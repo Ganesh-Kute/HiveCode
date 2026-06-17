@@ -16,6 +16,7 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
+import { lockHeldByOther, lockOrder } from './core.js'
 
 const [, , RELAY = 'ws://localhost:1234', ROOM = 'default', NAME = 'AI', FILE = 'fileA', INTENT = 'edit'] = process.argv
 const TTL = 6000        // a lock dies if not renewed within 6s (crash safety)
@@ -34,10 +35,7 @@ provider.awareness.setLocalStateField('user', { name: NAME, kind: 'ai' })
 const now = () => Date.now()
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-function heldByOther(file) {
-  const l = locks.get(file)
-  return l && l.owner !== ME && l.exp > now() ? l : null
-}
+const heldByOther = (file) => lockHeldByOther(locks, file, ME, now())
 function postRequest(file, summary) {
   const cur = requests.get(file) || {}
   if (cur[ME]) return
@@ -72,6 +70,12 @@ async function acquire(file, intent) {
     }
     await sleep(300) // lost the race, try again
   }
+}
+
+// Take SEVERAL files for one task without risk of deadlock: always acquire in
+// the same sorted order, so two agents can never each hold what the other needs.
+async function acquireAll(filesList, intent) {
+  for (const f of lockOrder(filesList)) await acquire(f, intent)
 }
 
 let heartbeat
