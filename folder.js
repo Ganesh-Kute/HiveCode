@@ -16,6 +16,7 @@ import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
+import { applyDiff } from './core.js'
 
 const [, , RELAY = 'ws://localhost:1234', ROOM = 'default', DIR = '.', NAME = 'anon'] = process.argv
 const ROOT = path.resolve(DIR)
@@ -29,6 +30,7 @@ const provider = new WebsocketProvider(RELAY, ROOM, doc, { WebSocketPolyfill: We
 provider.awareness.setLocalStateField('user', { name: NAME, kind: 'human' })
 
 const known = new Set() // paths we've synced (lets us tell a local delete from a not-yet-written remote file)
+const mtimes = new Map() // path -> last-seen mtimeMs, so we only re-read files that actually changed
 
 function walk(dir, acc = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -51,49 +53,44 @@ function readText(full) {
   }
 }
 
-function applyDiff(ytext, next) {
-  const cur = ytext.toString()
-  if (cur === next) return
-  let p = 0
-  while (p < cur.length && p < next.length && cur[p] === next[p]) p++
-  let s = 0
-  while (s < cur.length - p && s < next.length - p && cur[cur.length - 1 - s] === next[next.length - 1 - s]) s++
-  if (cur.length - p - s > 0) ytext.delete(p, cur.length - p - s)
-  const ins = next.slice(p, next.length - s)
-  if (ins) ytext.insert(p, ins)
-}
-
 function writeToDisk(relPath, content) {
   const full = path.join(ROOT, relPath)
   fs.mkdirSync(path.dirname(full), { recursive: true })
   fs.writeFileSync(full, content)
   known.add(relPath)
+  try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch {} // don't re-read our own write
 }
 
 // DISK -> DOC: scan the folder and fold changes into the shared doc.
+// Optimization: only READ a file's contents when its mtime changed; unchanged
+// files are skipped entirely, so a large project costs almost nothing per tick.
 function scan() {
   const diskFulls = walk(ROOT)
   const diskRel = new Set(diskFulls.map(rel))
+  const changed = []
+  for (const full of diskFulls) {
+    const r = rel(full)
+    let mt
+    try { mt = fs.statSync(full).mtimeMs } catch { continue }
+    if (mtimes.get(r) === mt && files.has(r)) continue // unchanged -> skip read
+    const text = readText(full)
+    if (text === null) continue
+    changed.push([r, text, mt])
+  }
+  const removed = [...known].filter((r) => !diskRel.has(r) && files.has(r))
+  if (!changed.length && !removed.length) return
   doc.transact(() => {
-    for (const full of diskFulls) {
-      const r = rel(full)
-      const text = readText(full)
-      if (text === null) continue
+    for (const [r, text, mt] of changed) {
       let yt = files.get(r)
-      if (!yt) {
-        yt = new Y.Text()
-        files.set(r, yt)
-        yt.insert(0, text)
-      } else {
-        applyDiff(yt, text)
-      }
+      if (!yt) { yt = new Y.Text(); files.set(r, yt); yt.insert(0, text) }
+      else applyDiff(yt, text)
       known.add(r)
+      mtimes.set(r, mt)
     }
-    for (const r of [...known]) {
-      if (!diskRel.has(r) && files.has(r)) {
-        files.delete(r) // file vanished from disk -> propagate the delete
-        known.delete(r)
-      }
+    for (const r of removed) {
+      files.delete(r) // file vanished from disk -> propagate the delete
+      known.delete(r)
+      mtimes.delete(r)
     }
   }) // local transaction -> the observer below ignores it
 }

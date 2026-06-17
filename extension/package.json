@@ -1,0 +1,35 @@
+{
+  "name": "livecode",
+  "displayName": "LiveCode — live multiplayer coding",
+  "description": "Edit a project together live with teammates and AI agents. No git push/pull.",
+  "version": "0.1.0",
+  "publisher": "livecode",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      { "command": "livecode.host", "title": "LiveCode: Host a Session" },
+      { "command": "livecode.join", "title": "LiveCode: Join a Session" },
+      { "command": "livecode.leave", "title": "LiveCode: Leave Session" }
+    ],
+    "configuration": {
+      "title": "LiveCode",
+      "properties": {
+        "livecode.relayUrl": {
+          "type": "string",
+          "default": "wss://livecode-xoss.onrender.com",
+          "description": "The LiveCode relay server URL."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "yjs": "^13.6.18",
+    "y-websocket": "^2.0.4",
+    "ws": "^8.18.0"
+  }
+}
