@@ -38,6 +38,17 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **LIVE lock-free agent** (`agent-merge.js` + `merge-live-test.js`): the
+  patch-apply-or-rework model, now running over the real relay (no locks). The
+  agent reads the file, posts its intent on a shared `board` Y.Map, reasons,
+  then RE-CHECKS at write time: unchanged → write; disjoint lines → merge both;
+  same lines → conflict → re-reason on the fresh code. `merge-live-test.js`
+  proves it across two real OS processes over WebSocket — Scenario A (different
+  lines) merges with no rework; Scenario B (same line) conflicts and the slow
+  agent reworks so nobody is clobbered. ALL LIVE CHECKS PASS. Stub mode is
+  deterministic (find→replace); live mode uses Claude (`LIVECODE_AI=1`).
+  Replaces the lock-based `agent-ai.js` as the scalable path.
+
 - **Patch-apply-or-rework** (`mergeEdit` in core.js + `patch-merge-demo.js`):
   the lock-free model. Agents edit in parallel; at write time a 3-way line
   merge decides — current unchanged → take mine; disjoint edits → merge both
