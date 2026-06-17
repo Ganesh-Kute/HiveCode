@@ -64,3 +64,36 @@ function sharedWord(a, b) {
   for (const w of words(a)) if (wb.has(w)) return w
   return null
 }
+
+// --- Patch-apply-or-rework (for two writers in the SAME file) ---
+// 3-way line merge: given the `base` an agent read, the `mine` it produced, and
+// the `current` on the board now, decide what to write.
+//   - current unchanged  -> take mine
+//   - I changed nothing  -> take current
+//   - changes on disjoint lines -> merge both (no rework)
+//   - changes overlap the same lines -> { conflict } -> agent must re-do on current
+export function mergeEdit(base, mine, current) {
+  if (current === base) return { ok: true, text: mine }
+  if (mine === base) return { ok: true, text: current }
+  if (mine === current) return { ok: true, text: mine }
+  const b = base.split('\n')
+  const mr = changedRange(b, mine.split('\n'))
+  const tr = changedRange(b, current.split('\n'))
+  if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
+    const out = b.slice()
+    for (const e of [mr, tr].sort((x, y) => y.startBase - x.startBase)) {
+      out.splice(e.startBase, e.endBase - e.startBase, ...e.newLines)
+    }
+    return { ok: true, text: out.join('\n') }
+  }
+  return { conflict: true } // same lines changed two ways -> re-reason on `current`
+}
+
+// Which base line-range an edit replaced, and the replacement lines.
+function changedRange(base, other) {
+  let p = 0
+  while (p < base.length && p < other.length && base[p] === other[p]) p++
+  let s = 0
+  while (s < base.length - p && s < other.length - p && base[base.length - 1 - s] === other[other.length - 1 - s]) s++
+  return { startBase: p, endBase: base.length - s, newLines: other.slice(p, other.length - s) }
+}
