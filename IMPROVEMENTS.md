@@ -38,9 +38,16 @@ Work done while you were at lunch. Every change verified before moving on.
    which is really an AI judgment call → ties into #3.
 2. **Live cursors + keystroke sync** in the extension (the Google-Docs feel).
    Bigger: bind to the editor buffer instead of the file on disk.
-3. **Plug in real AI** — replace the stub edits in the agents with actual
-   Claude calls so they truly reason. Needs an API key (yours), so I left it.
-4. **Business plan** — tiers, pricing, what to charge for.
+3. **Business plan** — tiers, pricing, what to charge for.
+
+## Also done
+
+- **Real AI agent** (`agent-ai.js`): joins a room, locks the target file,
+  reads it, asks Claude (`claude-opus-4-8`) for the new version, writes it
+  back through the shared doc. Safe by default — runs in STUB mode with no
+  API key (verified end-to-end), uses the real model when you set
+  `LIVECODE_AI=1` + `ANTHROPIC_API_KEY`. This is the bridge from "coordination
+  demo" to "AI teammates that actually edit your code."
 
 ## How to check my work
 ```
