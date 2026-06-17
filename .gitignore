@@ -8,6 +8,9 @@ projA/
 projB/
 workspace/
 
+# build artifacts
+*.vsix
+
 # os junk
 .DS_Store
 Thumbs.db
