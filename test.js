@@ -5,7 +5,7 @@
 // can be verified instantly.
 
 import * as Y from 'yjs'
-import { applyDiff, safeBump, lockHeldByOther, lockOrder } from './core.js'
+import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate } from './core.js'
 
 let passed = 0
 let failed = 0
@@ -104,6 +104,23 @@ section('Deadlock-safe multi-file ordering')
   const want2 = ['fileA', 'fileB']
   check('both agents lock in the same order', JSON.stringify(lockOrder(want1)) === JSON.stringify(lockOrder(want2)))
   check('order is sorted', JSON.stringify(lockOrder(['c', 'a', 'b'])) === JSON.stringify(['a', 'b', 'c']))
+}
+
+// ---------------------------------------------------------------------------
+section('Richer negotiation (grant / counter / deny)')
+{
+  // no conflict -> grant
+  const g = negotiate({ intent: 'add logging to parser', done: false }, { from: 'B', summary: 'rename the CLI flag' })
+  check('grants when unrelated', g.decision === 'grant')
+  // both touch "login" -> counter (take turns)
+  const c = negotiate({ intent: 'add validation to login', done: false }, { from: 'B', summary: 'refactor login helper' })
+  check('counters on overlap', c.decision === 'counter' && /login/.test(c.reason))
+  // destructive while mid-edit -> deny
+  const d = negotiate({ intent: 'tweak login copy', done: false }, { from: 'B', summary: 'delete the auth module' })
+  check('denies destructive mid-edit', d.decision === 'deny')
+  // once holder is done, overlap is fine -> grant
+  const g2 = negotiate({ intent: 'add validation to login', done: true }, { from: 'B', summary: 'refactor login helper' })
+  check('grants overlap once holder is done', g2.decision === 'grant')
 }
 
 // ---------------------------------------------------------------------------

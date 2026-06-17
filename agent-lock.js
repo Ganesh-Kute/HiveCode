@@ -16,7 +16,7 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { lockHeldByOther, lockOrder } from './core.js'
+import { lockHeldByOther, lockOrder, negotiate } from './core.js'
 
 const [, , RELAY = 'ws://localhost:1234', ROOM = 'default', NAME = 'AI', FILE = 'fileA', INTENT = 'edit'] = process.argv
 const TTL = 6000        // a lock dies if not renewed within 6s (crash safety)
@@ -26,8 +26,9 @@ const WORK_MS = 2500    // pretend this is the agent's reasoning + edit time
 
 const doc = new Y.Doc()
 const text = doc.getText('file')
-const locks = doc.getMap('locks')       // file -> { owner, intent, exp }
-const requests = doc.getMap('requests') // file -> { [requesterName]: summary }
+const locks = doc.getMap('locks')         // file -> { owner, intent, exp }
+const requests = doc.getMap('requests')   // file -> { [requesterName]: summary }
+const responses = doc.getMap('responses') // "file:requester" -> { from, decision, reason }
 const provider = new WebsocketProvider(RELAY, ROOM, doc, { WebSocketPolyfill: WebSocket })
 const ME = NAME
 provider.awareness.setLocalStateField('user', { name: NAME, kind: 'ai' })
@@ -49,6 +50,12 @@ function clearMyRequest(file) {
 async function acquire(file, intent) {
   let requested = false
   while (true) {
+    // If the current holder denied my request, stop waiting and back off.
+    const resp = responses.get(`${file}:${ME}`)
+    if (resp && resp.decision === 'deny') {
+      console.log(`[${NAME}] my request for "${file}" was DENIED: ${resp.reason}. Backing off.`)
+      return 'denied'
+    }
     const other = heldByOther(file)
     if (other) {
       if (!requested) {
@@ -66,7 +73,7 @@ async function acquire(file, intent) {
     if (l && l.owner === ME) {
       clearMyRequest(file)
       if (requested) console.log(`[${NAME}] access GRANTED on "${file}".`)
-      return
+      return 'acquired'
     }
     await sleep(300) // lost the race, try again
   }
@@ -95,18 +102,30 @@ async function main() {
   await new Promise((res) => provider.on('sync', (s) => s && res()))
   console.log(`[${NAME}] joined room "${ROOM}".`)
 
-  await acquire(FILE, INTENT)
+  const status = await acquire(FILE, INTENT)
+  if (status === 'denied') { provider.destroy(); process.exit(0) }
   console.log(`[${NAME}] LOCKED "${FILE}" — intent: "${INTENT}". Working...`)
   startHeartbeat(FILE, INTENT)
   provider.awareness.setLocalStateField('activity', `editing ${FILE}: ${INTENT}`)
 
+  // While I hold the lock, answer any request with grant / counter / deny.
+  let working = true
+  const answer = () => {
+    if (!working) return
+    const reqs = requests.get(FILE) || {}
+    for (const [who, summary] of Object.entries(reqs)) {
+      if (who === ME || responses.get(`${FILE}:${who}`)) continue
+      const r = negotiate({ intent: INTENT, done: false }, { from: who, summary })
+      console.log(`[${NAME}] ${who} asks ("${summary}") → ${r.decision.toUpperCase()}: ${r.reason}`)
+      responses.set(`${FILE}:${who}`, { from: ME, decision: r.decision, reason: r.reason })
+    }
+  }
+  requests.observe(answer)
+  answer()
+
   await sleep(WORK_MS)                       // reasoning + edit
   text.insert(text.length, `# [${NAME}] ${INTENT}\n`)
-
-  const reqs = requests.get(FILE)           // be polite: acknowledge anyone waiting
-  if (reqs) for (const [who, summary] of Object.entries(reqs)) {
-    if (who !== ME) console.log(`[${NAME}] ${who} is waiting to: "${summary}". Handing over.`)
-  }
+  working = false
 
   release(FILE)
   provider.awareness.setLocalStateField('activity', 'idle')

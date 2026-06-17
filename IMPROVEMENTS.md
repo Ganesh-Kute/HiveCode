@@ -32,15 +32,17 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Roadmap (not done — needs your input or is bigger)
 
-1. **Richer negotiation** — let a lock holder DENY or COUNTER a request
-   ("wait, my change touches that too"), not just auto-hand-over. The request
-   channel already carries the summary; this needs a policy for *when* to deny,
-   which is really an AI judgment call → ties into #3.
-2. **Live cursors + keystroke sync** in the extension (the Google-Docs feel).
+1. **Live cursors + keystroke sync** in the extension (the Google-Docs feel).
    Bigger: bind to the editor buffer instead of the file on disk.
 3. **Business plan** — tiers, pricing, what to charge for.
 
 ## Also done
+
+- **Richer negotiation** (`negotiate` in core.js + `negotiation-v2-demo.js`):
+  a lock holder now GRANTs unrelated requests, COUNTERs overlapping ones
+  ("let me finish, then it's yours"), and DENYs destructive ones mid-edit.
+  Wired live into `agent-lock.js` (holder answers waiters; a denied requester
+  backs off). Unit-tested (4 cases) and verified live.
 
 - **Real AI agent** (`agent-ai.js`): joins a room, locks the target file,
   reads it, asks Claude (`claude-opus-4-8`) for the new version, writes it

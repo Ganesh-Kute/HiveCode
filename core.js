@@ -37,3 +37,30 @@ export function lockHeldByOther(locks, file, me, now) {
 export function lockOrder(files) {
   return [...files].sort()
 }
+
+// Richer negotiation: when a lock holder gets a request, decide how to respond.
+// Returns one of:
+//   grant   — no conflict, hand over (after finishing)
+//   counter — we both touch the same thing; propose taking turns
+//   deny    — the request is destructive while I'm still mid-edit; refuse for now
+// `holder` = { intent, done }, `request` = { from, summary }.
+export function negotiate(holder, request) {
+  const h = (holder.intent || '').toLowerCase()
+  const r = (request.summary || '').toLowerCase()
+  if (/\b(delete|drop|remove|rewrite|overwrite)\b/.test(r) && !holder.done) {
+    return { decision: 'deny', reason: 'that change is destructive and I am still mid-edit' }
+  }
+  const overlap = sharedWord(h, r)
+  if (overlap && !holder.done) {
+    return { decision: 'counter', reason: `we both touch "${overlap}"`, counter: 'let me finish, then it is yours' }
+  }
+  return { decision: 'grant', reason: 'no conflict' }
+}
+
+// Smallest shared "significant" word (len > 3) between two intent strings.
+function sharedWord(a, b) {
+  const words = (s) => new Set(s.split(/[^a-z0-9]+/i).filter((w) => w.length > 3))
+  const wb = words(b)
+  for (const w of words(a)) if (wb.has(w)) return w
+  return null
+}
