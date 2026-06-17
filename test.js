@@ -5,7 +5,7 @@
 // can be verified instantly.
 
 import * as Y from 'yjs'
-import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate } from './core.js'
+import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit } from './core.js'
 
 let passed = 0
 let failed = 0
@@ -121,6 +121,22 @@ section('Richer negotiation (grant / counter / deny)')
   // once holder is done, overlap is fine -> grant
   const g2 = negotiate({ intent: 'add validation to login', done: true }, { from: 'B', summary: 'refactor login helper' })
   check('grants overlap once holder is done', g2.decision === 'grant')
+}
+
+// ---------------------------------------------------------------------------
+section('Patch merge-or-rework (two writers, same file)')
+{
+  const base = 'a\nb\nc\nd\ne'
+  // current unchanged -> take mine
+  check('takes mine when current == base', mergeEdit(base, 'a\nB\nc\nd\ne', base).text === 'a\nB\nc\nd\ne')
+  // disjoint line edits -> merge both, no rework
+  const m = mergeEdit(base, 'a\nB\nc\nd\ne', 'a\nb\nc\nD\ne')
+  check('merges disjoint edits', m.ok && m.text === 'a\nB\nc\nD\ne')
+  // same line changed two ways -> conflict (rework)
+  const c = mergeEdit(base, 'a\nb\nC\nd\ne', 'a\nb\nX\nd\ne')
+  check('flags overlapping edit as conflict', c.conflict === true)
+  // I changed nothing -> take current
+  check('takes current when I made no change', mergeEdit(base, base, 'a\nb\nc\nd\nE').text === 'a\nb\nc\nd\nE')
 }
 
 // ---------------------------------------------------------------------------

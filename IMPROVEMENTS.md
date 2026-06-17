@@ -38,6 +38,13 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **Patch-apply-or-rework** (`mergeEdit` in core.js + `patch-merge-demo.js`):
+  the lock-free model. Agents edit in parallel; at write time a 3-way line
+  merge decides — current unchanged → take mine; disjoint edits → merge both
+  (no rework); same lines changed two ways → conflict → agent re-does on the
+  fresh code. Unit-tested (4 cases). (Area ownership is intentionally NOT code
+  — users just instruct their AI "don't touch backend/".)
+
 - **Richer negotiation** (`negotiate` in core.js + `negotiation-v2-demo.js`):
   a lock holder now GRANTs unrelated requests, COUNTERs overlapping ones
   ("let me finish, then it's yours"), and DENYs destructive ones mid-edit.
