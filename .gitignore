@@ -1,0 +1,13 @@
+# dependencies (reinstalled on deploy)
+node_modules/
+
+# local test artifacts
+*.log
+*.txt
+projA/
+projB/
+workspace/
+
+# os junk
+.DS_Store
+Thumbs.db

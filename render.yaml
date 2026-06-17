@@ -1,0 +1,15 @@
+# Render deployment for the livecode relay.
+# Render supports WebSockets on web services and has a free tier.
+# (Free tier sleeps after ~15 min idle and cold-starts in ~30s — fine to
+#  start; upgrade to a paid instance once people rely on it.)
+services:
+  - type: web
+    name: livecode-relay
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 20.11.1
