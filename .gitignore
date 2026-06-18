@@ -25,7 +25,9 @@ aiproj/
 HIVE_CHAT.md
 HIVE_BOARD.md
 HIVE_TASKS.md
+HIVE_MEMBERS.md
 .hive.json
+.presence-test/
 
 # os junk
 .DS_Store

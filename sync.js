@@ -29,9 +29,10 @@ const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents'
 const TASKS_FILE = 'HIVE_TASKS.md' // generated locally from `tasks`; directed work + approvals
 const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
 const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
+const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
-const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, RULES_FILE])
+const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, RULES_FILE, MEMBERS_FILE])
 
 // The hive's law. Auto-written into every room folder so it is ALWAYS present —
 // no setup, no relying on an agent to remember it. The sync layer enforces the
@@ -45,6 +46,9 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 ## Identity
 - You are automatically "human" (you ran the editor) or "ai" (you ran the agent
   client). Nobody declares it — running the client is the declaration.
+
+## Know who you are working with
+- Read HIVE_MEMBERS.md — who (humans + AIs) is in the room right now, and how many.
 
 ## Before you touch a file
 1. Read HIVE_CHAT.md — what is everyone doing right now.
@@ -123,7 +127,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fs.mkdirSync(path.dirname(full), { recursive: true })
     fs.writeFileSync(full, content)
     known.add(relPath)
-    try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch {}
+    try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
   }
 
   function reconcile(relPath, origin = 'local') {
@@ -136,7 +140,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (docText === null) {
       const t = new Y.Text(); files.set(relPath, t); t.insert(0, disk)
       known.add(relPath); bases.set(relPath, disk)
-      try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch {}
+      try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
       return
     }
     if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); return }
@@ -229,6 +233,22 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
   if (syncFiles) tasks.observe(() => renderTasks())
 
+  // --- live presence: who is in the room (humans + AIs), updated on join/leave ---
+  function memberList() {
+    const seen = new Map()
+    for (const s of provider.awareness.getStates().values()) {
+      if (s.user && s.user.name) seen.set(s.user.name, s.user)
+    }
+    return [...seen.values()]
+  }
+  function renderMembers() {
+    const us = memberList()
+    const out = ['# Hive Members — who is in this room right now (live).', '', `count: ${us.length}`, '']
+    for (const u of us) out.push(`- ${u.name} (${u.kind})${u.owner ? ' — owned by ' + u.owner : ''}`)
+    writeToDisk(MEMBERS_FILE, out.join('\n') + '\n')
+  }
+  if (syncFiles) provider.awareness.on('change', () => renderMembers())
+
   function scan() {
     const diskFulls = walk(ROOT)
     const diskRel = new Set(diskFulls.map(rel))
@@ -256,7 +276,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (ev.target === files) {
         ev.changes.keys.forEach((change, key) => {
           if (change.action === 'delete') {
-            try { fs.rmSync(path.join(ROOT, key)) } catch {}
+            try { fs.rmSync(path.join(ROOT, key)) } catch { }
             known.delete(key); bases.delete(key)
             log(`[${name}] <- deleted ${key}`)
           } else {
@@ -279,6 +299,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (board.size) renderBoard()
     if (chat.length) renderChat()
     if (tasks.size) renderTasks()
+    renderMembers()
     scan()
     log(`[${name}] folder sync active on ${ROOT} (room "${room}") as ${kind}. ${files.size} files.`)
     if (!scanTimer) scanTimer = setInterval(scan, 400)
@@ -293,7 +314,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     complete,            // mark a task done
     myTasks,             // tasks directed at me
     members: () => [...provider.awareness.getStates().values()].map((s) => s.user).filter(Boolean),
-    stop: () => { if (scanTimer) clearInterval(scanTimer); try { provider.destroy() } catch {}; try { doc.destroy() } catch {} },
+    stop: () => {
+      if (scanTimer) clearInterval(scanTimer)
+      try { provider.awareness.setLocalState(null) } catch { } // announce departure now (don't wait for timeout)
+      try { provider.destroy() } catch { }
+      try { doc.destroy() } catch { }
+    },
   }
 }
 

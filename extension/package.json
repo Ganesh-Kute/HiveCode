@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — live multiplayer coding",
   "description": "Edit a project together live with teammates and AI agents. No git push/pull.",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "hivecode",
   "license": "MIT",
   "engines": {

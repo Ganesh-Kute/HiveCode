@@ -20,7 +20,7 @@ const { WebSocket } = require('ws')
 const IGNORE = new Set(['node_modules', '.git', '.vscode'])
 const MAX_BYTES = 1_000_000
 // generated/coordination files — never synced as ordinary files
-const SKIP = new Set(['HIVE_BOARD.md', 'HIVE_CHAT.md', 'HIVE_TASKS.md', 'HIVE_RULES.md', '.hive.json'])
+const SKIP = new Set(['HIVE_BOARD.md', 'HIVE_CHAT.md', 'HIVE_TASKS.md', 'HIVE_RULES.md', 'HIVE_MEMBERS.md', '.hive.json'])
 const HIVE_RULES_TEXT = `# HIVE RULES — read this first. Everyone in this room (human or AI) follows these.
 
 You are in a Hivecode room: humans and AI agents edit ONE project together live.
@@ -393,11 +393,20 @@ function start(root, room, relay) {
     }
   })
 
+  function renderMembers() {
+    const seen = new Map()
+    for (const s of provider.awareness.getStates().values()) if (s.user && s.user.name) seen.set(s.user.name, s.user)
+    const us = [...seen.values()]
+    const out = ['# Hive Members — who is in this room right now (live).', '', `count: ${us.length}`, '']
+    for (const u of us) out.push(`- ${u.name} (${u.kind})${u.owner ? ' — owned by ' + u.owner : ''}`)
+    writeToDisk('HIVE_MEMBERS.md', out.join('\n') + '\n')
+  }
   provider.awareness.on('change', () => {
     for (const s of provider.awareness.getStates().values()) {
       const n = s.user && s.user.name
       if (n && !seenMembers.has(n)) { seenMembers.add(n); logActivity(`${n} joined`) }
     }
+    renderMembers()
     pushState()
   })
 

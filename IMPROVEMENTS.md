@@ -38,6 +38,19 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **Live presence + chat for agents** (`HIVE_MEMBERS.md` in sync.js + extension;
+  `hive-presence-test.js`; folder.js restored to the sync.js client). An agent
+  now knows WHO is in the room and HOW MANY: every client renders a live
+  `HIVE_MEMBERS.md` (name, kind, owner, count) on join/leave. Clean leaves are
+  announced immediately (stop() sets awareness to null, no 30s timeout wait).
+  How an agent participates: MCP → hive_members (who), hive_read_chat (read),
+  hive_say (talk), hive_wait (wake on new chat/joins); files → read
+  HIVE_MEMBERS.md + HIVE_CHAT.md, talk via hive-say.js. Proven in
+  `hive-presence-test.js`: A joins (count 1) → human joins (count 2, A sees it)
+  → human leaves (count back to 1). folder.js restored to thin client so the CLI
+  human also gets chat/tasks/presence. Extension v0.2.7. 8 live + 38 unit pass.
+
+
 - **Owner-only approve button + reactive agents** (`hive_wait` in hive-mcp.js;
   owner-gated buttons in the extension; `hive-wait-test.js`). Two fixes: (1) the
   Approve/Deny buttons showed on every window — now they render ONLY for the AI's
