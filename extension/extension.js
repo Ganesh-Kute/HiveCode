@@ -19,6 +19,33 @@ const { WebSocket } = require('ws')
 
 const IGNORE = new Set(['node_modules', '.git', '.vscode'])
 const MAX_BYTES = 1_000_000
+// generated/coordination files — never synced as ordinary files
+const SKIP = new Set(['HIVE_BOARD.md', 'HIVE_CHAT.md', 'HIVE_RULES.md', '.hive.json'])
+const HIVE_RULES_TEXT = `# HIVE RULES — read this first. Everyone in this room (human or AI) follows these.
+
+You are in a Hivecode room: humans and AI agents edit ONE project together live.
+These rules keep anyone from destroying another's work. The sync layer enforces
+the hard parts automatically; you do the rest.
+
+## Before you touch a file
+1. Read HIVE_CHAT.md — what is everyone doing right now.
+2. Read HIVE_BOARD.md — which files were just rewritten.
+3. If a file you plan to edit appears there, RE-READ it before changing it.
+
+## While you work
+4. ANNOUNCE in chat what you are taking before you start.
+5. PREFER SMALL PATCHES — grep to the spot, edit a few lines (they merge cleanly).
+6. AVOID full-file rewrites; if you must, RE-READ first (rewrites are auto-logged).
+7. STAY IN YOUR LANE — read others' areas, but leave edits to the owner.
+
+## When things collide
+8. <<<<<<< ======= >>>>>>> markers = a real conflict: keep the right code, delete
+   the markers. Never ignore or blindly overwrite.
+9. If your edit was merged/reworked, that is normal — re-read and continue.
+
+## Talking
+10. Coordinate in chat. ASK before anything destructive in another's area.
+`
 
 let session = null     // { doc, provider, root, scanTimer, room, relay }
 let status             // status-bar item
@@ -235,7 +262,7 @@ function start(root, room, relay) {
   // Bring one file's disk copy and shared-doc copy into agreement via 3-way
   // merge against its last agreed base. Safe from either direction.
   function reconcile(r, origin = 'local') {
-    if (r === BOARD_FILE) return // the board file is generated, never synced
+    if (SKIP.has(r)) return // generated/coordination files are never synced
     const full = path.join(root, r)
     const yt = files.get(r)
     const disk = fs.existsSync(full) ? readText(full) : null
@@ -292,7 +319,7 @@ function start(root, room, relay) {
     const onDisk = new Set(fulls.map(rel))
     for (const full of fulls) {
       const r = rel(full)
-      if (r === BOARD_FILE) continue // generated locally; don't sync it
+      if (SKIP.has(r)) continue // generated/coordination files; don't sync
       let mt
       try { mt = fs.statSync(full).mtimeMs } catch { continue }
       if (mtimes.get(r) === mt && files.has(r)) continue
@@ -334,6 +361,7 @@ function start(root, room, relay) {
 
   provider.on('sync', (s) => {
     if (!s) return
+    writeToDisk('HIVE_RULES.md', HIVE_RULES_TEXT) // the law is always present in the room
     for (const [key] of files.entries()) reconcile(key, 'remote') // pull + merge against local
     if (board.size) renderBoard() // surface rewrites logged before we joined
     scan()

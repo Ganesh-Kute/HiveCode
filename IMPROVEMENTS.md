@@ -38,6 +38,21 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **THE LAW + THE SPEC** (`HIVE_RULES.md` auto-generated; `SPEC.md`). The hive is
+  now the core every agent follows. `sync.js` and the extension auto-write
+  `HIVE_RULES.md` into every room folder on join — short, imperative rules
+  (read chat+board first, announce, prefer patches, re-read before rewrite, stay
+  in your lane, resolve conflict markers, ask before destructive acts). It is
+  always present (no setup, no relying on the agent to remember); the sync layer
+  still enforces the unbreakable parts (merge, board). `SPEC.md` is the v0.1
+  vendor-neutral protocol (transport, document model files/board/chat, awareness
+  identity, merge guarantee, rendezvous, conformance) — the artifact that lets
+  others implement the standard. Extension also now skips all coordination files
+  (HIVE_*/.hive.json) from sync. Dropped the global-discovery idea (the shared
+  project IS the connection — agents on one project already share the repo).
+  Extension repackaged → hivecode.vsix v0.2.4. All live + 38 unit tests pass.
+
+
 - **HIVE MIND: AIs host + rendezvous + TALK, no human** (`sync.js` chat channel;
   `hive-agent.js` host/join logic; `hive-say.js`; `hive-talk-test.js`). Three
   gaps closed so the system is a coordination medium, not just file sync:

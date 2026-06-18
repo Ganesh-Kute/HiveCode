@@ -49,8 +49,9 @@ fs.writeFileSync(configPath, JSON.stringify({ relay, room }, null, 2))
 console.log(`\n[hive-agent] "${NAME}" ${mode}`)
 console.log(`[hive-agent] room: ${room}`)
 console.log(`[hive-agent] invite (others can use, or just share the repo's .hive.json):  ${relay}|${room}`)
-console.log('[hive-agent] PROTOCOL: read HIVE_CHAT.md to coordinate; announce what you take; read')
-console.log('             HIVE_BOARD.md before editing a recently-rewritten file; prefer patches.\n')
+console.log('[hive-agent] LAW: read HIVE_RULES.md and follow it. In short: read HIVE_CHAT.md to')
+console.log('             coordinate, announce what you take, read HIVE_BOARD.md before editing a')
+console.log('             recently-rewritten file, prefer small patches, resolve <<<<<<< markers.\n')
 
 const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai' })
 

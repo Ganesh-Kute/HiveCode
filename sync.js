@@ -27,9 +27,51 @@ const MAX_BYTES = 1_000_000
 const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
 const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents' conversation
 const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
+const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
-const SKIP = new Set([BOARD_FILE, CHAT_FILE, CONFIG_FILE])
+const SKIP = new Set([BOARD_FILE, CHAT_FILE, CONFIG_FILE, RULES_FILE])
+
+// The hive's law. Auto-written into every room folder so it is ALWAYS present —
+// no setup, no relying on an agent to remember it. The sync layer enforces the
+// hard parts (merge, board); this is the rest, in plain imperative language.
+const HIVE_RULES_TEXT = `# HIVE RULES — read this first. Everyone in this room (human or AI) follows these.
+
+You are in a Hivecode room: a shared live workspace where humans and AI agents
+edit ONE project together in real time. These rules keep anyone from destroying
+another's work. The sync layer enforces the hard parts automatically; you do the rest.
+
+## Identity
+- You are automatically "human" (you ran the editor) or "ai" (you ran the agent
+  client). Nobody declares it — running the client is the declaration.
+
+## Before you touch a file
+1. Read HIVE_CHAT.md — what is everyone doing right now.
+2. Read HIVE_BOARD.md — which files were just rewritten (and what was touched).
+3. If a file you plan to edit appears there, RE-READ it before changing it.
+
+## While you work
+4. ANNOUNCE first: post to chat what you are taking, e.g.
+   node hive-say.js <yourName> "taking auth.js: adding login validation"
+5. PREFER SMALL PATCHES — grep to the spot, edit a few lines. Patches from
+   different agents merge automatically with no conflict.
+6. AVOID full-file rewrites unless necessary. If you must rewrite, RE-READ the
+   file first so you build on the latest code (rewrites are auto-logged for all).
+7. STAY IN YOUR LANE — if someone said "I own X" (e.g. the backend), read X but
+   do not edit it; leave that to the owner.
+
+## When things collide
+8. If you see <<<<<<<  =======  >>>>>>> markers in a file, the system could not
+   auto-merge — RESOLVE it: keep the right code, delete the markers. Never ignore
+   them or blindly overwrite.
+9. If your edit was merged/reworked, that is normal — re-read and continue.
+
+## Talking
+10. Coordinate in chat. ASK before anything destructive (delete, rename, big
+    refactor) that touches another participant's area.
+
+Read → announce → patch → respect lanes → resolve conflicts → talk.
+`
 
 export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', log = console.log, syncFiles = true }) {
   const ROOT = path.resolve(dir)
@@ -184,6 +226,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let scanTimer = null
   provider.on('sync', (s) => {
     if (!s || !syncFiles) return
+    writeToDisk(RULES_FILE, HIVE_RULES_TEXT) // the law is always present in the room
     for (const [key] of files.entries()) reconcile(key, 'remote')
     if (board.size) renderBoard()
     if (chat.length) renderChat()

@@ -48,6 +48,7 @@ fs.writeFileSync(path.join(TWO, '.hive.json'), cfg)
 start(['hive-agent.js', '', TWO, 'Two'], 'Two')
 await sleep(2500)
 assert('agent Two rendezvous-joined the SAME room', (read(TWO, '.hive.json') || '').includes(room))
+assert('HIVE_RULES.md auto-written into both folders (the law is present)', (read(ONE, 'HIVE_RULES.md') || '').includes('HIVE RULES') && (read(TWO, 'HIVE_RULES.md') || '').includes('HIVE RULES'))
 
 // 4. both should see both join announcements in the chat
 const chatOne = read(ONE, CHAT) || '', chatTwo = read(TWO, CHAT) || ''
