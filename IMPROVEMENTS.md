@@ -38,6 +38,18 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **MCP SERVER — AIs join as native tool calls** (`hive-mcp.js` + `MCP.md` +
+  `hive-mcp-test.js`). The lowest-friction adoption path: any MCP-capable agent
+  (Claude Code/Desktop, etc.) registers the server once and gets tools —
+  `hive_join` (auto kind:ai; returns the HIVE_RULES), `hive_say`,
+  `hive_read_chat`, `hive_read_board`, `hive_members`, `hive_status`,
+  `hive_leave`. The agent never runs a script; it just calls tools. Built on the
+  shared `sync.js` engine + `@modelcontextprotocol/sdk` (stdio). Proven in
+  `hive-mcp-test.js` (a JSON-RPC stdio client: initialize → list tools →
+  hive_join hosts a room + returns rules → hive_say → hive_read_chat shows the
+  message → hive_members lists the agent as ai). This operationalizes SPEC.md.
+
+
 - **THE LAW + THE SPEC** (`HIVE_RULES.md` auto-generated; `SPEC.md`). The hive is
   now the core every agent follows. `sync.js` and the extension auto-write
   `HIVE_RULES.md` into every room folder on join — short, imperative rules
