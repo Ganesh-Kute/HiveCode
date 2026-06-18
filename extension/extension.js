@@ -149,6 +149,7 @@ function start(root, room, relay) {
   provider.awareness.setLocalStateField('user', { name: me, kind })
   const known = new Set()
   const mtimes = new Map()
+  const bases = new Map()  // path -> last AGREED text (common ancestor for 3-way merge)
   const seenMembers = new Set()
 
   vscode.workspace.getConfiguration('files').update('autoSave', 'afterDelay', vscode.ConfigurationTarget.Workspace)
@@ -184,6 +185,58 @@ function start(root, room, relay) {
     const ins = next.slice(p, next.length - s)
     if (ins) yt.insert(p, ins)
   }
+  // line-range an edit replaced, and the replacement lines (for 3-way merge)
+  function changedRange(base, other) {
+    let p = 0
+    while (p < base.length && p < other.length && base[p] === other[p]) p++
+    let s = 0
+    while (s < base.length - p && s < other.length - p && base[base.length - 1 - s] === other[other.length - 1 - s]) s++
+    return { startBase: p, endBase: base.length - s, newLines: other.slice(p, other.length - s) }
+  }
+  // 3-way merge: disjoint edits merge cleanly; overlapping edits get git-style
+  // markers so BOTH versions survive (nobody's work is silently lost).
+  function merge3(base, mine, theirs) {
+    if (mine === theirs) return { text: mine, conflict: false }
+    if (base === theirs) return { text: mine, conflict: false }
+    if (base === mine) return { text: theirs, conflict: false }
+    const b = base.split('\n')
+    const mr = changedRange(b, mine.split('\n'))
+    const tr = changedRange(b, theirs.split('\n'))
+    if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
+      const out = b.slice()
+      for (const e of [mr, tr].sort((x, y) => y.startBase - x.startBase)) out.splice(e.startBase, e.endBase - e.startBase, ...e.newLines)
+      return { text: out.join('\n'), conflict: false }
+    }
+    const start = Math.min(mr.startBase, tr.startBase)
+    const end = Math.max(mr.endBase, tr.endBase)
+    const mineBlock = [...b.slice(start, mr.startBase), ...mr.newLines, ...b.slice(mr.endBase, end)]
+    const theirsBlock = [...b.slice(start, tr.startBase), ...tr.newLines, ...b.slice(tr.endBase, end)]
+    const out = [...b.slice(0, start), '<<<<<<< local (yours)', ...mineBlock, '=======', ...theirsBlock, '>>>>>>> incoming (theirs)', ...b.slice(end)]
+    return { text: out.join('\n'), conflict: true }
+  }
+  // Bring one file's disk copy and shared-doc copy into agreement via 3-way
+  // merge against its last agreed base. Safe from either direction.
+  function reconcile(r) {
+    const full = path.join(root, r)
+    const yt = files.get(r)
+    const disk = fs.existsSync(full) ? readText(full) : null
+    const docText = yt ? yt.toString() : null
+    if (disk === null && docText === null) return
+    if (docText === null) {
+      const t = new Y.Text(); files.set(r, t); t.insert(0, disk)
+      known.add(r); bases.set(r, disk)
+      try { mtimes.set(r, fs.statSync(full).mtimeMs) } catch {}
+      return
+    }
+    if (disk === null) { writeToDisk(r, docText); bases.set(r, docText); return }
+    if (disk === docText) { known.add(r); bases.set(r, disk); return }
+    const base = bases.has(r) ? bases.get(r) : disk
+    const res = merge3(base, disk, docText)
+    doc.transact(() => applyDiff(yt, res.text)) // local txn -> observer ignores
+    if (res.text !== disk) writeToDisk(r, res.text)
+    known.add(r); bases.set(r, res.text)
+    logActivity(res.conflict ? `merge conflict in ${r} — kept BOTH (resolve <<<<<<< markers)` : `merged ${r} (both edits kept)`)
+  }
   function writeToDisk(r, content) {
     const full = path.join(root, r)
     fs.mkdirSync(path.dirname(full), { recursive: true })
@@ -196,27 +249,21 @@ function start(root, room, relay) {
   function scan() {
     const fulls = walk(root)
     const onDisk = new Set(fulls.map(rel))
-    const changed = []
     for (const full of fulls) {
       const r = rel(full)
       let mt
       try { mt = fs.statSync(full).mtimeMs } catch { continue }
       if (mtimes.get(r) === mt && files.has(r)) continue
-      const text = readText(full)
-      if (text === null) continue
-      changed.push([r, text, mt])
+      if (readText(full) === null) continue
+      mtimes.set(r, mt)
+      reconcile(r) // 3-way merge instead of blind overwrite
     }
     const removed = [...known].filter((r) => !onDisk.has(r) && files.has(r))
-    if (!changed.length && !removed.length) return
-    doc.transact(() => {
-      for (const [r, text, mt] of changed) {
-        let yt = files.get(r)
-        if (!yt) { yt = new Y.Text(); files.set(r, yt); yt.insert(0, text) }
-        else applyDiff(yt, text)
-        known.add(r); mtimes.set(r, mt)
-      }
-      for (const r of removed) { files.delete(r); known.delete(r); mtimes.delete(r) }
-    })
+    if (removed.length) {
+      doc.transact(() => {
+        for (const r of removed) { files.delete(r); known.delete(r); mtimes.delete(r); bases.delete(r) }
+      })
+    }
   }
 
   files.observeDeep((events, txn) => {
@@ -224,12 +271,12 @@ function start(root, room, relay) {
     for (const ev of events) {
       if (ev.target === files) {
         ev.changes.keys.forEach((change, key) => {
-          if (change.action === 'delete') { try { fs.rmSync(path.join(root, key)) } catch {}; known.delete(key); logActivity(`deleted ${key}`) }
-          else { const yt = files.get(key); if (yt) { writeToDisk(key, yt.toString()); logActivity(`received ${key}`) } }
+          if (change.action === 'delete') { try { fs.rmSync(path.join(root, key)) } catch {}; known.delete(key); bases.delete(key); logActivity(`deleted ${key}`) }
+          else reconcile(key) // merge remote change with any local edits
         })
       } else {
         for (const [key, yt] of files.entries()) {
-          if (yt === ev.target) { writeToDisk(key, yt.toString()); logActivity(`updated ${key}`); break }
+          if (yt === ev.target) { reconcile(key); break }
         }
       }
     }
@@ -245,11 +292,7 @@ function start(root, room, relay) {
 
   provider.on('sync', (s) => {
     if (!s) return
-    for (const [key, yt] of files.entries()) {
-      const full = path.join(root, key)
-      if (!fs.existsSync(full)) writeToDisk(key, yt.toString())
-      else known.add(key)
-    }
+    for (const [key] of files.entries()) reconcile(key) // pull + merge against local
     scan()
     session.scanTimer = setInterval(scan, 400)
     logActivity('Synced')

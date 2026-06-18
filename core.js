@@ -89,6 +89,42 @@ export function mergeEdit(base, mine, current) {
   return { conflict: true } // same lines changed two ways -> re-reason on `current`
 }
 
+// --- 3-way merge for the SYNC layer (disk <-> shared doc) ---
+// Same idea as mergeEdit, but instead of bailing with { conflict } it always
+// returns text: disjoint edits merge cleanly; overlapping edits are wrapped in
+// git-style conflict markers so BOTH versions survive and a human/AI resolves.
+//   merge3(base, mine, theirs) -> { text, conflict }
+export function merge3(base, mine, theirs) {
+  if (mine === theirs) return { text: mine, conflict: false }
+  if (base === theirs) return { text: mine, conflict: false }  // only I changed
+  if (base === mine) return { text: theirs, conflict: false }  // only they changed
+  const b = base.split('\n')
+  const mr = changedRange(b, mine.split('\n'))
+  const tr = changedRange(b, theirs.split('\n'))
+  if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
+    const out = b.slice()
+    for (const e of [mr, tr].sort((x, y) => y.startBase - x.startBase)) {
+      out.splice(e.startBase, e.endBase - e.startBase, ...e.newLines)
+    }
+    return { text: out.join('\n'), conflict: false }
+  }
+  // Overlap: reconstruct each side's lines over the union region [start,end).
+  const start = Math.min(mr.startBase, tr.startBase)
+  const end = Math.max(mr.endBase, tr.endBase)
+  const mineBlock = [...b.slice(start, mr.startBase), ...mr.newLines, ...b.slice(mr.endBase, end)]
+  const theirsBlock = [...b.slice(start, tr.startBase), ...tr.newLines, ...b.slice(tr.endBase, end)]
+  const out = [
+    ...b.slice(0, start),
+    '<<<<<<< local (yours)',
+    ...mineBlock,
+    '=======',
+    ...theirsBlock,
+    '>>>>>>> incoming (theirs)',
+    ...b.slice(end),
+  ]
+  return { text: out.join('\n'), conflict: true }
+}
+
 // Which base line-range an edit replaced, and the replacement lines.
 function changedRange(base, other) {
   let p = 0

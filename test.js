@@ -5,7 +5,7 @@
 // can be verified instantly.
 
 import * as Y from 'yjs'
-import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit } from './core.js'
+import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3 } from './core.js'
 
 let passed = 0
 let failed = 0
@@ -137,6 +137,30 @@ section('Patch merge-or-rework (two writers, same file)')
   check('flags overlapping edit as conflict', c.conflict === true)
   // I changed nothing -> take current
   check('takes current when I made no change', mergeEdit(base, base, 'a\nb\nc\nd\nE').text === 'a\nb\nc\nd\nE')
+}
+
+// ---------------------------------------------------------------------------
+section('merge3 (sync-layer 3-way merge — never silently loses work)')
+{
+  const base = 'a\nb\nc\nd\ne'
+  // only one side changed -> take that side
+  check('takes mine when theirs unchanged', merge3(base, 'a\nB\nc\nd\ne', base).text === 'a\nB\nc\nd\ne')
+  check('takes theirs when mine unchanged', merge3(base, base, 'a\nb\nc\nd\nE').text === 'a\nb\nc\nd\nE')
+  // disjoint full edits -> auto-merge, both survive, no conflict
+  const m = merge3(base, 'a\nB\nc\nd\ne', 'a\nb\nc\nD\ne')
+  check('auto-merges disjoint edits', !m.conflict && m.text === 'a\nB\nc\nD\ne')
+  // same line two ways -> conflict markers, BOTH versions present (nothing lost)
+  const c = merge3(base, 'a\nb\nMINE\nd\ne', 'a\nb\nTHEIRS\nd\ne')
+  check('marks overlapping edit as conflict', c.conflict === true)
+  check('conflict keeps my version', c.text.includes('MINE'))
+  check('conflict keeps their version', c.text.includes('THEIRS'))
+  check('conflict has git-style markers', c.text.includes('<<<<<<<') && c.text.includes('>>>>>>>'))
+  // realistic: two agents append to different ends of a file -> clean merge
+  const f = 'function login() {\n  return ok\n}'
+  const mine = '// added by A\nfunction login() {\n  return ok\n}'
+  const theirs = 'function login() {\n  return ok\n}\n// added by B'
+  const r = merge3(f, mine, theirs)
+  check('disjoint top/bottom edits merge', !r.conflict && r.text.includes('// added by A') && r.text.includes('// added by B'))
 }
 
 // ---------------------------------------------------------------------------

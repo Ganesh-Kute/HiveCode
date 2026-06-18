@@ -7,16 +7,20 @@
 // deletes. Nested folders are handled. node_modules/.git are skipped.
 //
 // Model: a shared Y.Map "files" maps each relative path -> a Y.Text of its
-// contents. Disk->doc happens on a periodic scan; doc->disk happens via an
-// observer that fires ONLY for remote changes (transaction.local tells them
-// apart), so there is no echo loop.
+// contents. Both directions go through reconcile(), a 3-way merge against the
+// last agreed version of each file (its "base"):
+//   - only one side changed       -> take that side
+//   - both changed disjoint lines -> MERGE both (nobody's work is lost)
+//   - both changed the same lines -> write git-style conflict markers so BOTH
+//     versions survive and a human/AI resolves them (still never silently lost)
+// This is what stops "the second agent's full rewrite wiped the first's work."
 
 import fs from 'fs'
 import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { applyDiff } from './core.js'
+import { applyDiff, merge3 } from './core.js'
 
 const [, , RELAY = 'ws://localhost:1234', ROOM = 'default', DIR = '.', NAME = 'anon'] = process.argv
 const ROOT = path.resolve(DIR)
@@ -29,8 +33,9 @@ const files = doc.getMap('files') // relPath -> Y.Text
 const provider = new WebsocketProvider(RELAY, ROOM, doc, { WebSocketPolyfill: WebSocket })
 provider.awareness.setLocalStateField('user', { name: NAME, kind: 'human' })
 
-const known = new Set() // paths we've synced (lets us tell a local delete from a not-yet-written remote file)
+const known = new Set()  // paths we've synced (tells a local delete from a not-yet-written remote file)
 const mtimes = new Map() // path -> last-seen mtimeMs, so we only re-read files that actually changed
+const bases = new Map()  // path -> last AGREED text (the common ancestor for 3-way merge)
 
 function walk(dir, acc = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -61,41 +66,64 @@ function writeToDisk(relPath, content) {
   try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch {} // don't re-read our own write
 }
 
-// DISK -> DOC: scan the folder and fold changes into the shared doc.
-// Optimization: only READ a file's contents when its mtime changed; unchanged
-// files are skipped entirely, so a large project costs almost nothing per tick.
+// The heart of it. Bring one file's disk copy and shared-doc copy into agreement
+// via a 3-way merge against its last agreed base, writing the result to whichever
+// side is behind. Safe to call from either direction (scan or remote observer).
+function reconcile(relPath) {
+  const full = path.join(ROOT, relPath)
+  const yt = files.get(relPath)
+  const disk = fs.existsSync(full) ? readText(full) : null
+  const docText = yt ? yt.toString() : null
+  if (disk === null && docText === null) return
+
+  // Only one side has the file yet -> just copy it across.
+  if (docText === null) {
+    const t = new Y.Text(); files.set(relPath, t); t.insert(0, disk)
+    known.add(relPath); bases.set(relPath, disk)
+    try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch {}
+    return
+  }
+  if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); return }
+  if (disk === docText) { known.add(relPath); bases.set(relPath, disk); return } // already agree
+
+  // Both sides exist and differ -> 3-way merge against the last agreed base.
+  const base = bases.has(relPath) ? bases.get(relPath) : disk
+  const res = merge3(base, disk, docText)
+  doc.transact(() => applyDiff(yt, res.text)) // local txn -> observer ignores it
+  if (res.text !== disk) writeToDisk(relPath, res.text)
+  known.add(relPath); bases.set(relPath, res.text)
+  if (res.conflict) console.log(`[${NAME}] ⚠ merge conflict in ${relPath} — kept BOTH versions with <<<<<<< markers; resolve when ready`)
+  else console.log(`[${NAME}] merged ${relPath} (both edits kept)`)
+}
+
+// DISK -> reconcile: scan the folder; reconcile any file whose mtime changed.
+// Unchanged files are skipped entirely, so a large project costs ~nothing/tick.
 function scan() {
   const diskFulls = walk(ROOT)
   const diskRel = new Set(diskFulls.map(rel))
-  const changed = []
+  let touched = false
   for (const full of diskFulls) {
     const r = rel(full)
     let mt
     try { mt = fs.statSync(full).mtimeMs } catch { continue }
     if (mtimes.get(r) === mt && files.has(r)) continue // unchanged -> skip read
-    const text = readText(full)
-    if (text === null) continue
-    changed.push([r, text, mt])
+    if (readText(full) === null) continue              // binary/huge -> skip
+    mtimes.set(r, mt)
+    reconcile(r)
+    touched = true
   }
   const removed = [...known].filter((r) => !diskRel.has(r) && files.has(r))
-  if (!changed.length && !removed.length) return
-  doc.transact(() => {
-    for (const [r, text, mt] of changed) {
-      let yt = files.get(r)
-      if (!yt) { yt = new Y.Text(); files.set(r, yt); yt.insert(0, text) }
-      else applyDiff(yt, text)
-      known.add(r)
-      mtimes.set(r, mt)
-    }
-    for (const r of removed) {
-      files.delete(r) // file vanished from disk -> propagate the delete
-      known.delete(r)
-      mtimes.delete(r)
-    }
-  }) // local transaction -> the observer below ignores it
+  if (removed.length) {
+    doc.transact(() => {
+      for (const r of removed) { files.delete(r); known.delete(r); mtimes.delete(r); bases.delete(r) }
+    })
+  }
+  return touched
 }
 
-// DOC -> DISK: react ONLY to remote changes.
+// DOC -> reconcile: react ONLY to remote changes (transaction.local tells ours
+// apart), then reconcile so a remote update merges with local edits instead of
+// overwriting them.
 files.observeDeep((events, txn) => {
   if (txn.local) return
   for (const ev of events) {
@@ -103,16 +131,15 @@ files.observeDeep((events, txn) => {
       ev.changes.keys.forEach((change, key) => {
         if (change.action === 'delete') {
           try { fs.rmSync(path.join(ROOT, key)) } catch {}
-          known.delete(key)
+          known.delete(key); bases.delete(key)
           console.log(`[${NAME}] <- deleted ${key}`)
         } else {
-          const yt = files.get(key)
-          if (yt) { writeToDisk(key, yt.toString()); console.log(`[${NAME}] <- received ${key}`) }
+          reconcile(key)
         }
       })
     } else {
       for (const [key, yt] of files.entries()) {
-        if (yt === ev.target) { writeToDisk(key, yt.toString()); break }
+        if (yt === ev.target) { reconcile(key); break }
       }
     }
   }
@@ -120,13 +147,9 @@ files.observeDeep((events, txn) => {
 
 provider.on('sync', (s) => {
   if (!s) return
-  // pull any files the room already has that we lack...
-  for (const [key, yt] of files.entries()) {
-    const full = path.join(ROOT, key)
-    if (!fs.existsSync(full)) writeToDisk(key, yt.toString())
-    else known.add(key)
-  }
-  scan() // ...then push our local files
+  // pull any files the room already has, reconciling against our local copies...
+  for (const [key] of files.entries()) reconcile(key)
+  scan() // ...then push/reconcile our local files
   console.log(`[${NAME}] folder sync active on ${ROOT} (room "${ROOM}"). ${files.size} files.`)
   setInterval(scan, 400)
 })

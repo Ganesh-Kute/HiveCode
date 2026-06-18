@@ -38,6 +38,23 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **THE FIX: 3-way merge moved into the SYNC LAYER** (`merge3` in core.js;
+  `reconcile()` in folder.js AND the extension). Root cause of "the second
+  agent's full rewrite wiped the first's work": the merge logic only lived in
+  the standalone `agent-merge.js`, but real edits flow through folder.js / the
+  extension, which just MIRRORED disk↔doc with a blind `applyDiff` — so two
+  full-file rewrites clobbered. Now every change (typed, AI, either direction)
+  goes through `reconcile()`: a 3-way merge against each file's last agreed
+  "base". Disjoint edits merge (both kept); same-line edits get git-style
+  `<<<<<<<` markers so BOTH survive — never silently lost. Proven end-to-end in
+  `folder-collide-test.js` (two real folder.js processes, two folders, both
+  editing the same file at once → both edits kept, folders converge). Extension
+  repackaged → `hivecode.vsix` v0.2.2. Residual hard case: two edits to the
+  EXACT same line at the EXACT same instant (char-CRDT can interleave before
+  reconcile runs) — rare, and the common "different parts of the same file"
+  case is fully fixed.
+
+
 - **LIVE lock-free agent** (`agent-merge.js` + `merge-live-test.js`): the
   patch-apply-or-rework model, now running over the real relay (no locks). The
   agent reads the file, posts its intent on a shared `board` Y.Map, reasons,
