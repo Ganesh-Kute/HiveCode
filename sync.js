@@ -25,14 +25,20 @@ import { applyDiff, merge3, summarizeChange } from './core.js'
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
 const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
+const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents' conversation
+const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
+// Generated/coordination files are rendered locally from CRDT state — never
+// synced as ordinary files (that would cause echo loops / conflicts).
+const SKIP = new Set([BOARD_FILE, CHAT_FILE, CONFIG_FILE])
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', log = console.log }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', log = console.log, syncFiles = true }) {
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
 
   const doc = new Y.Doc()
   const files = doc.getMap('files') // relPath -> Y.Text
   const board = doc.getMap('board') // relPath -> { by, at, churn, symbols }
+  const chat = doc.getArray('chat') // ordered coordination messages { by, kind, at, text }
   const provider = new WebsocketProvider(relay, room, doc, { WebSocketPolyfill: WebSocket })
   provider.awareness.setLocalStateField('user', { name, kind }) // identity is implicit in the client
 
@@ -69,7 +75,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
 
   function reconcile(relPath, origin = 'local') {
-    if (relPath === BOARD_FILE) return
+    if (SKIP.has(relPath)) return
     const full = path.join(ROOT, relPath)
     const yt = files.get(relPath)
     const disk = fs.existsSync(full) ? readText(full) : null
@@ -111,14 +117,34 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     for (const e of entries) out.push(`- ${e.at}  ${e.by} rewrote \`${e.file}\` (${e.churn}) — touched: ${(e.symbols || []).join(', ') || 'n/a'}`)
     writeToDisk(BOARD_FILE, out.join('\n') + '\n')
   }
-  board.observe(() => renderBoard())
+  if (syncFiles) board.observe(() => renderBoard())
+
+  // --- coordination channel: the agents (and humans) talk to each other ---
+  // say() posts a message into the shared, ordered chat. Everyone renders the
+  // whole conversation to HIVE_CHAT.md locally, so an agent just READS that file
+  // to see what others are doing and APPENDS via say() (or `node hive-say.js`).
+  function say(text) {
+    if (!text) return
+    chat.push([{ by: name, kind, at: fmtTime(), text: String(text) }])
+  }
+  function renderChat() {
+    const out = [
+      '# Hive Chat — the live coordination channel for everyone in this room.',
+      '# Humans and AI agents talk here. Agents: READ this before/while working,',
+      '# and announce what you are about to do (e.g. "taking auth.js: add login").',
+      '',
+    ]
+    for (const m of chat.toArray()) out.push(`- ${m.at}  ${m.by} (${m.kind}): ${m.text}`)
+    writeToDisk(CHAT_FILE, out.join('\n') + '\n')
+  }
+  if (syncFiles) chat.observe(() => renderChat())
 
   function scan() {
     const diskFulls = walk(ROOT)
     const diskRel = new Set(diskFulls.map(rel))
     for (const full of diskFulls) {
       const r = rel(full)
-      if (r === BOARD_FILE) continue
+      if (SKIP.has(r)) continue
       let mt
       try { mt = fs.statSync(full).mtimeMs } catch { continue }
       if (mtimes.get(r) === mt && files.has(r)) continue
@@ -134,7 +160,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
   }
 
-  files.observeDeep((events, txn) => {
+  if (syncFiles) files.observeDeep((events, txn) => {
     if (txn.local) return
     for (const ev of events) {
       if (ev.target === files) {
@@ -157,9 +183,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   let scanTimer = null
   provider.on('sync', (s) => {
-    if (!s) return
+    if (!s || !syncFiles) return
     for (const [key] of files.entries()) reconcile(key, 'remote')
     if (board.size) renderBoard()
+    if (chat.length) renderChat()
     scan()
     log(`[${name}] folder sync active on ${ROOT} (room "${room}") as ${kind}. ${files.size} files.`)
     if (!scanTimer) scanTimer = setInterval(scan, 400)
@@ -168,6 +195,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   return {
     doc,
     provider,
+    say, // post a coordination message to the room
     members: () => [...provider.awareness.getStates().values()].map((s) => s.user).filter(Boolean),
     stop: () => { if (scanTimer) clearInterval(scanTimer); try { provider.destroy() } catch {}; try { doc.destroy() } catch {} },
   }

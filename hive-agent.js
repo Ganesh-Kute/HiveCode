@@ -1,54 +1,66 @@
-// Hivecode AGENT client — what an AI runs ITSELF to join a room.
+// Hivecode AGENT client — what an AI runs ITSELF. Host, join, and talk: no human.
 //
-//   node hive-agent.js "<join-link>" <dir> [name]
-//   e.g. node hive-agent.js "wss://livecode-xoss.onrender.com|room-AbC123" ./project Claude
+//   node hive-agent.js [join-link] [dir] [name]
 //
-// No human setup required. An agent runs this, and from then on it is a
-// first-class participant in the room:
-//   - it joins as kind:'ai' AUTOMATICALLY (no setting to toggle, no human to
-//     "declare" it — running this client IS the declaration)
-//   - the folder it points at is kept live-merged with everyone else's (humans
-//     and other agents), with the same 3-way merge + auto-board protections
-//   - it just edits files in <dir> with its own tools; changes sync safely
+// Room resolution (this is how an AI hosts/invites WITHOUT a human passing links):
+//   1. if a join-link is given        -> use it (and save it to .hive.json)
+//   2. else if <dir>/.hive.json exists -> JOIN that room (rendezvous)
+//   3. else                            -> HOST: create a room, save .hive.json
+// So the FIRST agent to run hosts and writes .hive.json; every other agent that
+// shares the folder/repo just runs `node hive-agent.js` and auto-joins the same
+// room. The invite travels with the project, not a human's clipboard.
 //
-// The protocol the agent should follow (printed on start so the agent reads it):
-//   1. Before editing a file, read HIVE_BOARD.md. If your target file is listed
-//      as recently rewritten, RE-READ that file before changing it.
-//   2. Prefer small patches over full rewrites. Patches merge automatically.
-//   3. If you must rewrite a whole file, that's fine — it's auto-logged for
-//      everyone; just make sure you re-read first so you build on current code.
+// Relay: defaults to the hosted relay, override with HIVE_RELAY env.
+// On join the agent announces itself in the shared chat (HIVE_CHAT.md) so the
+// others know it arrived; it READS HIVE_CHAT.md to coordinate and HIVE_BOARD.md
+// before editing files someone just rewrote.
 
+import fs from 'fs'
+import path from 'path'
+import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 
-const DEFAULT_RELAY = 'wss://livecode-xoss.onrender.com'
-const [, , LINK = '', DIR = './workspace', NAME = `agent-${Math.floor(process.uptime() * 1000) % 9000 + 1000}`] = process.argv
+const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
+const [, , ARG_LINK = '', DIR = './workspace', NAME = `agent-${crypto.randomBytes(2).toString('hex')}`] = process.argv
 
-if (!LINK) {
-  console.error('Usage: node hive-agent.js "<join-link>" <dir> [name]')
-  console.error('  join-link looks like  wss://host|room-xxxx  (or just  room-xxxx  to use the default relay)')
-  process.exit(1)
+const ROOT = path.resolve(DIR)
+fs.mkdirSync(ROOT, { recursive: true })
+const configPath = path.join(ROOT, '.hive.json')
+
+function resolveRoom() {
+  if (ARG_LINK) {
+    const { relay, room } = parseLink(ARG_LINK)
+    return { relay: relay || DEFAULT_RELAY, room, mode: 'joined (from link)' }
+  }
+  if (fs.existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      if (cfg.room) return { relay: cfg.relay || DEFAULT_RELAY, room: cfg.room, mode: 'joined (rendezvous .hive.json)' }
+    } catch {}
+  }
+  // HOST a new room — this agent is the first one in.
+  return { relay: DEFAULT_RELAY, room: 'room-' + crypto.randomBytes(13).toString('base64url'), mode: 'HOSTED (new room)' }
 }
 
-const { relay, room } = parseLink(LINK)
-const RELAY = relay || DEFAULT_RELAY
-if (!room) { console.error('Could not read a room from the link.'); process.exit(1) }
+const { relay, room, mode } = resolveRoom()
+// persist so other agents (and humans) can rendezvous without a link
+fs.writeFileSync(configPath, JSON.stringify({ relay, room }, null, 2))
 
-console.log(`\n[hive-agent] joining room "${room}" on ${RELAY} as AI participant "${NAME}"`)
-console.log('[hive-agent] PROTOCOL FOR THIS AGENT:')
-console.log('  1. Before editing a file, read HIVE_BOARD.md; if your file is listed as recently')
-console.log('     rewritten, re-read it before changing it.')
-console.log('  2. Prefer small patches (grep + edit) over full rewrites — they merge automatically.')
-console.log('  3. A full rewrite is OK and auto-logged; just re-read the file first.\n')
+console.log(`\n[hive-agent] "${NAME}" ${mode}`)
+console.log(`[hive-agent] room: ${room}`)
+console.log(`[hive-agent] invite (others can use, or just share the repo's .hive.json):  ${relay}|${room}`)
+console.log('[hive-agent] PROTOCOL: read HIVE_CHAT.md to coordinate; announce what you take; read')
+console.log('             HIVE_BOARD.md before editing a recently-rewritten file; prefer patches.\n')
 
-const hive = startSync({ relay: RELAY, room, dir: DIR, name: NAME, kind: 'ai' })
+const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai' })
 
 let announced = false
 hive.provider.on('sync', (s) => {
   if (!s || announced) return
   announced = true
-  const others = hive.members().filter((m) => m.name !== NAME)
-  console.log(`[hive-agent] connected. In the room: ${hive.members().map((m) => `${m.name}(${m.kind})`).join(', ') || 'just me'}`)
-  console.log(`[hive-agent] editing folder: ${DIR}  —  edits here sync live to ${others.length} other participant(s).`)
+  hive.say(`${NAME} joined and is ready to work.`) // talk to the room
+  const who = hive.members().map((m) => `${m.name}(${m.kind})`).join(', ') || 'just me'
+  console.log(`[hive-agent] connected. In the room: ${who}`)
 })
 
 process.on('SIGINT', () => { hive.stop(); process.exit(0) })

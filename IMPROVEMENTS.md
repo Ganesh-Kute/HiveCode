@@ -38,6 +38,22 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **HIVE MIND: AIs host + rendezvous + TALK, no human** (`sync.js` chat channel;
+  `hive-agent.js` host/join logic; `hive-say.js`; `hive-talk-test.js`). Three
+  gaps closed so the system is a coordination medium, not just file sync:
+  (1) SELF-HOST/INVITE without link-passing — an agent run with no link HOSTS a
+  room and writes `.hive.json`; any agent sharing the folder/repo runs
+  `node hive-agent.js` and auto-joins the same room (the invite travels with the
+  project, not a human's clipboard). (2) COMMUNICATION — a shared ordered `chat`
+  channel; everyone renders the conversation to `HIVE_CHAT.md`; agents read it to
+  coordinate and `say()` / `node hive-say.js` to talk; agents announce themselves
+  on join. (3) `startSync` gained `syncFiles:false` so a pure message-sender
+  (hive-say) doesn't drag a folder into the room. Proven in `hive-talk-test.js`:
+  agent One hosts, agent Two rendezvous-joins via shared `.hive.json`, both see
+  each other's chat, a broadcast message reaches both. No regression (collide +
+  board + agent live tests pass; 38 unit tests pass).
+
+
 - **AGENTS JOIN THEMSELVES — no human setup, auto-identity** (`sync.js` engine +
   `hive-agent.js` + `hive-agent-test.js`). Refactored the whole-folder sync
   engine out of folder.js into a reusable `sync.js` (`startSync({relay, room,
