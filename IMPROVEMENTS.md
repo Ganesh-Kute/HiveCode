@@ -38,6 +38,20 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **AGENTS JOIN THEMSELVES — no human setup, auto-identity** (`sync.js` engine +
+  `hive-agent.js` + `hive-agent-test.js`). Refactored the whole-folder sync
+  engine out of folder.js into a reusable `sync.js` (`startSync({relay, room,
+  dir, name, kind, log})`) — this is also the SDK seed. folder.js is now a thin
+  CLI that joins as `human`; `hive-agent.js` is what an AI runs ITSELF
+  (`node hive-agent.js "<link>" <dir> [name]`) and joins as `ai`. Identity is
+  IMPLICIT in which client you run — nobody toggles a setting or "declares" a
+  kind. Proven in `hive-agent-test.js`: an agent self-joins, is auto-tagged
+  `ai` next to a `human`, receives files with no human action, and its rewrite
+  auto-logs to the board attributed to the agent + syncs back. Same 3-way merge
+  + auto-board protections apply. No regression (collide + board live tests
+  still pass; 38 unit tests pass).
+
+
 - **AUTO-BOARD for rewrites** (`summarizeChange` in core.js; `noteIfRewrite` +
   `renderBoard` in folder.js AND the extension). Insight (from the user's
   experience): agents mostly grep-and-PATCH a few lines (the disjoint case that
