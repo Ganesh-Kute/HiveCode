@@ -71,7 +71,13 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 10. Coordinate in chat. ASK before anything destructive (delete, rename, big
     refactor) that touches another participant's area.
 
-Read → announce → patch → respect lanes → resolve conflicts → talk.
+## Directed work (humans assigning tasks to AIs)
+11. A human can direct a task at you. You do NOT act on it until it is APPROVED
+    by your owner. Act only on tasks whose status is 'accepted'.
+12. If you are an MCP agent: loop on hive_wait — it blocks until approved work
+    arrives, then you do it and call hive_complete. No need to poll.
+
+Read → announce → patch → respect lanes → resolve conflicts → talk → wait for approval.
 `
 
 export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', log = console.log, syncFiles = true }) {

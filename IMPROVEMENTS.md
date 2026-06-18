@@ -38,76 +38,17 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
-- **HUMAN ↔ AI COORDINATION + permission gate** (`sync.js` tasks/owners +
-  `hive-mcp.js` task tools + extension panel chat/tasks UI; `hive-task-test.js`).
-  Humans and AIs share ONE visible chat, and a human can direct an AI to do work
-  — but the AI does NOT auto-obey: a directed task stays PENDING until the AI's
-  OWNER (the human responsible for it) approves; only then does the AI act.
-  Engine: `tasks` Y.Map + `owners` Y.Map; `assign/decide/complete/myTasks`;
-  rendered to `HIVE_TASKS.md`; an AI records its owner on join (kind:ai + owner).
-  MCP tools added: hive_assign, hive_read_tasks, hive_approve, hive_deny,
-  hive_complete (+ owner arg on hive_join). Extension panel now shows live CHAT
-  (everyone visible) with an input ("@Name do X" assigns a task) and a TASKS list
-  with Approve/Deny buttons; ext v0.2.5. Proven in `hive-task-test.js`: human
-  assigns → AI sees PENDING (must not act) → non-owner approval REJECTED → owner
-  approves → AI sees ACCEPTED → completes. All 6 live tests + 38 unit tests pass.
-
-
-- **MCP SERVER — AIs join as native tool calls** (`hive-mcp.js` + `MCP.md` +
-  `hive-mcp-test.js`). The lowest-friction adoption path: any MCP-capable agent
-  (Claude Code/Desktop, etc.) registers the server once and gets tools —
-  `hive_join` (auto kind:ai; returns the HIVE_RULES), `hive_say`,
-  `hive_read_chat`, `hive_read_board`, `hive_members`, `hive_status`,
-  `hive_leave`. The agent never runs a script; it just calls tools. Built on the
-  shared `sync.js` engine + `@modelcontextprotocol/sdk` (stdio). Proven in
-  `hive-mcp-test.js` (a JSON-RPC stdio client: initialize → list tools →
-  hive_join hosts a room + returns rules → hive_say → hive_read_chat shows the
-  message → hive_members lists the agent as ai). This operationalizes SPEC.md.
-
-
-- **THE LAW + THE SPEC** (`HIVE_RULES.md` auto-generated; `SPEC.md`). The hive is
-  now the core every agent follows. `sync.js` and the extension auto-write
-  `HIVE_RULES.md` into every room folder on join — short, imperative rules
-  (read chat+board first, announce, prefer patches, re-read before rewrite, stay
-  in your lane, resolve conflict markers, ask before destructive acts). It is
-  always present (no setup, no relying on the agent to remember); the sync layer
-  still enforces the unbreakable parts (merge, board). `SPEC.md` is the v0.1
-  vendor-neutral protocol (transport, document model files/board/chat, awareness
-  identity, merge guarantee, rendezvous, conformance) — the artifact that lets
-  others implement the standard. Extension also now skips all coordination files
-  (HIVE_*/.hive.json) from sync. Dropped the global-discovery idea (the shared
-  project IS the connection — agents on one project already share the repo).
-  Extension repackaged → hivecode.vsix v0.2.4. All live + 38 unit tests pass.
-
-
-- **HIVE MIND: AIs host + rendezvous + TALK, no human** (`sync.js` chat channel;
-  `hive-agent.js` host/join logic; `hive-say.js`; `hive-talk-test.js`). Three
-  gaps closed so the system is a coordination medium, not just file sync:
-  (1) SELF-HOST/INVITE without link-passing — an agent run with no link HOSTS a
-  room and writes `.hive.json`; any agent sharing the folder/repo runs
-  `node hive-agent.js` and auto-joins the same room (the invite travels with the
-  project, not a human's clipboard). (2) COMMUNICATION — a shared ordered `chat`
-  channel; everyone renders the conversation to `HIVE_CHAT.md`; agents read it to
-  coordinate and `say()` / `node hive-say.js` to talk; agents announce themselves
-  on join. (3) `startSync` gained `syncFiles:false` so a pure message-sender
-  (hive-say) doesn't drag a folder into the room. Proven in `hive-talk-test.js`:
-  agent One hosts, agent Two rendezvous-joins via shared `.hive.json`, both see
-  each other's chat, a broadcast message reaches both. No regression (collide +
-  board + agent live tests pass; 38 unit tests pass).
-
-
-- **AGENTS JOIN THEMSELVES — no human setup, auto-identity** (`sync.js` engine +
-  `hive-agent.js` + `hive-agent-test.js`). Refactored the whole-folder sync
-  engine out of folder.js into a reusable `sync.js` (`startSync({relay, room,
-  dir, name, kind, log})`) — this is also the SDK seed. folder.js is now a thin
-  CLI that joins as `human`; `hive-agent.js` is what an AI runs ITSELF
-  (`node hive-agent.js "<link>" <dir> [name]`) and joins as `ai`. Identity is
-  IMPLICIT in which client you run — nobody toggles a setting or "declares" a
-  kind. Proven in `hive-agent-test.js`: an agent self-joins, is auto-tagged
-  `ai` next to a `human`, receives files with no human action, and its rewrite
-  auto-logs to the board attributed to the agent + syncs back. Same 3-way merge
-  + auto-board protections apply. No regression (collide + board live tests
-  still pass; 38 unit tests pass).
+- **Owner-only approve button + reactive agents** (`hive_wait` in hive-mcp.js;
+  owner-gated buttons in the extension; `hive-wait-test.js`). Two fixes: (1) the
+  Approve/Deny buttons showed on every window — now they render ONLY for the AI's
+  owner (others see "— awaiting <owner>"); the panel gets the `owners` map and
+  gates on `me === owner`. (2) "How does the AI see the approval and start?" —
+  the CRDT data arrives in <1s, but an LLM agent doesn't poll, so added
+  `hive_wait`: the agent BLOCKS on it and it returns the instant the owner
+  approves (or new chat arrives). No interval to tune. Proven in
+  `hive-wait-test.js`: agent blocks while task is pending, owner approves, wait
+  returns ~1.1s later with the accepted task. Rules + MCP.md document the
+  wait-loop. Extension v0.2.6. All 7 live tests + 38 unit tests pass.
 
 
 - **AUTO-BOARD for rewrites** (`summarizeChange` in core.js; `noteIfRewrite` +

@@ -115,6 +115,7 @@ function pushState() {
   if (!panel) return
   const chat = session ? session.chat.toArray().slice(-50) : []
   const tasks = session ? [...session.tasks.values()].sort((a, b) => (a.at < b.at ? 1 : -1)) : []
+  const owners = session ? Object.fromEntries(session.owners.entries()) : {}
   panel.post({
     type: 'state',
     connected: !!session,
@@ -125,6 +126,7 @@ function pushState() {
     activity,
     chat,
     tasks,
+    owners,
   })
 }
 
@@ -527,10 +529,18 @@ function getHtml() {
       '<div><b>' + escapeHtml(m.by) + '</b> <span class="badge">' + (m.kind === 'ai' ? 'AI' : 'human') + '</span>: ' + escapeHtml(m.text) + '</div>'
     ).join('') || '<div style="opacity:.5">no messages yet</div>';
     $('chat').scrollTop = $('chat').scrollHeight;
+    const owners = s.owners || {};
     $('tasks').innerHTML = (s.tasks || []).map((t) => {
       let row = '<div>[' + escapeHtml(t.status) + '] <b>' + escapeHtml(t.by) + '</b> → ' + escapeHtml(t.to) + ': ' + escapeHtml(t.text);
-      if (t.status === 'pending') row += ' <button class="mini" data-act="approve" data-id="' + escapeHtml(t.id) + '">approve</button>'
-        + '<button class="mini secondary" data-act="deny" data-id="' + escapeHtml(t.id) + '">deny</button>';
+      // Only the OWNER of the target AI may approve. If the target has no owner
+      // recorded, fall back to the target themselves (a human accepting their own task).
+      const approver = owners[t.to] || t.to;
+      const iMayApprove = s.me && s.me === approver;
+      if (t.status === 'pending') {
+        if (iMayApprove) row += ' <button class="mini" data-act="approve" data-id="' + escapeHtml(t.id) + '">approve</button>'
+          + '<button class="mini secondary" data-act="deny" data-id="' + escapeHtml(t.id) + '">deny</button>';
+        else row += ' <span style="opacity:.6">— awaiting ' + escapeHtml(approver) + '</span>';
+      }
       return row + '</div>';
     }).join('') || '<div style="opacity:.5">no tasks</div>';
     $('log').innerHTML = (s.activity || []).map((l) => '<div>' + escapeHtml(l) + '</div>').join('');

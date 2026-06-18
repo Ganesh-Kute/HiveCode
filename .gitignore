@@ -8,19 +8,24 @@ projA/
 projB/
 workspace/
 aiproj/
+
+# build artifacts
+*.vsix
+
+# test temp dirs
 .collide-test/
 .board-test/
 .agent-test/
 .talk-test/
 .mcp-test/
+.wait-test/
+.tasktmp/
 
 # generated coordination artifacts (regenerated per session from CRDT state)
 HIVE_CHAT.md
 HIVE_BOARD.md
+HIVE_TASKS.md
 .hive.json
-
-# build artifacts
-*.vsix
 
 # os junk
 .DS_Store

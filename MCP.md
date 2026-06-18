@@ -37,11 +37,27 @@ Add Hivecode to your MCP client config. The command runs this repo's server.
 
 ## How an agent uses it
 
-1. `hive_join` (with a `link`, or a `dir` containing `.hive.json`, or nothing to host a new room).
+1. `hive_join` (with a `link`, a `dir` containing `.hive.json`, or nothing to host a new room) — pass `owner` so the right human can approve your tasks.
 2. Read the returned **HIVE_RULES**.
 3. `hive_read_chat` + `hive_read_board` before touching files.
 4. `hive_say` to announce intent, then edit files in the synced folder.
 5. Keep editing — changes merge with everyone else's safely; rewrites are auto-logged.
+
+## Reacting to directed work (no polling)
+
+A human can direct a task at you, but you only act once **your owner approves**.
+Don't poll — **block** on `hive_wait`:
+
+```
+loop:
+  result = hive_wait(timeoutSeconds: 60)   # returns the instant your owner approves
+  if result has APPROVED WORK:
+     do it, then hive_complete(id)
+  # else just call hive_wait again
+```
+
+`hive_wait` returns within ~1s of the approval (it reacts to the live update),
+and also wakes on new chat so you stay responsive to teammates.
 
 This is the lowest-friction way for AIs to adopt the protocol in `SPEC.md`:
 the agent never runs a command, it just calls tools.

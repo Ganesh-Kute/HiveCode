@@ -66,6 +66,29 @@ function requireSession() { if (!session) throw new Error('not in a room — cal
 function chatArray() { return requireSession().hive.doc.getArray('chat').toArray() }
 function boardMap() { const b = requireSession().hive.doc.getMap('board'); return [...b.entries()].map(([file, e]) => ({ file, ...e })) }
 function taskList() { return [...requireSession().hive.doc.getMap('tasks').values()] }
+const fmtTask = (t) => `${t.id} [${t.status}] ${t.by} -> ${t.to}: ${t.text}${t.decidedBy ? ` (by ${t.decidedBy})` : ''}`
+
+// Block until there is approved work for me (or a new chat message), then return.
+// This is how the agent reacts the INSTANT the owner approves — no polling loop,
+// no interval to tune. Resolves immediately if approved work already exists.
+function waitForWork(timeoutMs) {
+  const s = requireSession()
+  const tmap = s.hive.doc.getMap('tasks')
+  const chat = s.hive.doc.getArray('chat')
+  const me = s.name
+  const accepted = () => [...tmap.values()].filter((t) => t.to === me && t.status === 'accepted')
+  const baseChatLen = chat.length
+  const ready = accepted()
+  if (ready.length) return Promise.resolve({ tasks: ready, newChat: [] })
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); resolve(v) } }
+    const onTask = () => { const a = accepted(); if (a.length) finish({ tasks: a, newChat: [] }) }
+    const onChat = () => { const extra = chat.toArray().slice(baseChatLen); if (extra.length) finish({ tasks: accepted(), newChat: extra }) }
+    tmap.observe(onTask); chat.observe(onChat)
+    setTimeout(() => finish(null), timeoutMs)
+  })
+}
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join (or host) a Hivecode room for a project folder. Joins automatically as an AI participant. If a join link is given, uses it; else reads <dir>/.hive.json; else hosts a new room. Returns the room info and the HIVE_RULES you must follow.',
@@ -74,6 +97,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name to assign to' }, text: { type: 'string', description: 'what to do' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Read tasks. Shows tasks directed at YOU (act only on accepted ones) and all pending tasks awaiting approval.',
     inputSchema: { type: 'object', properties: {} } },
+  { name: 'hive_wait', description: 'BLOCK until there is approved work for you (or new chat), then return it. Use this as your main loop: call hive_wait; when it returns an accepted task, do the work and call hive_complete; then call hive_wait again. Returns instantly if approved work already exists. Times out after timeoutSeconds (default 60) so you can re-call.',
+    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, max 300)' } } } },
   { name: 'hive_approve', description: 'Approve a pending task (you must be the owner of the target AI). The AI may then act on it.',
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   { name: 'hive_deny', description: 'Deny a pending task (you must be the owner of the target AI).',
@@ -106,8 +131,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const all = taskList(); const me = requireSession().name
         const mine = all.filter((t) => t.to === me)
         const pending = all.filter((t) => t.status === 'pending')
-        const fmt = (t) => `${t.id} [${t.status}] ${t.by} -> ${t.to}: ${t.text}${t.decidedBy ? ` (by ${t.decidedBy})` : ''}`
-        return text(`TASKS FOR YOU (act only on 'accepted'):\n${mine.map(fmt).join('\n') || '(none)'}\n\nPENDING (awaiting approval):\n${pending.map(fmt).join('\n') || '(none)'}`)
+        return text(`TASKS FOR YOU (act only on 'accepted'):\n${mine.map(fmtTask).join('\n') || '(none)'}\n\nPENDING (awaiting approval):\n${pending.map(fmtTask).join('\n') || '(none)'}`)
+      }
+      case 'hive_wait': {
+        const ms = Math.min(Math.max(Number(args.timeoutSeconds) || 60, 1), 300) * 1000
+        const r = await waitForWork(ms)
+        if (!r) return text('(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)')
+        const parts = []
+        if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
+        if (r.newChat.length) parts.push(`NEW MESSAGES:\n${r.newChat.map((m) => `${m.at} ${m.by}(${m.kind}): ${m.text}`).join('\n')}`)
+        return text(parts.join('\n\n'))
       }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
