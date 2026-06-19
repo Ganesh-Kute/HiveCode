@@ -4,6 +4,28 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Done & verified
 
+### THE SILENT-LOSS FIX (fork-point merge) — `core.js`, `sync.js`, extension; `merge-clobber-test.js`
+A live two-process field test (MCP agent + a second client over the hosted relay)
+reproduced the original "second agent's rewrite wipes the first's work" bug — and
+it was REAL: when agent B received A's change and then pasted a stale whole-file
+rewrite that omitted it, A's work was destroyed SILENTLY (no conflict marker, no
+board entry). Root cause: the per-file merge `base` advanced to incoming remote
+content, so `merge3(base=+A, mine=staleB, theirs=+A)` saw `base===theirs` and let
+mine win — deleting A.
+
+Fix: merge a LOCAL edit against the FORK POINT (`forkBases`) — what THIS author
+last actually saw/authored — not the latest doc. forkBase advances on local
+authorship and on first content a joining client receives, but NOT when a remote
+update lands on disk. So a stale rewrite that drops another's just-arrived lines
+either re-adds them (disjoint) or raises a conflict (overlap) — never silent loss.
+Plus: an "integrated" shortcut (a write that already contains the remote change is
+trusted as-is, no spurious conflict) and a "resolution" shortcut (removing
+<<<<<<< markers is an intentional resolve and wins). Mirrored into the extension
+(v0.2.9). Honest result: same-line rewrites now CONFLICT (both kept, you resolve)
+instead of silently losing — matching git's "never lose work" guarantee, which
+is the behavior the live test proved was missing. 38 unit + 11 live tests pass.
+
+
 ### Safety net
 - **`test.js`** — automated test suite (18 tests, all passing). Covers: text
   diff, CRDT convergence, claim protocol, version check, lock/negotiation

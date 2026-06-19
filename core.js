@@ -155,7 +155,7 @@ function symbolsIn(text) {
 }
 
 // Which base line-range an edit replaced, and the replacement lines.
-function changedRange(base, other) {
+export function changedRange(base, other) {
   let p = 0
   while (p < base.length && p < other.length && base[p] === other[p]) p++
   let s = 0
