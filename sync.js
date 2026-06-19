@@ -21,7 +21,7 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
 import ignore from 'ignore'
-import { applyDiff, merge3, summarizeChange } from './core.js'
+import { applyDiff, merge3, summarizeChange, changedRange } from './core.js'
 
 // Never sync these, even if not in .gitignore — secrets and obvious junk. This
 // prevents pushing a teammate's .env / private keys / build output to the room.
@@ -119,7 +119,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   const known = new Set()
   const mtimes = new Map()
-  const bases = new Map()
+  const bases = new Map()      // last synced content per file (advances on every reconcile)
+  const forkBases = new Map()  // FORK POINT: what THIS author last saw/authored per file.
+  // forkBases advances only on local authorship / first adoption — NOT when a
+  // remote change is auto-applied to disk. That distinction is what stops a stale
+  // local full-file paste from silently deleting another participant's just-arrived
+  // work (it would look like a deliberate deletion against an up-to-date base).
 
   const rel = (full) => path.relative(ROOT, full).split(path.sep).join('/')
   function walk(d, acc = []) {
@@ -160,18 +165,52 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (disk === null && docText === null) return
     if (docText === null) {
       const t = new Y.Text(); files.set(relPath, t); t.insert(0, disk)
-      known.add(relPath); bases.set(relPath, disk)
+      known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
       return
     }
-    if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); return }
-    if (disk === docText) { known.add(relPath); bases.set(relPath, disk); return }
+    if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); forkBases.set(relPath, docText); return }
+    if (disk === docText) {
+      known.add(relPath); bases.set(relPath, disk)
+      // disk and doc already agree — a safe fork point, but only adopt it as
+      // THIS author's fork on first sight or our own local activity (a remote
+      // change landing on disk doesn't mean the local author has seen it).
+      if (!forkBases.has(relPath) || origin === 'local') forkBases.set(relPath, disk)
+      return
+    }
     const base = bases.has(relPath) ? bases.get(relPath) : disk
-    if (origin === 'local') noteIfRewrite(relPath, base, disk)
-    const res = merge3(base, disk, docText)
+    const fork = forkBases.has(relPath) ? forkBases.get(relPath) : base
+
+    let res, reAdded = false
+    if (origin === 'local' && docText.includes('<<<<<<<') && !disk.includes('<<<<<<<')) {
+      // Resolving a conflict: the doc still has <<<<<<< markers and this local
+      // write removed them — the author has resolved it. Their clean version wins.
+      res = { text: disk, conflict: false }
+    } else if (origin === 'local') {
+      noteIfRewrite(relPath, fork, disk)
+      // THE FIX. Merge a local edit against the FORK POINT (what this author
+      // last saw), not the latest doc. If the doc gained lines since the fork
+      // that this write does NOT contain, the author was working from a stale
+      // copy — merging against the fork re-adds those lines (disjoint) or raises
+      // a conflict (overlap) instead of silently deleting another's work.
+      const theirsNew = changedRange(fork.split('\n'), docText.split('\n')).newLines.filter((l) => l.length)
+      const mineLines = new Set(disk.split('\n'))
+      const integrated = theirsNew.every((l) => mineLines.has(l)) // this write already contains the remote change
+      if (integrated) {
+        res = { text: disk, conflict: false } // author built on the latest — trust it
+      } else {
+        res = merge3(fork, disk, docText)
+        reAdded = !res.conflict && res.text !== disk // we restored remote lines a stale write had dropped
+      }
+    } else {
+      res = merge3(base, disk, docText) // incoming remote change merged into our working copy
+    }
+
     doc.transact(() => applyDiff(yt, res.text))
     if (res.text !== disk) writeToDisk(relPath, res.text)
     known.add(relPath); bases.set(relPath, res.text)
+    if (origin === 'local') forkBases.set(relPath, res.text) // we authored this state; it's our new fork
+    else if (!forkBases.get(relPath)) forkBases.set(relPath, res.text) // bootstrap: first real content a joining client receives is its fork
     // Conflict guard: announce a NEW conflict in chat (so everyone — and any
     // agent on hive_wait — is alerted), and announce when it's later resolved.
     const hasMarkers = res.conflict || res.text.includes('<<<<<<<')
@@ -182,6 +221,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     } else if (!hasMarkers && conflicted.has(relPath)) {
       conflicted.delete(relPath)
       try { say(`✓ conflict in ${relPath} resolved.`) } catch { }
+    } else if (reAdded) {
+      log(`[${name}] protected ${relPath}: your edit was based on an older version — re-added changes that arrived since (nobody's work lost)`)
+      try { say(`↺ ${relPath}: ${name}'s edit was based on an older copy — kept the changes that landed in between (nothing lost).`) } catch { }
     } else if (!hasMarkers) {
       log(`[${name}] merged ${relPath} (both edits kept)`)
     }
@@ -298,7 +340,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const removed = [...known].filter((r) => !diskRel.has(r) && files.has(r))
     if (removed.length) {
       doc.transact(() => {
-        for (const r of removed) { files.delete(r); known.delete(r); mtimes.delete(r); bases.delete(r) }
+        for (const r of removed) { files.delete(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r) }
       })
     }
   }
@@ -310,7 +352,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         ev.changes.keys.forEach((change, key) => {
           if (change.action === 'delete') {
             try { fs.rmSync(path.join(ROOT, key)) } catch { }
-            known.delete(key); bases.delete(key)
+            known.delete(key); bases.delete(key); forkBases.delete(key)
             log(`[${name}] <- deleted ${key}`)
           } else {
             reconcile(key, 'remote')

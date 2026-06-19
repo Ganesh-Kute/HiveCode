@@ -196,6 +196,9 @@ function start(root, room, relay) {
   const known = new Set()
   const mtimes = new Map()
   const bases = new Map()  // path -> last AGREED text (common ancestor for 3-way merge)
+  const forkBases = new Map() // path -> FORK POINT: what THIS author last saw/authored.
+  // Advances only on local authorship / first adoption — NOT when a remote change
+  // lands on disk. Stops a stale local rewrite from silently deleting another's work.
   const seenMembers = new Set()
 
   vscode.workspace.getConfiguration('files').update('autoSave', 'afterDelay', vscode.ConfigurationTarget.Workspace)
@@ -298,18 +301,40 @@ function start(root, room, relay) {
     if (disk === null && docText === null) return
     if (docText === null) {
       const t = new Y.Text(); files.set(r, t); t.insert(0, disk)
-      known.add(r); bases.set(r, disk)
+      known.add(r); bases.set(r, disk); forkBases.set(r, disk)
       try { mtimes.set(r, fs.statSync(full).mtimeMs) } catch {}
       return
     }
-    if (disk === null) { writeToDisk(r, docText); bases.set(r, docText); return }
-    if (disk === docText) { known.add(r); bases.set(r, disk); return }
+    if (disk === null) { writeToDisk(r, docText); bases.set(r, docText); forkBases.set(r, docText); return }
+    if (disk === docText) {
+      known.add(r); bases.set(r, disk)
+      if (!forkBases.has(r) || origin === 'local') forkBases.set(r, disk)
+      return
+    }
     const base = bases.has(r) ? bases.get(r) : disk
-    if (origin === 'local') noteIfRewrite(r, base, disk) // auto-log big rewrites
-    const res = merge3(base, disk, docText)
+    const fork = forkBases.has(r) ? forkBases.get(r) : base
+    let res, reAdded = false
+    if (origin === 'local' && docText.includes('<<<<<<<') && !disk.includes('<<<<<<<')) {
+      // Resolving a conflict: doc has markers, this write removed them — author resolved it.
+      res = { text: disk, conflict: false }
+    } else if (origin === 'local') {
+      noteIfRewrite(r, fork, disk) // auto-log big rewrites
+      // THE FIX: merge a local edit against the FORK POINT (what this author last
+      // saw), not the latest doc — so a stale rewrite re-adds another's just-arrived
+      // lines (or raises a conflict) instead of silently deleting their work.
+      const theirsNew = changedRange(fork.split('\n'), docText.split('\n')).newLines.filter((l) => l.length)
+      const mineLines = new Set(disk.split('\n'))
+      const integrated = theirsNew.every((l) => mineLines.has(l))
+      if (integrated) { res = { text: disk, conflict: false } }
+      else { res = merge3(fork, disk, docText); reAdded = !res.conflict && res.text !== disk }
+    } else {
+      res = merge3(base, disk, docText)
+    }
     doc.transact(() => applyDiff(yt, res.text)) // local txn -> observer ignores
     if (res.text !== disk) writeToDisk(r, res.text)
     known.add(r); bases.set(r, res.text)
+    if (origin === 'local') forkBases.set(r, res.text)
+    else if (!forkBases.get(r)) forkBases.set(r, res.text) // bootstrap fork on first real remote content
     const hasMarkers = res.conflict || res.text.includes('<<<<<<<')
     if (hasMarkers && !conflicted.has(r)) {
       conflicted.add(r)
@@ -318,6 +343,9 @@ function start(root, room, relay) {
     } else if (!hasMarkers && conflicted.has(r)) {
       conflicted.delete(r)
       try { say(`✓ conflict in ${r} resolved.`) } catch { }
+    } else if (reAdded) {
+      logActivity(`protected ${r}: edit was based on an older version — re-added changes that arrived since`)
+      try { say(`↺ ${r}: an edit was based on an older copy — kept the changes that landed in between (nothing lost).`) } catch { }
     } else if (!hasMarkers) {
       logActivity(`merged ${r} (both edits kept)`)
     }
@@ -400,7 +428,7 @@ function start(root, room, relay) {
     const removed = [...known].filter((r) => !onDisk.has(r) && files.has(r))
     if (removed.length) {
       doc.transact(() => {
-        for (const r of removed) { files.delete(r); known.delete(r); mtimes.delete(r); bases.delete(r) }
+        for (const r of removed) { files.delete(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r) }
       })
     }
   }
@@ -410,7 +438,7 @@ function start(root, room, relay) {
     for (const ev of events) {
       if (ev.target === files) {
         ev.changes.keys.forEach((change, key) => {
-          if (change.action === 'delete') { try { fs.rmSync(path.join(root, key)) } catch {}; known.delete(key); bases.delete(key); logActivity(`deleted ${key}`) }
+          if (change.action === 'delete') { try { fs.rmSync(path.join(root, key)) } catch {}; known.delete(key); bases.delete(key); forkBases.delete(key); logActivity(`deleted ${key}`) }
           else reconcile(key, 'remote') // merge remote change with any local edits
         })
       } else {
