@@ -4,6 +4,25 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Done & verified
 
+### RBAC PHASE 1 — token-gated rooms (`token.js`, `server.js`, `hive-token.js`, all clients; `hive-auth-test.js`)
+Enterprise foundation: securely invite specific agents into specific rooms,
+time-limited and revocable, without changing anything for existing open rooms.
+- **`token.js`** — dependency-free JWT (HS256 self-host + RS256 hosted issuer):
+  sign/verify, expiry, `roomMatches` (exact/`*`/prefix), `scopeForRoom`.
+- **`server.js`** — opt-in auth (`HIVE_AUTH_MODE=required`). Authorizes at the WS
+  **upgrade** (rejected clients get no socket and no CRDT bytes). Verifies sig +
+  expiry + `jti` revocation + room-in-scope. Fail-closed if no key configured.
+  Audit log of every admit/reject. Open mode (default) unchanged.
+- **`hive-token.js`** — CLI to mint scoped tokens (`--room --role --paths --ttl …`).
+- **Clients** — `sync.js` accepts `token` → passed as a WS query param; extension
+  (`hivecode.token` setting), MCP (`hive_join` `token` arg or `$HIVE_TOKEN`), CLIs
+  (`$HIVE_TOKEN`).
+- **Tests** — `hive-auth-test.js` (valid admits; no/garbage/tampered/expired/revoked/
+  wrong-room all rejected; CLI token works; fail-closed; open mode still works) +
+  12 token unit tests in test.js. **55 unit + 13 live, all green.** See RBAC.md for
+  the model + the roadmap to per-path globs (Phase 2 subdocs → Phase 3 glob auth).
+  Honest scope: Phase 1 gates ROOMS; path-glob + read-only enforcement are later.
+
 ### LIVE ACTIVITY / CONTROL ROOM (`sync.js`, extension, `hive-mcp.js`; `hive-activity-test.js`)
 Strengthens the actual moat (visibility + control over parallel agents). Each
 client now BROADCASTS which file it is editing via awareness; the live member list

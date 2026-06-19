@@ -42,13 +42,15 @@ function resolveRoom(link, dir) {
   return { relay: DEFAULT_RELAY, room: 'room-' + crypto.randomBytes(13).toString('base64url'), mode: 'HOSTED (new room)' }
 }
 
-async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '' }) {
+async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '' }) {
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
   const { relay, room, mode } = resolveRoom(link, dir)
   fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room }, null, 2))
-  const hive = startSync({ relay, room, dir, name, kind: 'ai', owner, log: () => {} })
+  // token: explicit arg wins, else $HIVE_TOKEN (so a secured-room agent can be
+  // launched with the grant in its env and never needs to pass it per call).
+  const hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: token || process.env.HIVE_TOKEN || '', log: () => {} })
   session = { hive, room, relay, dir, name }
   // wait for the first sync so members/board/rules are ready
   await new Promise((resolve) => {
@@ -93,7 +95,7 @@ function waitForWork(timeoutMs) {
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join (or host) a Hivecode room for a project folder. Joins automatically as an AI participant. If a join link is given, uses it; else reads <dir>/.hive.json; else hosts a new room. Returns the room info and the HIVE_RULES you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'project folder to sync (default ./workspace)' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'project folder to sync (default ./workspace)' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' }, token: { type: 'string', description: 'access token for a secured room (else uses $HIVE_TOKEN). Required only if the relay runs in auth-required mode.' } } } },
   { name: 'hive_assign', description: 'Direct a task at another participant by name (e.g. ask another agent to work on a file). If the target is an AI with an owner, it stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name to assign to' }, text: { type: 'string', description: 'what to do' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Read tasks. Shows tasks directed at YOU (act only on accepted ones) and all pending tasks awaiting approval.',

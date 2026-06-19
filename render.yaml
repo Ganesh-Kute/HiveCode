@@ -18,3 +18,10 @@ services:
         value: 20.11.1
       # - key: HIVE_PERSIST_DIR    # uncomment + attach a disk to persist rooms across restarts
       #   value: /var/data/hive
+      # --- access control (RBAC Phase 1, opt-in) — see RBAC.md ---
+      # - key: HIVE_AUTH_MODE      # 'required' gates every connection on a valid token
+      #   value: required
+      # - key: HIVE_JWT_SECRET     # HS256 shared secret (self-host); set as a Render secret
+      #   sync: false
+      # - key: HIVE_AUDIT_FILE     # append-only JSONL audit log (needs a mounted disk)
+      #   value: /var/data/hive/audit.jsonl

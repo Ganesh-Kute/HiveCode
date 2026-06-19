@@ -6,6 +6,7 @@
 
 import * as Y from 'yjs'
 import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3, summarizeChange, hasConflictMarkers } from './core.js'
+import { sign, verify, roomMatches, scopeForRoom } from './token.js'
 
 let passed = 0
 let failed = 0
@@ -217,6 +218,31 @@ section('hasConflictMarkers (line-anchored, not a substring — no phantom confl
   check('inline marker mention is not flagged', hasConflictMarkers('use the `<<<<<<<`/`>>>>>>>` syntax') === false)
   // Partial leftover (opener only, no closer) is not a full conflict.
   check('opener without closer is not flagged', hasConflictMarkers('<<<<<<< oops\nsome text') === false)
+}
+
+// ---------------------------------------------------------------------------
+section('Access tokens (RBAC Phase 1: sign/verify/scope)')
+{
+  const secret = 's3cret'
+  const base = { sub: 'p1', name: 'Bot', kind: 'ai', scopes: [{ room: 'room-1', role: 'agent' }], exp: Math.floor(Date.now() / 1000) + 60 }
+  const tok = sign(base, { secret })
+  check('a signed token is a 3-part JWT', tok.split('.').length === 3)
+  check('verify accepts a good token', verify(tok, { secret }).ok === true)
+  check('verify rejects a wrong secret', verify(tok, { secret: 'nope' }).ok === false)
+  check('verify rejects a tampered payload', verify(tok.slice(0, -2) + 'zz', { secret }).ok === false)
+  check('verify rejects garbage', verify('not.a.jwt', { secret }).ok === false)
+  check('verify rejects an HS256 token with no secret', verify(tok, {}).ok === false)
+  // expiry
+  const expired = sign({ ...base, exp: Math.floor(Date.now() / 1000) - 1 }, { secret })
+  const er = verify(expired, { secret })
+  check('verify rejects an expired token', er.ok === false && /expired/.test(er.error))
+  // room matching
+  check('roomMatches exact', roomMatches('room-1', 'room-1') === true)
+  check('roomMatches "*" wildcard', roomMatches('*', 'anything') === true)
+  check('roomMatches prefix "acme/*"', roomMatches('acme/*', 'acme/api') === true && roomMatches('acme/*', 'other') === false)
+  // scope lookup carries the role
+  check('scopeForRoom finds the authorizing scope', (scopeForRoom(base, 'room-1') || {}).role === 'agent')
+  check('scopeForRoom returns null for an unscoped room', scopeForRoom(base, 'room-2') === null)
 }
 
 // ---------------------------------------------------------------------------

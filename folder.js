@@ -11,4 +11,4 @@
 import { startSync } from './sync.js'
 
 const [, , RELAY = 'ws://localhost:1234', ROOM = 'default', DIR = '.', NAME = 'anon'] = process.argv
-startSync({ relay: RELAY, room: ROOM, dir: DIR, name: NAME, kind: 'human' })
+startSync({ relay: RELAY, room: ROOM, dir: DIR, name: NAME, kind: 'human', token: process.env.HIVE_TOKEN || '' })

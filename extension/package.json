@@ -79,6 +79,11 @@
           ],
           "default": "human",
           "description": "How this window appears in the member list. Set to 'ai' for a window driven by an AI agent."
+        },
+        "hivecode.token": {
+          "type": "string",
+          "default": "",
+          "description": "Access token for a secured (auth-required) relay. Leave blank for open rooms."
         }
       }
     }

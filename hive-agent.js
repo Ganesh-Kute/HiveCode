@@ -54,7 +54,7 @@ console.log('             see who is here, HIVE_CHAT.md to coordinate (announce 
 console.log('             HIVE_BOARD.md before editing a recently-rewritten file; prefer small')
 console.log('             patches; resolve <<<<<<< markers. To talk: node hive-say.js <name> "..."\n')
 
-const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai' })
+const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '' })
 
 let announced = false
 hive.provider.on('sync', (s) => {

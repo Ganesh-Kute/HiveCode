@@ -187,7 +187,8 @@ function start(root, room, relay) {
   const owners = doc.getMap('owners') // aiName -> ownerHumanName
   const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
   const useRelay = relay || relayUrl()
-  const provider = new WebsocketProvider(useRelay, room, doc, { WebSocketPolyfill: WebSocket })
+  const tokenCfg = (vscode.workspace.getConfiguration('hivecode').get('token') || '').trim()
+  const provider = new WebsocketProvider(useRelay, room, doc, { WebSocketPolyfill: WebSocket, params: tokenCfg ? { token: tokenCfg } : undefined })
   // Unique per window: doc.clientID is distinct even for two windows on one
   // machine (machineId was identical → both showed the same id). A configured
   // displayName wins so members read as "Jeevan"/"Friend" instead of an id.

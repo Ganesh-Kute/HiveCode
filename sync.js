@@ -98,7 +98,7 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 Read → announce → patch → respect lanes → resolve conflicts → talk → wait for approval.
 `
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', log = console.log, syncFiles = true }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', log = console.log, syncFiles = true }) {
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
 
@@ -118,7 +118,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const chat = doc.getArray('chat') // ordered coordination messages { by, kind, at, text }
   const tasks = doc.getMap('tasks') // id -> { id, to, by, text, status, decidedBy, at } directed work
   const owners = doc.getMap('owners') // aiName -> ownerHumanName (who may approve its tasks)
-  const provider = new WebsocketProvider(relay, room, doc, { WebSocketPolyfill: WebSocket })
+  const provider = new WebsocketProvider(relay, room, doc, { WebSocketPolyfill: WebSocket, params: token ? { token } : undefined })
   provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined }) // identity is implicit in the client
   if (kind === 'ai' && owner) owners.set(name, owner) // record who is allowed to approve my tasks
 

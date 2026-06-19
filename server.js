@@ -20,8 +20,52 @@ import path from 'path'
 import * as Y from 'yjs'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence } from 'y-websocket/bin/utils'
+import { verify, scopeForRoom } from './token.js'
 
 const PORT = process.env.PORT || 1234
+
+// --- access control (Phase 1: token-gated rooms; opt-in, off by default) ---
+// HIVE_AUTH_MODE: 'open' (default — anyone with the room id joins, like before)
+//                 'required' — every connection must present a valid token whose
+//                 scopes authorize the room it is joining.
+// Keys: HIVE_JWT_SECRET (HS256, self-host) and/or HIVE_JWT_PUBKEY[_FILE] (RS256,
+// for a hosted issuer). Revocation: HIVE_REVOKED_FILE (JSON array of jti) and/or
+// HIVE_REVOKED_JTIS (comma list). Audit: HIVE_AUDIT_FILE (JSONL) else stdout.
+const AUTH_MODE = (process.env.HIVE_AUTH_MODE || 'open').toLowerCase()
+const JWT_SECRET = process.env.HIVE_JWT_SECRET || ''
+const JWT_PUBKEY = process.env.HIVE_JWT_PUBKEY || (process.env.HIVE_JWT_PUBKEY_FILE ? readSafe(process.env.HIVE_JWT_PUBKEY_FILE) : '')
+const AUDIT_FILE = process.env.HIVE_AUDIT_FILE || ''
+function readSafe(p) { try { return fs.readFileSync(p, 'utf8') } catch { return '' } }
+
+function revokedSet() {
+  const out = new Set((process.env.HIVE_REVOKED_JTIS || '').split(',').map((s) => s.trim()).filter(Boolean))
+  if (process.env.HIVE_REVOKED_FILE) {
+    try { for (const j of JSON.parse(fs.readFileSync(process.env.HIVE_REVOKED_FILE, 'utf8'))) out.add(j) } catch { /* none */ }
+  }
+  return out
+}
+
+function audit(event, fields) {
+  const line = JSON.stringify({ ts: new Date().toISOString(), event, ...fields })
+  if (AUDIT_FILE) { try { fs.appendFileSync(AUDIT_FILE, line + '\n') } catch { console.error('[relay] audit write failed') } }
+  else console.log('[relay][audit]', line)
+}
+
+// Decide whether a connection to `room` carrying `token` is allowed.
+// Returns { ok, identity?, role?, code?, reason? }.
+function authorize(room, token) {
+  if (AUTH_MODE !== 'required') return { ok: true, identity: { name: 'anon', kind: 'unknown' }, role: 'open' }
+  // fail closed: required mode with no key configured rejects everything
+  if (!JWT_SECRET && !JWT_PUBKEY) return { ok: false, code: 503, reason: 'auth required but relay has no keys configured' }
+  if (!token) return { ok: false, code: 401, reason: 'no token' }
+  const res = verify(token, { secret: JWT_SECRET || undefined, publicKey: JWT_PUBKEY || undefined })
+  if (!res.ok) return { ok: false, code: 401, reason: res.error }
+  const p = res.payload
+  if (p.jti && revokedSet().has(p.jti)) return { ok: false, code: 401, reason: 'token revoked' }
+  const sc = scopeForRoom(p, room)
+  if (!sc) return { ok: false, code: 403, reason: 'room not in token scope' }
+  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner }, role: sc.role || 'writer' }
+}
 
 // --- optional persistence (plain-file snapshots per room) ---
 const PERSIST_DIR = process.env.HIVE_PERSIST_DIR
@@ -45,18 +89,45 @@ const server = http.createServer((req, res) => {
   res.end('hivecode relay is up. Connect a client to ws://<this-host>:' + PORT + '/<room>\n')
 })
 
-const wss = new WebSocketServer({ server })
+// noServer: we authorize at the HTTP upgrade BEFORE completing the WS handshake,
+// so an unauthorized client never establishes a socket and never receives any
+// CRDT bytes for the room.
+const wss = new WebSocketServer({ noServer: true })
+
+server.on('upgrade', (req, socket, head) => {
+  let room = 'default', token = ''
+  try {
+    const u = new URL(req.url, 'http://localhost')
+    room = decodeURIComponent(u.pathname.slice(1)) || 'default'
+    token = u.searchParams.get('token') || ''
+  } catch { /* keep defaults */ }
+
+  const auth = authorize(room, token)
+  if (!auth.ok) {
+    audit('reject', { room, reason: auth.reason })
+    const code = auth.code || 401
+    const msg = code === 403 ? 'Forbidden' : code === 503 ? 'Service Unavailable' : 'Unauthorized'
+    socket.write(`HTTP/1.1 ${code} ${msg}\r\nConnection: close\r\n\r\n`)
+    socket.destroy()
+    return
+  }
+  wss.handleUpgrade(req, socket, head, (conn) => {
+    conn._hive = { room, identity: auth.identity, role: auth.role }
+    audit('connect', { room, identity: auth.identity, role: auth.role })
+    wss.emit('connection', conn, req)
+  })
+})
 
 wss.on('connection', (conn, req) => {
-  // The room is the URL path, e.g. ws://host:1234/my-project
-  const room = (req.url || '/').slice(1).split('?')[0] || 'default'
-  console.log(`[relay] a client joined room "${room}"`)
+  const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'
+  console.log(`[relay] a client joined room "${room}"${conn._hive ? ` as ${conn._hive.identity.name} (${conn._hive.role})` : ''}`)
   setupWSConnection(conn, req, { docName: room })
 })
 
 server.listen(PORT, () => {
   console.log(`[relay] listening on :${PORT}`)
   console.log(`[relay] room URL pattern: ws://localhost:${PORT}/<room-name>`)
+  console.log(`[relay] auth mode: ${AUTH_MODE}${AUTH_MODE === 'required' ? ` (keys: ${JWT_SECRET ? 'HS256 ' : ''}${JWT_PUBKEY ? 'RS256' : ''})` : ''}`)
 })
 
 // --- optional keep-warm (free-tier hosts sleep after ~15 min idle) ---
