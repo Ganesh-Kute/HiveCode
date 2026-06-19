@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — live multiplayer coding",
   "description": "Edit a project together live with teammates and AI agents. No git push/pull.",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "publisher": "hivecode",
   "license": "MIT",
   "engines": {
@@ -62,6 +62,7 @@
   "dependencies": {
     "yjs": "^13.6.18",
     "y-websocket": "^2.0.4",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "ignore": "^5.3.2"
   }
 }

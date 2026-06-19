@@ -38,6 +38,28 @@ Work done while you were at lunch. Every change verified before moving on.
 
 ## Also done
 
+- **Perfect + faster pass (4 improvements)** (`server.js`, `sync.js`, extension;
+  `hive-gitignore-test.js`):
+  - **Safety — respect .gitignore + never sync secrets.** `sync.js` and the
+    extension now load `.gitignore` (via `ignore`) plus an always-ignore list
+    (`.env`, `*.pem`, `*.key`, build output, logs…) so a teammate's secrets and
+    junk are never pushed to the room. Proven: `.env`/`secret.txt`/`dist/` do NOT
+    sync, normal files do.
+  - **Faster — instant fs.watch.** Replaced 400ms polling with `fs.watch`
+    (debounced ~40ms) for ~instant propagation and near-zero idle CPU; periodic
+    scan kept as a fallback (2s when watch is active).
+  - **Keep relay warm.** `server.js` self-pings `RENDER_EXTERNAL_URL` every
+    10 min (opt-in via env) so the free host never sleeps — no ~30s cold start.
+  - **Hardening.** Conflict-marker guard: a new `<<<<<<<` conflict is announced
+    in chat (wakes agents on hive_wait) and a "resolved" note posts when cleared.
+    Optional relay persistence: set `HIVE_PERSIST_DIR` to snapshot each room's
+    CRDT state to disk (plain files, no native deps) so sessions survive restart.
+  - Extension v0.2.8 (adds `ignore` dep). All 9 live tests + 38 unit tests pass.
+  - NOTE: a transient break — the earlier working-tree revert dropped
+    `@modelcontextprotocol/sdk` from package.json; `npm install` then pruned it,
+    hanging the MCP tests. Reinstalled + saved. Re-add if it disappears again.
+
+
 - **Live presence + chat for agents** (`HIVE_MEMBERS.md` in sync.js + extension;
   `hive-presence-test.js`; folder.js restored to the sync.js client). An agent
   now knows WHO is in the room and HOW MANY: every client renders a live

@@ -16,9 +16,16 @@ const crypto = require('crypto')
 const Y = require('yjs')
 const { WebsocketProvider } = require('y-websocket')
 const { WebSocket } = require('ws')
+const ignore = require('ignore')
 
 const IGNORE = new Set(['node_modules', '.git', '.vscode'])
 const MAX_BYTES = 1_000_000
+// Never sync these, even if not in .gitignore — secrets and obvious junk.
+const ALWAYS_IGNORE = [
+  '.git/', 'node_modules/',
+  '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
+  '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
+]
 // generated/coordination files — never synced as ordinary files
 const SKIP = new Set(['HIVE_BOARD.md', 'HIVE_CHAT.md', 'HIVE_TASKS.md', 'HIVE_RULES.md', 'HIVE_MEMBERS.md', '.hive.json'])
 const HIVE_RULES_TEXT = `# HIVE RULES — read this first. Everyone in this room (human or AI) follows these.
@@ -193,6 +200,15 @@ function start(root, room, relay) {
 
   vscode.workspace.getConfiguration('files').update('autoSave', 'afterDelay', vscode.ConfigurationTarget.Workspace)
 
+  // Respect .gitignore (+ always-ignore secrets) so we never sync .env/keys/build output.
+  let ig = ignore()
+  function reloadIgnores() {
+    ig = ignore().add(ALWAYS_IGNORE)
+    try { ig.add(fs.readFileSync(path.join(root, '.gitignore'), 'utf8')) } catch { }
+  }
+  reloadIgnores()
+  const isIgnored = (relPath) => !!relPath && ig.ignores(relPath)
+
   const rel = (full) => path.relative(root, full).split(path.sep).join('/')
 
   function walk(dir, acc = []) {
@@ -201,8 +217,9 @@ function start(root, room, relay) {
     for (const e of entries) {
       if (IGNORE.has(e.name)) continue
       const full = path.join(dir, e.name)
-      if (e.isDirectory()) walk(full, acc)
-      else if (e.isFile()) acc.push(full)
+      const r = rel(full)
+      if (e.isDirectory()) { if (!isIgnored(r + '/')) walk(full, acc) }
+      else if (e.isFile()) { if (!isIgnored(r)) acc.push(full) }
     }
     return acc
   }
@@ -271,8 +288,9 @@ function start(root, room, relay) {
   }
   // Bring one file's disk copy and shared-doc copy into agreement via 3-way
   // merge against its last agreed base. Safe from either direction.
+  const conflicted = new Set()
   function reconcile(r, origin = 'local') {
-    if (SKIP.has(r)) return // generated/coordination files are never synced
+    if (SKIP.has(r) || isIgnored(r)) return // never sync secrets/ignored/coordination files
     const full = path.join(root, r)
     const yt = files.get(r)
     const disk = fs.existsSync(full) ? readText(full) : null
@@ -292,7 +310,17 @@ function start(root, room, relay) {
     doc.transact(() => applyDiff(yt, res.text)) // local txn -> observer ignores
     if (res.text !== disk) writeToDisk(r, res.text)
     known.add(r); bases.set(r, res.text)
-    logActivity(res.conflict ? `merge conflict in ${r} — kept BOTH (resolve <<<<<<< markers)` : `merged ${r} (both edits kept)`)
+    const hasMarkers = res.conflict || res.text.includes('<<<<<<<')
+    if (hasMarkers && !conflicted.has(r)) {
+      conflicted.add(r)
+      logActivity(`⚠ merge conflict in ${r} — kept BOTH (resolve <<<<<<< markers)`)
+      try { say(`⚠ MERGE CONFLICT in ${r} — it has <<<<<<< markers. Whoever owns it: resolve before continuing.`) } catch { }
+    } else if (!hasMarkers && conflicted.has(r)) {
+      conflicted.delete(r)
+      try { say(`✓ conflict in ${r} resolved.`) } catch { }
+    } else if (!hasMarkers) {
+      logActivity(`merged ${r} (both edits kept)`)
+    }
   }
   // AUTO-BOARD: a local wholesale rewrite is recorded for everyone — the agent
   // doesn't have to remember; the sync layer sees the diff and logs it.

@@ -20,7 +20,16 @@ import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
+import ignore from 'ignore'
 import { applyDiff, merge3, summarizeChange } from './core.js'
+
+// Never sync these, even if not in .gitignore — secrets and obvious junk. This
+// prevents pushing a teammate's .env / private keys / build output to the room.
+const ALWAYS_IGNORE = [
+  '.git/', 'node_modules/',
+  '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
+  '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
+]
 
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
@@ -88,6 +97,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
 
+  // Respect .gitignore (+ always-ignore secrets/junk) so we never sync a
+  // teammate's .env, keys, or build output. Reloaded by reloadIgnores().
+  let ig = ignore()
+  function reloadIgnores() {
+    ig = ignore().add(ALWAYS_IGNORE)
+    try { ig.add(fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8')) } catch { /* no .gitignore */ }
+  }
+  reloadIgnores()
+  const isIgnored = (relPath) => !!relPath && ig.ignores(relPath)
+
   const doc = new Y.Doc()
   const files = doc.getMap('files') // relPath -> Y.Text
   const board = doc.getMap('board') // relPath -> { by, at, churn, symbols }
@@ -102,18 +121,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const mtimes = new Map()
   const bases = new Map()
 
+  const rel = (full) => path.relative(ROOT, full).split(path.sep).join('/')
   function walk(d, acc = []) {
     let entries = []
     try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return acc }
     for (const e of entries) {
       if (IGNORE.has(e.name)) continue
       const full = path.join(d, e.name)
-      if (e.isDirectory()) walk(full, acc)
-      else if (e.isFile()) acc.push(full)
+      const r = rel(full)
+      if (e.isDirectory()) { if (!isIgnored(r + '/')) walk(full, acc) }      // prune ignored dirs
+      else if (e.isFile()) { if (!isIgnored(r)) acc.push(full) }             // skip ignored/secret files
     }
     return acc
   }
-  const rel = (full) => path.relative(ROOT, full).split(path.sep).join('/')
 
   function readText(full) {
     try {
@@ -130,8 +150,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
   }
 
+  const conflicted = new Set() // files currently holding unresolved <<<<<<< markers
   function reconcile(relPath, origin = 'local') {
-    if (SKIP.has(relPath)) return
+    if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
     const full = path.join(ROOT, relPath)
     const yt = files.get(relPath)
     const disk = fs.existsSync(full) ? readText(full) : null
@@ -151,7 +172,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     doc.transact(() => applyDiff(yt, res.text))
     if (res.text !== disk) writeToDisk(relPath, res.text)
     known.add(relPath); bases.set(relPath, res.text)
-    log(res.conflict ? `[${name}] ⚠ merge conflict in ${relPath} — kept BOTH versions with <<<<<<< markers` : `[${name}] merged ${relPath} (both edits kept)`)
+    // Conflict guard: announce a NEW conflict in chat (so everyone — and any
+    // agent on hive_wait — is alerted), and announce when it's later resolved.
+    const hasMarkers = res.conflict || res.text.includes('<<<<<<<')
+    if (hasMarkers && !conflicted.has(relPath)) {
+      conflicted.add(relPath)
+      log(`[${name}] ⚠ merge conflict in ${relPath} — kept BOTH versions with <<<<<<< markers`)
+      try { say(`⚠ MERGE CONFLICT in ${relPath} — it has <<<<<<< markers. Whoever owns it: resolve before continuing.`) } catch { }
+    } else if (!hasMarkers && conflicted.has(relPath)) {
+      conflicted.delete(relPath)
+      try { say(`✓ conflict in ${relPath} resolved.`) } catch { }
+    } else if (!hasMarkers) {
+      log(`[${name}] merged ${relPath} (both edits kept)`)
+    }
   }
 
   const fmtTime = () => new Date().toTimeString().slice(0, 8)
@@ -291,7 +324,22 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
   })
 
+  // INSTANT propagation: fs.watch fires on the actual edit, so changes go out in
+  // ~tens of ms instead of waiting for the poll. A periodic scan stays as a
+  // safety net (and the only mechanism where recursive watch isn't supported).
   let scanTimer = null
+  let watcher = null
+  let debounce = null
+  const onFsEvent = (_evt, fname) => {
+    if (fname && String(fname).endsWith('.gitignore')) reloadIgnores()
+    if (debounce) return
+    debounce = setTimeout(() => { debounce = null; scan() }, 40)
+  }
+  function startWatch() {
+    try { watcher = fs.watch(ROOT, { recursive: true }, onFsEvent) }
+    catch { watcher = null } // recursive watch unsupported (some Linux) -> rely on scan
+  }
+
   provider.on('sync', (s) => {
     if (!s || !syncFiles) return
     writeToDisk(RULES_FILE, HIVE_RULES_TEXT) // the law is always present in the room
@@ -302,7 +350,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     renderMembers()
     scan()
     log(`[${name}] folder sync active on ${ROOT} (room "${room}") as ${kind}. ${files.size} files.`)
-    if (!scanTimer) scanTimer = setInterval(scan, 400)
+    if (!scanTimer) {
+      startWatch()
+      scanTimer = setInterval(scan, watcher ? 2000 : 400) // watch handles fast path; scan is the net
+    }
   })
 
   return {
@@ -316,6 +367,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     members: () => [...provider.awareness.getStates().values()].map((s) => s.user).filter(Boolean),
     stop: () => {
       if (scanTimer) clearInterval(scanTimer)
+      if (debounce) clearTimeout(debounce)
+      try { watcher && watcher.close() } catch { }
       try { provider.awareness.setLocalState(null) } catch { } // announce departure now (don't wait for timeout)
       try { provider.destroy() } catch { }
       try { doc.destroy() } catch { }

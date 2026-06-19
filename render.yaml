@@ -1,7 +1,10 @@
 # Render deployment for the livecode relay.
 # Render supports WebSockets on web services and has a free tier.
-# (Free tier sleeps after ~15 min idle and cold-starts in ~30s — fine to
-#  start; upgrade to a paid instance once people rely on it.)
+# Free tier sleeps after ~15 min idle — but server.js self-pings
+# RENDER_EXTERNAL_URL every 10 min to KEEP IT WARM (no cold start). Render sets
+# RENDER_EXTERNAL_URL automatically, so keep-warm activates on its own.
+# For state that survives a restart, set HIVE_PERSIST_DIR to a mounted disk
+# (paid) — without it, rooms live only in connected clients' memory.
 services:
   - type: web
     name: livecode-relay
@@ -13,3 +16,5 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20.11.1
+      # - key: HIVE_PERSIST_DIR    # uncomment + attach a disk to persist rooms across restarts
+      #   value: /var/data/hive
