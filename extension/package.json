@@ -8,8 +8,17 @@
   "engines": {
     "vscode": "^1.75.0"
   },
-  "categories": ["Other"],
-  "keywords": ["collaboration", "live share", "ai", "pair programming", "realtime", "multiplayer"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "collaboration",
+    "live share",
+    "ai",
+    "pair programming",
+    "realtime",
+    "multiplayer"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/GSK7024/livecode"
@@ -19,18 +28,35 @@
   "contributes": {
     "viewsContainers": {
       "activitybar": [
-        { "id": "hivecode", "title": "Hivecode", "icon": "resources/hive.svg" }
+        {
+          "id": "hivecode",
+          "title": "Hivecode",
+          "icon": "resources/hive.svg"
+        }
       ]
     },
     "views": {
       "hivecode": [
-        { "type": "webview", "id": "hivecode.panel", "name": "Session" }
+        {
+          "type": "webview",
+          "id": "hivecode.panel",
+          "name": "Session"
+        }
       ]
     },
     "commands": [
-      { "command": "hivecode.host", "title": "Hivecode: Host a Session" },
-      { "command": "hivecode.join", "title": "Hivecode: Join a Session" },
-      { "command": "hivecode.leave", "title": "Hivecode: Leave Session" }
+      {
+        "command": "hivecode.host",
+        "title": "Hivecode: Host a Session"
+      },
+      {
+        "command": "hivecode.join",
+        "title": "Hivecode: Join a Session"
+      },
+      {
+        "command": "hivecode.leave",
+        "title": "Hivecode: Leave Session"
+      }
     ],
     "configuration": {
       "title": "Hivecode",
@@ -47,7 +73,10 @@
         },
         "hivecode.participantKind": {
           "type": "string",
-          "enum": ["human", "ai"],
+          "enum": [
+            "human",
+            "ai"
+          ],
           "default": "human",
           "description": "How this window appears in the member list. Set to 'ai' for a window driven by an AI agent."
         }
@@ -60,9 +89,12 @@
     "publish:ovsx": "ovsx publish"
   },
   "dependencies": {
-    "yjs": "^13.6.18",
-    "y-websocket": "^2.0.4",
+    "ignore": "^5.3.2",
     "ws": "^8.18.0",
-    "ignore": "^5.3.2"
+    "y-websocket": "^2.0.4",
+    "yjs": "^13.6.18"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.9.2"
   }
 }
