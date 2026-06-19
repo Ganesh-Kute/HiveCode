@@ -21,7 +21,7 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
 import ignore from 'ignore'
-import { applyDiff, merge3, summarizeChange, changedRange } from './core.js'
+import { applyDiff, merge3, summarizeChange, changedRange, hasConflictMarkers } from './core.js'
 
 // Never sync these, even if not in .gitignore — secrets and obvious junk. This
 // prevents pushing a teammate's .env / private keys / build output to the room.
@@ -84,11 +84,16 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 10. Coordinate in chat. ASK before anything destructive (delete, rename, big
     refactor) that touches another participant's area.
 
-## Directed work (humans assigning tasks to AIs)
-11. A human can direct a task at you. You do NOT act on it until it is APPROVED
-    by your owner. Act only on tasks whose status is 'accepted'.
-12. If you are an MCP agent: loop on hive_wait — it blocks until approved work
-    arrives, then you do it and call hive_complete. No need to poll.
+## Directed work + permission (the asymmetric gate)
+11. AI -> AI is COORDINATION: if another agent hands you work, it is auto-accepted
+    and you may proceed. This is how the hive plans and divides work by itself.
+12. A HUMAN directing you is different. If a human who is NOT your owner assigns
+    you a task, you do NOT act on it — it stays PENDING until YOUR OWNER approves
+    ("do it or ignore?"). Your own owner's requests proceed. Act only on tasks
+    whose status is 'accepted'.
+13. If you are an MCP agent: loop on hive_wait — it blocks until accepted work
+    arrives, then you do it and call hive_complete. No need to poll. A pending
+    human request will NOT wake you until your owner approves it.
 
 Read → announce → patch → respect lanes → resolve conflicts → talk → wait for approval.
 `
@@ -183,7 +188,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (origin === 'local') { noteCoEditing(relPath); markEditing(relPath) } // broadcast activity + warn if someone else is on this file
 
     let res, reAdded = false
-    if (origin === 'local' && docText.includes('<<<<<<<') && !disk.includes('<<<<<<<')) {
+    if (origin === 'local' && hasConflictMarkers(docText) && !hasConflictMarkers(disk)) {
       // Resolving a conflict: the doc still has <<<<<<< markers and this local
       // write removed them — the author has resolved it. Their clean version wins.
       res = { text: disk, conflict: false }
@@ -214,7 +219,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     else if (!forkBases.get(relPath)) forkBases.set(relPath, res.text) // bootstrap: first real content a joining client receives is its fork
     // Conflict guard: announce a NEW conflict in chat (so everyone — and any
     // agent on hive_wait — is alerted), and announce when it's later resolved.
-    const hasMarkers = res.conflict || res.text.includes('<<<<<<<')
+    const hasMarkers = res.conflict || hasConflictMarkers(res.text)
     if (hasMarkers && !conflicted.has(relPath)) {
       conflicted.add(relPath)
       log(`[${name}] ⚠ merge conflict in ${relPath} — kept BOTH versions with <<<<<<< markers`)
@@ -272,16 +277,28 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (syncFiles) chat.observe(() => renderChat())
 
   // --- directed work + permission ---
-  // A human (or agent) ASSIGNS a task to a participant. If the target is an AI
-  // with a recorded owner, only that owner may APPROVE it; the AI acts only on
-  // 'accepted' tasks. So "tell another AI to do X" works, but only goes ahead
-  // if that AI's owner permits. Nothing is auto-obeyed.
+  // ASYMMETRIC gate (this is the rule that makes a hive both autonomous AND safe):
+  //  - AI -> AI  = COORDINATION. Agents plan and hand work to each other freely;
+  //    these tasks are auto-accepted so the hive flows without a human in the loop.
+  //  - owner -> own AI = the owner directing their own agent; auto-accepted.
+  //  - any OTHER human -> AI = a human telling someone else's agent what to do.
+  //    This does NOT auto-run. It stays PENDING until that AI's OWNER says
+  //    "do it or ignore" (decide). The agent acts only on 'accepted' tasks.
+  // So agents coordinate among themselves, but a human can never make an agent
+  // act without that agent's owner approving it.
   const newId = () => 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
   function assign(to, text) {
     if (!to || !text) return null
     const id = newId()
-    tasks.set(id, { id, to, by: name, text: String(text), status: 'pending', decidedBy: null, at: fmtTime() })
-    say(`@${to}: ${text}  (task ${id} — pending ${owners.get(to) ? owners.get(to) + "'s" : 'owner'} approval)`)
+    const ownerOf = owners.get(to)
+    // auto-accept when it's AI->AI coordination, the target has no owner to ask,
+    // or the asker IS the target's owner. Otherwise it needs owner approval.
+    const auto = kind === 'ai' || !ownerOf || name === ownerOf
+    const status = auto ? 'accepted' : 'pending'
+    const decidedBy = auto ? (kind === 'ai' ? `${name} (AI coordination)` : name) : null
+    tasks.set(id, { id, to, by: name, byKind: kind, text: String(text), status, decidedBy, at: fmtTime() })
+    if (auto) say(`@${to}: ${text}  (task ${id} — ${kind === 'ai' ? 'AI coordination, proceeding' : 'from owner, proceeding'})`)
+    else say(`@${to}: ${text}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
     return id
   }
   function decide(id, accept, by = name) {
@@ -302,7 +319,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const myTasks = () => [...tasks.values()].filter((t) => t.to === name)
   function renderTasks() {
     const all = [...tasks.values()].sort((a, b) => (a.at < b.at ? 1 : -1))
-    const out = ['# Hive Tasks — directed work and approvals.', '# An AI acts on a task only once it is APPROVED by that AI\'s owner.', '']
+    const out = ['# Hive Tasks — directed work and approvals.', '# AI->AI = auto-accepted coordination. A non-owner human\'s request to an AI', '# stays PENDING until that AI\'s owner approves (do it or ignore).', '']
     if (!all.length) out.push('(no tasks)')
     for (const t of all) out.push(`- [${t.status}] ${t.id}  ${t.by} -> ${t.to}: ${t.text}${t.decidedBy ? `  (by ${t.decidedBy})` : ''}`)
     writeToDisk(TASKS_FILE, out.join('\n') + '\n')

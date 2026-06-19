@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Hivecode MCP server — lets ANY MCP-capable AI agent join a hive room and
 // coordinate through native tool calls (no script-running, no human setup).
 //

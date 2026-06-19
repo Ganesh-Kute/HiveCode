@@ -1,87 +1,53 @@
-# Hivecode
+# Task-List — a live Hivecode collaboration
 
-**Multiplayer for AI coding.** Multiple people *and* AI agents edit the same
-project live, across the internet — no git push/pull in the loop. Your IDE
-doesn't matter (it syncs files on disk, so VS Code, Antigravity, and Cursor all
-work). The relay is one server hosting unlimited isolated, private rooms.
+A tiny task-list web app, built **live** by multiple agents in one Hivecode room:
+a backend agent and a frontend agent editing the same project at the same time,
+over the internet, with no git push/pull. This file is the **onboarding doc** —
+if you are an AI (or human) who just joined this room, read it first.
 
-## Install the editor extension
+---
 
-Download and install in VS Code / Antigravity / Cursor (Extensions panel →
-`...` → **Install from VSIX**):
+## 1. What we're building
+A task list: add tasks, mark them done, delete them. Plain Node.js backend (no
+deps) + a static HTML/CSS/JS frontend. Small on purpose, so two agents can build
+the two halves in parallel and we can see Hivecode coordinate them.
 
-```
-https://github.com/GSK7024/livecode/raw/main/extension/hivecode.vsix
-```
+## 2. Who owns what (LANES — stay in yours)
+| Area | Files | Owner |
+|------|-------|-------|
+| Backend / API | `server.js` | **ClaudeBackend** (AI) |
+| Frontend / UI | `public/index.html`, `public/app.js`, `public/style.css` | **frontend agent** |
+| Shared contract | `README.md` (this file) | edit by agreement, announce first |
 
-Then click the **Hivecode** icon in the activity bar — Host / Join / Leave,
-live members, and an activity log are all in the side panel.
+Read any file you like; **only edit files in your lane.** If you must touch
+another lane, say so in chat and wait.
 
-## Why
+## 3. The API contract (frontend builds against THIS)
+Backend serves the frontend from `public/` and exposes a JSON API under `/api`.
+All bodies and responses are JSON. A task is `{ id: string, title: string, done: boolean, createdAt: number }`.
 
-When you and a teammate work remotely while AI agents move fast, git is too
-slow: commit → push → wait → pull → merge. Hivecode replaces that with **sync** —
-everyone (humans and AI) sees changes the instant they happen, like Figma or
-Google Docs, but for your whole project folder.
+| Method | Path | Body | Returns |
+|--------|------|------|---------|
+| `GET`  | `/api/tasks` | — | `{ tasks: Task[] }` |
+| `POST` | `/api/tasks` | `{ title: string }` | `201 { task: Task }` · `400 { error }` if title empty |
+| `POST` | `/api/tasks/:id/toggle` | — | `{ task: Task }` · `404 { error }` |
+| `DELETE` | `/api/tasks/:id` | — | `{ ok: true }` · `404 { error }` |
 
-## Quick start
+Run it: `node server.js` → http://localhost:4000 . Data is in-memory (resets on
+restart) — that's fine for the demo.
 
-```bash
-npm install
+## 4. How to work here (Hivecode rules, short version)
+1. **Read `HIVE_MEMBERS.md`** — who is here and what each is editing right now.
+2. **Read `HIVE_CHAT.md`** — what everyone is doing. **Announce** before you start.
+3. **Prefer small patches** — edit the spot, not the whole file. Disjoint edits
+   from different agents auto-merge. Whole-file rewrites are risky; if you must,
+   RE-READ the file first.
+4. If you see `<<<<<<<` markers, the system kept BOTH versions — **resolve** them.
+5. If two of you touch the same file, you'll get a chat heads-up — coordinate.
+6. The sync layer guarantees **nobody's work is silently lost** (a stale rewrite
+   that drops another's lines is re-added or flagged as a conflict, never deleted).
 
-# 1. start a session (local test, no tunnel)
-node go.js host ./workspace Jeevan --local
-# prints a join command with a room id
-
-# 2. someone else joins (another folder / machine)
-node go.js join ws://localhost:1234 <room> ./theirfolder Friend
-
-# 3. add an AI teammate
-node agent-coord.js ws://localhost:1234 <room> MyAI
-```
-
-For a real session across cities, deploy the relay (see [DEPLOY.md](DEPLOY.md))
-and drop `--local`. For the no-terminal experience, install the VS Code
-extension in [`extension/`](extension/) (see [SETUP.md](SETUP.md)).
-
-## How it works
-
-| Layer | What it does |
-|---|---|
-| **CRDT (Yjs)** | Concurrent edits to the same spot always merge identically — text never corrupts. |
-| **Relay (`server.js`)** | One WebSocket server, many isolated rooms (each project = a private unguessable link). |
-| **Folder sync (`folder.js`)** | Mirrors a whole directory both ways: create, edit, delete, nested folders. |
-| **Agent coordination** | The hard part — how multiple AI agents share files without chaos. |
-
-### Agent coordination — the five guarantees
-
-| Problem | Mechanism | File |
-|---|---|---|
-| Two edits to one spot corrupt the file | CRDT convergence | (Yjs) |
-| Two AIs do the same task | Claim protocol | `agent-coord.js` |
-| Two AIs need the same region | Region lease + intent | `agent-lease.js` |
-| An AI reasons on code that then changed | Version-checked write | `safe-write-demo.js` |
-| Two AIs need the same file — ask permission | Lock + negotiation | `agent-lock.js` |
-
-A real Claude-powered editing agent lives in `agent-ai.js` (stub by default;
-set `LIVECODE_AI=1` + `ANTHROPIC_API_KEY` for the real model).
-
-## Files
-
-- `server.js` — relay; `client.js` — single-file sync; `folder.js` — whole-folder sync
-- `go.js` — one-command launcher (relay + tunnel + sync)
-- `agent-coord.js` / `agent-lease.js` / `agent-lock.js` / `agent-ai.js` — agents
-- `core.js` — shared, tested logic; `test.js` — `npm test` (18 tests)
-- `extension/` — VS Code / Antigravity / Cursor extension
-
-## Test
-
-```bash
-npm test
-```
-
-## Status
-
-Working prototype: deployed relay, whole-folder sync, installable editor
-extension, and a five-part agent-coordination model. See [IMPROVEMENTS.md](IMPROVEMENTS.md)
-for the roadmap.
+## 5. Status
+- [x] Backend API (`server.js`) — by ClaudeBackend
+- [ ] Frontend UI (`public/`) — by the frontend agent
+- [ ] Wire-up verified end-to-end (add/toggle/delete in the browser)

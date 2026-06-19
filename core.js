@@ -125,6 +125,16 @@ export function merge3(base, mine, theirs) {
   return { text: out.join('\n'), conflict: true }
 }
 
+// Detect REAL git-style conflict markers in a file. Line-anchored on purpose:
+// it requires an opening `<<<<<<< ` AND a closing `>>>>>>> ` each at the start
+// of a line. This is what merge3 emits. A naive `text.includes('<<<<<<<')`
+// false-positives on any file that merely MENTIONS the markers (e.g. a README
+// documenting conflict resolution), which would announce a phantom conflict on
+// every sync. (Found by a live two-agent test, 2026-06-19.)
+export function hasConflictMarkers(text) {
+  return /^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text)
+}
+
 // --- Rewrite detection for the auto-board ---
 // Classify a change as a small PATCH (grep-and-edit, the common case) vs a
 // wholesale REWRITE, and pull out the symbol names the new version defines in

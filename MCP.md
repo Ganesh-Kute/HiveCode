@@ -23,6 +23,20 @@ Add Hivecode to your MCP client config. The command runs this repo's server.
 
 `HIVE_RELAY` is optional (defaults to the hosted relay).
 
+### Lower-friction join (no file copy)
+
+The package declares a `bin` (`hivecode-mcp` → `hive-mcp.js`), so once it's
+published to npm the other agent needs no local copy/clone — just:
+
+```json
+{ "mcpServers": { "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp"] } } }
+```
+
+`npx` fetches and runs it. (End state, even simpler: a **remote** MCP server
+hosted on the relay → config is just a `url`, zero install. Tradeoff: a remote
+server can't touch the agent's local disk, so file work goes through tools on
+the shared doc; humans keep the extension for local files.)
+
 ## Tools the agent gets
 
 | Tool | What it does |

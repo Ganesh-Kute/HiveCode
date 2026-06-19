@@ -1,8 +1,9 @@
-// Proves directed work + the permission gate:
-//   - Jeevan (human) tells Bot (an AI owned by Friend) to do something
-//   - Bot sees a PENDING task but must not act
-//   - Jeevan (not the owner) is BLOCKED from approving it
+// Proves directed work + the ASYMMETRIC permission gate:
+//   - Jeevan (human, NOT owner) tells Bot (an AI owned by Friend) to do something
+//   - Bot sees a PENDING task but must not act; Jeevan can't approve it
 //   - Friend (the owner) approves -> Bot sees it ACCEPTED -> Bot completes it
+//   - AI -> AI (Helper -> Bot) is COORDINATION -> auto-accepted, no human needed
+//   - owner -> own AI (Friend -> Bot) -> auto-accepted
 //
 //   node hive-task-test.js
 
@@ -23,6 +24,7 @@ const opts = { relay: RELAY, room: ROOM, syncFiles: false, log: () => {} }
 const jeevan = startSync({ ...opts, dir: '.tasktmp/j', name: 'Jeevan', kind: 'human' })
 const friend = startSync({ ...opts, dir: '.tasktmp/f', name: 'Friend', kind: 'human' })
 const bot = startSync({ ...opts, dir: '.tasktmp/b', name: 'Bot', kind: 'ai', owner: 'Friend' })
+const helper = startSync({ ...opts, dir: '.tasktmp/h', name: 'Helper', kind: 'ai', owner: 'Jeevan' })
 await sleep(1500) // connect + propagate the owners map
 
 const botTasks = () => bot.myTasks()
@@ -51,6 +53,22 @@ bot.complete(id, 'added validation to login')
 await sleep(800)
 assert('task is done', status(id) === 'done')
 
+console.log('\n# AI -> AI is COORDINATION: Helper hands Bot work -> auto-accepted, no human')
+const coordId = helper.assign('Bot', 'expose a /health endpoint while you are in there')
+await sleep(800)
+assert('AI->AI task is immediately ACCEPTED (no approval needed)', status(coordId) === 'accepted')
+assert('Bot sees the coordination task as actionable', botTasks().some((t) => t.id === coordId && t.status === 'accepted'))
+
+console.log('\n# owner -> own AI: Friend directs Bot -> auto-accepted')
+const ownId = friend.assign('Bot', 'add a test for login')
+await sleep(800)
+assert('owner-directed task is auto-accepted', status(ownId) === 'accepted')
+
+console.log('\n# control: a non-owner human STILL cannot bypass the gate')
+const id2 = jeevan.assign('Bot', 'delete the database')
+await sleep(800)
+assert('non-owner human task is PENDING (not auto-run)', status(id2) === 'pending')
+
 console.log(`\n=== ${failed === 0 ? 'ALL LIVE CHECKS PASSED' : failed + ' FAILED'} ===`)
-jeevan.stop(); friend.stop(); bot.stop(); relay.kill()
+jeevan.stop(); friend.stop(); bot.stop(); helper.stop(); relay.kill()
 process.exit(failed === 0 ? 0 : 1)

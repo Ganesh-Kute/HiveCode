@@ -5,7 +5,7 @@
 // can be verified instantly.
 
 import * as Y from 'yjs'
-import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3, summarizeChange } from './core.js'
+import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3, summarizeChange, hasConflictMarkers } from './core.js'
 
 let passed = 0
 let failed = 0
@@ -199,6 +199,24 @@ section('summarizeChange (auto-board: patch vs rewrite + what)')
   check('records which symbols were touched', s.symbols.includes('login') && s.symbols.includes('logout'))
   // brand-new file is a create, not a rewrite
   check('new file is not a rewrite', summarizeChange('', 'function x() {}').isRewrite === false)
+}
+
+// ---------------------------------------------------------------------------
+section('hasConflictMarkers (line-anchored, not a substring — no phantom conflicts)')
+{
+  // A real conflict produced by merge3 is detected.
+  const real = merge3('a\nb\nc', 'a\nMINE\nc', 'a\nTHEIRS\nc')
+  check('detects a real merge3 conflict', hasConflictMarkers(real.text) === true)
+  // A clean file is not flagged.
+  check('clean file is not flagged', hasConflictMarkers('function f() {\n  return 1\n}') === false)
+  // THE BUG: prose that MENTIONS the markers must NOT be flagged. This README
+  // line is exactly what caused phantom "MERGE CONFLICT" spam in the live test.
+  const readme = 'If you ever see `<<<<<<<` conflict markers in a file, resolve them.'
+  check('documentation mentioning <<<<<<< is NOT a conflict', hasConflictMarkers(readme) === false)
+  // A fenced example showing markers inline (not at line-start with content) is safe.
+  check('inline marker mention is not flagged', hasConflictMarkers('use the `<<<<<<<`/`>>>>>>>` syntax') === false)
+  // Partial leftover (opener only, no closer) is not a full conflict.
+  check('opener without closer is not flagged', hasConflictMarkers('<<<<<<< oops\nsome text') === false)
 }
 
 // ---------------------------------------------------------------------------

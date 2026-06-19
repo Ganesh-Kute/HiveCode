@@ -316,6 +316,9 @@ function start(root, room, relay) {
     const out = [...b.slice(0, start), '<<<<<<< local (yours)', ...mineBlock, '=======', ...theirsBlock, '>>>>>>> incoming (theirs)', ...b.slice(end)]
     return { text: out.join('\n'), conflict: true }
   }
+  // Line-anchored detection of REAL conflict markers — NOT a substring scan, so
+  // a file that merely documents the markers (e.g. a README) isn't flagged.
+  function hasConflictMarkers(text) { return /^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text) }
   // Bring one file's disk copy and shared-doc copy into agreement via 3-way
   // merge against its last agreed base. Safe from either direction.
   const conflicted = new Set()
@@ -342,7 +345,7 @@ function start(root, room, relay) {
     const fork = forkBases.has(r) ? forkBases.get(r) : base
     if (origin === 'local') { noteCoEditing(r); markEditing(r) } // broadcast activity + warn if someone else is on this file
     let res, reAdded = false
-    if (origin === 'local' && docText.includes('<<<<<<<') && !disk.includes('<<<<<<<')) {
+    if (origin === 'local' && hasConflictMarkers(docText) && !hasConflictMarkers(disk)) {
       // Resolving a conflict: doc has markers, this write removed them — author resolved it.
       res = { text: disk, conflict: false }
     } else if (origin === 'local') {
@@ -363,7 +366,7 @@ function start(root, room, relay) {
     known.add(r); bases.set(r, res.text)
     if (origin === 'local') forkBases.set(r, res.text)
     else if (!forkBases.get(r)) forkBases.set(r, res.text) // bootstrap fork on first real remote content
-    const hasMarkers = res.conflict || res.text.includes('<<<<<<<')
+    const hasMarkers = res.conflict || hasConflictMarkers(res.text)
     if (hasMarkers && !conflicted.has(r)) {
       conflicted.add(r)
       logActivity(`⚠ merge conflict in ${r} — kept BOTH (resolve <<<<<<< markers)`)
@@ -411,8 +414,15 @@ function start(root, room, relay) {
   function assign(to, textMsg) {
     if (!to || !textMsg) return
     const id = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
-    tasks.set(id, { id, to, by: me, text: String(textMsg), status: 'pending', decidedBy: null, at: fmtTime() })
-    say(`@${to}: ${textMsg}  (task ${id} — pending ${owners.get(to) ? owners.get(to) + "'s" : 'owner'} approval)`)
+    const ownerOf = owners.get(to)
+    // Asymmetric gate: AI->AI coordination (or owner directing own AI) auto-accepts;
+    // any other human directing an AI stays PENDING until that AI's owner approves.
+    const auto = kind === 'ai' || !ownerOf || me === ownerOf
+    const status = auto ? 'accepted' : 'pending'
+    const decidedBy = auto ? (kind === 'ai' ? `${me} (AI coordination)` : me) : null
+    tasks.set(id, { id, to, by: me, byKind: kind, text: String(textMsg), status, decidedBy, at: fmtTime() })
+    if (auto) say(`@${to}: ${textMsg}  (task ${id} — ${kind === 'ai' ? 'AI coordination, proceeding' : 'from owner, proceeding'})`)
+    else say(`@${to}: ${textMsg}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
   }
   function decide(id, accept) {
     const t = tasks.get(id); if (!t) return

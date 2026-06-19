@@ -16,6 +16,10 @@ aiproj/
 .collide-test/
 .clobber-test/
 .activity-test/
+
+# scratch room folders created during live multi-agent tests (recursive sync pollution)
+hive-workspace/
+hive-presence-*/
 .board-test/
 .agent-test/
 .talk-test/

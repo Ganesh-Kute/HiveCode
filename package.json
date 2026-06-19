@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Multiplayer for AI coding — humans and AI agents edit one project live, no git in the loop.",
   "type": "module",
+  "bin": {
+    "hivecode-mcp": "./hive-mcp.js"
+  },
   "scripts": {
     "start": "node server.js",
     "relay": "node server.js",

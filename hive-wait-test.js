@@ -23,8 +23,11 @@ fs.mkdirSync(DIR, { recursive: true })
 const relay = spawn(process.execPath, ['server.js'], { env: { ...process.env, PORT: String(PORT) } })
 await new Promise((res) => relay.stdout.on('data', (d) => /listening on/.test(d) && res()))
 
-// Boss = the human owner, in the same room (drives assign + approve)
+// Boss = the human OWNER (approves). Client = a different human who REQUESTS work.
+// (A non-owner's request stays pending until the owner approves — that's the gate
+// we're proving the agent reacts to.)
 const boss = startSync({ relay: RELAY, room: ROOM, dir: '.wait-test/boss', name: 'Boss', kind: 'human', syncFiles: false, log: () => {} })
+const client = startSync({ relay: RELAY, room: ROOM, dir: '.wait-test/client', name: 'Client', kind: 'human', syncFiles: false, log: () => {} })
 
 // MCP server hosting the agent
 const mcp = spawn(process.execPath, ['hive-mcp.js'], { env: { ...process.env, HIVE_RELAY: RELAY } })
@@ -50,8 +53,8 @@ await sleep(300)
 await callTool('hive_join', { link: `${RELAY}|${ROOM}`, dir: DIR, name: 'WaitBot', owner: 'Boss' })
 await sleep(800)
 
-console.log('# Boss assigns work (pending), agent starts WAITING')
-const id = boss.assign('WaitBot', 'build the parser module')
+console.log('# Client (non-owner) requests work (stays pending), agent starts WAITING')
+const id = client.assign('WaitBot', 'build the parser module')
 await sleep(500)
 const waitStart = Date.now()
 const waitPromise = callTool('hive_wait', { timeoutSeconds: 25 }) // BLOCKS here
@@ -75,6 +78,6 @@ const tasksAfter = await callTool('hive_read_tasks', {})
 assert('the task is now accepted for the agent', /accepted/.test(tasksAfter) && /build the parser/.test(tasksAfter))
 
 console.log(`\n=== ${failed === 0 ? 'ALL LIVE CHECKS PASSED' : failed + ' FAILED'} ===`)
-boss.stop(); mcp.kill(); relay.kill()
+boss.stop(); client.stop(); mcp.kill(); relay.kill()
 fs.rmSync(path.resolve('.wait-test'), { recursive: true, force: true })
 process.exit(failed === 0 ? 0 : 1)
