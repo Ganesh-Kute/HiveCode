@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — live multiplayer coding",
   "description": "Edit a project together live with teammates and AI agents. No git push/pull.",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "publisher": "hivecode",
   "license": "MIT",
   "engines": {
@@ -24,7 +24,9 @@
     "url": "https://github.com/GSK7024/livecode"
   },
   "main": "./extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -47,15 +49,31 @@
     "commands": [
       {
         "command": "hivecode.host",
-        "title": "Hivecode: Host a Session"
+        "title": "Hivecode: Host an Open Session"
+      },
+      {
+        "command": "hivecode.hostSecured",
+        "title": "Hivecode: Host a Secured Session"
       },
       {
         "command": "hivecode.join",
         "title": "Hivecode: Join a Session"
       },
       {
+        "command": "hivecode.invite",
+        "title": "Hivecode: Invite to folders…"
+      },
+      {
+        "command": "hivecode.manage",
+        "title": "Hivecode: Manage access"
+      },
+      {
         "command": "hivecode.leave",
         "title": "Hivecode: Leave Session"
+      },
+      {
+        "command": "hivecode.endRoom",
+        "title": "Hivecode: End Room (forget & start fresh)"
       }
     ],
     "configuration": {

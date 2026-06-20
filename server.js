@@ -20,7 +20,7 @@ import path from 'path'
 import * as Y from 'yjs'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence } from 'y-websocket/bin/utils'
-import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed } from './token.js'
+import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import * as decoding from 'lib0/decoding'
 
 // Enforce a read-only connection: drop the client's inbound SYNC writes (sync
@@ -56,13 +56,24 @@ const PORT = process.env.PORT || 1234
 const AUTH_MODE = (process.env.HIVE_AUTH_MODE || 'open').toLowerCase()
 const JWT_SECRET = process.env.HIVE_JWT_SECRET || ''
 const JWT_PUBKEY = process.env.HIVE_JWT_PUBKEY || (process.env.HIVE_JWT_PUBKEY_FILE ? readSafe(process.env.HIVE_JWT_PUBKEY_FILE) : '')
+// Pin the accepted JWT algorithm (alg-confusion defense). Explicit override via
+// HIVE_JWT_ALG; otherwise auto-pin to the one type of key configured. With BOTH
+// keys present we accept either (no pin) — but never an unexpected alg.
+const JWT_ALG = (process.env.HIVE_JWT_ALG || '').toUpperCase() || (JWT_SECRET && JWT_PUBKEY ? '' : JWT_SECRET ? 'HS256' : JWT_PUBKEY ? 'RS256' : '')
 const AUDIT_FILE = process.env.HIVE_AUDIT_FILE || ''
 function readSafe(p) { try { return fs.readFileSync(p, 'utf8') } catch { return '' } }
 
+// Revocation list. The JSON file is re-read per connect so a revocation takes
+// effect immediately. If that read/parse fails transiently (e.g. the file is
+// mid-write), we KEEP the last good set rather than forgetting it — failing
+// closed, so a revoked token can't slip through during a list update.
+let lastGoodRevokedFile = new Set()
 function revokedSet() {
   const out = new Set((process.env.HIVE_REVOKED_JTIS || '').split(',').map((s) => s.trim()).filter(Boolean))
   if (process.env.HIVE_REVOKED_FILE) {
-    try { for (const j of JSON.parse(fs.readFileSync(process.env.HIVE_REVOKED_FILE, 'utf8'))) out.add(j) } catch { /* none */ }
+    try { lastGoodRevokedFile = new Set(JSON.parse(fs.readFileSync(process.env.HIVE_REVOKED_FILE, 'utf8'))) }
+    catch { /* mid-write/missing: fall back to last good (don't drop revocations) */ }
+    for (const j of lastGoodRevokedFile) out.add(j)
   }
   return out
 }
@@ -73,30 +84,86 @@ function audit(event, fields) {
   else console.log('[relay][audit]', line)
 }
 
-// Decide whether a connection to `room` carrying `token` is allowed.
-// Returns { ok, identity?, role?, code?, reason? }.
-function authorize(room, token) {
-  if (AUTH_MODE !== 'required') return { ok: true, identity: { name: 'anon', kind: 'unknown' }, role: 'open' }
-  // fail closed: required mode with no key configured rejects everything
-  if (!JWT_SECRET && !JWT_PUBKEY) return { ok: false, code: 503, reason: 'auth required but relay has no keys configured' }
-  if (!token) return { ok: false, code: 401, reason: 'no token' }
-  const res = verify(token, { secret: JWT_SECRET || undefined, publicKey: JWT_PUBKEY || undefined })
-  if (!res.ok) return { ok: false, code: 401, reason: res.error }
-  const p = res.payload
-  if (p.jti && revokedSet().has(p.jti)) return { ok: false, code: 401, reason: 'token revoked' }
-  // A project is a base room plus per-file rooms ("<base>␁<path>"). Authorize on
-  // the BASE room, and — for a file-room — also require the file's path to match
-  // the scope's path globs. This is the Phase-3 guarantee: a scoped agent's
-  // connection to an out-of-scope file is rejected here, so that file's bytes
-  // never reach it.
+// Per-room revocation, set live by the owner via POST /__hive/revoke (in-memory:
+// gives instant "cut this person off" during a session; tokens also carry a TTL).
+const roomRevoked = new Map() // baseRoom -> Set(jti)
+function isRevoked(base, jti) {
+  if (!jti) return false
+  if (revokedSet().has(jti)) return true
+  const s = roomRevoked.get(base)
+  return !!(s && s.has(jti))
+}
+
+// Shared scope + path enforcement once a token's signature is verified. A project
+// is a base room plus per-file rooms ("<base>␁<path>"). Authorize on the BASE
+// room, and — for a file-room — also require the path to match the scope's globs.
+// This is the guarantee: a scoped agent's connect to an out-of-scope file is
+// rejected here, so that file's bytes never reach it.
+function scopeCheck(p, room) {
   const base = baseRoomOf(room)
+  if (isRevoked(base, p.jti)) return { ok: false, code: 401, reason: 'token revoked' }
   const sc = scopeForRoom(p, base)
   if (!sc) return { ok: false, code: 403, reason: 'room not in token scope' }
   const filePath = pathOf(room)
-  if (filePath !== null && !pathAllowed(sc.paths, filePath)) {
-    return { ok: false, code: 403, reason: `path "${filePath}" not in scope` }
+  if (filePath !== null) {
+    if (!isSafeRelPath(filePath)) return { ok: false, code: 403, reason: 'malformed file path' }
+    if (!pathAllowed(sc.paths, filePath)) return { ok: false, code: 403, reason: `path "${filePath}" not in scope` }
   }
   return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner }, role: sc.role || 'writer', path: filePath }
+}
+
+// Decide whether a connection to `room` carrying `token` is allowed.
+// Returns { ok, identity?, role?, code?, reason? }.
+function authorize(room, token) {
+  // SELF-CERTIFYING SECURED ROOM (always enforced, even on an "open" relay): the
+  // room id embeds a fingerprint of the owner's public key. The token carries that
+  // public key (claim `pk`) and is signed by the matching private key. We trust it
+  // only if fingerprint(pk) === the room's fingerprint — so no server-side key
+  // store is needed, and only the owner (private-key holder) can mint valid tokens.
+  const fp = roomFingerprint(baseRoomOf(room))
+  if (fp) {
+    if (!token) return { ok: false, code: 401, reason: 'secured room requires a token' }
+    const pre = decodeUnsafe(token)
+    const pk = pre && pre.pk
+    if (!pk) return { ok: false, code: 401, reason: 'token missing room key' }
+    if (keyFingerprint(pk) !== fp) return { ok: false, code: 403, reason: 'token key does not match this room' }
+    const res = verify(token, { publicKey: pk, alg: 'RS256' })
+    if (!res.ok) return { ok: false, code: 401, reason: res.error }
+    return scopeCheck(res.payload, room)
+  }
+
+  // NON-SECURED ROOMS: the relay-wide policy (open by default; or a self-host
+  // locked relay via HIVE_AUTH_MODE=required + a configured key).
+  if (AUTH_MODE !== 'required') return { ok: true, identity: { name: 'anon', kind: 'unknown' }, role: 'open' }
+  if (!JWT_SECRET && !JWT_PUBKEY) return { ok: false, code: 503, reason: 'auth required but relay has no keys configured' }
+  if (!token) return { ok: false, code: 401, reason: 'no token' }
+  const res = verify(token, { secret: JWT_SECRET || undefined, publicKey: JWT_PUBKEY || undefined, alg: JWT_ALG || undefined })
+  if (!res.ok) return { ok: false, code: 401, reason: res.error }
+  return scopeCheck(res.payload, room)
+}
+
+// Owner-driven revocation endpoint. Body: { room, token, jti }. The token must be
+// an admin/maintainer token for that secured room (proven self-certifying), so
+// only the room owner can cut someone off. In-memory + audited.
+function readBody(req) { return new Promise((resolve) => { let b = ''; req.on('data', (d) => { b += d; if (b.length > 1e5) req.destroy() }); req.on('end', () => resolve(b)) }) }
+async function handleRevoke(req, res) {
+  const reply = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)) }
+  try {
+    const { room, token, jti } = JSON.parse((await readBody(req)) || '{}')
+    const base = baseRoomOf(room || '')
+    const fp = roomFingerprint(base)
+    const p = decodeUnsafe(token)
+    if (!fp || !p || !p.pk || keyFingerprint(p.pk) !== fp) return reply(403, { error: 'not authorized for this room' })
+    const v = verify(token, { publicKey: p.pk, alg: 'RS256' })
+    if (!v.ok) return reply(401, { error: v.error })
+    const sc = scopeForRoom(v.payload, base)
+    if (!sc || !['admin', 'maintainer'].includes(sc.role)) return reply(403, { error: 'need an admin/maintainer token' })
+    if (!jti) return reply(400, { error: 'need a jti to revoke' })
+    if (!roomRevoked.has(base)) roomRevoked.set(base, new Set())
+    roomRevoked.get(base).add(jti)
+    audit('revoke', { room: base, jti, by: v.payload.name })
+    return reply(200, { ok: true })
+  } catch { return reply(400, { error: 'bad request' }) }
 }
 
 // --- optional persistence (plain-file snapshots per room) ---
@@ -117,6 +184,10 @@ if (PERSIST_DIR) {
 }
 
 const server = http.createServer((req, res) => {
+  if (req.url === '/__hive/revoke') {
+    if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
+    if (req.method === 'POST') return void handleRevoke(req, res)
+  }
   res.writeHead(200, { 'Content-Type': 'text/plain' })
   res.end('hivecode relay is up. Connect a client to ws://<this-host>:' + PORT + '/<room>\n')
 })

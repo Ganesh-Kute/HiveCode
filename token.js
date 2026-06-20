@@ -37,16 +37,22 @@ export function sign(payload, signWith) {
 }
 
 // --- verify ---
-// verifyWith: { secret } and/or { publicKey }. The token's header.alg selects
-// which key is used. Returns { ok, payload } or { ok:false, error }.
+// verifyWith: { secret } and/or { publicKey }, plus optional { alg } to PIN the
+// accepted algorithm (defense-in-depth against alg-confusion: a deployment that
+// only issues RS256 can refuse every HS256 token outright). The token's
+// header.alg selects which key is used. Returns { ok, payload } or { ok:false, error }.
 export function verify(token, verifyWith = {}, now = Math.floor(Date.now() / 1000)) {
   if (!token || typeof token !== 'string') return { ok: false, error: 'no token' }
   const parts = token.split('.')
   if (parts.length !== 3) return { ok: false, error: 'malformed token' }
   const [h, p, s] = parts
+  if (!s) return { ok: false, error: 'unsigned token' } // "h.p." — empty signature segment
   let header, payload
   try { header = JSON.parse(b64urlToBuf(h).toString('utf8')); payload = JSON.parse(b64urlToBuf(p).toString('utf8')) }
   catch { return { ok: false, error: 'undecodable token' } }
+  if (!payload || typeof payload !== 'object') return { ok: false, error: 'bad payload' }
+  // Optional algorithm pinning: reject anything the relay didn't opt into.
+  if (verifyWith.alg && header.alg !== verifyWith.alg) return { ok: false, error: `alg ${header.alg} not allowed (pinned to ${verifyWith.alg})` }
   const data = h + '.' + p
   const sig = b64urlToBuf(s)
 
@@ -63,8 +69,10 @@ export function verify(token, verifyWith = {}, now = Math.floor(Date.now() / 100
     return { ok: false, error: `unsupported alg: ${header.alg}` }
   }
 
-  if (payload.exp != null && now >= payload.exp) return { ok: false, error: 'token expired' }
-  if (payload.nbf != null && now < payload.nbf) return { ok: false, error: 'token not yet valid' }
+  // exp/nbf must be NUMBERS. A non-numeric exp would make `now >= exp` false and
+  // the token would never expire — fail closed and reject it instead.
+  if (payload.exp != null && (typeof payload.exp !== 'number' || now >= payload.exp)) return { ok: false, error: 'token expired' }
+  if (payload.nbf != null && (typeof payload.nbf !== 'number' || now < payload.nbf)) return { ok: false, error: 'token not yet valid' }
   return { ok: true, payload }
 }
 
@@ -87,10 +95,37 @@ export function roomMatches(pattern, room) {
   return false
 }
 
-// Find the scope (and role) that authorizes `room`, or null.
+// Find the scope (and role) that authorizes `room`, or null. When several scopes
+// match, the MOST SPECIFIC wins (exact room > longer prefix > "*"). This stops a
+// broad "*" scope listed first from shadowing a tighter, intentionally-narrower
+// scope for the same room (which would silently over-grant). Ties keep the first.
 export function scopeForRoom(payload, room) {
   const scopes = Array.isArray(payload && payload.scopes) ? payload.scopes : []
-  return scopes.find((sc) => roomMatches(sc.room, room)) || null
+  let best = null, bestScore = -1
+  for (const sc of scopes) {
+    if (!sc || !roomMatches(sc.room, room)) continue
+    const score = sc.room === room ? Infinity : sc.room === '*' ? 0 : sc.room.length // exact > longer prefix > "*"
+    if (score > bestScore) { bestScore = score; best = sc }
+  }
+  return best
+}
+
+// Is a remote-supplied path safe to materialize on this client's disk? A room
+// participant controls the manifest (and thus file paths); without this, a
+// malicious entry like "../../etc/cron.d/x", "/etc/passwd", or "C:\\Windows\\..."
+// would be written OUTSIDE the project root by every client that syncs it. We
+// reject absolute paths, drive letters, UNC, any ".." segment, control chars
+// (incl. the FILE_SEP separator and NULs), and absurd lengths. Enforced on the
+// client (before writing) AND the relay (rejects the file-room) — defense in depth.
+export function isSafeRelPath(relPath) {
+  if (typeof relPath !== 'string' || relPath.length === 0 || relPath.length > 1024) return false
+  if (/[\u0000-\u001f]/.test(relPath)) return false        // control chars: NUL, FILE_SEP (U+0001), etc.
+  const p = relPath.replace(/\\/g, '/')                    // normalize Windows separators
+  if (p.startsWith('/')) return false                      // POSIX absolute
+  if (p.startsWith('//')) return false                     // UNC-ish
+  if (/^[a-zA-Z]:/.test(p)) return false                   // Windows drive letter (C:...)
+  if (p.split('/').some((seg) => seg === '..')) return false // traversal
+  return true
 }
 
 // Phase 3: is a file path allowed by a scope's path globs? Gitignore-style globs
@@ -105,6 +140,32 @@ export function pathAllowed(globs, relPath) {
   const matches = (pats) => pats.length > 0 && ignore().add(pats).ignores(relPath)
   const inAllow = pos.length === 0 ? true : matches(pos)
   return inAllow && !matches(neg)
+}
+
+// --- self-certifying secured rooms (no server-side key registry, no secret files) ---
+// A secured room's id embeds a fingerprint of the OWNER's public key:
+//     hs_<fp>_<rand>        fp = base64url(sha256(spki-DER)).slice(0, 22)
+// Every token for the room carries the owner's public key (claim `pk`) and is
+// signed by the matching private key (RS256). The relay trusts a token IFF the
+// embedded key's fingerprint equals the one in the room id — so trust is anchored
+// in the room id itself and the relay needs to store nothing. Only the owner (who
+// holds the private key, kept in the editor's secure storage) can mint valid
+// tokens. This is what lets the hosted, stateless, free-tier relay enforce
+// per-folder access with no registration step and no secret handed to anyone.
+export function keyFingerprint(publicKeyPem) {
+  try {
+    const der = crypto.createPublicKey(publicKeyPem).export({ type: 'spki', format: 'der' })
+    return crypto.createHash('sha256').update(der).digest('base64url').slice(0, 22)
+  } catch { return null }
+}
+export function roomFingerprint(room) {
+  const m = /^hs_([A-Za-z0-9_-]{22})_/.exec(room || '')
+  return m ? m[1] : null
+}
+export const isSecuredRoom = (room) => roomFingerprint(room) != null
+export function makeSecuredRoomId(publicKeyPem, rand) {
+  const fp = keyFingerprint(publicKeyPem)
+  return fp ? `hs_${fp}_${rand}` : null
 }
 
 // Read a token's payload WITHOUT verifying — for a client to inspect its OWN grant

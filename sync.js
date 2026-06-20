@@ -22,7 +22,7 @@ import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
 import ignore from 'ignore'
 import { applyDiff, merge3, summarizeChange, changedRange, hasConflictMarkers } from './core.js'
-import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed } from './token.js'
+import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, isSafeRelPath } from './token.js'
 
 // Never sync these, even if not in .gitignore — secrets and obvious junk. This
 // prevents pushing a teammate's .env / private keys / build output to the room.
@@ -96,7 +96,17 @@ another's work. The sync layer enforces the hard parts automatically; you do the
     arrives, then you do it and call hive_complete. No need to poll. A pending
     human request will NOT wake you until your owner approves it.
 
-Read → announce → patch → respect lanes → resolve conflicts → talk → wait for approval.
+## When a ping arrives while you are mid-task (interruptions)
+14. hive_wait only checks BETWEEN steps, so a ping never interrupts mid-step.
+    Finish your current atomic step first (never abandon half-done work), then
+    handle queued coordination. If it's urgent (build broken, blocking others),
+    do it now.
+15. ACKNOWLEDGE a ping as soon as you see it so the sender isn't left hanging,
+    e.g. say "got it — finishing X (~2 min), then on your fix".
+16. YOU triage: announce do-now vs after-current. Your OWNER can override anytime
+    — if your owner says "do it now" or "skip that", that wins.
+
+Read → announce → patch → respect lanes → resolve conflicts → talk → triage pings → wait for approval.
 `
 
 export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', log = console.log, syncFiles = true }) {
@@ -133,17 +143,20 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (kind === 'ai' && owner) owners.set(name, owner) // record who is allowed to approve my tasks
 
   // One sub-provider + Y.Doc per file, created on demand. `text` is its content.
-  const fileDocs = new Map() // relPath -> { doc, provider, text }
+  // `synced` flips true after the first relay sync — until then an empty doc means
+  // "not pulled yet", NOT "new file", so we must not re-seed it from disk (that
+  // would create a second CRDT history and duplicate/garble content on rejoin).
+  const fileDocs = new Map() // relPath -> { doc, provider, text, synced }
   function openFile(relPath) {
     let e = fileDocs.get(relPath)
     if (e) return e
     const fdoc = new Y.Doc()
     const fprovider = new WebsocketProvider(relay, fileRoom(room, relPath), fdoc, wsOpts)
     const text = fdoc.getText('content')
-    e = { doc: fdoc, provider: fprovider, text }
+    e = { doc: fdoc, provider: fprovider, text, synced: false }
     fileDocs.set(relPath, e)
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
-    fprovider.on('sync', (s) => { if (s) reconcile(relPath, 'remote') })          // initial pull
+    fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(relPath, 'remote') } }) // initial pull settled
     return e
   }
   function closeFile(relPath) {
@@ -161,7 +174,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // undefined = no path restriction (open room or whole-room grant).
   let myPaths
   if (token) { const pl = decodeUnsafe(token); const sc = pl && scopeForRoom(pl, room); myPaths = sc ? sc.paths : undefined }
-  const canOpen = (relPath) => pathAllowed(myPaths, relPath)
+  // canOpen gates BOTH scope (am I granted this path?) AND safety (is the path
+  // safe to write to disk — not a "../" traversal, absolute path, or control-char
+  // injection a malicious participant slipped into the shared manifest?).
+  const canOpen = (relPath) => isSafeRelPath(relPath) && pathAllowed(myPaths, relPath)
 
   const known = new Set()
   const mtimes = new Map()
@@ -194,6 +210,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     } catch { return null }
   }
   function writeToDisk(relPath, content) {
+    if (!isSafeRelPath(relPath)) return // never write a path that could escape ROOT (defense in depth)
     const full = path.join(ROOT, relPath)
     fs.mkdirSync(path.dirname(full), { recursive: true })
     fs.writeFileSync(full, content)
@@ -204,20 +221,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const conflicted = new Set() // files currently holding unresolved <<<<<<< markers
   function reconcile(relPath, origin = 'local') {
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
+    if (!canOpen(relPath)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
     const full = path.join(ROOT, relPath)
-    let yt = fileText(relPath)
-    const disk = fs.existsSync(full) ? readText(full) : null
-    const docText = yt ? yt.toString() : null
-    if (disk === null && docText === null) return
-    if (docText === null) {
-      // New LOCAL file: create its per-file doc, seed content, register in manifest.
-      const fe = openFile(relPath)
+    const exists = fs.existsSync(full)
+    const disk = exists ? readText(full) : null
+    if (exists && disk === null) return // present on disk but binary/too-large to represent — leave it untouched (never clobber with stale doc text)
+    // Per-file doc gating: we must know the RELAY's content before touching disk.
+    // Until the file-doc has synced, an empty Y.Text means "not pulled yet", not
+    // "empty file" — acting now would re-seed from disk and fork the CRDT history
+    // (duplicated/garbled content on rejoin). So: open if needed, then defer until
+    // the 'sync' handler re-runs us. Once synced, "" genuinely means empty.
+    let fe = fileDocs.get(relPath)
+    if (!fe) { if (disk === null) return; openFile(relPath); return }
+    if (!fe.synced) return
+    const docText = fe.text.toString()
+    if (docText === '' && !manifest.has(relPath)) {
+      // the relay has no copy of this path -> publish ours (a genuinely new file)
+      if (disk === null) return
       fe.doc.transact(() => applyDiff(fe.text, disk))
-      if (!manifest.has(relPath)) manifest.set(relPath, 1)
+      manifest.set(relPath, 1)
       known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
       return
     }
+    const yt = fe.text
     if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); forkBases.set(relPath, docText); return }
     if (disk === docText) {
       known.add(relPath); bases.set(relPath, disk)
@@ -513,8 +540,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
 }
 
-// Parse a Hivecode join link "wss://relay|room" into { relay, room }.
+// Parse a Hivecode join link into { relay, room, token }. Two shapes:
+//   "wss://relay|room"          (open room — no token)
+//   "wss://relay|room|<token>"  (secured room — the access token is baked in, so
+//                                the invitee just pastes the link; no settings)
+// A JWT contains '.' but never '|', and room ids/relay URLs never contain '|',
+// so splitting on '|' is unambiguous.
 export function parseLink(link) {
-  if (link && link.includes('|')) { const [r, m] = link.split('|'); return { relay: r.trim(), room: m.trim() } }
-  return { relay: null, room: (link || '').trim() }
+  if (link && link.includes('|')) { const [r, m, t] = link.split('|'); return { relay: r.trim(), room: (m || '').trim(), token: (t || '').trim() } }
+  return { relay: null, room: (link || '').trim(), token: '' }
 }

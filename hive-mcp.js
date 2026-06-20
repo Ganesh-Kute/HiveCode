@@ -34,23 +34,25 @@ const text = (s) => ({ content: [{ type: 'text', text: typeof s === 'string' ? s
 const err = (s) => ({ content: [{ type: 'text', text: s }], isError: true })
 
 function resolveRoom(link, dir) {
-  if (link) { const { relay, room } = parseLink(link); return { relay: relay || DEFAULT_RELAY, room, mode: 'joined (link)' } }
+  if (link) { const { relay, room, token } = parseLink(link); return { relay: relay || DEFAULT_RELAY, room, token, mode: 'joined (link)' } }
   const cfgPath = path.join(path.resolve(dir), '.hive.json')
   if (fs.existsSync(cfgPath)) {
-    try { const c = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); if (c.room) return { relay: c.relay || DEFAULT_RELAY, room: c.room, mode: 'joined (.hive.json)' } } catch {}
+    try { const c = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); if (c.room) return { relay: c.relay || DEFAULT_RELAY, room: c.room, token: c.token || '', mode: 'joined (.hive.json)' } } catch {}
   }
-  return { relay: DEFAULT_RELAY, room: 'room-' + crypto.randomBytes(13).toString('base64url'), mode: 'HOSTED (new room)' }
+  return { relay: DEFAULT_RELAY, room: 'room-' + crypto.randomBytes(13).toString('base64url'), token: '', mode: 'HOSTED (new room)' }
 }
 
 async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '' }) {
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
-  const { relay, room, mode } = resolveRoom(link, dir)
-  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room }, null, 2))
-  // token: explicit arg wins, else $HIVE_TOKEN (so a secured-room agent can be
-  // launched with the grant in its env and never needs to pass it per call).
-  const hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: token || process.env.HIVE_TOKEN || '', log: () => {} })
+  const { relay, room, token: linkToken, mode } = resolveRoom(link, dir)
+  // token precedence: explicit arg > token baked into the join link > $HIVE_TOKEN.
+  const useToken = token || linkToken || process.env.HIVE_TOKEN || ''
+  // persist the token too, so a re-join from .hive.json keeps the grant (the
+  // invitee pastes the link once; subsequent joins just read the folder config).
+  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}) }, null, 2))
+  const hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: useToken, log: () => {} })
   session = { hive, room, relay, dir, name }
   // wait for the first sync so members/board/rules are ready
   await new Promise((resolve) => {

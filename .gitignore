@@ -12,12 +12,20 @@ aiproj/
 # build artifacts
 *.vsix
 
+# secured-room secret + audit log (NEVER commit — the secret signs all tokens)
+.hive-host.json
+hive-audit.log
+
 # test temp dirs
 .collide-test/
 .clobber-test/
 .activity-test/
 .scope-test/
 .ro-test/
+.secure-test/
+.resume-test/
+.dbg/
+.edge-test/
 
 # scratch room folders created during live multi-agent tests (recursive sync pollution)
 hive-workspace/

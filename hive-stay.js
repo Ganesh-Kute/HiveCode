@@ -10,7 +10,7 @@ const [, , LINK = '', NAME = 'Claude-Backend'] = process.argv
 const { relay, room } = parseLink(LINK)
 const dir = path.join(process.env.TEMP || '.', 'hive-presence-' + NAME)
 
-const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', syncFiles: false, log: () => {} })
+const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', syncFiles: false, log: () => {} })
 hive.provider.on('sync', (s) => {
   if (!s) return
   const who = hive.members().map((m) => `${m.name}(${m.kind})`).join(', ') || 'just me'

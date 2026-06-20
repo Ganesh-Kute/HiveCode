@@ -52,14 +52,31 @@ the hard parts automatically; you do the rest.
 
 ## Talking
 10. Coordinate in chat. ASK before anything destructive in another's area.
+
+## When you get a ping mid-task (interruptions)
+11. Another AGENT pinging or assigning you = COORDINATION: auto-accepted and
+    QUEUED. It does NOT interrupt — finish your current atomic step first (never
+    abandon half-done work), THEN handle it. If it's urgent (build broken,
+    blocking others), do it now.
+12. ACKNOWLEDGE the moment you see a ping so the sender isn't left hanging, e.g.
+    "got it — finishing X (~2 min), then on your auth.js fix".
+13. YOU triage: say whether you'll do it now or after your current step. Your
+    OWNER can override anytime — if they say "do it now" or "skip that" in chat,
+    that wins (owner instructions are always honored).
+14. A ping from a HUMAN who is not your owner does NOT auto-run — it waits for
+    your owner's approval. Keep working; your owner decides.
 `
 
 let session = null     // { doc, provider, root, scanTimer, room, relay }
 let status             // status-bar item
 let panel = null       // the sidebar webview provider
+let secrets = null     // vscode.SecretStorage — holds room private keys invisibly
+let store = null       // vscode.Memento (workspaceState) — durable invite list per room
 const activity = []    // recent activity log lines (newest first)
 
 function activate(context) {
+  secrets = context.secrets
+  store = context.workspaceState
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100)
   setStatus('off')
   status.show()
@@ -70,10 +87,79 @@ function activate(context) {
     status,
     vscode.window.registerWebviewViewProvider('hivecode.panel', panel),
     vscode.commands.registerCommand('hivecode.host', hostSession),
+    vscode.commands.registerCommand('hivecode.hostSecured', hostSecuredSession),
     vscode.commands.registerCommand('hivecode.join', joinSessionPrompt),
-    vscode.commands.registerCommand('hivecode.leave', leaveSession)
+    vscode.commands.registerCommand('hivecode.invite', inviteCommand),
+    vscode.commands.registerCommand('hivecode.manage', manageCommand),
+    vscode.commands.registerCommand('hivecode.leave', leaveSession),
+    vscode.commands.registerCommand('hivecode.endRoom', endRoom)
   )
+
+  // Auto-resume the LAST room for this folder, so closing/reopening the IDE drops
+  // you back into the SAME room — same id, same key — and every invite link you
+  // already sent keeps working. No re-hosting, no re-inviting.
+  tryAutoResume()
 }
+
+// --- room persistence: <root>/.hive.json remembers the room across restarts ---
+function roomCfgPath(root) { return path.join(root, '.hive.json') }
+function saveRoomCfg(root, cfg) { try { fs.writeFileSync(roomCfgPath(root), JSON.stringify(cfg, null, 2)) } catch {} }
+function loadRoomCfg(root) { try { return JSON.parse(fs.readFileSync(roomCfgPath(root), 'utf8')) } catch { return null } }
+
+async function tryAutoResume() {
+  if (session) return
+  const folders = vscode.workspace.workspaceFolders
+  if (!folders || !folders.length) return
+  const root = folders[0].uri.fsPath
+  const cfg = loadRoomCfg(root)
+  if (!cfg || !cfg.room) return
+  const relay = cfg.relay || relayUrl()
+  if (cfg.secured) {
+    // resume as the OWNER: reload the room's private key and re-mint a fresh owner
+    // token. The room id (and its key fingerprint) are unchanged, so old invites stay valid.
+    let keys = null
+    try { keys = JSON.parse(await secrets.get('hive.key.' + cfg.room) || 'null') } catch {}
+    if (keys && keys.privateKey) {
+      const me = (vscode.workspace.getConfiguration('hivecode').get('displayName') || '').trim() || 'Owner'
+      const { token: ownerTok } = mintToken(keys, cfg.room, { name: me, kind: 'human', role: 'maintainer' })
+      start(root, cfg.room, relay, ownerTok)
+      session.keys = keys; session.ownerToken = ownerTok; session.secured = true
+      seedInvitesFromStore(cfg.room)
+      logActivity('Resumed your secured room — existing invite links still work')
+      pushState()
+      return
+    }
+    // secured room but no key here (e.g. a different machine) — fall back to token if present
+  }
+  if (cfg.token || !cfg.secured) {
+    start(root, cfg.room, relay, cfg.token || '')
+    logActivity('Resumed the room')
+    pushState()
+  }
+}
+
+// End the room for this folder: disconnect AND forget it (so the next Host makes a
+// fresh one). Leaving (hivecode.leave) only disconnects — it keeps the room so you
+// can resume. This is the explicit "start over" / "kick everyone for good" action.
+async function endRoom() {
+  const folders = vscode.workspace.workspaceFolders
+  const root = folders && folders.length ? folders[0].uri.fsPath : null
+  const wasRoom = session && session.room
+  leaveSession()
+  if (root) {
+    const cfg = loadRoomCfg(root)
+    try { fs.rmSync(roomCfgPath(root)) } catch {}
+    if (cfg && cfg.room) { try { await secrets.delete('hive.key.' + cfg.room) } catch {}; try { await store.update('hiveInvites:' + cfg.room, undefined) } catch {} }
+  }
+  if (wasRoom) vscode.window.showInformationMessage('Hivecode: room ended and forgotten. The next "Host" creates a fresh one.')
+}
+
+// Durable invite list (per room) so the Manage panel survives a restart even if the
+// relay dropped the room doc while everyone was away.
+function loadInvites(room) { try { return store.get('hiveInvites:' + room) || [] } catch { return [] } }
+function saveInvite(room, rec) { try { store.update('hiveInvites:' + room, [...loadInvites(room), rec]) } catch {} }
+function updateInvite(room, jti, patch) { try { store.update('hiveInvites:' + room, loadInvites(room).map((e) => e.jti === jti ? { ...e, ...patch } : e)) } catch {} }
+function seedInvitesFromStore(room) { if (!session) return; for (const e of loadInvites(room)) { if (e.jti && !session.invites.has(e.jti)) { try { session.invites.set(e.jti, e) } catch {} } } }
 
 function setStatus(state, people) {
   if (state === 'off') {
@@ -130,6 +216,8 @@ function pushState() {
     room: session ? session.room : null,
     link: session ? `${session.relay}|${session.room}` : null,
     me: session ? session.me : null,
+    canInvite: !!(session && session.keys), // this window hosts a secured room -> can invite/manage
+    secured: !!(session && session.secured),
     members,
     activity,
     chat,
@@ -142,9 +230,13 @@ function pushState() {
 async function hostSession() {
   const root = workspaceRoot()
   if (!root || session) return
-  const room = 'room-' + crypto.randomBytes(13).toString('base64url')
+  // reuse this folder's existing OPEN room if one was saved (so reopening keeps the
+  // same link); only make a fresh one if there's none.
+  const prev = loadRoomCfg(root)
+  const room = (prev && prev.room && !prev.secured) ? prev.room : 'room-' + crypto.randomBytes(13).toString('base64url')
   const relay = relayUrl()
   start(root, room, relay)
+  saveRoomCfg(root, { relay, room })
   await vscode.env.clipboard.writeText(`${relay}|${room}`)
   logActivity('Hosting — join link copied to clipboard')
   vscode.window.showInformationMessage('Hivecode: hosting. Join link copied — send it to your friend.')
@@ -161,9 +253,13 @@ async function joinSessionPrompt() {
 function joinSessionWithLink(link) {
   const root = workspaceRoot()
   if (!root || session || !link) return
-  const [relay, room] = link.includes('|') ? link.split('|') : [relayUrl(), link]
-  start(root, room.trim(), relay.trim())
-  logActivity(`Joining room ${room.trim()}`)
+  // link shapes: "relay|room" (open) or "relay|room|token" (secured — token baked in).
+  const [relay, room, token] = link.includes('|') ? link.split('|') : [relayUrl(), link, '']
+  const r = room.trim(), rl = relay.trim(), tk = (token || '').trim()
+  start(root, r, rl, tk)
+  // remember it so reopening the IDE rejoins automatically (no re-pasting the link)
+  saveRoomCfg(root, { relay: rl, room: r, ...(tk ? { token: tk } : {}) })
+  logActivity(`Joining room ${r}`)
 }
 
 function leaveSession() {
@@ -177,6 +273,122 @@ function leaveSession() {
   pushState()
 }
 
+// --- SECURED hosting + folder-scoped invites (no terminal, no secret files) ---
+// Host a room whose access YOU control. A keypair is generated; the private key
+// lives in the editor's secure storage (never a file, never shown). The room id
+// is a fingerprint of the public key, so the relay can enforce access with no
+// server state. You then invite people to specific folders with one command.
+async function hostSecuredSession() {
+  const root = workspaceRoot()
+  if (!root) return
+  if (session) { vscode.window.showInformationMessage('Hivecode: already in a session — leave it first.'); return }
+  // Reuse this folder's existing secured room + key if we have one (so re-hosting
+  // after a close/leave keeps the SAME room — all previously-sent invite links stay
+  // valid). Only generate a fresh keypair when there's none.
+  const prev = loadRoomCfg(root)
+  let keys = null, room = null, resumed = false
+  if (prev && prev.secured && prev.room) {
+    try { keys = JSON.parse(await secrets.get('hive.key.' + prev.room) || 'null') } catch {}
+    if (keys && keys.privateKey) { room = prev.room; resumed = true }
+  }
+  if (!keys) {
+    const kp = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
+    keys = { publicKey: kp.publicKey.export({ type: 'spki', format: 'pem' }), privateKey: kp.privateKey.export({ type: 'pkcs8', format: 'pem' }) }
+    room = makeSecuredRoomId(keys.publicKey, crypto.randomBytes(6).toString('hex'))
+    try { await secrets.store('hive.key.' + room, JSON.stringify(keys)) } catch { /* secure store unavailable */ }
+  }
+  const relay = relayUrl()
+  const me = (vscode.workspace.getConfiguration('hivecode').get('displayName') || '').trim() || 'Owner'
+  const { token: ownerTok } = mintToken(keys, room, { name: me, kind: 'human', role: 'maintainer' }) // full access
+  start(root, room, relay, ownerTok)
+  session.keys = keys; session.ownerToken = ownerTok; session.secured = true // re-attach after start() rebuilt session
+  seedInvitesFromStore(room)
+  saveRoomCfg(root, { relay, room, secured: true })
+  await vscode.env.clipboard.writeText(`${relay}|${room}|${ownerTok}`)
+  logActivity(resumed ? 'Resumed your secured room — existing invite links still work' : 'Hosting a SECURED room — your full-access link is copied')
+  if (resumed) vscode.window.showInformationMessage('Hivecode: resumed your secured room. Everyone\'s existing links still work.')
+  else vscode.window.showInformationMessage('Hivecode: secured room is live. Use "Invite to folders…" to add people/AIs with chosen access.', 'Invite to folders…').then((c) => { if (c) inviteCommand() })
+  pushState()
+}
+
+// List folders under the workspace root (relative, "/"-joined), ignoring junk and
+// .gitignored dirs, capped in depth so the picker stays readable.
+function listFolders(root, maxDepth = 4) {
+  const out = []
+  const ig = ignore().add(ALWAYS_IGNORE); try { ig.add(fs.readFileSync(path.join(root, '.gitignore'), 'utf8')) } catch {}
+  const walk = (dir, depth) => {
+    if (depth > maxDepth) return
+    let entries = []; try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (!e.isDirectory() || IGNORE.has(e.name) || e.name.startsWith('.')) continue
+      const rel = path.relative(root, path.join(dir, e.name)).split(path.sep).join('/')
+      if (ig.ignores(rel + '/')) continue
+      out.push(rel)
+      walk(path.join(dir, e.name), depth + 1)
+    }
+  }
+  walk(root, 1)
+  return out.sort()
+}
+
+// Invite a person or AI to THIS secured room, scoped to chosen folders.
+async function inviteCommand() {
+  if (!session || !session.keys) { vscode.window.showWarningMessage('Hivecode: host a secured session first ("Host a Secured Session").'); return }
+  const name = (await vscode.window.showInputBox({ prompt: 'Name for the invitee (person or AI)', placeHolder: 'e.g. FrontBot or Alex' }) || '').trim()
+  if (!name) return
+  const kindPick = await vscode.window.showQuickPick([{ label: 'AI agent', v: 'ai' }, { label: 'Human teammate', v: 'human' }], { placeHolder: 'What are you inviting?' })
+  if (!kindPick) return
+  const folders = listFolders(session.root)
+  const picks = await vscode.window.showQuickPick(
+    [{ label: '$(globe) Whole project', v: '__all__', picked: false }, ...folders.map((f) => ({ label: '$(folder) ' + f, v: f }))],
+    { canPickMany: true, placeHolder: 'Pick the folder(s) they may see and work in (none = whole project)' }
+  )
+  if (!picks) return
+  const accessPick = await vscode.window.showQuickPick([{ label: '$(edit) Can edit', v: false }, { label: '$(eye) View only', v: true }], { placeHolder: 'Access level' })
+  if (!accessPick) return
+  const viewOnly = accessPick.v
+  const wholeRepo = picks.length === 0 || picks.some((p) => p.v === '__all__')
+  const paths = wholeRepo ? undefined : picks.filter((p) => p.v !== '__all__').map((p) => `${p.v}/**`)
+  const role = viewOnly ? 'reader' : (kindPick.v === 'human' ? 'writer' : 'agent')
+  const { token, jti } = mintToken(session.keys, session.room, { name, kind: kindPick.v, role, paths, owner: session.me })
+  const rec = { jti, name, kind: kindPick.v, role, paths: paths || null, viewOnly, by: session.me, at: new Date().toTimeString().slice(0, 8) }
+  try { session.invites.set(jti, rec) } catch {} // live, for others
+  saveInvite(session.room, rec)                  // durable, survives restart for the Manage panel
+  const link = `${session.relay}|${session.room}|${token}`
+  await vscode.env.clipboard.writeText(link)
+  logActivity(`Invited ${name} (${role}) to ${wholeRepo ? 'the whole project' : paths.join(', ')}`)
+  const scopeMsg = wholeRepo ? 'the whole project' : paths.join(', ')
+  vscode.window.showInformationMessage(`Hivecode: invite link for ${name} copied (${viewOnly ? 'view only' : 'can edit'} — ${scopeMsg}). Send it to them; they just paste it into Join.`)
+}
+
+// View who has access; revoke or re-scope anyone, anytime.
+async function manageCommand() {
+  if (!session || !session.keys) { vscode.window.showWarningMessage('Hivecode: only the room host can manage access.'); return }
+  const entries = loadInvites(session.room) // durable list (survives restarts)
+  if (!entries.length) { vscode.window.showInformationMessage('Hivecode: no invites yet. Use "Invite to folders…".'); return }
+  const pick = await vscode.window.showQuickPick(
+    entries.map((e) => ({
+      label: `${e.revoked ? '$(circle-slash) ' : ''}${e.name} — ${e.viewOnly ? 'view only' : 'can edit'}`,
+      description: (e.paths ? e.paths.join(', ') : 'whole project') + (e.revoked ? '  (REVOKED)' : ''),
+      e,
+    })),
+    { placeHolder: 'Pick someone to manage' }
+  )
+  if (!pick) return
+  if (pick.e.revoked) { vscode.window.showInformationMessage(`${pick.e.name} is already revoked.`); return }
+  const action = await vscode.window.showQuickPick([{ label: '$(trash) Revoke access', v: 'revoke' }, { label: 'Cancel', v: 'cancel' }], { placeHolder: `Manage ${pick.e.name}` })
+  if (!action || action.v !== 'revoke') return
+  const res = await relayHttpPost('__hive/revoke', { room: session.room, token: session.ownerToken, jti: pick.e.jti })
+  if (res.ok) {
+    try { session.invites.set(pick.e.jti, { ...pick.e, revoked: true }) } catch {}
+    updateInvite(session.room, pick.e.jti, { revoked: true })
+    logActivity(`Revoked ${pick.e.name}`)
+    vscode.window.showInformationMessage(`Hivecode: ${pick.e.name}'s access revoked. They can no longer connect.`)
+  } else {
+    vscode.window.showErrorMessage(`Hivecode: revoke failed (relay said ${res.status || 'no response'}). Is the relay updated?`)
+  }
+}
+
 // --- per-file-doc model + access helpers (mirrors token.js / sync.js) ---
 const FILE_SEP = ''
 const fileRoom = (baseRoom, relPath) => baseRoom + FILE_SEP + relPath
@@ -184,7 +396,12 @@ function decodeUnsafe(tok) {
   try { return JSON.parse(Buffer.from(String(tok).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')) } catch { return null }
 }
 function roomMatches(pattern, rm) { if (!pattern) return false; if (pattern === '*' || pattern === rm) return true; return pattern.endsWith('*') && rm.startsWith(pattern.slice(0, -1)) }
-function scopeForRoom(payload, rm) { const s = (payload && payload.scopes) || []; return s.find((sc) => roomMatches(sc.room, rm)) || null }
+function scopeForRoom(payload, rm) {
+  const s = (payload && payload.scopes) || []
+  let best = null, bestScore = -1 // most specific wins: exact > longer prefix > "*"
+  for (const sc of s) { if (!sc || !roomMatches(sc.room, rm)) continue; const score = sc.room === rm ? Infinity : sc.room === '*' ? 0 : sc.room.length; if (score > bestScore) { bestScore = score; best = sc } }
+  return best
+}
 function pathAllowed(globs, relPath) {
   if (!Array.isArray(globs) || globs.length === 0) return true
   const pos = [], neg = []
@@ -192,18 +409,68 @@ function pathAllowed(globs, relPath) {
   const matches = (pats) => pats.length > 0 && ignore().add(pats).ignores(relPath)
   return (pos.length === 0 || matches(pos)) && !matches(neg)
 }
+// Remote-supplied path safe to write to disk? Rejects "../" traversal, absolute
+// paths, drive letters, UNC, control-char injection — so a malicious manifest
+// entry can't make this window write outside its project root. (Mirrors token.js.)
+function isSafeRelPath(relPath) {
+  if (typeof relPath !== 'string' || relPath.length === 0 || relPath.length > 1024) return false
+  if (/[\u0000-\u001f]/.test(relPath)) return false
+  const p = relPath.replace(/\\/g, '/')
+  if (p.startsWith('/') || p.startsWith('//') || /^[a-zA-Z]:/.test(p)) return false
+  return !p.split('/').some((seg) => seg === '..')
+}
+// --- secured-room minting (mirrors token.js: RS256 self-certifying rooms) ---
+const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+function signRS256(payload, privateKeyPem) {
+  const data = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' })) + '.' + b64url(JSON.stringify(payload))
+  const sig = crypto.sign('RSA-SHA256', Buffer.from(data), privateKeyPem)
+  return data + '.' + b64url(sig)
+}
+function keyFingerprint(publicKeyPem) {
+  try { return crypto.createHash('sha256').update(crypto.createPublicKey(publicKeyPem).export({ type: 'spki', format: 'der' })).digest('base64url').slice(0, 22) } catch { return null }
+}
+const makeSecuredRoomId = (publicKeyPem, rand) => { const fp = keyFingerprint(publicKeyPem); return fp ? `hs_${fp}_${rand}` : null }
+// Mint a scoped token for a secured room, signed by its private key.
+function mintToken(keys, room, { name, kind, role, paths, owner, ttlSec = 7 * 86400 }) {
+  const now = Math.floor(Date.now() / 1000)
+  const jti = 'jti-' + crypto.randomBytes(9).toString('base64url')
+  const payload = {
+    iss: 'hivecode', sub: name, name, kind, ...(owner ? { owner } : {}),
+    pk: keys.publicKey, // self-certifying: the relay binds this to the room id
+    scopes: [{ room, role, ...(paths && paths.length ? { paths } : {}) }],
+    iat: now, exp: now + ttlSec, jti,
+  }
+  return { token: signRS256(payload, keys.privateKey), jti }
+}
+// POST to the relay's control endpoint (ws(s):// -> http(s)://), for revocation.
+function relayHttpPost(routePath, body) {
+  return new Promise((resolve) => {
+    try {
+      const base = (session.relay || '').replace(/^ws/, 'http')
+      const u = new URL(routePath, base.endsWith('/') ? base : base + '/')
+      const lib = u.protocol === 'https:' ? require('https') : require('http')
+      const data = JSON.stringify(body)
+      const req = lib.request(u, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } }, (res) => { let b = ''; res.on('data', (d) => b += d); res.on('end', () => resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: b })) })
+      req.on('error', () => resolve({ ok: false, status: 0 }))
+      req.write(data); req.end()
+    } catch { resolve({ ok: false, status: 0 }) }
+  })
+}
 
 // --- the sync engine (whole-folder, disk-level, mtime-optimized) ---
-function start(root, room, relay) {
+function start(root, room, relay, linkToken) {
   const doc = new Y.Doc()
   const manifest = doc.getMap('manifest') // relPath -> 1 (file registry); each file is its own subdoc
   const board = doc.getMap('board') // relPath -> { by, at, churn, symbols } (auto-logged rewrites)
   const chat = doc.getArray('chat') // ordered messages { by, kind, at, text }
   const tasks = doc.getMap('tasks') // id -> { id, to, by, text, status, decidedBy, at }
   const owners = doc.getMap('owners') // aiName -> ownerHumanName
+  const invites = doc.getMap('invites') // jti -> { name, kind, role, paths, viewOnly, by, at, revoked } (for the Manage panel)
   const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
   const useRelay = relay || relayUrl()
-  const tokenCfg = (vscode.workspace.getConfiguration('hivecode').get('token') || '').trim()
+  // token from the join link wins; else the hivecode.token setting (for people who
+  // configure it once). A pasted secured link needs zero settings.
+  const tokenCfg = (linkToken || vscode.workspace.getConfiguration('hivecode').get('token') || '').trim()
   // disableBc: relay is the ONLY sync path (else same-machine peers would bypass
   // the relay's access control via BroadcastChannel).
   const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: tokenCfg ? { token: tokenCfg } : undefined }
@@ -230,10 +497,13 @@ function start(root, room, relay) {
     const fdoc = new Y.Doc()
     const fprovider = new WebsocketProvider(useRelay, fileRoom(room, r), fdoc, wsOpts)
     const text = fdoc.getText('content')
-    e = { doc: fdoc, provider: fprovider, text }
+    // synced flips true after the first relay sync — until then an empty doc means
+    // "not pulled yet", not "new file"; we must not re-seed from disk (would fork
+    // the CRDT history and garble the file on rejoin).
+    e = { doc: fdoc, provider: fprovider, text, synced: false }
     fileDocs.set(r, e)
     text.observe((_ev, txn) => { if (!txn.local) reconcile(r, 'remote') })
-    fprovider.on('sync', (s) => { if (s) reconcile(r, 'remote') })
+    fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(r, 'remote') } })
     return e
   }
   function closeFile(r) { const e = fileDocs.get(r); if (!e) return; try { e.provider.destroy() } catch {} try { e.doc.destroy() } catch {} fileDocs.delete(r) }
@@ -241,7 +511,9 @@ function start(root, room, relay) {
   // This window's own path scope (from its token), so it only opens files it may.
   let myPaths
   if (tokenCfg) { const pl = decodeUnsafe(tokenCfg); const sc = pl && scopeForRoom(pl, room); myPaths = sc ? sc.paths : undefined }
-  const canOpen = (r) => pathAllowed(myPaths, r)
+  // gates BOTH scope (am I granted this path?) and safety (no traversal/control-char
+  // path a malicious participant slipped into the shared manifest).
+  const canOpen = (r) => isSafeRelPath(r) && pathAllowed(myPaths, r)
 
   const seenMembers = new Set()
   // --- live activity: broadcast which file this window is editing + warn on co-editing ---
@@ -366,19 +638,29 @@ function start(root, room, relay) {
   const conflicted = new Set()
   function reconcile(r, origin = 'local') {
     if (SKIP.has(r) || isIgnored(r)) return // never sync secrets/ignored/coordination files
+    if (!canOpen(r)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
     const full = path.join(root, r)
-    const yt = fileText(r)
-    const disk = fs.existsSync(full) ? readText(full) : null
-    const docText = yt ? yt.toString() : null
-    if (disk === null && docText === null) return
-    if (docText === null) {
-      const fe = openFile(r)
+    const exists = fs.existsSync(full)
+    const disk = exists ? readText(full) : null
+    if (exists && disk === null) return // present but binary/too-large — leave it untouched (never clobber with stale doc text)
+    // Per-file gating: know the RELAY's content before touching disk. Until the
+    // file-doc has synced, an empty Y.Text means "not pulled yet", not "empty file"
+    // — acting now would re-seed from disk and fork the CRDT history (garbled
+    // content on rejoin). Open if needed, defer until 'sync' re-runs us; once
+    // synced, "" genuinely means empty.
+    let fe = fileDocs.get(r)
+    if (!fe) { if (disk === null) return; openFile(r); return }
+    if (!fe.synced) return
+    const docText = fe.text.toString()
+    if (docText === '' && !manifest.has(r)) {
+      if (disk === null) return
       fe.doc.transact(() => applyDiff(fe.text, disk))
-      if (!manifest.has(r)) manifest.set(r, 1)
+      manifest.set(r, 1)
       known.add(r); bases.set(r, disk); forkBases.set(r, disk)
       try { mtimes.set(r, fs.statSync(full).mtimeMs) } catch {}
       return
     }
+    const yt = fe.text
     if (disk === null) { writeToDisk(r, docText); bases.set(r, docText); forkBases.set(r, docText); return }
     if (disk === docText) {
       known.add(r); bases.set(r, disk)
@@ -482,10 +764,40 @@ function start(root, room, relay) {
     for (const t of all) out.push(`- [${t.status}] ${t.id}  ${t.by} -> ${t.to}: ${t.text}${t.decidedBy ? ` (by ${t.decidedBy})` : ''}`)
     writeToDisk('HIVE_TASKS.md', out.join('\n') + '\n')
   }
-  chat.observe(() => { renderChat(); pushState() })
-  tasks.observe(() => { renderTasks(); pushState() })
+  // --- ping notifications: surface @mentions + approvals so a busy human notices ---
+  // Pings never interrupt the AI (it triages between steps per HIVE_RULES); this is
+  // just so YOU see one mid-task without opening a file. Armed AFTER the first sync
+  // so joining a room doesn't replay old history as fresh pings.
+  let pingsArmed = false
+  let chatSeen = 0
+  const taskNotified = new Set()
+  const mentionRe = new RegExp('(^|[^\\w])@' + me.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\w])', 'i')
+  const openPanel = (c) => { if (c) vscode.commands.executeCommand('hivecode.panel.focus') }
+  function notifyChat() {
+    const msgs = chat.toArray()
+    if (pingsArmed) {
+      for (let i = chatSeen; i < msgs.length; i++) {
+        const m = msgs[i]
+        if (!m || m.by === me) continue
+        if (mentionRe.test(m.text || '')) vscode.window.showInformationMessage(`Hivecode 🔔 ${m.by}: ${m.text}`, 'Open Hivecode').then(openPanel)
+      }
+    }
+    chatSeen = msgs.length
+  }
+  function notifyTasks() {
+    for (const t of tasks.values()) {
+      if (taskNotified.has(t.id)) continue
+      taskNotified.add(t.id)
+      if (!pingsArmed) continue
+      if (t.to === me && t.status !== 'done') vscode.window.showInformationMessage(`Hivecode 🔔 ${t.by} asked you: ${t.text}`, 'Open Hivecode').then(openPanel)
+      else if (owners.get(t.to) === me && t.status === 'pending') vscode.window.showWarningMessage(`Hivecode 🔔 ${t.by} wants ${t.to} to: ${t.text} — approve?`, 'Open Hivecode').then(openPanel)
+    }
+  }
+  chat.observe(() => { renderChat(); notifyChat(); pushState() })
+  tasks.observe(() => { renderTasks(); notifyTasks(); pushState() })
 
   function writeToDisk(r, content) {
+    if (!isSafeRelPath(r)) return // never write a path that could escape root (defense in depth)
     const full = path.join(root, r)
     fs.mkdirSync(path.dirname(full), { recursive: true })
     fs.writeFileSync(full, content)
@@ -557,6 +869,10 @@ function start(root, room, relay) {
     if (board.size) renderBoard() // surface rewrites logged before we joined
     if (chat.length) renderChat()
     if (tasks.size) renderTasks()
+    // baseline: treat everything already here as "seen", then arm pings for new ones
+    chatSeen = chat.length
+    for (const t of tasks.values()) taskNotified.add(t.id)
+    pingsArmed = true
     scan()
     session.scanTimer = setInterval(scan, 400)
     logActivity('Synced')
@@ -564,7 +880,7 @@ function start(root, room, relay) {
   })
 
   // expose chat/task actions to the panel handler
-  session = { doc, provider, root, scanTimer: null, room, relay: useRelay, me, chat, tasks, owners, say, assign, decide, stopActivity: () => { if (editingClearTimer) clearTimeout(editingClearTimer); for (const r of [...fileDocs.keys()]) closeFile(r) } }
+  session = { doc, provider, root, scanTimer: null, room, relay: useRelay, me, chat, tasks, owners, invites, say, assign, decide, stopActivity: () => { if (editingClearTimer) clearTimeout(editingClearTimer); for (const r of [...fileDocs.keys()]) closeFile(r) } }
   pushState()
 }
 
@@ -576,8 +892,12 @@ class HivecodeViewProvider {
     view.webview.html = getHtml()
     view.webview.onDidReceiveMessage((m) => {
       if (m.type === 'host') hostSession()
+      else if (m.type === 'hostSecured') hostSecuredSession()
+      else if (m.type === 'invite') inviteCommand()
+      else if (m.type === 'manage') manageCommand()
       else if (m.type === 'join') joinSessionWithLink(m.link || '')
       else if (m.type === 'leave') leaveSession()
+      else if (m.type === 'endRoom') endRoom()
       else if (m.type === 'copy') {
         vscode.env.clipboard.writeText(m.text || '')
         vscode.window.showInformationMessage('Hivecode: join link copied.')
@@ -621,17 +941,24 @@ function getHtml() {
   <div class="status"><span id="dot" class="dot off"></span><span id="statustext">Not in a session</span></div>
 
   <div id="offControls">
-    <button id="host">Host a Session</button>
+    <button id="hostSecured">Host a Secured Session</button>
+    <button id="host" class="secondary">Host an Open Session</button>
     <h3>Join a session</h3>
     <input id="link" placeholder="paste join link here" />
     <button id="join" class="secondary">Join</button>
   </div>
 
   <div id="onControls" class="hidden">
+    <div id="inviteControls" class="hidden">
+      <h3>People &amp; access</h3>
+      <button id="invite">Invite to folders…</button>
+      <button id="manage" class="secondary">Manage access</button>
+    </div>
     <h3>Your join link</h3>
     <div id="hostlink" class="link"></div>
     <button id="copy" class="secondary">Copy join link</button>
-    <button id="leave">Leave Session</button>
+    <button id="leave" class="secondary">Leave (keeps the room — reopen to resume)</button>
+    <button id="endRoom">End room &amp; forget</button>
   </div>
 
   <h3>Members (<span id="count">0</span>)</h3>
@@ -655,7 +982,11 @@ function getHtml() {
   const $ = (id) => document.getElementById(id);
   const send = (type, extra) => vscode.postMessage(Object.assign({ type }, extra || {}));
   $('host').onclick = () => send('host');
+  $('hostSecured').onclick = () => send('hostSecured');
+  $('invite').onclick = () => send('invite');
+  $('manage').onclick = () => send('manage');
   $('leave').onclick = () => send('leave');
+  $('endRoom').onclick = () => send('endRoom');
   $('join').onclick = () => send('join', { link: $('link').value });
   $('copy').onclick = () => send('copy', { text: $('hostlink').textContent });
   const sendMsg = () => { const v = $('msg').value.trim(); if (v) { send('say', { text: v }); $('msg').value = ''; } };
@@ -669,6 +1000,7 @@ function getHtml() {
     $('statustext').textContent = s.connected ? ('In room ' + (s.room || '')) : 'Not in a session';
     $('offControls').className = s.connected ? 'hidden' : '';
     $('onControls').className = s.connected ? '' : 'hidden';
+    $('inviteControls').className = s.canInvite ? '' : 'hidden';
     $('coord').className = s.connected ? '' : 'hidden';
     $('hostlink').textContent = s.link || '';
     $('count').textContent = (s.members || []).length;

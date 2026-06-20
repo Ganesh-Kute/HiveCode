@@ -27,7 +27,7 @@ else {
 }
 if (!room) { console.error('No room found (give a link or run from a folder with .hive.json).'); process.exit(1) }
 
-const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai', log: () => {}, syncFiles: false })
+const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', log: () => {}, syncFiles: false })
 hive.provider.on('sync', (s) => {
   if (!s) return
   hive.say(`${NAME}: ${MESSAGE}`)

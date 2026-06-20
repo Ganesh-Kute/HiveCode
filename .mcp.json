@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "hivecode": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/Users/G1/Desktop/N/hive-mcp.js"],
+      "env": { "HIVE_RELAY": "wss://livecode-xoss.onrender.com" }
+    }
+  }
+}

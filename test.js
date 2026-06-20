@@ -5,8 +5,9 @@
 // can be verified instantly.
 
 import * as Y from 'yjs'
+import crypto from 'crypto'
 import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3, summarizeChange, hasConflictMarkers } from './core.js'
-import { sign, verify, roomMatches, scopeForRoom } from './token.js'
+import { sign, verify, roomMatches, scopeForRoom, isSafeRelPath, FILE_SEP, keyFingerprint, roomFingerprint, isSecuredRoom, makeSecuredRoomId } from './token.js'
 
 let passed = 0
 let failed = 0
@@ -243,6 +244,87 @@ section('Access tokens (RBAC Phase 1: sign/verify/scope)')
   // scope lookup carries the role
   check('scopeForRoom finds the authorizing scope', (scopeForRoom(base, 'room-1') || {}).role === 'agent')
   check('scopeForRoom returns null for an unscoped room', scopeForRoom(base, 'room-2') === null)
+}
+
+// ---------------------------------------------------------------------------
+section('Token attacks (forgery, alg confusion, expiry edge cases)')
+{
+  const now = Math.floor(Date.now() / 1000)
+  const secret = 's3cret'
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  // alg:none — the classic "drop the signature" attack must NOT be accepted.
+  const noneTok = b64({ alg: 'none', typ: 'JWT' }) + '.' + b64({ sub: 'x', scopes: [{ room: 'r', role: 'admin' }] }) + '.'
+  check('alg=none is rejected', verify(noneTok, { secret }).ok === false)
+  // unsigned (empty signature segment) and malformed shapes.
+  const unsigned = sign({ sub: 'x', exp: now + 60 }, { secret }).split('.').slice(0, 2).join('.') + '.'
+  check('unsigned token (empty sig) is rejected', verify(unsigned, { secret }).ok === false)
+  check('two-part token is rejected', verify('a.b', { secret }).ok === false)
+  check('empty-string token is rejected', verify('', { secret }).ok === false)
+  // RSA + the alg-confusion attack: forge an HS256 token using the PUBLIC key as
+  // the HMAC secret; an RS256-only relay (publicKey, no secret) must reject it.
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const rs = sign({ sub: 'p', scopes: [{ room: 'r', role: 'agent' }], exp: now + 60 }, { privateKey })
+  check('RS256 token verifies with the public key', verify(rs, { publicKey }).ok === true)
+  const pubPem = publicKey.export({ type: 'spki', format: 'pem' })
+  const forged = sign({ sub: 'attacker', scopes: [{ room: 'r', role: 'admin' }], exp: now + 60 }, { secret: pubPem })
+  check('alg-confusion (HS256 signed with public key) is rejected by an RS256-only relay', verify(forged, { publicKey }).ok === false)
+  // alg pinning closes it explicitly even on a dual-key relay.
+  check('alg pin rejects a mismatched alg', verify(rs, { publicKey, alg: 'HS256' }).ok === false)
+  check('alg pin accepts the matching alg', verify(rs, { publicKey, alg: 'RS256' }).ok === true)
+  // expiry/nbf edge cases — a non-numeric exp must FAIL CLOSED (else it never expires).
+  const strExp = sign({ sub: 'x', scopes: [{ room: 'r', role: 'agent' }], exp: '9999999999' }, { secret })
+  check('non-numeric exp is rejected (fail closed)', verify(strExp, { secret }).ok === false)
+  const future = sign({ sub: 'x', scopes: [{ room: 'r', role: 'agent' }], nbf: now + 1000, exp: now + 2000 }, { secret })
+  check('a not-yet-valid (nbf in future) token is rejected', verify(future, { secret }).ok === false)
+}
+
+// ---------------------------------------------------------------------------
+section('isSafeRelPath (path-traversal / injection guard — arbitrary file write)')
+{
+  check('accepts a normal nested path', isSafeRelPath('src/ui/app.js') === true)
+  check('accepts a dot-prefixed file', isSafeRelPath('.gitignore') === true)
+  check('accepts ./ current-dir prefix', isSafeRelPath('./src/app.js') === true)
+  check('rejects ../ traversal', isSafeRelPath('../../etc/passwd') === false)
+  check('rejects an embedded ../ segment', isSafeRelPath('src/../../etc/x') === false)
+  check('rejects a POSIX absolute path', isSafeRelPath('/etc/passwd') === false)
+  check('rejects a Windows drive path', isSafeRelPath('C:\\Windows\\System32\\x') === false)
+  check('rejects a backslash traversal', isSafeRelPath('..\\..\\x') === false)
+  check('rejects a UNC path', isSafeRelPath('//server/share/x') === false)
+  check('rejects a NUL byte', isSafeRelPath('a' + String.fromCharCode(0) + 'b') === false)
+  check('rejects FILE_SEP injection (room-name smuggling)', isSafeRelPath('a' + FILE_SEP + 'b') === false)
+  check('rejects an empty path', isSafeRelPath('') === false)
+  check('rejects an absurdly long path', isSafeRelPath('a/'.repeat(700)) === false)
+}
+
+// ---------------------------------------------------------------------------
+section('scopeForRoom specificity (a broad "*" must not shadow a tighter scope)')
+{
+  const tok = { scopes: [{ room: '*', role: 'agent', paths: ['**'] }, { room: 'acme/web', role: 'reader', paths: ['docs/**'] }] }
+  const sc = scopeForRoom(tok, 'acme/web')
+  check('most-specific scope wins over an earlier "*"', !!sc && sc.role === 'reader')
+  check('"*" still authorizes a room with no tighter match', (scopeForRoom(tok, 'other-room') || {}).role === 'agent')
+  // exact beats a prefix wildcard too
+  const tok2 = { scopes: [{ room: 'acme/*', role: 'writer' }, { room: 'acme/api', role: 'reader' }] }
+  check('exact room beats a prefix wildcard', (scopeForRoom(tok2, 'acme/api') || {}).role === 'reader')
+}
+
+// ---------------------------------------------------------------------------
+section('Self-certifying secured rooms (room id = owner key fingerprint)')
+{
+  const { publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const pem = publicKey.export({ type: 'spki', format: 'pem' })
+  const fp = keyFingerprint(pem)
+  check('fingerprint is 22 url-safe chars', typeof fp === 'string' && /^[A-Za-z0-9_-]{22}$/.test(fp))
+  check('fingerprint is stable for the same key', keyFingerprint(pem) === fp)
+  const { publicKey: other } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
+  check('a different key has a different fingerprint', keyFingerprint(other.export({ type: 'spki', format: 'pem' })) !== fp)
+  const room = makeSecuredRoomId(pem, 'abc123')
+  check('makeSecuredRoomId embeds the fingerprint', room === `hs_${fp}_abc123`)
+  check('roomFingerprint extracts it back', roomFingerprint(room) === fp)
+  check('isSecuredRoom true for an hs_ room', isSecuredRoom(room) === true)
+  check('isSecuredRoom false for a normal room', isSecuredRoom('room-xyz') === false)
+  check('roomFingerprint null for a normal room', roomFingerprint('room-xyz') === null)
+  check('garbage key fingerprints to null', keyFingerprint('not a key') === null)
 }
 
 // ---------------------------------------------------------------------------
