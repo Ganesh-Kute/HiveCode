@@ -17,6 +17,9 @@ import http from 'http'
 import https from 'https'
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import * as Y from 'yjs'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence } from 'y-websocket/bin/utils'
@@ -84,9 +87,18 @@ function audit(event, fields) {
   else console.log('[relay][audit]', line)
 }
 
-// Per-room revocation, set live by the owner via POST /__hive/revoke (in-memory:
-// gives instant "cut this person off" during a session; tokens also carry a TTL).
+// Per-room revocation, set live by the owner via POST /__hive/revoke. Persisted to
+// a JSON file (HIVE_ROOM_REVOKED_FILE, default ./hive-room-revoked.json) so a
+// revoked agent stays cut off across a relay restart — not just for the session.
+const ROOM_REVOKED_FILE = process.env.HIVE_ROOM_REVOKED_FILE || './hive-room-revoked.json'
 const roomRevoked = new Map() // baseRoom -> Set(jti)
+;(function loadRoomRevoked() {
+  try { const o = JSON.parse(fs.readFileSync(ROOM_REVOKED_FILE, 'utf8')); for (const k of Object.keys(o)) roomRevoked.set(k, new Set(o[k])) } catch { /* none yet */ }
+})()
+function persistRoomRevoked() {
+  try { const o = {}; for (const [k, set] of roomRevoked) o[k] = [...set]; fs.writeFileSync(ROOM_REVOKED_FILE, JSON.stringify(o)) }
+  catch (e) { console.error('[relay] room-revoked persist failed', e.message) }
+}
 function isRevoked(base, jti) {
   if (!jti) return false
   if (revokedSet().has(jti)) return true
@@ -161,13 +173,21 @@ async function handleRevoke(req, res) {
     if (!jti) return reply(400, { error: 'need a jti to revoke' })
     if (!roomRevoked.has(base)) roomRevoked.set(base, new Set())
     roomRevoked.get(base).add(jti)
+    persistRoomRevoked() // survive a relay restart
     audit('revoke', { room: base, jti, by: v.payload.name })
     return reply(200, { ok: true })
   } catch { return reply(400, { error: 'bad request' }) }
 }
 
-// --- optional persistence (plain-file snapshots per room) ---
-const PERSIST_DIR = process.env.HIVE_PERSIST_DIR
+// --- persistence (plain-file snapshots per room) ---
+// Keeps a room's code available even when NO editor is online — this is what lets
+// you view/control a project from a browser (or phone) while you're away.
+// Resolution: explicit HIVE_PERSIST_DIR wins; "off" force-disables; otherwise it
+// auto-enables on the deployed relay (Render sets RENDER=true) and stays OFF for
+// local runs/tests so they're deterministic and RAM-only.
+const PERSIST_DIR = process.env.HIVE_PERSIST_DIR === 'off'
+  ? null
+  : (process.env.HIVE_PERSIST_DIR || (process.env.RENDER ? path.join(__dirname, '.hive-relay-data') : null))
 if (PERSIST_DIR) {
   fs.mkdirSync(PERSIST_DIR, { recursive: true })
   const fileFor = (docName) => path.join(PERSIST_DIR, encodeURIComponent(docName) + '.bin')
@@ -188,6 +208,22 @@ const server = http.createServer((req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
     if (req.method === 'POST') return void handleRevoke(req, res)
   }
+  // Static pages: the relay doubles as the website + the browser control room, so
+  // one deploy serves everything. Map a small allowlist of paths to public/ files.
+  if (req.method === 'GET') {
+    const STATIC = {
+      '/': 'index.html', '/index.html': 'index.html',
+      '/control': 'control.html', '/control.html': 'control.html',
+    }
+    const file = STATIC[(req.url || '').split('?')[0]]
+    if (file) {
+      try {
+        const html = fs.readFileSync(path.join(__dirname, 'public', file))
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300' })
+        return res.end(html)
+      } catch { /* fall through to the plain status text */ }
+    }
+  }
   res.writeHead(200, { 'Content-Type': 'text/plain' })
   res.end('hivecode relay is up. Connect a client to ws://<this-host>:' + PORT + '/<room>\n')
 })
@@ -205,7 +241,12 @@ server.on('upgrade', (req, socket, head) => {
     token = u.searchParams.get('token') || ''
   } catch { /* keep defaults */ }
 
-  const auth = authorize(room, token)
+  // Fail CLOSED on any unexpected error in authorization — a thrown exception here
+  // must reject the connection, never crash the relay process (which would take down
+  // every room). authorize() is the only trust gate, so a throw = deny.
+  let auth
+  try { auth = authorize(room, token) }
+  catch (e) { auth = { ok: false, code: 401, reason: 'authorization error' }; console.error('[relay] authorize threw:', e && e.message) }
   if (!auth.ok) {
     audit('reject', { room, reason: auth.reason })
     const code = auth.code || 401

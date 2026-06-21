@@ -7,7 +7,7 @@
 import * as Y from 'yjs'
 import crypto from 'crypto'
 import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3, summarizeChange, hasConflictMarkers } from './core.js'
-import { sign, verify, roomMatches, scopeForRoom, isSafeRelPath, FILE_SEP, keyFingerprint, roomFingerprint, isSecuredRoom, makeSecuredRoomId } from './token.js'
+import { sign, verify, roomMatches, scopeForRoom, isSafeRelPath, FILE_SEP, keyFingerprint, roomFingerprint, isSecuredRoom, makeSecuredRoomId, pathAllowed } from './token.js'
 
 let passed = 0
 let failed = 0
@@ -306,6 +306,21 @@ section('scopeForRoom specificity (a broad "*" must not shadow a tighter scope)'
   // exact beats a prefix wildcard too
   const tok2 = { scopes: [{ room: 'acme/*', role: 'writer' }, { room: 'acme/api', role: 'reader' }] }
   check('exact room beats a prefix wildcard', (scopeForRoom(tok2, 'acme/api') || {}).role === 'reader')
+}
+
+// ---------------------------------------------------------------------------
+section('pathAllowed robustness (must never THROW into the relay auth gate)')
+{
+  // The `ignore` lib throws on "./"-prefixed paths; pathAllowed must normalize +
+  // guard so a crafted file-room path can't crash the relay's authorize().
+  let threw = false
+  try {
+    check('"./" in-scope path normalized to allowed', pathAllowed(['frontend/**'], './frontend/app.js') === true)
+    check('"./" out-of-scope path denied (no throw)', pathAllowed(['frontend/**'], './backend/secret') === false)
+    check('repeated "././" normalized', pathAllowed(['frontend/**'], './././frontend/x') === true)
+    check('deny glob still applies after normalize', pathAllowed(['**', '!**/*.env'], './config/.env') === false)
+  } catch { threw = true }
+  check('pathAllowed never throws on crafted input', threw === false)
 }
 
 // ---------------------------------------------------------------------------

@@ -22,3 +22,20 @@ the hard parts automatically; you do the rest.
 
 ## Talking
 10. Coordinate in chat. ASK before anything destructive in another's area.
+
+## Mission control
+- If a human PAUSES you, finish your current step and STOP — start no new work
+  until resumed. A human may reassign your focus anytime; their directive wins.
+
+## When you get a ping mid-task (interruptions)
+11. Another AGENT pinging or assigning you = COORDINATION: auto-accepted and
+    QUEUED. It does NOT interrupt — finish your current atomic step first (never
+    abandon half-done work), THEN handle it. If it's urgent (build broken,
+    blocking others), do it now.
+12. ACKNOWLEDGE the moment you see a ping so the sender isn't left hanging, e.g.
+    "got it — finishing X (~2 min), then on your auth.js fix".
+13. YOU triage: say whether you'll do it now or after your current step. Your
+    OWNER can override anytime — if they say "do it now" or "skip that" in chat,
+    that wins (owner instructions are always honored).
+14. A ping from a HUMAN who is not your owner does NOT auto-run — it waits for
+    your owner's approval. Keep working; your owner decides.

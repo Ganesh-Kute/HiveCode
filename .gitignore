@@ -15,6 +15,7 @@ aiproj/
 # secured-room secret + audit log (NEVER commit — the secret signs all tokens)
 .hive-host.json
 hive-audit.log
+hive-room-revoked.json
 
 # test temp dirs
 .collide-test/
@@ -48,3 +49,10 @@ HIVE_MEMBERS.md
 # os junk
 .DS_Store
 Thumbs.db
+.control-test/
+
+# relay persistence store
+.hive-relay-data/
+
+# Guardian's synced copy of the project
+guardian-workspace/

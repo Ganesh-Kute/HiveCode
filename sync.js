@@ -24,6 +24,11 @@ import ignore from 'ignore'
 import { applyDiff, merge3, summarizeChange, changedRange, hasConflictMarkers } from './core.js'
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, isSafeRelPath } from './token.js'
 
+// Wire-format/protocol version. Bump when a change makes clients incompatible
+// (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
+// when someone joins on an incompatible build instead of silently failing to sync.
+const PROTOCOL_VERSION = 2
+
 // Never sync these, even if not in .gitignore — secrets and obvious junk. This
 // prevents pushing a teammate's .env / private keys / build output to the room.
 const ALWAYS_IGNORE = [
@@ -96,6 +101,12 @@ another's work. The sync layer enforces the hard parts automatically; you do the
     arrives, then you do it and call hive_complete. No need to poll. A pending
     human request will NOT wake you until your owner approves it.
 
+## Mission control (a human can pause/steer you)
+- If you are PAUSED, finish your current step and STOP — do not start new work
+  until you are resumed. (MCP agents: hive_wait returns no work while paused.)
+- A human may REASSIGN your focus at any time; treat a fresh directive from your
+  owner as the new priority.
+
 ## When a ping arrives while you are mid-task (interruptions)
 14. hive_wait only checks BETWEEN steps, so a ping never interrupts mid-step.
     Finish your current atomic step first (never abandon half-done work), then
@@ -134,12 +145,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const chat = doc.getArray('chat') // ordered coordination messages { by, kind, at, text }
   const tasks = doc.getMap('tasks') // id -> { id, to, by, text, status, decidedBy, at } directed work
   const owners = doc.getMap('owners') // aiName -> ownerHumanName (who may approve its tasks)
+  const controls = doc.getMap('controls') // participantName -> { state: 'running'|'paused', by, at } (mission control)
   // disableBc: do NOT sync peer-to-peer over BroadcastChannel. The relay must be
   // the ONLY path between clients — otherwise two clients on the same machine would
   // sync directly and bypass the relay's access control (auth, path scope, read-only).
   const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: token ? { token } : undefined }
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION }) // identity is implicit in the client
   if (kind === 'ai' && owner) owners.set(name, owner) // record who is allowed to approve my tasks
 
   // One sub-provider + Y.Doc per file, created on demand. `text` is its content.
@@ -388,6 +400,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     return { ok: true }
   }
   const myTasks = () => [...tasks.values()].filter((t) => t.to === name)
+
+  // --- mission control: pause / resume / steer an agent ---
+  // A human (or an owner) can PAUSE an agent: it should finish its current step,
+  // then stop picking up new work until resumed. Agents honor this via hive_wait
+  // (it won't return work while paused) and the HIVE_RULES. Cooperative, not forced
+  // — but combined with the task gate it gives a real "stop that agent" control.
+  function control(target, state, by = name) {
+    if (!target) return { error: 'no target' }
+    controls.set(target, { state: state === 'paused' ? 'paused' : 'running', by, at: fmtTime() })
+    say(`${by} ${state === 'paused' ? '⏸ paused' : '▶ resumed'} ${target}`)
+    return { ok: true }
+  }
+  const isPaused = (who = name) => { const c = controls.get(who); return !!(c && c.state === 'paused') }
   function renderTasks() {
     const all = [...tasks.values()].sort((a, b) => (a.at < b.at ? 1 : -1))
     const out = ['# Hive Tasks — directed work and approvals.', '# AI->AI = auto-accepted coordination. A non-owner human\'s request to an AI', '# stays PENDING until that AI\'s owner approves (do it or ignore).', '']
@@ -407,7 +432,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, v: PROTOCOL_VERSION })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     setUserState()
@@ -448,7 +473,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     writeToDisk(MEMBERS_FILE, out.join('\n') + '\n')
   }
-  if (syncFiles) provider.awareness.on('change', () => renderMembers())
+  // Warn (once per peer) when someone joins on an incompatible protocol version —
+  // otherwise they'd silently fail to sync and look like a "broken room".
+  const versionWarned = new Set()
+  function checkVersions() {
+    for (const s of provider.awareness.getStates().values()) {
+      const u = s.user
+      if (!u || u.name === name || u.v === PROTOCOL_VERSION) continue
+      if (versionWarned.has(u.name)) continue
+      versionWarned.add(u.name)
+      const theirs = u.v ? `v${u.v}` : 'an older build'
+      log(`[${name}] ⚠ ${u.name} is on ${theirs} (incompatible with v${PROTOCOL_VERSION}) — they won't sync correctly until everyone updates.`)
+      try { say(`⚠ ${u.name} is on an incompatible version — files won't sync with them until everyone updates Hivecode.`) } catch { }
+    }
+  }
+  if (syncFiles) provider.awareness.on('change', () => { renderMembers(); checkVersions() })
 
   function scan() {
     const diskFulls = walk(ROOT)
@@ -526,7 +565,22 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     decide,              // approve/deny a task (owner only, if set)
     complete,            // mark a task done
     myTasks,             // tasks directed at me
-    members: () => [...provider.awareness.getStates().values()].map((s) => s.user).filter(Boolean),
+    control,             // pause/resume an agent (mission control)
+    isPaused,            // is a participant currently paused?
+    controls,            // the live control map
+    // One entry PER NAME, not per connection: the same user open in two windows
+    // (e.g. the editor + the browser Control Room) is ONE member. Merge their
+    // fields so we keep whichever connection has an active `editing`/`owner`.
+    members: () => {
+      const seen = new Map()
+      for (const s of provider.awareness.getStates().values()) {
+        const u = s.user
+        if (!u || !u.name) continue
+        const prev = seen.get(u.name) || {}
+        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner })
+      }
+      return [...seen.values()]
+    },
     stop: () => {
       if (scanTimer) clearInterval(scanTimer)
       if (debounce) clearTimeout(debounce)

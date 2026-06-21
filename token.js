@@ -135,9 +135,13 @@ export function isSafeRelPath(relPath) {
 //   pathAllowed(["src/**"],            "secrets/k.txt") -> false
 export function pathAllowed(globs, relPath) {
   if (!Array.isArray(globs) || globs.length === 0) return true
+  // The `ignore` lib throws on a "./"-prefixed path; normalize it away. And guard
+  // every match call so a malformed input can NEVER throw into the relay's auth
+  // gate (a throw there must fail closed, not crash the process).
+  const p = String(relPath).replace(/^(\.\/)+/, '')
   const pos = [], neg = []
   for (const g of globs) { if (typeof g !== 'string' || !g) continue; if (g[0] === '!') neg.push(g.slice(1)); else pos.push(g) }
-  const matches = (pats) => pats.length > 0 && ignore().add(pats).ignores(relPath)
+  const matches = (pats) => { try { return pats.length > 0 && ignore().add(pats).ignores(p) } catch { return false } }
   const inAllow = pos.length === 0 ? true : matches(pos)
   return inAllow && !matches(neg)
 }

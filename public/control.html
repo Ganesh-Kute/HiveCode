@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hivecode — Control Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Google Sans (display) — falls back to Roboto if unavailable; Roboto + Roboto Mono load reliably -->
+<link href="https://fonts.googleapis.com/css?family=Google+Sans:400,500,700|Google+Sans+Text:400,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* Gemini dark */
+    --ground:#0E0E10; --panel:#1E1F22; --panel2:#272A2E; --raise:#303338;
+    --line:rgba(255,255,255,.06); --line2:rgba(255,255,255,.11);
+    --text:#E3E3E6; --mut:#9AA0A6; --dim:#6E747B; --msg:#C9CDD3;
+    --blue:#1A73E8; --blue-h:#4285F4; --teal:#34D399; --amber:#FBBF24; --red:#F28B82; --edit:#8AB4F8;
+    --spark:linear-gradient(105deg,#4285F4,#9B72CB 50%,#D96570);
+    --sh1:0 1px 3px rgba(0,0,0,.5);
+    --sh2:0 24px 70px -30px rgba(0,0,0,.85);
+    --glow:rgba(26,115,232,.52);
+    --rc:24px; --ri:16px;
+    --fd:"Google Sans","Product Sans",Roboto,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --fb:"Google Sans Text","Google Sans",Roboto,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --fm:"Roboto Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  body.light{
+    --ground:#FFFFFF; --panel:#F0F4F9; --panel2:#E9EEF6; --raise:#DFE6F1;
+    --line:#E3E6EB; --line2:#D7DCE3;
+    --text:#1F1F22; --mut:#5F6368; --dim:#80868B; --msg:#3C4043; --edit:#1A73E8;
+    --sh1:0 1px 2px rgba(60,64,67,.10); --sh2:0 24px 60px -30px rgba(60,64,80,.30); --glow:rgba(26,115,232,.16);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font-family:var(--fb);font-size:14px;line-height:1.5;color:var(--text);background:var(--ground);
+    -webkit-font-smoothing:antialiased;overflow:hidden;
+    background-image:radial-gradient(1200px 900px at 50% 50%,var(--glow),transparent 62%);background-attachment:fixed;}
+  a{color:var(--edit);text-decoration:none}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:10px;border:3px solid transparent;background-clip:content-box}
+  .mono{font-family:var(--fm)}
+  button{font-family:var(--fb);cursor:pointer;border:none;background:var(--panel2);color:var(--text);
+    border-radius:999px;padding:9px 16px;font-size:13px;font-weight:500;transition:transform .1s ease,background .15s,box-shadow .15s}
+  button:hover{background:var(--raise)}
+  button:active{transform:translateY(1px)}
+  button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  button.primary{background:var(--blue);color:#fff}
+  button.primary:hover{background:var(--blue-h)}
+  button.ok{background:transparent;color:var(--teal);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--teal) 40%,transparent)}
+  button.ok:hover{background:color-mix(in srgb,var(--teal) 14%,transparent)}
+  button.bad{background:transparent;color:var(--red);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--red) 34%,transparent)}
+  button.bad:hover{background:color-mix(in srgb,var(--red) 12%,transparent)}
+  button.ghost{background:transparent;color:var(--mut);box-shadow:inset 0 0 0 1px var(--line2)}
+  button.ghost:hover{background:var(--panel2);color:var(--text)}
+
+  /* gate */
+  .gate{height:100vh;display:grid;place-items:center;padding:24px}
+  .gate .box{width:100%;max-width:480px;background:color-mix(in srgb,var(--panel) 64%,transparent);backdrop-filter:blur(28px) saturate(1.3);-webkit-backdrop-filter:blur(28px) saturate(1.3);border:1px solid var(--line);border-radius:28px;padding:40px;box-shadow:var(--sh2)}
+  .brand{display:flex;align-items:center;gap:12px}
+  .spark{width:30px;height:30px;flex:0 0 auto}
+  .wordmark{font-family:var(--fd);font-weight:500;font-size:20px;letter-spacing:0}
+  .wordmark .rm{color:var(--mut)}
+  .gate h1{font-family:var(--fd);font-weight:400;font-size:30px;letter-spacing:-.01em;margin:24px 0 8px;line-height:1.15}
+  .gate p{color:var(--mut);font-size:14.5px;margin:0 0 26px;line-height:1.55}
+  .gate label{display:block;font-size:12px;color:var(--mut);font-weight:500;margin:0 0 8px 4px}
+  .gate label b{color:var(--dim);font-weight:400}
+  .gate input{width:100%;background:var(--panel2);border:1px solid transparent;border-radius:16px;padding:14px 17px;color:var(--text);font-size:14.5px;font-family:var(--fb);margin-bottom:15px;transition:border-color .15s,background .15s}
+  .gate input.mono{font-family:var(--fm);font-size:12.5px}
+  .gate input::placeholder{color:var(--dim)}
+  .gate input:focus{outline:none;border-color:var(--blue);background:var(--ground)}
+  .gate .go{width:100%;justify-content:center;display:flex;padding:14px;font-size:15px;font-weight:500;margin-top:6px}
+  .gate .err{color:var(--red);font-size:13px;margin-top:13px;min-height:18px;line-height:1.5}
+  .gate .hint{color:var(--dim);font-size:12.5px;margin-top:18px;line-height:1.55}
+
+  /* shell */
+  .app{display:none;height:100vh;flex-direction:column;padding:14px;gap:14px}.app.on{display:flex}
+  header{display:flex;align-items:center;gap:14px;background:color-mix(in srgb,var(--panel) 40%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border:1px solid var(--line);border-radius:var(--rc);padding:13px 20px;box-shadow:var(--sh1);flex:0 0 auto}
+  header .wordmark{font-size:16px}
+  .chip{font-family:var(--fm);font-size:11.5px;color:var(--mut);background:var(--panel2);border-radius:999px;padding:5px 12px}
+  .chip b{color:var(--text);font-weight:500}
+  .live{display:flex;align-items:center;gap:8px;font-family:var(--fm);font-size:11.5px;color:var(--mut);margin-left:auto}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--dim);position:relative}
+  .dot.on{background:var(--teal)}
+  .dot.on::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1.5px solid var(--teal);opacity:.5;animation:rad 2s ease-out infinite}
+  @keyframes rad{0%{transform:scale(.55);opacity:.5}100%{transform:scale(2.3);opacity:0}}
+  .iconbtn{padding:9px 12px;background:transparent;box-shadow:inset 0 0 0 1px var(--line2)}
+
+  main{display:grid;grid-template-columns:308px 1fr 336px;gap:14px;flex:1;min-height:0}
+  .col{background:color-mix(in srgb,var(--panel) 40%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border:1px solid var(--line);border-radius:var(--rc);box-shadow:var(--sh1);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .colhead{display:flex;align-items:center;gap:10px;padding:18px 20px 12px;flex:0 0 auto}
+  .colhead h2{font-family:var(--fd);font-weight:500;font-size:16px;margin:0}
+  .colhead .ct{margin-left:auto;font-family:var(--fm);font-size:11px;color:var(--mut);background:var(--panel2);border-radius:999px;padding:2px 9px}
+  .scroll{overflow:auto;flex:1;padding:4px 12px 14px}
+  .empty{color:var(--dim);font-size:13px;text-align:center;padding:36px 18px;line-height:1.6}
+
+  /* crew */
+  .mcard{background:color-mix(in srgb,var(--panel2) 34%,transparent);border-radius:var(--ri);padding:14px;margin:7px 4px}
+  .mtop{display:flex;align-items:center;gap:12px}
+  .av{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;font-family:var(--fd);font-weight:500;font-size:14px;color:#fff;flex:0 0 auto;position:relative}
+  .av.online{animation:breathe 3.6s ease-in-out infinite}
+  .av.editing{animation:breathe 1.7s ease-in-out infinite}
+  @keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(26,115,232,0)}50%{box-shadow:0 0 16px 1px var(--glow)}}
+  .av.paused{opacity:.45}
+  .mname{font-family:var(--fd);font-weight:500;font-size:15px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .tag{font-family:var(--fm);font-size:9.5px;font-weight:500;padding:2px 7px;border-radius:6px;letter-spacing:.02em}
+  .tag.ai{background:color-mix(in srgb,#9B72CB 22%,transparent);color:#c9b0ed}
+  .tag.human{background:color-mix(in srgb,var(--teal) 18%,transparent);color:#86e6c2}
+  .tag.pz{background:color-mix(in srgb,var(--amber) 22%,transparent);color:#f4d27a}
+  .estat{font-size:12.5px;color:var(--dim);margin-top:3px}.estat b{color:var(--edit);font-weight:400;font-family:var(--fm);font-size:11.5px}
+  .mctl{display:flex;gap:8px;margin-top:13px}.mctl button{flex:1;display:flex;justify-content:center;padding:7px;font-size:12.5px}
+
+  /* chat */
+  .chat .scroll{padding:8px 18px}
+  .cmsg{display:flex;gap:12px;padding:10px 0}
+  .cmsg .av{width:34px;height:34px;font-size:12px;animation:none;box-shadow:none}
+  .cbody{min-width:0}
+  .cby{font-family:var(--fd);font-weight:500;font-size:14px;display:flex;align-items:center;gap:7px}
+  .ctime{font-family:var(--fm);font-size:10.5px;color:var(--dim);font-weight:400}
+  .ctxt{color:var(--msg);font-size:14px;margin-top:2px;word-break:break-word;white-space:pre-wrap;line-height:1.55}
+  .composer{display:flex;gap:10px;align-items:center;padding:14px 16px;flex:0 0 auto}
+  .composer .field{flex:1;display:flex;align-items:center;background:color-mix(in srgb,var(--panel2) 42%,transparent);border-radius:26px;padding:5px 5px 5px 18px}
+  .composer input{flex:1;background:transparent;border:none;color:var(--text);font-size:14.5px;font-family:var(--fb);padding:9px 0}
+  .composer input::placeholder{color:var(--dim)}
+  .composer input:focus{outline:none}
+  .composer .send{width:40px;height:40px;border-radius:50%;padding:0;display:grid;place-items:center;flex:0 0 auto}
+  .composer .send svg{width:18px;height:18px}
+
+  /* ledger */
+  .stack{display:flex;flex-direction:column;gap:14px;min-height:0}.stack .col{flex:1}
+  .task{background:color-mix(in srgb,var(--panel2) 34%,transparent);border-radius:var(--ri);padding:14px;margin:7px 4px;font-size:13.5px}
+  .tflow{font-family:var(--fm);font-size:11px;color:var(--dim);margin-bottom:5px}.tflow b{color:var(--mut);font-weight:500}
+  .ttext{font-size:14px}
+  .tst{font-family:var(--fm);font-size:9.5px;font-weight:500;padding:2px 8px;border-radius:6px;display:inline-block;margin-top:9px;letter-spacing:.02em}
+  .tst.pending{background:color-mix(in srgb,var(--amber) 22%,transparent);color:#f4d27a}
+  .tst.accepted,.tst.done{background:color-mix(in srgb,var(--teal) 18%,transparent);color:#86e6c2}
+  .tst.denied{background:color-mix(in srgb,var(--red) 18%,transparent);color:#f6a9a3}
+  .tact{display:flex;gap:8px;margin-top:12px}.tact button{padding:6px 14px;font-size:12.5px}
+  .feed{padding:11px;border-radius:12px;font-size:13px}.feed:hover{background:var(--panel2)}
+  .fmeta{font-family:var(--fm);font-size:11px;color:var(--dim);display:flex;gap:9px;margin-bottom:3px}.fmeta b{color:var(--mut);font-weight:500}
+  .ffile{font-family:var(--fm);color:var(--edit);font-size:11.5px}
+
+  @media(max-width:1040px){main{grid-template-columns:1fr;grid-auto-rows:minmax(220px,44vh)}.stack{display:contents}}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+
+<div class="gate" id="gate">
+  <div class="box">
+    <div class="brand"><svg class="spark" viewBox="0 0 24 24"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4285f4"/><stop offset=".5" stop-color="#9b72cb"/><stop offset="1" stop-color="#d96570"/></linearGradient></defs><path d="M12 1.6c.45 5.3 3.7 8.55 9 9-5.3.45-8.55 3.7-9 9-.45-5.3-3.7-8.55-9-9 5.3-.45 8.55-3.7 9-9z" fill="url(#g)"/></svg><span class="wordmark">Hivecode <span class="rm">Control</span></span></div>
+    <h1>Ready when you are</h1>
+    <p>Step into the room to watch your agent crew, talk to them, and steer the work — from any browser.</p>
+    <label for="uname">Your name <b>— match your editor, so you're one person everywhere</b></label>
+    <input id="uname" placeholder="e.g. user-1" autocomplete="off" spellcheck="false">
+    <label for="link">Room link</label>
+    <input id="link" class="mono" placeholder="wss://relay|room|token" autocomplete="off" spellcheck="false">
+    <button class="go primary" id="connect">Enter room</button>
+    <div class="err" id="err"></div>
+    <div class="hint">Get the link from the Hivecode panel in your editor, or via “Invite to folders…”. Your token never leaves this browser.</div>
+  </div>
+</div>
+
+<div class="app" id="app">
+  <header>
+    <svg class="spark" viewBox="0 0 24 24" style="width:22px;height:22px"><path d="M12 1.6c.45 5.3 3.7 8.55 9 9-5.3.45-8.55 3.7-9 9-.45-5.3-3.7-8.55-9-9 5.3-.45 8.55-3.7 9-9z" fill="url(#g)"/></svg>
+    <span class="wordmark">Hivecode <span class="rm">Control</span></span>
+    <span class="chip" id="roomChip"></span>
+    <span class="chip" id="youChip"></span>
+    <span class="live"><span class="dot" id="dot"></span><span id="connState">connecting…</span> · <span id="memCount">0</span> online</span>
+    <button class="iconbtn" id="theme" title="Light / dark">🌙</button>
+    <button class="ghost" id="leave">Leave</button>
+  </header>
+  <main>
+    <section class="col">
+      <div class="colhead"><h2>Crew</h2><span class="ct" id="mc">0</span></div>
+      <div class="scroll" id="members"></div>
+    </section>
+    <section class="col chat">
+      <div class="colhead"><h2>Chat</h2><span class="ct" id="cc">0</span></div>
+      <div class="scroll" id="chat"></div>
+      <div class="composer">
+        <div class="field"><input id="chatInput" placeholder="Message the crew…  ( @name to assign a task )" autocomplete="off">
+          <button class="primary send" id="send" title="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></div>
+      </div>
+    </section>
+    <div class="stack">
+      <section class="col">
+        <div class="colhead"><h2>Tasks</h2><span class="ct" id="tc">0</span></div>
+        <div class="scroll" id="tasks"></div>
+      </section>
+      <section class="col">
+        <div class="colhead"><h2>Activity</h2><span class="ct" id="ac">0</span></div>
+        <div class="scroll" id="activity"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script type="module">
+const $=(id)=>document.getElementById(id)
+const COLORS=['#4285F4','#9B72CB','#D96570','#34D399','#FBBF24','#8AB4F8','#E0529C','#22D3EE']
+const colorFor=(s)=>{let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
+const initials=(s)=>String(s||'?').replace(/[^a-zA-Z0-9]/g,'').slice(0,2).toUpperCase()||'?'
+const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+const ago=(t)=>{if(!t)return'';const d=Math.max(0,Date.now()-t),m=Math.floor(d/60000);if(m<1)return'now';if(m<60)return m+'m';const h=Math.floor(m/60);return h<24?h+'h':Math.floor(h/24)+'d'}
+const efile=(e)=>e?(typeof e==='object'?e.file:e):null
+const err=(m)=>{$('err').textContent=m||''}
+const genId=()=>'t'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36)
+
+let Y=null,WS=null,provider=null,doc=null,timer=null,me='Control',meKind='human'
+function b64urlDecode(s){s=String(s).replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';return atob(s)}
+function decodeJwt(t){const p=String(t||'').split('.')[1];if(!p)return null;try{return JSON.parse(decodeURIComponent(escape(b64urlDecode(p))))}catch{try{return JSON.parse(b64urlDecode(p))}catch{return null}}}
+async function ensureLib(){if(Y)return true;err('loading…');try{const[y,yw]=await Promise.all([import('https://esm.sh/yjs@13.6.18'),import('https://esm.sh/y-websocket@2.0.4')]);Y=y;WS=yw.WebsocketProvider;err('');return true}catch(e){err('Could not load the realtime library — this page needs to reach esm.sh once. '+e.message);return false}}
+function sanitize(raw){let s=String(raw||'').trim();const i=s.search(/wss?:\/\//);return i>0?s.slice(i):s}
+function parseLink(link){if(link&&link.includes('|')){const[r,m,t]=link.split('|');return{relay:r.trim(),room:(m||'').trim(),token:(t||'').trim()}}return{relay:'',room:'',token:''}}
+const isSecured=(r)=>/^hs_[A-Za-z0-9_-]{22}_/.test(r||'')
+
+async function connect(raw){
+  const p=parseLink(sanitize(raw))
+  if(!/^wss?:\/\//.test(p.relay)||!p.room){err('That link looks off. Expected:  wss://relay|room|token');return}
+  if(isSecured(p.room)&&!p.token){err('Secured room — your link is missing the token (after the second “|”).');return}
+  if(!(await ensureLib()))return
+  const claim=decodeJwt(p.token)||{};me=($('uname').value||'').trim()||claim.name||'Control';meKind=claim.kind||'human'
+  doc=new Y.Doc()
+  const opts={connect:true};if(p.token)opts.params={token:p.token}
+  try{provider=new WS(p.relay,p.room,doc,opts)}catch(e){err('Could not connect: '+e.message);return}
+  provider.awareness.setLocalStateField('user',{name:me,kind:meKind,v:2})
+  window._h={chat:doc.getArray('chat'),tasks:doc.getMap('tasks'),controls:doc.getMap('controls')}
+  const ok=()=>{$('dot').classList.add('on');$('connState').textContent='connected';if(timer){clearTimeout(timer);timer=null}}
+  provider.on('status',(e)=>{if(e.status==='connected')ok();else{$('dot').classList.remove('on');$('connState').textContent=e.status}})
+  provider.on('sync',(s)=>{if(s)ok()})
+  provider.awareness.on('change',render);doc.on('update',render)
+  $('gate').style.display='none';$('app').classList.add('on')
+  $('roomChip').innerHTML='room <b>'+esc(p.room.length>24?p.room.slice(0,24)+'…':p.room)+'</b>'
+  $('youChip').innerHTML='you <b>'+esc(me)+'</b>'
+  $('connState').textContent='connecting…'
+  timer=setTimeout(()=>{if(!$('dot').classList.contains('on'))$('connState').textContent='can’t reach room'},9000)
+  render()
+}
+
+function members(){const ctrls=doc.getMap('controls').toJSON(),byName=new Map();for(const s of provider.awareness.getStates().values()){const u=s&&s.user;if(!u||!u.name)continue;byName.set(u.name,{...(byName.get(u.name)||{}),...u,paused:(ctrls[u.name]||{}).state==='paused'})}return[...byName.values()]}
+
+function render(){
+  if(!provider)return
+  const mem=members()
+  $('memCount').textContent=mem.length;$('mc').textContent=mem.length
+  $('members').innerHTML=mem.length?mem.map(m=>{const ai=m.kind==='ai',ef=efile(m.editing)
+    const st=m.paused?'paused':ef?'editing':'online'
+    return `<div class="mcard"><div class="mtop"><div class="av ${st}" style="background:${colorFor(m.name)}">${initials(m.name)}</div>
+      <div style="min-width:0"><div class="mname">${esc(m.name)}<span class="tag ${ai?'ai':'human'}">${ai?'AI':'HUMAN'}</span>${m.paused?'<span class="tag pz">PAUSED</span>':''}</div>
+      <div class="estat">${ef?'editing <b>'+esc(ef)+'</b>':'idle'}</div></div></div>
+      ${ai&&m.name!==me?`<div class="mctl">${m.paused?`<button class="ok" data-act="resume" data-name="${esc(m.name)}">Resume</button>`:`<button data-act="pause" data-name="${esc(m.name)}">Pause</button>`}<button data-act="reassign" data-name="${esc(m.name)}">Reassign</button></div>`:''}
+    </div>`}).join(''):'<div class="empty">No one here yet.<br>Share your room link to bring the crew in.</div>'
+
+  const msgs=window._h.chat.toArray().slice(-150),cw=$('chat'),bot=cw.scrollHeight-cw.scrollTop-cw.clientHeight<70
+  $('cc').textContent=msgs.length
+  cw.innerHTML=msgs.length?msgs.map(m=>`<div class="cmsg"><div class="av" style="background:${colorFor(m.by)}">${initials(m.by)}</div><div class="cbody"><div class="cby">${esc(m.by||'?')}<span class="tag ${m.kind==='ai'?'ai':'human'}">${m.kind==='ai'?'AI':'HUMAN'}</span><span class="ctime">${ago(m.at)}</span></div><div class="ctxt">${esc(m.text)}</div></div></div>`).join(''):'<div class="empty">Quiet so far.<br>Say hello, or @name to put an agent on something.</div>'
+  if(bot)cw.scrollTop=cw.scrollHeight
+
+  const tasks=Object.values(window._h.tasks.toJSON()).sort((a,b)=>(b.at||0)-(a.at||0))
+  $('tc').textContent=tasks.length
+  $('tasks').innerHTML=tasks.length?tasks.map(t=>{const s=(t.status||'pending').toLowerCase()
+    const acts=s==='pending'?`<div class="tact"><button class="ok" data-tact="accept" data-id="${esc(t.id)}">Approve</button><button class="bad" data-tact="deny" data-id="${esc(t.id)}">Deny</button></div>`:''
+    return `<div class="task"><div class="tflow"><b>${esc(t.by||'?')}</b> → <b>${esc(t.to||'?')}</b></div><div class="ttext">${esc(t.text)}</div><span class="tst ${s}">${esc(s)}</span>${acts}</div>`}).join(''):'<div class="empty">No tasks yet.</div>'
+
+  const board=Object.entries(doc.getMap('board').toJSON()).map(([file,v])=>({file,...v})).sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,50)
+  $('ac').textContent=board.length
+  $('activity').innerHTML=board.length?board.map(b=>`<div class="feed"><div class="fmeta"><b>${esc(b.by||'?')}</b><span>${ago(b.at)}</span><span>${esc(b.churn||'')}</span></div><div class="ffile">${esc(b.file)}</div></div>`).join(''):'<div class="empty">No activity yet.</div>'
+}
+
+document.addEventListener('click',(e)=>{
+  const b=e.target.closest('button');if(!b||!window._h)return
+  const{controls,tasks}=window._h
+  if(b.dataset.act==='pause')controls.set(b.dataset.name,{state:'paused',by:me,at:Date.now()})
+  if(b.dataset.act==='resume')controls.set(b.dataset.name,{state:'running',by:me,at:Date.now()})
+  if(b.dataset.act==='reassign'){const txt=prompt('New task for '+b.dataset.name+':');if(txt&&txt.trim()){const id=genId();tasks.set(id,{id,to:b.dataset.name,by:me,text:txt.trim(),status:'accepted',at:Date.now()})}}
+  if(b.dataset.tact){const t=tasks.get(b.dataset.id);if(t)tasks.set(b.dataset.id,{...t,status:b.dataset.tact==='accept'?'accepted':'denied',decidedBy:me,at:Date.now()})}
+})
+function sendChat(){const i=$('chatInput'),v=i.value.trim();if(!v||!window._h)return;const m=v.match(/^@(\S+)\s+(.+)/);if(m){const id=genId();window._h.tasks.set(id,{id,to:m[1],by:me,text:m[2],status:'accepted',at:Date.now()})}else{window._h.chat.push([{by:me,kind:meKind,at:Date.now(),text:v}])}i.value=''}
+$('send').addEventListener('click',sendChat)
+$('chatInput').addEventListener('keydown',(e)=>{if(e.key==='Enter')sendChat()})
+$('connect').addEventListener('click',()=>connect($('link').value.trim()))
+$('link').addEventListener('keydown',(e)=>{if(e.key==='Enter')connect($('link').value.trim())})
+$('link').addEventListener('input',()=>{if($('uname').value.trim())return;const c=decodeJwt(parseLink(sanitize($('link').value)).token);if(c&&c.name)$('uname').value=c.name})
+$('leave').addEventListener('click',()=>{try{provider&&provider.destroy()}catch{};location.hash='';location.reload()})
+const applyTheme=(t)=>{document.body.classList.toggle('light',t==='light');$('theme').textContent=t==='light'?'🌙':'☀️'}
+let theme=localStorage.getItem('hc-theme')||'dark';applyTheme(theme)
+$('theme').addEventListener('click',()=>{theme=theme==='light'?'dark':'light';localStorage.setItem('hc-theme',theme);applyTheme(theme)})
+const h=sanitize(decodeURIComponent(location.hash.slice(1)))
+if(h&&h.includes('|')){$('link').value=h;const c=decodeJwt(parseLink(h).token);if(c&&c.name&&!$('uname').value)$('uname').value=c.name;connect(h)}
+</script>
+</body>
+</html>

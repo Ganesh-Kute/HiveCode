@@ -80,17 +80,43 @@ function waitForWork(timeoutMs) {
   const s = requireSession()
   const tmap = s.hive.doc.getMap('tasks')
   const chat = s.hive.doc.getArray('chat')
+  const controls = s.hive.doc.getMap('controls')
   const me = s.name
-  const accepted = () => [...tmap.values()].filter((t) => t.to === me && t.status === 'accepted')
+  const paused = () => { const c = controls.get(me); return !!(c && c.state === 'paused') }
+  const accepted = () => (paused() ? [] : [...tmap.values()].filter((t) => t.to === me && t.status === 'accepted'))
   const baseChatLen = chat.length
+  const rx = new RegExp('@' + me.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+  const mentionsMe = (t) => rx.test(String(t || ''))
+  // PAUSED: stop auto-working, but STAY LISTENING. A paused agent doesn't pull its
+  // queued work — yet it still wakes the moment it's directly addressed: a new
+  // @mention in chat, or a new task assigned to it. It handles that, then calls
+  // hive_wait again (still paused) until a human resumes it.
+  if (paused()) {
+    const baseTaskIds = new Set([...tmap.values()].filter((t) => t.to === me).map((t) => t.id))
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (v) => { if (!done) { done = true; controls.unobserve(onCtl); chat.unobserve(onChat); tmap.unobserve(onTask); resolve(v) } }
+      const mentions = () => chat.toArray().slice(baseChatLen).filter((m) => mentionsMe(m.text))
+      const directTasks = () => [...tmap.values()].filter((t) => t.to === me && t.status === 'accepted' && !baseTaskIds.has(t.id))
+      const check = () => {
+        if (!paused()) return finish({ tasks: accepted(), newChat: [], resumed: true })
+        const dt = directTasks(), mn = mentions()
+        if (dt.length || mn.length) finish({ paused: true, mentioned: true, tasks: dt, newChat: mn })
+      }
+      const onCtl = check, onChat = check, onTask = check
+      controls.observe(onCtl); chat.observe(onChat); tmap.observe(onTask)
+      setTimeout(() => finish({ paused: true }), timeoutMs)
+    })
+  }
   const ready = accepted()
   if (ready.length) return Promise.resolve({ tasks: ready, newChat: [] })
   return new Promise((resolve) => {
     let done = false
-    const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); resolve(v) } }
+    const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); controls.unobserve(onCtl); resolve(v) } }
     const onTask = () => { const a = accepted(); if (a.length) finish({ tasks: a, newChat: [] }) }
     const onChat = () => { const extra = chat.toArray().slice(baseChatLen); if (extra.length) finish({ tasks: accepted(), newChat: extra }) }
-    tmap.observe(onTask); chat.observe(onChat)
+    const onCtl = () => { if (paused()) finish({ paused: true }) } // paused mid-wait -> stop handing out work
+    tmap.observe(onTask); chat.observe(onChat); controls.observe(onCtl)
     setTimeout(() => finish(null), timeoutMs)
   })
 }
@@ -141,11 +167,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'hive_wait': {
         const ms = Math.min(Math.max(Number(args.timeoutSeconds) || 60, 1), 300) * 1000
         const r = await waitForWork(ms)
+        if (r && r.paused) {
+          if (r.mentioned) {
+            const parts = []
+            if (r.newChat && r.newChat.length) parts.push(`💬 Mentioned while paused:\n${r.newChat.map((m) => `${m.by}(${m.kind}): ${m.text}`).join('\n')}`)
+            if (r.tasks && r.tasks.length) parts.push(`📌 Directed task(s):\n${r.tasks.map(fmtTask).join('\n')}`)
+            return text(`⏸ You are PAUSED, but were directly addressed. Handle ONLY this, then call hive_wait again (you stay paused until a human resumes you — don't pick up other queued work):\n\n${parts.join('\n\n')}`)
+          }
+          return text('⏸ You are PAUSED by mission control. Stop new work and wait. You will be woken if someone @mentions you or assigns you a task; otherwise just call hive_wait again.')
+        }
         if (!r) return text('(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)')
         const parts = []
+        if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         if (r.newChat.length) parts.push(`NEW MESSAGES:\n${r.newChat.map((m) => `${m.at} ${m.by}(${m.kind}): ${m.text}`).join('\n')}`)
-        return text(parts.join('\n\n'))
+        return text(parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)')
       }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }

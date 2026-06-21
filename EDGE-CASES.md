@@ -89,6 +89,21 @@ folder access with no registration and no shared secret**.
 | E3 | A reader's local edits stay on its own disk (just never reach the relay). | read-only is about shared state, not the local working copy. |
 | E4 | Two clients joining one room with **different/nested root folders** can cause flat-namespace path collisions / recursive nesting. | operational guidance: join a room from one consistent project root. `hive-workspace/` is gitignored. |
 | E5 | CRLF vs LF line endings between OSes can widen merges. | line-based merge still converges; not data loss. (candidate for normalization later.) |
+| E6 | Path-glob scope matching (`ignore` lib) is **case-insensitive**. On a case-sensitive FS (Linux), a scope `frontend/**` would also authorize a distinct `Frontend/` dir. | not a traversal/ROOT-escape (paths stay relative, `..`-free); narrow precision gap. Avoid case-only-distinct dirs in scoped trees, or normalize case in a future pass. |
+
+## G. Security audit (2026-06-21)
+
+Two independent adversarial passes over the access-control surface (`token.js`,
+`server.js`, `sync.js`, `hive-mcp.js`, `extension.js`). **All core guarantees held**
+— no auth/authorization bypass, no JWT forgery (alg-confusion / none / unsigned /
+tamper), no path-traversal write, no self-certifying fingerprint bypass, no revoke
+auth flaw, no read-only bypass, no webview XSS (every `innerHTML` interpolation is
+`escapeHtml`'d). Findings:
+
+| # | Finding | Severity | Status |
+|---|---------|----------|--------|
+| G1 | `pathAllowed` threw on a `"./"`-prefixed file-room path; the `ignore` lib's `RangeError` propagated uncaught through the WS-upgrade handler → **relay process crash** (a single valid scoped participant could take down everyone's session). Fail-closed for auth, but an availability hole. | MEDIUM (availability) | **FIXED** — upgrade handler wraps `authorize()` in try/catch (throw ⇒ reject, never crash); `pathAllowed` normalizes leading `./` and guards every match in try/catch (deny on error). Tests: `hive-relay-robust-test.js`, unit "pathAllowed robustness". |
+| G2 | Case-insensitive glob matching (E6). | LOW (scope precision, case-sensitive FS only) | Documented limit. |
 
 ---
 

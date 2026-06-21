@@ -1,24 +1,39 @@
 {
   "name": "hivecode",
-  "displayName": "Hivecode — live multiplayer coding",
-  "description": "Edit a project together live with teammates and AI agents. No git push/pull.",
-  "version": "0.5.0",
+  "displayName": "Hivecode — multiplayer for AI coding agents",
+  "description": "Run humans and multiple AI agents on one live codebase, with folder-scoped permissions and approval gates. No git push/pull.",
+  "version": "0.6.0",
   "publisher": "hivecode",
   "license": "MIT",
+  "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.75.0"
   },
   "categories": [
+    "AI",
     "Other"
   ],
   "keywords": [
+    "ai agents",
+    "multi-agent",
+    "claude",
+    "cursor",
     "collaboration",
     "live share",
-    "ai",
     "pair programming",
     "realtime",
-    "multiplayer"
+    "multiplayer",
+    "mcp"
   ],
+  "galleryBanner": {
+    "color": "#0a0c10",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/GSK7024/livecode",
+  "bugs": {
+    "url": "https://github.com/GSK7024/livecode/issues"
+  },
+  "qna": false,
   "repository": {
     "type": "git",
     "url": "https://github.com/GSK7024/livecode"

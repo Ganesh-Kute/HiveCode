@@ -20,6 +20,7 @@ const ignore = require('ignore')
 
 const IGNORE = new Set(['node_modules', '.git', '.vscode'])
 const MAX_BYTES = 1_000_000
+const PROTOCOL_VERSION = 2 // bump on incompatible wire changes; broadcast so peers can warn on mismatch
 // Never sync these, even if not in .gitignore — secrets and obvious junk.
 const ALWAYS_IGNORE = [
   '.git/', 'node_modules/',
@@ -52,6 +53,10 @@ the hard parts automatically; you do the rest.
 
 ## Talking
 10. Coordinate in chat. ASK before anything destructive in another's area.
+
+## Mission control
+- If a human PAUSES you, finish your current step and STOP — start no new work
+  until resumed. A human may reassign your focus anytime; their directive wins.
 
 ## When you get a ping mid-task (interruptions)
 11. Another AGENT pinging or assigning you = COORDINATION: auto-accepted and
@@ -197,24 +202,42 @@ function logActivity(msg) {
 function membersList() {
   if (!session) return []
   const fresh = Date.now() - 15000
-  return [...session.provider.awareness.getStates().values()]
-    .map((s) => s.user)
-    .filter(Boolean)
-    .map((u) => ({ name: u.name, kind: u.kind || 'human', editing: u.editing && u.editing.at > fresh ? u.editing.file : null }))
+  // One entry PER NAME, not per connection: the same user open in two windows
+  // (editor + browser Control Room, both "user-1") is ONE member. `editing` may be
+  // an object {file,at} (editor) or a plain string (browser) — normalize both.
+  const seen = new Map()
+  for (const s of session.provider.awareness.getStates().values()) {
+    const u = s.user
+    if (!u || !u.name) continue
+    const ef = u.editing && typeof u.editing === 'object' ? (u.editing.at > fresh ? u.editing.file : null) : (u.editing || null)
+    const prev = seen.get(u.name)
+    seen.set(u.name, { name: u.name, kind: u.kind || (prev && prev.kind) || 'human', editing: ef || (prev && prev.editing) || null })
+  }
+  return [...seen.values()]
 }
 
 function pushState() {
-  const members = membersList()
-  setStatus(session ? 'on' : 'off', members.length)
+  const baseMembers = membersList()
+  setStatus(session ? 'on' : 'off', baseMembers.length)
   if (!panel) return
   const chat = session ? session.chat.toArray().slice(-50) : []
   const tasks = session ? [...session.tasks.values()].sort((a, b) => (a.at < b.at ? 1 : -1)) : []
   const owners = session ? Object.fromEntries(session.owners.entries()) : {}
+  // Mission-control enrichment: each member's pause state + current task.
+  const members = baseMembers.map((m) => {
+    const c = session && session.controls.get(m.name)
+    const mine = tasks.filter((t) => t.to === m.name)
+    const active = mine.find((t) => t.status === 'accepted') || mine.find((t) => t.status === 'pending')
+    return { ...m, paused: !!(c && c.state === 'paused'), task: active ? { text: active.text, status: active.status } : null }
+  })
   panel.post({
     type: 'state',
     connected: !!session,
     room: session ? session.room : null,
     link: session ? `${session.relay}|${session.room}` : null,
+    // The owner's own full-access link (carries the maintainer token). Used to open
+    // the Control Room or rejoin; for inviting OTHERS use the scoped "Invite" flow.
+    ownerLink: session && session.secured && session.ownerToken ? `${session.relay}|${session.room}|${session.ownerToken}` : null,
     me: session ? session.me : null,
     canInvite: !!(session && session.keys), // this window hosts a secured room -> can invite/manage
     secured: !!(session && session.secured),
@@ -331,6 +354,37 @@ function listFolders(root, maxDepth = 4) {
   return out.sort()
 }
 
+// Ask which folders + access level. Returns { paths, viewOnly, role } or null.
+async function pickFolderAccess(kind, preselect) {
+  const folders = listFolders(session.root)
+  const sel = new Set((preselect || []).map((p) => p.replace(/\/\*\*$/, '')))
+  const picks = await vscode.window.showQuickPick(
+    [{ label: '$(globe) Whole project', v: '__all__', picked: !preselect }, ...folders.map((f) => ({ label: '$(folder) ' + f, v: f, picked: sel.has(f) }))],
+    { canPickMany: true, placeHolder: 'Pick the folder(s) they may see and work in (none = whole project)' }
+  )
+  if (!picks) return null
+  const accessPick = await vscode.window.showQuickPick([{ label: '$(edit) Can edit', v: false }, { label: '$(eye) View only', v: true }], { placeHolder: 'Access level' })
+  if (!accessPick) return null
+  const viewOnly = accessPick.v
+  const wholeRepo = picks.length === 0 || picks.some((p) => p.v === '__all__')
+  const paths = wholeRepo ? undefined : picks.filter((p) => p.v !== '__all__').map((p) => `${p.v}/**`)
+  const role = viewOnly ? 'reader' : (kind === 'human' ? 'writer' : 'agent')
+  return { paths, viewOnly, role }
+}
+
+// Mint + record an invite, copy its link, and announce. Returns the record.
+async function issueInvite(name, kind, { paths, viewOnly, role }) {
+  const { token, jti } = mintToken(session.keys, session.room, { name, kind, role, paths, owner: session.me })
+  const rec = { jti, name, kind, role, paths: paths || null, viewOnly, by: session.me, at: new Date().toTimeString().slice(0, 8) }
+  try { session.invites.set(jti, rec) } catch {} // live, for others
+  saveInvite(session.room, rec)                  // durable for the Manage panel
+  await vscode.env.clipboard.writeText(`${session.relay}|${session.room}|${token}`)
+  const scopeMsg = paths ? paths.join(', ') : 'the whole project'
+  logActivity(`Invite for ${name} (${role}) — ${scopeMsg}`)
+  vscode.window.showInformationMessage(`Hivecode: link for ${name} copied (${viewOnly ? 'view only' : 'can edit'} — ${scopeMsg}). Send it; they paste it into Join.`)
+  return rec
+}
+
 // Invite a person or AI to THIS secured room, scoped to chosen folders.
 async function inviteCommand() {
   if (!session || !session.keys) { vscode.window.showWarningMessage('Hivecode: host a secured session first ("Host a Secured Session").'); return }
@@ -338,36 +392,18 @@ async function inviteCommand() {
   if (!name) return
   const kindPick = await vscode.window.showQuickPick([{ label: 'AI agent', v: 'ai' }, { label: 'Human teammate', v: 'human' }], { placeHolder: 'What are you inviting?' })
   if (!kindPick) return
-  const folders = listFolders(session.root)
-  const picks = await vscode.window.showQuickPick(
-    [{ label: '$(globe) Whole project', v: '__all__', picked: false }, ...folders.map((f) => ({ label: '$(folder) ' + f, v: f }))],
-    { canPickMany: true, placeHolder: 'Pick the folder(s) they may see and work in (none = whole project)' }
-  )
-  if (!picks) return
-  const accessPick = await vscode.window.showQuickPick([{ label: '$(edit) Can edit', v: false }, { label: '$(eye) View only', v: true }], { placeHolder: 'Access level' })
-  if (!accessPick) return
-  const viewOnly = accessPick.v
-  const wholeRepo = picks.length === 0 || picks.some((p) => p.v === '__all__')
-  const paths = wholeRepo ? undefined : picks.filter((p) => p.v !== '__all__').map((p) => `${p.v}/**`)
-  const role = viewOnly ? 'reader' : (kindPick.v === 'human' ? 'writer' : 'agent')
-  const { token, jti } = mintToken(session.keys, session.room, { name, kind: kindPick.v, role, paths, owner: session.me })
-  const rec = { jti, name, kind: kindPick.v, role, paths: paths || null, viewOnly, by: session.me, at: new Date().toTimeString().slice(0, 8) }
-  try { session.invites.set(jti, rec) } catch {} // live, for others
-  saveInvite(session.room, rec)                  // durable, survives restart for the Manage panel
-  const link = `${session.relay}|${session.room}|${token}`
-  await vscode.env.clipboard.writeText(link)
-  logActivity(`Invited ${name} (${role}) to ${wholeRepo ? 'the whole project' : paths.join(', ')}`)
-  const scopeMsg = wholeRepo ? 'the whole project' : paths.join(', ')
-  vscode.window.showInformationMessage(`Hivecode: invite link for ${name} copied (${viewOnly ? 'view only' : 'can edit'} — ${scopeMsg}). Send it to them; they just paste it into Join.`)
+  const scope = await pickFolderAccess(kindPick.v)
+  if (!scope) return
+  await issueInvite(name, kindPick.v, scope)
 }
 
-// View who has access; revoke or re-scope anyone, anytime.
+// View who has access; revoke or RE-SCOPE anyone, anytime.
 async function manageCommand() {
   if (!session || !session.keys) { vscode.window.showWarningMessage('Hivecode: only the room host can manage access.'); return }
   const entries = loadInvites(session.room) // durable list (survives restarts)
   if (!entries.length) { vscode.window.showInformationMessage('Hivecode: no invites yet. Use "Invite to folders…".'); return }
   const pick = await vscode.window.showQuickPick(
-    entries.map((e) => ({
+    entries.filter((e) => !e.supersededBy).map((e) => ({
       label: `${e.revoked ? '$(circle-slash) ' : ''}${e.name} — ${e.viewOnly ? 'view only' : 'can edit'}`,
       description: (e.paths ? e.paths.join(', ') : 'whole project') + (e.revoked ? '  (REVOKED)' : ''),
       e,
@@ -375,18 +411,32 @@ async function manageCommand() {
     { placeHolder: 'Pick someone to manage' }
   )
   if (!pick) return
-  if (pick.e.revoked) { vscode.window.showInformationMessage(`${pick.e.name} is already revoked.`); return }
-  const action = await vscode.window.showQuickPick([{ label: '$(trash) Revoke access', v: 'revoke' }, { label: 'Cancel', v: 'cancel' }], { placeHolder: `Manage ${pick.e.name}` })
-  if (!action || action.v !== 'revoke') return
-  const res = await relayHttpPost('__hive/revoke', { room: session.room, token: session.ownerToken, jti: pick.e.jti })
-  if (res.ok) {
-    try { session.invites.set(pick.e.jti, { ...pick.e, revoked: true }) } catch {}
-    updateInvite(session.room, pick.e.jti, { revoked: true })
-    logActivity(`Revoked ${pick.e.name}`)
-    vscode.window.showInformationMessage(`Hivecode: ${pick.e.name}'s access revoked. They can no longer connect.`)
-  } else {
-    vscode.window.showErrorMessage(`Hivecode: revoke failed (relay said ${res.status || 'no response'}). Is the relay updated?`)
+  const e = pick.e
+  if (e.revoked) { vscode.window.showInformationMessage(`${e.name} is already revoked.`); return }
+  const action = await vscode.window.showQuickPick(
+    [{ label: '$(folder) Change folders / access', v: 'rescope' }, { label: '$(trash) Revoke access', v: 'revoke' }, { label: 'Cancel', v: 'cancel' }],
+    { placeHolder: `Manage ${e.name} (${e.paths ? e.paths.join(', ') : 'whole project'})` }
+  )
+  if (!action || action.v === 'cancel') return
+
+  // Both revoke and re-scope first cut off the OLD grant on the relay.
+  const revoke = await relayHttpPost('__hive/revoke', { room: session.room, token: session.ownerToken, jti: e.jti })
+  if (!revoke.ok) { vscode.window.showErrorMessage(`Hivecode: relay didn't accept the change (${revoke.status || 'no response'}). Is the relay updated?`); return }
+  try { session.invites.set(e.jti, { ...e, revoked: true }) } catch {}
+
+  if (action.v === 'revoke') {
+    updateInvite(session.room, e.jti, { revoked: true })
+    logActivity(`Revoked ${e.name}`)
+    vscode.window.showInformationMessage(`Hivecode: ${e.name}'s access revoked. They can no longer connect.`)
+    return
   }
+  // re-scope: pick new folders, issue a FRESH link (old one is now dead)
+  const scope = await pickFolderAccess(e.kind, e.paths || undefined)
+  if (!scope) return // they backed out — note the old grant is already revoked; they can re-invite
+  updateInvite(session.room, e.jti, { revoked: true })
+  const fresh = await issueInvite(e.name, e.kind, scope)
+  updateInvite(session.room, e.jti, { revoked: true, supersededBy: fresh.jti })
+  vscode.window.showInformationMessage(`Hivecode: ${e.name} re-scoped. Send them the NEW link (copied) — their old link no longer works.`)
 }
 
 // --- per-file-doc model + access helpers (mirrors token.js / sync.js) ---
@@ -466,6 +516,7 @@ function start(root, room, relay, linkToken) {
   const tasks = doc.getMap('tasks') // id -> { id, to, by, text, status, decidedBy, at }
   const owners = doc.getMap('owners') // aiName -> ownerHumanName
   const invites = doc.getMap('invites') // jti -> { name, kind, role, paths, viewOnly, by, at, revoked } (for the Manage panel)
+  const controls = doc.getMap('controls') // participantName -> { state:'running'|'paused', by, at } (mission control)
   const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
   const useRelay = relay || relayUrl()
   // token from the join link wins; else the hivecode.token setting (for people who
@@ -481,7 +532,7 @@ function start(root, room, relay, linkToken) {
   const cfg = vscode.workspace.getConfiguration('hivecode')
   const me = (cfg.get('displayName') || '').trim() || `user-${String(doc.clientID).slice(-4)}`
   const kind = cfg.get('participantKind') === 'ai' ? 'ai' : 'human'
-  provider.awareness.setLocalStateField('user', { name: me, kind })
+  provider.awareness.setLocalStateField('user', { name: me, kind, v: PROTOCOL_VERSION })
   const known = new Set()
   const mtimes = new Map()
   const bases = new Map()  // path -> last AGREED text (common ancestor for 3-way merge)
@@ -520,7 +571,7 @@ function start(root, room, relay, linkToken) {
   const EDIT_FRESH_MS = 15000
   let myEditing = null, editingClearTimer = null
   const warnedAt = new Map()
-  const setUserState = () => { try { provider.awareness.setLocalStateField('user', { name: me, kind, editing: myEditing || undefined }) } catch {} }
+  const setUserState = () => { try { provider.awareness.setLocalStateField('user', { name: me, kind, editing: myEditing || undefined, v: PROTOCOL_VERSION }) } catch {} }
   function markEditing(r) {
     myEditing = { file: r, at: Date.now() }; setUserState()
     if (editingClearTimer) clearTimeout(editingClearTimer)
@@ -757,6 +808,13 @@ function start(root, room, relay, linkToken) {
     tasks.set(id, { ...t, status: accept ? 'accepted' : 'denied', decidedBy: me })
     say(`task ${id} ${accept ? 'APPROVED' : 'denied'} by ${me}: "${t.text}"`)
   }
+  // mission control: pause/resume an agent (cooperative — honored via hive_wait + rules)
+  function control(target, state) {
+    if (!target) return
+    controls.set(target, { state: state === 'paused' ? 'paused' : 'running', by: me, at: fmtTime() })
+    say(`${me} ${state === 'paused' ? '⏸ paused' : '▶ resumed'} ${target}`)
+  }
+  controls.observe(() => pushState())
   function renderTasks() {
     const all = [...tasks.values()].sort((a, b) => (a.at < b.at ? 1 : -1))
     const out = ['# Hive Tasks — directed work + approvals.', '']
@@ -853,10 +911,17 @@ function start(root, room, relay, linkToken) {
     }
     writeToDisk('HIVE_MEMBERS.md', out.join('\n') + '\n')
   }
+  const versionWarned = new Set()
   provider.awareness.on('change', () => {
     for (const s of provider.awareness.getStates().values()) {
-      const n = s.user && s.user.name
+      const u = s.user
+      const n = u && u.name
       if (n && !seenMembers.has(n)) { seenMembers.add(n); logActivity(`${n} joined`) }
+      // warn once if a peer is on an incompatible build (else they'd silently not sync)
+      if (u && n && n !== me && u.v !== PROTOCOL_VERSION && !versionWarned.has(n)) {
+        versionWarned.add(n)
+        vscode.window.showWarningMessage(`Hivecode: ${n} is on an incompatible version (${u.v ? 'v' + u.v : 'older build'}). Files won't sync with them until everyone updates to the latest extension.`)
+      }
     }
     renderMembers()
     pushState()
@@ -880,7 +945,7 @@ function start(root, room, relay, linkToken) {
   })
 
   // expose chat/task actions to the panel handler
-  session = { doc, provider, root, scanTimer: null, room, relay: useRelay, me, chat, tasks, owners, invites, say, assign, decide, stopActivity: () => { if (editingClearTimer) clearTimeout(editingClearTimer); for (const r of [...fileDocs.keys()]) closeFile(r) } }
+  session = { doc, provider, root, scanTimer: null, room, relay: useRelay, me, chat, tasks, owners, invites, controls, say, assign, decide, control, stopActivity: () => { if (editingClearTimer) clearTimeout(editingClearTimer); for (const r of [...fileDocs.keys()]) closeFile(r) } }
   pushState()
 }
 
@@ -898,6 +963,11 @@ class HivecodeViewProvider {
       else if (m.type === 'join') joinSessionWithLink(m.link || '')
       else if (m.type === 'leave') leaveSession()
       else if (m.type === 'endRoom') endRoom()
+      else if (m.type === 'pause' && session) session.control(m.name, 'paused')
+      else if (m.type === 'resume' && session) session.control(m.name, 'running')
+      else if (m.type === 'reassign' && session) {
+        vscode.window.showInputBox({ prompt: `New task for ${m.name}`, placeHolder: 'e.g. switch to fixing the login bug' }).then((txt) => { if (txt && session) session.assign(m.name, txt) })
+      }
       else if (m.type === 'copy') {
         vscode.env.clipboard.writeText(m.text || '')
         vscode.window.showInformationMessage('Hivecode: join link copied.')
@@ -917,61 +987,112 @@ class HivecodeViewProvider {
 function getHtml() {
   return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
-  body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); padding: 10px; font-size: 13px; }
-  h3 { margin: 14px 0 6px; font-size: 11px; text-transform: uppercase; opacity: .7; letter-spacing: .5px; }
-  button { width: 100%; padding: 7px; margin: 4px 0; border: none; border-radius: 4px; cursor: pointer;
-           background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-  button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
-  button:hover { opacity: .9; }
-  input { width: 100%; box-sizing: border-box; padding: 6px; margin: 4px 0;
-          background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-          border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; }
-  .status { padding: 6px 8px; border-radius: 4px; background: var(--vscode-editor-inactiveSelectionBackground); }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
-  .on { background:#3fb950; } .off { background:#888; }
-  .member { padding: 3px 0; }
-  .badge { font-size: 10px; padding: 1px 5px; border-radius: 8px; margin-left: 6px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-  .editing { font-size: 10px; margin-left: 6px; opacity: 0.8; color: var(--vscode-charts-green, #3fb950); }
-  .link { word-break: break-all; font-size: 11px; padding: 6px; background: var(--vscode-textBlockQuote-background); border-radius: 4px; }
-  .log { font-size: 11px; line-height: 1.5; max-height: 220px; overflow:auto; opacity:.85; }
-  .log div { padding: 1px 0; border-bottom: 1px solid var(--vscode-editorWidget-border, transparent); }
-  .hidden { display: none; }
-  .mini { width: auto; padding: 1px 7px; margin: 0 2px; display: inline-block; }
+  :root{
+    --bg:#0c0e13;--panel:#141823;--panel2:#1a1f2b;--line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.14);
+    --ink:#eef1f6;--mut:#8b94a7;--dim:#5b6470;--acc:#ffb224;--acc2:#ff8a3d;--accdim:rgba(255,178,36,.14);
+    --good:#3fd99a;--blue:#5b9dff;--bad:#ff6b6b;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:12px;background:var(--bg);color:var(--ink);font-size:13px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",var(--vscode-font-family),sans-serif;line-height:1.45}
+  ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:8px}
+  .brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;letter-spacing:-.01em;margin:0 0 12px}
+  .brand svg{width:20px;height:20px}
+  h3{margin:18px 0 8px;font-size:10.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--dim);font-weight:700;display:flex;align-items:center;gap:7px}
+  h3 .ct{margin-left:auto;background:rgba(255,255,255,.06);color:var(--mut);border-radius:20px;padding:0 7px;font-size:10px;letter-spacing:0}
+  button{width:100%;padding:9px 12px;margin:5px 0;border:1px solid transparent;border-radius:9px;cursor:pointer;
+    font-family:inherit;font-size:12.5px;font-weight:600;transition:.15s;color:var(--ink);background:rgba(255,255,255,.04);border-color:var(--line2)}
+  button:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.22)}
+  button.primary{background:linear-gradient(180deg,#ffc24d,var(--acc2));color:#241400;border-color:transparent;
+    box-shadow:0 1px 0 rgba(255,255,255,.3) inset}
+  button.primary:hover{filter:brightness(1.06)}
+  button.danger{color:var(--mut)}button.danger:hover{border-color:var(--bad);color:#ffb3b3;background:rgba(255,107,107,.08)}
+  input{width:100%;padding:9px 11px;margin:5px 0;background:#0a0c10;color:var(--ink);font-size:12.5px;
+    border:1px solid var(--line2);border-radius:9px;font-family:inherit}
+  input:focus{outline:none;border-color:var(--acc)}
+  input.mono{font-family:var(--mono);font-size:11.5px}
+
+  .status{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:10px;font-size:12.5px;font-weight:600;
+    background:var(--panel);border:1px solid var(--line)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+  .on{background:var(--good);box-shadow:0 0 8px var(--good)}.off{background:var(--dim)}
+  .status .rm{color:var(--mut);font-weight:400;font-family:var(--mono);font-size:11px;margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}
+
+  .linkbox{display:flex;gap:6px;align-items:center}
+  .link{flex:1;word-break:break-all;font-size:10.5px;font-family:var(--mono);padding:8px 10px;background:#0a0c10;
+    border:1px solid var(--line);border-radius:9px;color:var(--mut);max-height:60px;overflow:auto}
+  .icp{width:auto;padding:8px 10px;margin:0;flex:0 0 auto}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:11px;margin-bottom:8px}
+  .mtop{display:flex;align-items:center;gap:9px}
+  .av{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;font-size:11px;color:#0a0c10;flex:0 0 auto}
+  .mname{font-weight:650;font-size:13px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .kind{font-size:9px;font-weight:700;padding:1px 6px;border-radius:5px;text-transform:uppercase;letter-spacing:.04em}
+  .kind.ai{background:var(--accdim);color:var(--acc)}.kind.human{background:rgba(63,217,154,.14);color:var(--good)}
+  .pz{font-size:9px;font-weight:700;color:var(--acc);background:var(--accdim);padding:1px 6px;border-radius:5px}
+  .editing{font-size:10.5px;color:var(--dim);font-family:var(--mono);margin-top:3px}
+  .editing b{color:var(--blue);font-weight:600}
+  .sub{font-size:11px;color:var(--mut);margin-top:5px}
+  .ctl{display:flex;gap:6px;margin-top:9px}
+  .ctl button{margin:0;padding:5px 8px;font-size:11px}
+
+  .task .tflow{font-size:10px;color:var(--dim);margin-bottom:4px}.task .tflow b{color:var(--mut)}
+  .tst{font-size:9px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.04em;display:inline-block;margin-top:7px}
+  .tst.pending{background:var(--accdim);color:var(--acc)}.tst.accepted,.tst.done{background:rgba(63,217,154,.14);color:var(--good)}.tst.denied{background:rgba(255,107,107,.14);color:#ff9a9a}
+  .tact{display:flex;gap:6px;margin-top:8px}.tact button{margin:0;padding:5px 8px;font-size:11px}
+  .tact .ok{color:var(--good)}.tact .ok:hover{border-color:var(--good)}
+  .await{font-size:10.5px;color:var(--dim);margin-top:7px}
+
+  .chat{max-height:200px;overflow:auto}
+  .cmsg{padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+  .cmsg:last-child{border:0}
+  .cby{font-weight:650;font-size:11.5px}.ctext{color:var(--mut);margin-top:1px;word-break:break-word}
+  .log{font-size:11px;font-family:var(--mono);line-height:1.6;max-height:160px;overflow:auto;color:var(--mut)}
+  .log div{padding:2px 0;border-bottom:1px solid var(--line)}
+  .empty{color:var(--dim);font-size:11.5px;text-align:center;padding:14px 8px}
+  .note{font-size:10.5px;color:var(--dim);margin:6px 2px 0;line-height:1.5}
+  .note b{color:var(--acc)}
+  .hidden{display:none}
 </style></head><body>
-  <div class="status"><span id="dot" class="dot off"></span><span id="statustext">Not in a session</span></div>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffc24d"/><stop offset="1" stop-color="#ff8a3d"/></linearGradient></defs><path d="M12 2.6l8.2 4.75v9.3L12 21.4 3.8 16.65v-9.3z" stroke="url(#lg)" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 7.4l4 2.3v4.6L12 16.6 8 14.3V9.7z" fill="url(#lg)" fill-opacity=".25" stroke="url(#lg)" stroke-width="1.4" stroke-linejoin="round"/></svg>
+    Hivecode
+  </div>
+  <div class="status"><span id="dot" class="dot off"></span><span id="statustext">Not in a session</span><span id="roomlbl" class="rm"></span></div>
 
   <div id="offControls">
-    <button id="hostSecured">Host a Secured Session</button>
-    <button id="host" class="secondary">Host an Open Session</button>
+    <button id="hostSecured" class="primary" style="margin-top:12px">Host a Secured Session</button>
+    <button id="host">Host an Open Session</button>
     <h3>Join a session</h3>
-    <input id="link" placeholder="paste join link here" />
-    <button id="join" class="secondary">Join</button>
+    <input id="link" class="mono" placeholder="paste join link here" />
+    <button id="join">Join room</button>
   </div>
 
   <div id="onControls" class="hidden">
     <div id="inviteControls" class="hidden">
       <h3>People &amp; access</h3>
-      <button id="invite">Invite to folders…</button>
-      <button id="manage" class="secondary">Manage access</button>
+      <button id="invite" class="primary">Invite to folders…</button>
+      <button id="manage">Manage access</button>
     </div>
-    <h3>Your join link</h3>
-    <div id="hostlink" class="link"></div>
-    <button id="copy" class="secondary">Copy join link</button>
-    <button id="leave" class="secondary">Leave (keeps the room — reopen to resume)</button>
-    <button id="endRoom">End room &amp; forget</button>
+    <h3 id="linklbl">Your join link</h3>
+    <div class="linkbox"><div id="hostlink" class="link"></div><button id="copy" class="icp" title="Copy">Copy</button></div>
+    <div id="linknote" class="note hidden"></div>
+    <button id="leave" style="margin-top:8px">Leave (keeps the room)</button>
+    <button id="endRoom" class="danger">End room &amp; forget</button>
   </div>
 
-  <h3>Members (<span id="count">0</span>)</h3>
+  <h3>Members <span id="count" class="ct">0</span></h3>
   <div id="members"></div>
 
   <div id="coord" class="hidden">
-    <h3>Tasks</h3>
-    <div id="tasks" class="log"></div>
+    <h3>Tasks <span id="taskct" class="ct">0</span></h3>
+    <div id="tasks"></div>
 
-    <h3>Chat</h3>
-    <div id="chat" class="log"></div>
-    <input id="msg" placeholder="message… or @Name do X to assign a task" />
-    <button id="sendmsg" class="secondary">Send</button>
+    <h3>Chat <span id="chatct" class="ct">0</span></h3>
+    <div id="chat" class="chat"></div>
+    <input id="msg" placeholder="message… or @Name do X to assign" />
+    <button id="sendmsg" class="primary">Send</button>
   </div>
 
   <h3>Activity</h3>
@@ -981,6 +1102,9 @@ function getHtml() {
   const vscode = acquireVsCodeApi();
   const $ = (id) => document.getElementById(id);
   const send = (type, extra) => vscode.postMessage(Object.assign({ type }, extra || {}));
+  const COLORS = ['#3fd99a','#ffb224','#5b9dff','#a78bfa','#ff6fae','#ff8a3d','#4dd0e1','#f06292'];
+  const colorFor = (s) => { let h=0; for (const c of String(s||'')) h=(h*31+c.charCodeAt(0))>>>0; return COLORS[h%COLORS.length]; };
+  const initials = (s) => String(s||'?').replace(/[^a-zA-Z0-9]/g,'').slice(0,2).toUpperCase() || '?';
   $('host').onclick = () => send('host');
   $('hostSecured').onclick = () => send('hostSecured');
   $('invite').onclick = () => send('invite');
@@ -997,39 +1121,79 @@ function getHtml() {
     const s = e.data;
     if (!s || s.type !== 'state') return;
     $('dot').className = 'dot ' + (s.connected ? 'on' : 'off');
-    $('statustext').textContent = s.connected ? ('In room ' + (s.room || '')) : 'Not in a session';
+    $('statustext').textContent = s.connected ? 'Connected' : 'Not in a session';
+    $('roomlbl').textContent = s.connected ? (s.room || '') : '';
     $('offControls').className = s.connected ? 'hidden' : '';
     $('onControls').className = s.connected ? '' : 'hidden';
     $('inviteControls').className = s.canInvite ? '' : 'hidden';
     $('coord').className = s.connected ? '' : 'hidden';
-    $('hostlink').textContent = s.link || '';
+    // Secured rooms need a token in the link; show the owner's full-access link so
+    // Copy always yields a WORKING link. Open rooms use the plain relay|room link.
+    if (s.secured && s.ownerLink) {
+      $('hostlink').textContent = s.ownerLink;
+      $('linklbl').textContent = 'Your owner link (full access)';
+      $('linknote').className = 'note';
+      $('linknote').innerHTML = 'Use this to open the <b>Control Room</b> or rejoin. Don\\'t share it — invite others with scoped access via “Invite to folders…”.';
+    } else {
+      $('hostlink').textContent = s.link || '';
+      $('linklbl').textContent = 'Your join link';
+      $('linknote').className = 'note hidden';
+    }
     $('count').textContent = (s.members || []).length;
-    $('members').innerHTML = (s.members || []).map((m) =>
-      '<div class="member">' + escapeHtml(m.name) + '<span class="badge">' + (m.kind === 'ai' ? 'AI' : 'human') + '</span>' + (m.editing ? '<span class="editing">editing ' + escapeHtml(m.editing) + '</span>' : '') + '</div>'
-    ).join('') || '<div style="opacity:.5">no one yet</div>';
-    $('chat').innerHTML = (s.chat || []).map((m) =>
-      '<div><b>' + escapeHtml(m.by) + '</b> <span class="badge">' + (m.kind === 'ai' ? 'AI' : 'human') + '</span>: ' + escapeHtml(m.text) + '</div>'
-    ).join('') || '<div style="opacity:.5">no messages yet</div>';
-    $('chat').scrollTop = $('chat').scrollHeight;
-    const owners = s.owners || {};
-    $('tasks').innerHTML = (s.tasks || []).map((t) => {
-      let row = '<div>[' + escapeHtml(t.status) + '] <b>' + escapeHtml(t.by) + '</b> → ' + escapeHtml(t.to) + ': ' + escapeHtml(t.text);
-      // Only the OWNER of the target AI may approve. If the target has no owner
-      // recorded, fall back to the target themselves (a human accepting their own task).
-      const approver = owners[t.to] || t.to;
-      const iMayApprove = s.me && s.me === approver;
-      if (t.status === 'pending') {
-        if (iMayApprove) row += ' <button class="mini" data-act="approve" data-id="' + escapeHtml(t.id) + '">approve</button>'
-          + '<button class="mini secondary" data-act="deny" data-id="' + escapeHtml(t.id) + '">deny</button>';
-        else row += ' <span style="opacity:.6">— awaiting ' + escapeHtml(approver) + '</span>';
+    $('members').innerHTML = (s.members || []).map((m) => {
+      const isAI = m.kind === 'ai', me = s.me;
+      let row = '<div class="card"><div class="mtop">'
+        + '<div class="av" style="background:' + colorFor(m.name) + '">' + initials(m.name) + '</div>'
+        + '<div style="min-width:0"><div class="mname">' + escapeHtml(m.name)
+        + '<span class="kind ' + (isAI?'ai':'human') + '">' + (isAI?'AI':'human') + '</span>'
+        + (m.paused ? '<span class="pz">paused</span>' : '') + '</div>'
+        + (m.editing ? '<div class="editing">editing <b>' + escapeHtml(m.editing) + '</b></div>' : '<div class="editing">idle</div>')
+        + '</div></div>';
+      if (m.task) row += '<div class="sub">' + (m.task.status === 'pending' ? '⌛ ' : '▸ ') + escapeHtml(m.task.text) + '</div>';
+      if (isAI && m.name !== me) {
+        row += '<div class="ctl">'
+          + (m.paused
+            ? '<button data-mact="resume" data-name="' + escapeHtml(m.name) + '">▸ Resume</button>'
+            : '<button data-mact="pause" data-name="' + escapeHtml(m.name) + '">⏸ Pause</button>')
+          + '<button data-mact="reassign" data-name="' + escapeHtml(m.name) + '">Reassign</button>'
+          + '</div>';
       }
       return row + '</div>';
-    }).join('') || '<div style="opacity:.5">no tasks</div>';
-    $('log').innerHTML = (s.activity || []).map((l) => '<div>' + escapeHtml(l) + '</div>').join('');
+    }).join('') || '<div class="empty">No one connected yet.</div>';
+
+    $('chatct').textContent = (s.chat || []).length;
+    $('chat').innerHTML = (s.chat || []).map((m) =>
+      '<div class="cmsg"><span class="cby" style="color:' + colorFor(m.by) + '">' + escapeHtml(m.by) + '</span> '
+      + '<span class="kind ' + (m.kind==='ai'?'ai':'human') + '">' + (m.kind==='ai'?'AI':'human') + '</span>'
+      + '<div class="ctext">' + escapeHtml(m.text) + '</div></div>'
+    ).join('') || '<div class="empty">No messages yet.</div>';
+    $('chat').scrollTop = $('chat').scrollHeight;
+
+    const owners = s.owners || {};
+    $('taskct').textContent = (s.tasks || []).length;
+    $('tasks').innerHTML = (s.tasks || []).map((t) => {
+      const st = (t.status||'pending').toLowerCase();
+      const approver = owners[t.to] || t.to;
+      const iMayApprove = s.me && s.me === approver;
+      let row = '<div class="card task"><div class="tflow"><b>' + escapeHtml(t.by) + '</b> → <b>' + escapeHtml(t.to) + '</b></div>'
+        + '<div>' + escapeHtml(t.text) + '</div><span class="tst ' + st + '">' + escapeHtml(st) + '</span>';
+      if (st === 'pending') {
+        if (iMayApprove) row += '<div class="tact"><button class="ok" data-act="approve" data-id="' + escapeHtml(t.id) + '">Approve</button>'
+          + '<button class="danger" data-act="deny" data-id="' + escapeHtml(t.id) + '">Deny</button></div>';
+        else row += '<div class="await">awaiting ' + escapeHtml(approver) + '</div>';
+      }
+      return row + '</div>';
+    }).join('') || '<div class="empty">No tasks yet.</div>';
+
+    $('log').innerHTML = (s.activity || []).map((l) => '<div>' + escapeHtml(l) + '</div>').join('') || '<div class="empty">No activity yet.</div>';
   });
   $('tasks').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-act]'); if (!b) return;
     send(b.dataset.act, { id: b.dataset.id });
+  });
+  $('members').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mact]'); if (!b) return;
+    send(b.dataset.mact, { name: b.dataset.name });
   });
   function escapeHtml(x){ return String(x).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   send('ready');
