@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Hivecode">
+  <defs>
+    <linearGradient id="spark" x1="6" y1="10" x2="94" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4285F4"/>
+      <stop offset=".5" stop-color="#9B72CB"/>
+      <stop offset="1" stop-color="#D96570"/>
+    </linearGradient>
+    <mask id="cut">
+      <rect width="100" height="100" fill="black"/>
+      <polygon points="92,50 71,86.4 29,86.4 8,50 29,13.6 71,13.6" fill="white"/>
+      <g fill="black">
+        <rect x="46" y="33" width="8" height="34" rx="2.5"/>
+        <rect x="39" y="33" width="22" height="6.5" rx="2.5"/>
+        <rect x="39" y="60.5" width="22" height="6.5" rx="2.5"/>
+      </g>
+    </mask>
+  </defs>
+  <polygon points="92,50 71,86.4 29,86.4 8,50 29,13.6 71,13.6" fill="url(#spark)" mask="url(#cut)"/>
+</svg>

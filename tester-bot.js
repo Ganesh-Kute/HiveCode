@@ -26,8 +26,16 @@ const OWNER = 'user-8166'
 const { relay, room, token } = parseLink(LINK)
 if (!room) { console.error('no room in link'); process.exit(1) }
 
-// keywords that mean "this message is for me / wants a test run"
-const TRIGGERS = [/backendbot/i, /@backend/i, /\btester\b/i, /\btests?\b/i, /\brun\b/i, /\bverify\b/i, /\bcheck\b/i]
+// What counts as "this message is for me": my exact name, "@<name>" / "@<prefix>",
+// plus a few work verbs so directed tasks aren't missed. Name-derived so the bot
+// works for any identity (testai, backend_AI, ...).
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const namePrefix = ME.split(/[_-]/)[0]            // "backend" from "backend_AI"
+const TRIGGERS = [
+  new RegExp(esc(ME), 'i'),                        // full name
+  new RegExp('@' + esc(namePrefix), 'i'),          // @backend / @testai
+  /\btests?\b/i, /\brun\b/i, /\bverify\b/i, /\bcheck\b/i,
+]
 const directedAtMe = (text) => TRIGGERS.some((re) => re.test(text || ''))
 
 const hive = startSync({ relay, room, dir: DIR, name: ME, kind: 'ai', owner: OWNER, token, log: () => {} })

@@ -214,13 +214,18 @@ const server = http.createServer((req, res) => {
     const STATIC = {
       '/': 'index.html', '/index.html': 'index.html',
       '/control': 'control.html', '/control.html': 'control.html',
+      '/favicon.ico': 'favicon.ico',
+      '/favicon-32.png': 'favicon-32.png',
+      '/apple-touch-icon.png': 'apple-touch-icon.png',
     }
+    const TYPES = { '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon', '.png': 'image/png', '.svg': 'image/svg+xml' }
     const file = STATIC[(req.url || '').split('?')[0]]
     if (file) {
       try {
-        const html = fs.readFileSync(path.join(__dirname, 'public', file))
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300' })
-        return res.end(html)
+        const body = fs.readFileSync(path.join(__dirname, 'public', file))
+        const ext = file.slice(file.lastIndexOf('.'))
+        res.writeHead(200, { 'Content-Type': TYPES[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=300' })
+        return res.end(body)
       } catch { /* fall through to the plain status text */ }
     }
   }

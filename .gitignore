@@ -1,6 +1,9 @@
 # dependencies (reinstalled on deploy)
 node_modules/
 
+# archived local clutter (moved out of the working tree; safe to delete, kept for retrieval)
+_archive/
+
 # local test artifacts
 *.log
 *.txt

@@ -1,10 +1,42 @@
 {
-  "name": "livecode",
-  "version": "0.1.0",
-  "description": "Multiplayer for AI coding — humans and AI agents edit one project live, no git in the loop.",
+  "name": "hivecode-mcp",
+  "version": "0.6.0",
+  "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/GSK7024/livecode",
+  "bugs": {
+    "url": "https://github.com/GSK7024/livecode/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GSK7024/livecode"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "multi-agent",
+    "claude",
+    "collaboration",
+    "realtime",
+    "yjs"
+  ],
   "bin": {
     "hivecode-mcp": "./hive-mcp.js"
+  },
+  "files": [
+    "hive-mcp.js",
+    "sync.js",
+    "core.js",
+    "token.js",
+    "HIVE_RULES.md",
+    "MCP.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "start": "node server.js",
