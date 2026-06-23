@@ -22,7 +22,7 @@ import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
 import ignore from 'ignore'
 import { applyDiff, merge3, summarizeChange, changedRange, hasConflictMarkers } from './core.js'
-import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, isSafeRelPath } from './token.js'
+import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -184,12 +184,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // try to open files I'm not granted — the relay would reject them anyway, but
   // this avoids the churn and keeps out-of-scope files off my disk entirely.
   // undefined = no path restriction (open room or whole-room grant).
-  let myPaths
-  if (token) { const pl = decodeUnsafe(token); const sc = pl && scopeForRoom(pl, room); myPaths = sc ? sc.paths : undefined }
+  let myPaths, myScope = null
+  if (token) { const pl = decodeUnsafe(token); const sc = pl && scopeForRoom(pl, room); myScope = sc || null; myPaths = sc ? sc.paths : undefined }
   // canOpen gates BOTH scope (am I granted this path?) AND safety (is the path
   // safe to write to disk — not a "../" traversal, absolute path, or control-char
   // injection a malicious participant slipped into the shared manifest?).
   const canOpen = (relPath) => isSafeRelPath(relPath) && pathAllowed(myPaths, relPath)
+  // canWrite: of the files I can SEE, which may I PUSH (edit/create in the room)?
+  // A view-only file (in my read scope but not my writePaths) is pull-only — I keep
+  // a local copy synced FROM the room but never publish my changes to it. No token
+  // or a full-write grant => everything I can open is writable (back-compat).
+  const canWrite = (relPath) => !myScope || writeAllowed(myScope, relPath)
 
   const known = new Set()
   const mtimes = new Map()
@@ -238,6 +243,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const exists = fs.existsSync(full)
     const disk = exists ? readText(full) : null
     if (exists && disk === null) return // present on disk but binary/too-large to represent — leave it untouched (never clobber with stale doc text)
+    // View-only file: never PUSH our local change/creation (the relay would drop it
+    // anyway — it connects this file-room as a reader). Keep disk in sync with the
+    // shared copy if we already have it; a brand-new local-only file just stays local
+    // and is never registered in the manifest. Reads (origin !== 'local') flow on.
+    if (origin === 'local' && !canWrite(relPath)) {
+      const fe2 = fileDocs.get(relPath)
+      if (fe2 && fe2.synced) { const dt = fe2.text.toString(); if (dt && dt !== disk) writeToDisk(relPath, dt) }
+      return
+    }
     // Per-file doc gating: we must know the RELAY's content before touching disk.
     // Until the file-doc has synced, an empty Y.Text means "not pulled yet", not
     // "empty file" — acting now would re-seed from disk and fork the CRDT history

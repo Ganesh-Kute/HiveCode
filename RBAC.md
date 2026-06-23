@@ -95,6 +95,18 @@ Open rooms need no token; existing setups keep working.
     syncing peer-to-peer over BroadcastChannel and bypassing access control.
   - ▢ **remaining:** a web UI/API for orgs/repos/grants, SSO/SCIM, hosted RS256
     issuer, audit export. (Tokens are minted by the `hive-token` CLI today.)
+- **Phase 5 — per-file write scope ✅** one principal can **see** some folders but
+  only **edit** a subset. A scope adds an optional `writePaths` (a subset of
+  `paths`): a file you can see is read-only unless it also matches `writePaths`.
+  The relay enforces it by connecting an out-of-write-scope file-room **as a
+  reader** (so Phase-4 read-only enforcement drops its writes) while the parent
+  room stays writable for coordination; clients additionally never *push* changes
+  to view-only files (so they can't even register a new file there). Proven in
+  `hive-writescope-test.js`: an agent with `paths=[backend,frontend]`,
+  `writePaths=[backend]` edits backend, sees frontend, and its frontend
+  writes/creates are dropped. Minted via the extension's "Invite to folders…"
+  (pick edit folders, then optional view-only folders) or
+  `hive-invite.js <name> "backend/**" --read "frontend/**"`.
 
 ### Known limits (honest)
 - **Filenames, not contents, can leak:** the parent `manifest` lists every path, so

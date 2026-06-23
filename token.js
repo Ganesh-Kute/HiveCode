@@ -146,6 +146,26 @@ export function pathAllowed(globs, relPath) {
   return inAllow && !matches(neg)
 }
 
+// Phase 5: within a scope, which VISIBLE paths are also WRITABLE. `writePaths` is
+// an optional subset of `paths`: a file the scope can see is read-only unless it
+// ALSO matches writePaths. This is what lets one agent read frontend/ for context
+// but only edit backend/. Semantics, chosen to fail safe:
+//   - role 'reader'        -> never writable (whole grant is view-only)
+//   - no writePaths key     -> every visible path is writable (back-compat: a plain
+//                              writer/agent edits everything it can see)
+//   - writePaths: []        -> nothing writable (explicit view-only everywhere)
+//   - writePaths: [globs]   -> writable IFF the path matches the globs
+// The relay enforces this by connecting an out-of-write-scope file-room as a
+// reader (so makeReadOnly drops its writes); clients use it for read-only UX.
+export function writeAllowed(scope, relPath) {
+  if (!scope) return false
+  if ((scope.role || 'writer') === 'reader') return false
+  const wp = scope.writePaths
+  if (wp == null) return true
+  if (!Array.isArray(wp) || wp.length === 0) return false
+  return pathAllowed(wp, relPath)
+}
+
 // --- self-certifying secured rooms (no server-side key registry, no secret files) ---
 // A secured room's id embeds a fingerprint of the OWNER's public key:
 //     hs_<fp>_<rand>        fp = base64url(sha256(spki-DER)).slice(0, 22)

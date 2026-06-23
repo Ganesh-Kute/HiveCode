@@ -97,7 +97,8 @@ function activate(context) {
     vscode.commands.registerCommand('hivecode.invite', inviteCommand),
     vscode.commands.registerCommand('hivecode.manage', manageCommand),
     vscode.commands.registerCommand('hivecode.leave', leaveSession),
-    vscode.commands.registerCommand('hivecode.endRoom', endRoom)
+    vscode.commands.registerCommand('hivecode.endRoom', endRoom),
+    vscode.commands.registerCommand('hivecode.controlRoom', openControlRoom)
   )
 
   // Auto-resume the LAST room for this folder, so closing/reopening the IDE drops
@@ -180,6 +181,30 @@ function setStatus(state, people) {
 
 function relayUrl() {
   return vscode.workspace.getConfiguration('hivecode').get('relayUrl')
+}
+
+// Build a Control Room URL that AUTO-CONNECTS to THIS room (link baked into the #
+// hash, so no copy-paste of tokens). Secured rooms include the owner token.
+function controlRoomUrl() {
+  if (!session || !session.relay || !session.room) return null
+  const link = session.secured && session.ownerToken
+    ? `${session.relay}|${session.room}|${session.ownerToken}`
+    : `${session.relay}|${session.room}`
+  const httpHost = session.relay.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://')
+  return `${httpHost}/control#${link}`
+}
+
+// One-click: open the browser Control Room already connected to this room, or copy
+// the link to open it on a phone. Replaces the old copy-the-token-by-hand flow.
+async function openControlRoom() {
+  if (!session) { vscode.window.showWarningMessage('Hivecode: host or join a session first, then open the Control Room.'); return }
+  const url = controlRoomUrl()
+  if (!url) { vscode.window.showWarningMessage('Hivecode: no active room link yet.'); return }
+  const pick = await vscode.window.showInformationMessage(
+    'Hivecode Control Room — watch & control this room from any browser or your phone.',
+    'Open in browser', 'Copy link (for phone)')
+  if (pick === 'Open in browser') vscode.env.openExternal(vscode.Uri.parse(url))
+  else if (pick === 'Copy link (for phone)') { await vscode.env.clipboard.writeText(url); vscode.window.showInformationMessage('Hivecode: Control Room link copied — open it in your phone’s browser.') }
 }
 
 function workspaceRoot() {
@@ -354,34 +379,65 @@ function listFolders(root, maxDepth = 4) {
   return out.sort()
 }
 
-// Ask which folders + access level. Returns { paths, viewOnly, role } or null.
+// Ask which folders they may EDIT, then optionally which extra folders they may
+// only VIEW (read-only). Returns { paths, writePaths, viewOnly, role } or null.
+//   paths      = what they can SEE  (edit folders + view-only folders)
+//   writePaths = the subset they may EDIT (rest of `paths` is read-only)
 async function pickFolderAccess(kind, preselect) {
   const folders = listFolders(session.root)
   const sel = new Set((preselect || []).map((p) => p.replace(/\/\*\*$/, '')))
-  const picks = await vscode.window.showQuickPick(
+  const editPicks = await vscode.window.showQuickPick(
     [{ label: '$(globe) Whole project', v: '__all__', picked: !preselect }, ...folders.map((f) => ({ label: '$(folder) ' + f, v: f, picked: sel.has(f) }))],
-    { canPickMany: true, placeHolder: 'Pick the folder(s) they may see and work in (none = whole project)' }
+    { canPickMany: true, placeHolder: 'Folders they can EDIT (pick none + “View only” next = pure viewer)' }
   )
-  if (!picks) return null
-  const accessPick = await vscode.window.showQuickPick([{ label: '$(edit) Can edit', v: false }, { label: '$(eye) View only', v: true }], { placeHolder: 'Access level' })
-  if (!accessPick) return null
-  const viewOnly = accessPick.v
-  const wholeRepo = picks.length === 0 || picks.some((p) => p.v === '__all__')
-  const paths = wholeRepo ? undefined : picks.filter((p) => p.v !== '__all__').map((p) => `${p.v}/**`)
-  const role = viewOnly ? 'reader' : (kind === 'human' ? 'writer' : 'agent')
-  return { paths, viewOnly, role }
+  if (!editPicks) return null
+  const editWhole = editPicks.some((p) => p.v === '__all__')
+  const editFolders = editPicks.filter((p) => p.v !== '__all__').map((p) => p.v)
+
+  // Optional: additional folders they may SEE but not edit. Offer only folders not
+  // already granted for edit (and skip the question entirely if they took the whole repo).
+  let viewFolders = []
+  if (!editWhole) {
+    const remaining = folders.filter((f) => !editFolders.includes(f))
+    if (remaining.length) {
+      const viewPicks = await vscode.window.showQuickPick(
+        [{ label: '$(circle-slash) None — only the folders above', v: '__none__', picked: true }, ...remaining.map((f) => ({ label: '$(eye) ' + f, v: f }))],
+        { canPickMany: true, placeHolder: 'Read-only folders they can SEE for context (optional)' }
+      )
+      if (!viewPicks) return null
+      viewFolders = viewPicks.filter((p) => p.v !== '__none__').map((p) => p.v)
+    }
+  }
+
+  // Whole-project edit grant: simplest case — full access, no path restriction.
+  if (editWhole) return { paths: undefined, writePaths: undefined, viewOnly: false, role: kind === 'human' ? 'writer' : 'agent' }
+
+  const editPaths = editFolders.map((f) => `${f}/**`)
+  const viewPaths = viewFolders.map((f) => `${f}/**`)
+  const paths = [...editPaths, ...viewPaths]                 // everything they can see
+  if (!editPaths.length) {                                   // nothing editable => pure reader
+    return { paths: paths.length ? paths : undefined, writePaths: undefined, viewOnly: true, role: 'reader' }
+  }
+  // Mixed grant: writePaths restricts editing to editPaths; rest of `paths` is read-only.
+  // (If they granted no view-only folders, writePaths === paths, i.e. edit all they see.)
+  const writePaths = viewPaths.length ? editPaths : undefined
+  return { paths, writePaths, viewOnly: false, role: kind === 'human' ? 'writer' : 'agent' }
 }
 
 // Mint + record an invite, copy its link, and announce. Returns the record.
-async function issueInvite(name, kind, { paths, viewOnly, role }) {
-  const { token, jti } = mintToken(session.keys, session.room, { name, kind, role, paths, owner: session.me })
-  const rec = { jti, name, kind, role, paths: paths || null, viewOnly, by: session.me, at: new Date().toTimeString().slice(0, 8) }
+async function issueInvite(name, kind, { paths, writePaths, viewOnly, role }) {
+  const { token, jti } = mintToken(session.keys, session.room, { name, kind, role, paths, writePaths, owner: session.me })
+  const rec = { jti, name, kind, role, paths: paths || null, writePaths: writePaths || null, viewOnly, by: session.me, at: new Date().toTimeString().slice(0, 8) }
   try { session.invites.set(jti, rec) } catch {} // live, for others
   saveInvite(session.room, rec)                  // durable for the Manage panel
   await vscode.env.clipboard.writeText(`${session.relay}|${session.room}|${token}`)
-  const scopeMsg = paths ? paths.join(', ') : 'the whole project'
+  // Describe the grant: "edit X; view Y", or just the scope when there's no split.
+  let scopeMsg
+  if (writePaths && writePaths.length) { const view = (paths || []).filter((p) => !writePaths.includes(p)); scopeMsg = `edit ${writePaths.join(', ')}${view.length ? `; view ${view.join(', ')}` : ''}` }
+  else scopeMsg = paths ? paths.join(', ') : 'the whole project'
+  const access = viewOnly ? 'view only' : (writePaths && writePaths.length ? 'mixed edit/view' : 'can edit')
   logActivity(`Invite for ${name} (${role}) — ${scopeMsg}`)
-  vscode.window.showInformationMessage(`Hivecode: link for ${name} copied (${viewOnly ? 'view only' : 'can edit'} — ${scopeMsg}). Send it; they paste it into Join.`)
+  vscode.window.showInformationMessage(`Hivecode: link for ${name} copied (${access} — ${scopeMsg}). Send it; they paste it into Join.`)
   return rec
 }
 
@@ -459,6 +515,17 @@ function pathAllowed(globs, relPath) {
   const matches = (pats) => pats.length > 0 && ignore().add(pats).ignores(relPath)
   return (pos.length === 0 || matches(pos)) && !matches(neg)
 }
+// Within a scope, which VISIBLE paths are also WRITABLE. writePaths is a subset of
+// paths; a file you can see is read-only unless it matches writePaths. (Mirrors
+// token.js writeAllowed — keep them in sync.) No writePaths => edit all you see.
+function writeAllowed(scope, relPath) {
+  if (!scope) return false
+  if ((scope.role || 'writer') === 'reader') return false
+  const wp = scope.writePaths
+  if (wp == null) return true
+  if (!Array.isArray(wp) || wp.length === 0) return false
+  return pathAllowed(wp, relPath)
+}
 // Remote-supplied path safe to write to disk? Rejects "../" traversal, absolute
 // paths, drive letters, UNC, control-char injection — so a malicious manifest
 // entry can't make this window write outside its project root. (Mirrors token.js.)
@@ -481,13 +548,15 @@ function keyFingerprint(publicKeyPem) {
 }
 const makeSecuredRoomId = (publicKeyPem, rand) => { const fp = keyFingerprint(publicKeyPem); return fp ? `hs_${fp}_${rand}` : null }
 // Mint a scoped token for a secured room, signed by its private key.
-function mintToken(keys, room, { name, kind, role, paths, owner, ttlSec = 7 * 86400 }) {
+function mintToken(keys, room, { name, kind, role, paths, writePaths, owner, ttlSec = 7 * 86400 }) {
   const now = Math.floor(Date.now() / 1000)
   const jti = 'jti-' + crypto.randomBytes(9).toString('base64url')
   const payload = {
     iss: 'hivecode', sub: name, name, kind, ...(owner ? { owner } : {}),
     pk: keys.publicKey, // self-certifying: the relay binds this to the room id
-    scopes: [{ room, role, ...(paths && paths.length ? { paths } : {}) }],
+    // paths = what they can SEE; writePaths = the subset they may EDIT (the rest of
+    // what they see is read-only). Omit writePaths to make everything visible editable.
+    scopes: [{ room, role, ...(paths && paths.length ? { paths } : {}), ...(writePaths && writePaths.length ? { writePaths } : {}) }],
     iat: now, exp: now + ttlSec, jti,
   }
   return { token: signRS256(payload, keys.privateKey), jti }
@@ -560,11 +629,15 @@ function start(root, room, relay, linkToken) {
   function closeFile(r) { const e = fileDocs.get(r); if (!e) return; try { e.provider.destroy() } catch {} try { e.doc.destroy() } catch {} fileDocs.delete(r) }
   const fileText = (r) => { const e = fileDocs.get(r); return e ? e.text : null }
   // This window's own path scope (from its token), so it only opens files it may.
-  let myPaths
-  if (tokenCfg) { const pl = decodeUnsafe(tokenCfg); const sc = pl && scopeForRoom(pl, room); myPaths = sc ? sc.paths : undefined }
+  let myPaths, myScope = null
+  if (tokenCfg) { const pl = decodeUnsafe(tokenCfg); const sc = pl && scopeForRoom(pl, room); myScope = sc || null; myPaths = sc ? sc.paths : undefined }
   // gates BOTH scope (am I granted this path?) and safety (no traversal/control-char
   // path a malicious participant slipped into the shared manifest).
   const canOpen = (r) => isSafeRelPath(r) && pathAllowed(myPaths, r)
+  // canWrite: of the files I can SEE, which may I PUSH? A view-only file (visible
+  // but not in my writePaths) is pull-only — I sync it FROM the room but never
+  // publish my edits. No token / full-write grant => everything I open is writable.
+  const canWrite = (r) => !myScope || writeAllowed(myScope, r)
 
   const seenMembers = new Set()
   // --- live activity: broadcast which file this window is editing + warn on co-editing ---
@@ -694,6 +767,14 @@ function start(root, room, relay, linkToken) {
     const exists = fs.existsSync(full)
     const disk = exists ? readText(full) : null
     if (exists && disk === null) return // present but binary/too-large — leave it untouched (never clobber with stale doc text)
+    // View-only file: never PUSH our local change/creation (the relay drops it — it
+    // connects this file-room as a reader). Keep disk synced with the shared copy if
+    // we have it; a new local-only file just stays local. Reads (origin!=='local') flow.
+    if (origin === 'local' && !canWrite(r)) {
+      const fe2 = fileDocs.get(r)
+      if (fe2 && fe2.synced) { const dt = fe2.text.toString(); if (dt && dt !== disk) writeToDisk(r, dt) }
+      return
+    }
     // Per-file gating: know the RELAY's content before touching disk. Until the
     // file-doc has synced, an empty Y.Text means "not pulled yet", not "empty file"
     // — acting now would re-seed from disk and fork the CRDT history (garbled
@@ -963,6 +1044,7 @@ class HivecodeViewProvider {
       else if (m.type === 'join') joinSessionWithLink(m.link || '')
       else if (m.type === 'leave') leaveSession()
       else if (m.type === 'endRoom') endRoom()
+      else if (m.type === 'controlRoom') openControlRoom()
       else if (m.type === 'pause' && session) session.control(m.name, 'paused')
       else if (m.type === 'resume' && session) session.control(m.name, 'running')
       else if (m.type === 'reassign' && session) {
@@ -1078,6 +1160,7 @@ function getHtml() {
     <h3 id="linklbl">Your join link</h3>
     <div class="linkbox"><div id="hostlink" class="link"></div><button id="copy" class="icp" title="Copy">Copy</button></div>
     <div id="linknote" class="note hidden"></div>
+    <button id="controlRoom" class="primary" style="margin-top:10px">🖥 Open Control Room (browser / phone)</button>
     <button id="leave" style="margin-top:8px">Leave (keeps the room)</button>
     <button id="endRoom" class="danger">End room &amp; forget</button>
   </div>
@@ -1111,6 +1194,7 @@ function getHtml() {
   $('manage').onclick = () => send('manage');
   $('leave').onclick = () => send('leave');
   $('endRoom').onclick = () => send('endRoom');
+  $('controlRoom').onclick = () => send('controlRoom');
   $('join').onclick = () => send('join', { link: $('link').value });
   $('copy').onclick = () => send('copy', { text: $('hostlink').textContent });
   const sendMsg = () => { const v = $('msg').value.trim(); if (v) { send('say', { text: v }); $('msg').value = ''; } };

@@ -23,7 +23,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import * as Y from 'yjs'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence } from 'y-websocket/bin/utils'
-import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
+import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import * as decoding from 'lib0/decoding'
 
 // Enforce a read-only connection: drop the client's inbound SYNC writes (sync
@@ -117,11 +117,16 @@ function scopeCheck(p, room) {
   const sc = scopeForRoom(p, base)
   if (!sc) return { ok: false, code: 403, reason: 'room not in token scope' }
   const filePath = pathOf(room)
+  let role = sc.role || 'writer'
   if (filePath !== null) {
     if (!isSafeRelPath(filePath)) return { ok: false, code: 403, reason: 'malformed file path' }
     if (!pathAllowed(sc.paths, filePath)) return { ok: false, code: 403, reason: `path "${filePath}" not in scope` }
+    // Per-file write control: a file this scope can SEE but not edit connects as a
+    // reader, so makeReadOnly() drops its update messages. (The base/parent room is
+    // left at the scope's role so coordination — chat/board/tasks — still works.)
+    if (role !== 'reader' && !writeAllowed(sc, filePath)) role = 'reader'
   }
-  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner }, role: sc.role || 'writer', path: filePath }
+  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner }, role, path: filePath }
 }
 
 // Decide whether a connection to `room` carrying `token` is allowed.

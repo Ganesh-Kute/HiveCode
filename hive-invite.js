@@ -8,8 +8,10 @@
 //   node hive-invite.js FrontBot "frontend/**,!**/*.env" # ...but never .env files
 //   node hive-invite.js Reviewer "**" --role reader      # read-only, whole repo
 //   node hive-invite.js Bob --kind human --role writer    # a human teammate, full repo
+//   node hive-invite.js ApiBot "backend/**" --read "frontend/**"  # EDIT backend, VIEW frontend
 //
-// Usage: node hive-invite.js <name> [paths]
+// Usage: node hive-invite.js <name> [edit-paths]
+//   --read  <globs>   extra folders they can SEE but NOT edit (read-only context)
 //   --role  agent|reader|writer|maintainer   (default agent)
 //   --kind  ai|human                          (default ai)
 //   --owner <human>   the human who may approve this agent's tasks
@@ -43,8 +45,13 @@ if (!name) {
   console.error('Usage: node hive-invite.js <name> [paths]\n  e.g.  node hive-invite.js FrontBot "frontend/**"')
   process.exit(1)
 }
-const pathsArg = pos[1] || args.paths || ''
-const paths = pathsArg && pathsArg !== '**' ? pathsArg.split(',').map((s) => s.trim()).filter(Boolean) : undefined
+const splitGlobs = (s) => (s && s !== '**' ? s.split(',').map((x) => x.trim()).filter(Boolean) : undefined)
+const editPaths = splitGlobs(pos[1] || args.paths || '')
+const readPaths = splitGlobs(args.read === 'true' ? '' : args.read || '') // extra view-only folders
+// paths = everything visible (edit + read-only); writePaths = the editable subset.
+// With no --read, paths === editPaths and writePaths is omitted (edit all you see).
+const paths = readPaths ? [...(editPaths || []), ...readPaths] : editPaths
+const writePaths = readPaths ? (editPaths || []) : undefined
 const role = args.role || 'agent'
 const kind = args.kind || 'ai'
 const ttl = String(args.ttl || '7d')
@@ -55,10 +62,13 @@ const now = Math.floor(Date.now() / 1000)
 const tok = sign({
   iss: 'hivecode', sub: name, name, kind,
   ...(args.owner ? { owner: args.owner } : {}),
-  scopes: [{ room, role, ...(paths ? { paths } : {}) }],
+  scopes: [{ room, role, ...(paths ? { paths } : {}), ...(writePaths && writePaths.length ? { writePaths } : {}) }],
   iat: now, exp: now + ttlSec, jti: 'jti-' + crypto.randomBytes(9).toString('base64url'),
 }, { secret })
 
-console.error(`invite for "${name}" (${kind}/${role}) — ${paths ? 'scoped to: ' + paths.join(', ') : 'WHOLE repo'}; expires ${new Date((now + ttlSec) * 1000).toISOString()}`)
+const scopeDesc = writePaths && writePaths.length
+  ? `edit: ${writePaths.join(', ')}; view-only: ${readPaths.join(', ')}`
+  : (paths ? 'scoped to: ' + paths.join(', ') : 'WHOLE repo')
+console.error(`invite for "${name}" (${kind}/${role}) — ${scopeDesc}; expires ${new Date((now + ttlSec) * 1000).toISOString()}`)
 console.error('paste this link into the extension Join box, or pass to hive_join({ link }):\n')
 console.log(`${relay}|${room}|${tok}`)

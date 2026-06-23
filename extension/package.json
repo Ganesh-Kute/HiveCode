@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — multiplayer for AI coding agents",
   "description": "Run humans and multiple AI agents on one live codebase, with folder-scoped permissions and approval gates. No git push/pull.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "hivecode",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -81,6 +81,10 @@
       {
         "command": "hivecode.manage",
         "title": "Hivecode: Manage access"
+      },
+      {
+        "command": "hivecode.controlRoom",
+        "title": "Hivecode: Open Control Room (browser / phone)"
       },
       {
         "command": "hivecode.leave",
