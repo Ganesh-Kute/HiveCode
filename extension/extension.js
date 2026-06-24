@@ -275,9 +275,27 @@ function pushState() {
 }
 
 // --- session actions ---
+// Ask once "what should the crew call you?" and remember it (global setting), so a
+// person shows up by their real name everywhere instead of an auto "user-xxxx".
+async function ensureDisplayName() {
+  const cfg = vscode.workspace.getConfiguration('hivecode')
+  let name = (cfg.get('displayName') || '').trim()
+  if (name) return name
+  name = (await vscode.window.showInputBox({
+    title: 'Hivecode',
+    prompt: 'What should the crew call you? (shown to everyone in the room)',
+    placeHolder: 'e.g. Aniket, Rahul, Ganesh',
+    ignoreFocusOut: true,
+    validateInput: (v) => (v && v.trim().length ? null : 'Please enter a name'),
+  }) || '').trim()
+  if (name) { try { await cfg.update('displayName', name, vscode.ConfigurationTarget.Global) } catch {} }
+  return name
+}
+
 async function hostSession() {
   const root = workspaceRoot()
   if (!root || session) return
+  await ensureDisplayName()
   // reuse this folder's existing OPEN room if one was saved (so reopening keeps the
   // same link); only make a fresh one if there's none.
   const prev = loadRoomCfg(root)
@@ -298,9 +316,10 @@ async function joinSessionPrompt() {
   if (link) joinSessionWithLink(link)
 }
 
-function joinSessionWithLink(link) {
+async function joinSessionWithLink(link) {
   const root = workspaceRoot()
   if (!root || session || !link) return
+  await ensureDisplayName()
   // link shapes: "relay|room" (open) or "relay|room|token" (secured — token baked in).
   const [relay, room, token] = link.includes('|') ? link.split('|') : [relayUrl(), link, '']
   const r = room.trim(), rl = relay.trim(), tk = (token || '').trim()
@@ -330,6 +349,7 @@ async function hostSecuredSession() {
   const root = workspaceRoot()
   if (!root) return
   if (session) { vscode.window.showInformationMessage('Hivecode: already in a session — leave it first.'); return }
+  await ensureDisplayName()
   // Reuse this folder's existing secured room + key if we have one (so re-hosting
   // after a close/leave keeps the SAME room — all previously-sent invite links stay
   // valid). Only generate a fresh keypair when there's none.

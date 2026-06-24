@@ -211,6 +211,7 @@ const ago=(t)=>{if(!t)return'';const d=Math.max(0,Date.now()-t),m=Math.floor(d/6
 const efile=(e)=>e?(typeof e==='object'?e.file:e):null
 const err=(m)=>{$('err').textContent=m||''}
 const genId=()=>'t'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36)
+const tstr=()=>new Date().toTimeString().slice(0,8) // "HH:MM:SS" — matches the editor/MCP clients
 
 let Y=null,WS=null,provider=null,doc=null,timer=null,me='Control',meKind='human'
 function b64urlDecode(s){s=String(s).replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';return atob(s)}
@@ -224,8 +225,13 @@ async function connect(raw){
   const p=parseLink(sanitize(raw))
   if(!/^wss?:\/\//.test(p.relay)||!p.room){err('That link looks off. Expected:  wss://relay|room|token');return}
   if(isSecured(p.room)&&!p.token){err('Secured room — your link is missing the token (after the second “|”).');return}
+  // You join under the name YOU pick (remembered for next time) — never an auto id,
+  // so you show up as one person everywhere (editor + browser), not two members.
+  me=($('uname').value||'').trim()||localStorage.getItem('hc-name')||''
+  if(!me){err('What should the crew call you? Enter a name above to join.');$('uname').focus();return}
+  try{localStorage.setItem('hc-name',me)}catch{}
   if(!(await ensureLib()))return
-  const claim=decodeJwt(p.token)||{};me=($('uname').value||'').trim()||claim.name||'Control';meKind=claim.kind||'human'
+  const claim=decodeJwt(p.token)||{};meKind=claim.kind||'human'
   doc=new Y.Doc()
   const opts={connect:true};if(p.token)opts.params={token:p.token}
   try{provider=new WS(p.relay,p.room,doc,opts)}catch(e){err('Could not connect: '+e.message);return}
@@ -272,10 +278,10 @@ function render(){
 
   const msgs=window._h.chat.toArray().slice(-150),cw=$('chat'),bot=cw.scrollHeight-cw.scrollTop-cw.clientHeight<70
   $('cc').textContent=msgs.length
-  cw.innerHTML=msgs.length?msgs.map(m=>`<div class="cmsg"><div class="av" style="background:${colorFor(m.by)}">${initials(m.by)}</div><div class="cbody"><div class="cby">${esc(m.by||'?')}<span class="tag ${m.kind==='ai'?'ai':'human'}">${m.kind==='ai'?'AI':'HUMAN'}</span><span class="ctime">${ago(m.at)}</span></div><div class="ctxt">${esc(m.text)}</div></div></div>`).join(''):'<div class="empty">Quiet so far.<br>Say hello, or @name to put an agent on something.</div>'
+  cw.innerHTML=msgs.length?msgs.map(m=>`<div class="cmsg"><div class="av" style="background:${colorFor(m.by)}">${initials(m.by)}</div><div class="cbody"><div class="cby">${esc(m.by||'?')}<span class="tag ${m.kind==='ai'?'ai':'human'}">${m.kind==='ai'?'AI':'HUMAN'}</span><span class="ctime">${typeof m.at==='number'?ago(m.at):esc(m.at||'')}</span></div><div class="ctxt">${esc(m.text)}</div></div></div>`).join(''):'<div class="empty">Quiet so far.<br>Say hello, or @name to put an agent on something.</div>'
   if(bot)cw.scrollTop=cw.scrollHeight
 
-  const tasks=Object.values(window._h.tasks.toJSON()).sort((a,b)=>(b.at||0)-(a.at||0))
+  const tasks=Object.values(window._h.tasks.toJSON()).sort((a,b)=>String(b.at||'').localeCompare(String(a.at||'')))
   $('tc').textContent=tasks.length
   $('tasks').innerHTML=tasks.length?tasks.map(t=>{const s=(t.status||'pending').toLowerCase()
     const acts=s==='pending'?`<div class="tact"><button class="ok" data-tact="accept" data-id="${esc(t.id)}">Approve</button><button class="bad" data-tact="deny" data-id="${esc(t.id)}">Deny</button></div>`:''
@@ -290,12 +296,28 @@ function render(){
 document.addEventListener('click',(e)=>{
   const b=e.target.closest('button');if(!b||!window._h)return
   const{controls,tasks}=window._h
-  if(b.dataset.act==='pause')controls.set(b.dataset.name,{state:'paused',by:me,at:Date.now()})
-  if(b.dataset.act==='resume')controls.set(b.dataset.name,{state:'running',by:me,at:Date.now()})
-  if(b.dataset.act==='reassign'){const txt=prompt('New task for '+b.dataset.name+':');if(txt&&txt.trim()){const id=genId();tasks.set(id,{id,to:b.dataset.name,by:me,text:txt.trim(),status:'accepted',at:Date.now()})}}
-  if(b.dataset.tact){const t=tasks.get(b.dataset.id);if(t)tasks.set(b.dataset.id,{...t,status:b.dataset.tact==='accept'?'accepted':'denied',decidedBy:me,at:Date.now()})}
+  const pushChat=(text)=>window._h.chat.push([{by:me,kind:meKind,at:tstr(),text}]) // announce so others see it + agents wake
+  if(b.dataset.act==='pause'){controls.set(b.dataset.name,{state:'paused',by:me,at:tstr()});pushChat(`${me} ⏸ paused ${b.dataset.name}`)}
+  if(b.dataset.act==='resume'){controls.set(b.dataset.name,{state:'running',by:me,at:tstr()});pushChat(`${me} ▶ resumed ${b.dataset.name}`)}
+  if(b.dataset.act==='reassign'){const txt=prompt('New task for '+b.dataset.name+':');if(txt&&txt.trim()){const id=genId(),to=b.dataset.name;tasks.set(id,{id,to,by:me,byKind:meKind,text:txt.trim(),status:'accepted',decidedBy:me,at:tstr()});pushChat(`@${to}: ${txt.trim()}  (task ${id} — proceeding)`)}}
+  if(b.dataset.tact){const t=tasks.get(b.dataset.id);if(t){const ok=b.dataset.tact==='accept';tasks.set(b.dataset.id,{...t,status:ok?'accepted':'denied',decidedBy:me});pushChat(`task ${t.id} ${ok?'APPROVED':'denied'} by ${me}: "${t.text}"`)}}
 })
-function sendChat(){const i=$('chatInput'),v=i.value.trim();if(!v||!window._h)return;const m=v.match(/^@(\S+)\s+(.+)/);if(m){const id=genId();window._h.tasks.set(id,{id,to:m[1],by:me,text:m[2],status:'accepted',at:Date.now()})}else{window._h.chat.push([{by:me,kind:meKind,at:Date.now(),text:v}])}i.value=''}
+function sendChat(){
+  const i=$('chatInput'),v=i.value.trim();if(!v||!window._h)return
+  const at=tstr(),m=v.match(/^@(\S+)\s+(.+)/)
+  if(m){
+    // Mirror the editor/MCP assign(): create the task AND post a chat ping so the
+    // agent (which watches chat) actually wakes. Owner-approval rule respected.
+    const to=m[1],text=m[2],id=genId()
+    const ownerOf=(doc.getMap('owners').toJSON()||{})[to]
+    const auto=!ownerOf||me===ownerOf
+    window._h.tasks.set(id,{id,to,by:me,byKind:meKind,text,status:auto?'accepted':'pending',decidedBy:auto?me:null,at})
+    window._h.chat.push([{by:me,kind:meKind,at,text:`@${to}: ${text}  (task ${id} — ${auto?'proceeding':(ownerOf+' must approve')})`}])
+  }else{
+    window._h.chat.push([{by:me,kind:meKind,at,text:v}])
+  }
+  i.value=''
+}
 $('send').addEventListener('click',sendChat)
 $('chatInput').addEventListener('keydown',(e)=>{if(e.key==='Enter')sendChat()})
 $('connect').addEventListener('click',()=>connect($('link').value.trim()))
@@ -306,8 +328,9 @@ $('leave').addEventListener('click',()=>{try{if(window._tick)clearInterval(windo
 const applyTheme=(t)=>{document.body.classList.toggle('light',t==='light');$('theme').textContent=t==='light'?'🌙':'☀️'}
 let theme=localStorage.getItem('hc-theme')||'dark';applyTheme(theme)
 $('theme').addEventListener('click',()=>{theme=theme==='light'?'dark':'light';localStorage.setItem('hc-theme',theme);applyTheme(theme)})
+$('uname').value=$('uname').value||localStorage.getItem('hc-name')||''
 const h=sanitize(decodeURIComponent(location.hash.slice(1)))
-if(h&&h.includes('|')){$('link').value=h;const c=decodeJwt(parseLink(h).token);if(c&&c.name&&!$('uname').value)$('uname').value=c.name;connect(h)}
+if(h&&h.includes('|')){$('link').value=h;if($('uname').value.trim())connect(h);else{err('Pick the name the crew should see, then Join.');$('uname').focus()}}
 </script>
 </body>
 </html>
