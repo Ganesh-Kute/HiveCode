@@ -28,7 +28,39 @@ const ALWAYS_IGNORE = [
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 ]
 // generated/coordination files — never synced as ordinary files
-const SKIP = new Set(['HIVE_BOARD.md', 'HIVE_CHAT.md', 'HIVE_TASKS.md', 'HIVE_RULES.md', 'HIVE_MEMBERS.md', '.hive.json'])
+const SKIP = new Set(['HIVE_BOARD.md', 'HIVE_CHAT.md', 'HIVE_TASKS.md', 'HIVE_RULES.md', 'HIVE_MEMBERS.md', 'HIVE_FOR_AGENTS.md', '.hive.json'])
+// Written into the room folder on every sync (like HIVE_RULES). An AI agent that
+// opens this project reads it to learn it's a Hivecode room and how to JOIN —
+// crucially via .hive.json (already in the folder), so no human has to paste a link.
+const AGENT_MANUAL_TEXT = `# Hivecode — for AI agents working in this folder
+
+This project is part of a live Hivecode room: humans and AI agents editing the same
+codebase together, in real time, with no git push/pull. If you are an AI assistant
+asked to collaborate here, follow this.
+
+## Join the room
+1. If you do NOT have a \`hive_join\` tool and you can run terminal commands, register
+   the Hivecode MCP server, then reload so the tools load:
+     claude mcp add hivecode -- npx -y hivecode-mcp
+2. Call: hive_join({ dir: ".", name: "<your name>", owner: "<the human you work for>" })
+   The room, relay, and token are already saved in .hive.json in this folder, so you
+   do NOT need a link — hive_join reads them automatically.
+3. Read the HIVE_RULES it returns, and follow them.
+
+## Work the loop
+- hive_read_chat() and hive_read_board() BEFORE editing — see what others are doing.
+- hive_say("taking X: doing Y") to announce intent before you edit.
+- Edit ONLY inside the folders you were granted. Edits merge live; rewrites are logged.
+- Block on hive_wait(); when it returns approved work, do it, then hive_complete(id).
+- A task aimed at you stays PENDING until your owner approves it — act only on 'accepted'.
+
+## Rules of the road
+- Stay in your lane — never edit folders you weren't granted.
+- Announce before editing; coordinate in chat; ask before anything destructive in others' areas.
+- If a human PAUSES you, finish your current step and stop until resumed.
+- Resolve <<<<<<< conflict markers properly — never blindly overwrite.
+- A human can ROLL BACK your changes at any time; that's normal — re-read and continue.
+`
 const HIVE_RULES_TEXT = `# HIVE RULES — read this first. Everyone in this room (human or AI) follows these.
 
 You are in a Hivecode room: humans and AI agents edit ONE project together live.
@@ -1193,6 +1225,7 @@ function start(root, room, relay, linkToken) {
   provider.on('sync', (s) => {
     if (!s) return
     writeToDisk('HIVE_RULES.md', HIVE_RULES_TEXT) // the law is always present in the room
+    writeToDisk('HIVE_FOR_AGENTS.md', AGENT_MANUAL_TEXT) // so an agent opening this folder learns how to join + behave
     for (const key of manifest.keys()) if (canOpen(key)) openFile(key) // connect to every file I'm granted
     if (board.size) renderBoard() // surface rewrites logged before we joined
     if (chat.length) renderChat()

@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — multiplayer for AI coding agents",
   "description": "Run humans and multiple AI agents on one live codebase, with folder-scoped permissions and approval gates. No git push/pull.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "publisher": "hivecode",
   "license": "MIT",
   "icon": "resources/icon.png",

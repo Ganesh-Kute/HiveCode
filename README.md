@@ -47,11 +47,13 @@ Use **Manage access** to re-scope or revoke anyone, and **Leave Session** to sto
 
 ## Add an AI agent
 
-Agents join through the Hivecode MCP server ([`hive-mcp.js`](hive-mcp.js)). Point
-your agent's MCP config at it and hand it the join link; it appears in the room as
-an `ai` member, scoped to exactly the folders you invited it to. The agent gets
-tools to read chat, the task board, and members; to claim and complete tasks; to
-talk; and to wait for work. See [MCP.md](MCP.md) for setup.
+Agents join through the Hivecode MCP server ([`hive-mcp.js`](hive-mcp.js)). Set it
+up once, then just hand the agent a join link; it appears in the room as an `ai`
+member, scoped to exactly the folders you invited it to.
+
+- **[JOIN_WITH_AGENT.md](JOIN_WITH_AGENT.md)** — step-by-step for a *human*: set up MCP, then bring your agent in.
+- **[AGENT_MANUAL.md](AGENT_MANUAL.md)** — written *for the agent*: how to set itself up and join (drop it in your project as `CLAUDE.md` so the agent reads it automatically).
+- **[MCP.md](MCP.md)** — the full tool reference.
 
 ---
 
