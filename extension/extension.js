@@ -98,7 +98,11 @@ function activate(context) {
     vscode.commands.registerCommand('hivecode.manage', manageCommand),
     vscode.commands.registerCommand('hivecode.leave', leaveSession),
     vscode.commands.registerCommand('hivecode.endRoom', endRoom),
-    vscode.commands.registerCommand('hivecode.controlRoom', openControlRoom)
+    vscode.commands.registerCommand('hivecode.controlRoom', openControlRoom),
+    vscode.commands.registerCommand('hivecode.restore', restoreCommand),
+    vscode.commands.registerCommand('hivecode.revertAgent', revertAgentCommand),
+    vscode.commands.registerCommand('hivecode.undo', () => { const r = session && session.undoLast(); if (r && r.error) vscode.window.showInformationMessage('Hivecode: ' + r.error) }),
+    vscode.commands.registerCommand('hivecode.redo', () => { const r = session && session.redoLast(); if (r && r.error) vscode.window.showInformationMessage('Hivecode: ' + r.error) })
   )
 
   // Auto-resume the LAST room for this folder, so closing/reopening the IDE drops
@@ -217,6 +221,39 @@ function workspaceRoot() {
     return null
   }
   return folders[0].uri.fsPath
+}
+
+// Pick a file from the restore-point timeline, then a point, then roll it back.
+async function restoreCommand() {
+  if (!session) { vscode.window.showWarningMessage('Hivecode: host or join a session first.'); return }
+  const all = session.listHistory({ limit: 500 })
+  if (!all.length) { vscode.window.showInformationMessage('Hivecode: no restore points yet — they appear as files change.'); return }
+  const files = [...new Set(all.map((e) => e.file))]
+  const file = await vscode.window.showQuickPick(files, { title: 'Restore — pick a file', placeHolder: 'Which file do you want to roll back?' })
+  if (!file) return
+  const pts = session.listHistory({ file, limit: 100 })
+  const labelFor = (k) => ({ base: 'created', auto: 'edited', manual: 'checkpoint', restore: 'restore point' }[k] || 'edited')
+  const pick = await vscode.window.showQuickPick(
+    pts.map((e) => ({ label: `${e.at}  ·  ${labelFor(e.kind)}${e.churn ? '  ·  ' + e.churn : ''}`, description: `by ${e.by}`, id: e.id })),
+    { title: `Restore ${file}`, placeHolder: 'Pick the point to restore to (current state is saved first, so it’s undoable)' })
+  if (!pick) return
+  const r = session.restore(pick.id)
+  if (r && r.error) vscode.window.showErrorMessage('Hivecode: ' + r.error)
+  else if (r && r.unchanged) vscode.window.showInformationMessage(`Hivecode: ${file} is already at that state.`)
+  else vscode.window.showInformationMessage(`Hivecode: restored ${file}. (Undo it from History if needed.)`)
+}
+
+// Roll back everything one participant changed — the "undo that agent" button.
+async function revertAgentCommand() {
+  if (!session) { vscode.window.showWarningMessage('Hivecode: host or join a session first.'); return }
+  const authors = [...new Set(session.listHistory({ limit: 500 }).map((e) => e.by))].filter((n) => n && n !== session.me)
+  if (!authors.length) { vscode.window.showInformationMessage('Hivecode: no one else’s changes to revert yet.'); return }
+  const who = await vscode.window.showQuickPick(authors, { title: 'Revert an author’s changes', placeHolder: 'Whose changes should be rolled back?' })
+  if (!who) return
+  const yes = await vscode.window.showWarningMessage(`Revert ALL of ${who}'s changes? Each file they touched rolls back to before they edited it. Their current versions are saved first, so this is undoable.`, { modal: true }, 'Revert')
+  if (yes !== 'Revert') return
+  const r = session.revertAuthor(who)
+  vscode.window.showInformationMessage(`Hivecode: reverted ${who}'s changes across ${r.reverted || 0} file(s).`)
 }
 
 // --- activity log + state broadcast to the panel ---
@@ -609,6 +646,10 @@ function start(root, room, relay, linkToken) {
   const owners = doc.getMap('owners') // aiName -> ownerHumanName
   const invites = doc.getMap('invites') // jti -> { name, kind, role, paths, viewOnly, by, at, revoked } (for the Manage panel)
   const controls = doc.getMap('controls') // participantName -> { state:'running'|'paused', by, at } (mission control)
+  // ROLLBACK timeline index (metadata only — NO content, which is scope-sensitive
+  // and lives in each file's own doc). Same exposure as the manifest. Lets the
+  // History panel / Control Room show restore points across the room.
+  const historyMeta = doc.getMap('history')
   const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
   const useRelay = relay || relayUrl()
   // token from the join link wins; else the hivecode.token setting (for people who
@@ -643,13 +684,17 @@ function start(root, room, relay, linkToken) {
     // synced flips true after the first relay sync — until then an empty doc means
     // "not pulled yet", not "new file"; we must not re-seed from disk (would fork
     // the CRDT history and garble the file on rejoin).
-    e = { doc: fdoc, provider: fprovider, text, synced: false }
+    // `snap` (this file's own doc) holds restore points; `undo` undoes this client's
+    // own local edits (Level-0 rollback).
+    const snap = fdoc.getMap('snap')
+    const undo = new Y.UndoManager(text, { captureTimeout: 350 })
+    e = { doc: fdoc, provider: fprovider, text, snap, undo, synced: false }
     fileDocs.set(r, e)
     text.observe((_ev, txn) => { if (!txn.local) reconcile(r, 'remote') })
     fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(r, 'remote') } })
     return e
   }
-  function closeFile(r) { const e = fileDocs.get(r); if (!e) return; try { e.provider.destroy() } catch {} try { e.doc.destroy() } catch {} fileDocs.delete(r) }
+  function closeFile(r) { const e = fileDocs.get(r); if (!e) return; try { e.undo && e.undo.destroy() } catch {} try { e.provider.destroy() } catch {} try { e.doc.destroy() } catch {} fileDocs.delete(r) }
   const fileText = (r) => { const e = fileDocs.get(r); return e ? e.text : null }
   // This window's own path scope (from its token), so it only opens files it may.
   let myPaths, myScope = null
@@ -813,6 +858,7 @@ function start(root, room, relay, linkToken) {
       manifest.set(r, 1)
       known.add(r); bases.set(r, disk); forkBases.set(r, disk)
       try { mtimes.set(r, fs.statSync(full).mtimeMs) } catch {}
+      captureSnapshot(r, disk, me, { force: true, kind: 'base', label: 'created' }); snappedBase.add(r)
       return
     }
     const yt = fe.text
@@ -820,6 +866,7 @@ function start(root, room, relay, linkToken) {
     if (disk === docText) {
       known.add(r); bases.set(r, disk)
       if (!forkBases.has(r) || origin === 'local') forkBases.set(r, disk)
+      if (!snappedBase.has(r) && disk) { captureSnapshot(r, disk, me, { force: true, kind: 'base', label: 'baseline' }); snappedBase.add(r) }
       return
     }
     const base = bases.has(r) ? bases.get(r) : disk
@@ -841,6 +888,13 @@ function start(root, room, relay, linkToken) {
       else { res = merge3(fork, disk, docText); reAdded = !res.conflict && res.text !== disk }
     } else {
       res = merge3(base, disk, docText)
+    }
+    // Snapshot the state JUST BEFORE this author's edit (local origin only — so each
+    // change is recorded once, by its true author), then apply the merge.
+    if (origin === 'local' && res.text !== docText) {
+      const sc = summarizeChange(docText, res.text)
+      captureSnapshot(r, docText, me, { force: sc.isRewrite, churn: `${sc.changedLines}/${sc.totalLines} lines` })
+      lastLocalEdit = r
     }
     fileDocs.get(r).doc.transact(() => applyDiff(yt, res.text)) // file-doc txn -> its observer ignores
     if (res.text !== disk) writeToDisk(r, res.text)
@@ -872,6 +926,107 @@ function start(root, room, relay, linkToken) {
     if (!s.changedLines) return
     board.set(r, { by: me, at: new Date().toTimeString().slice(0, 8), ts: Date.now(), churn: `${s.changedLines}/${s.totalLines} lines`, symbols: s.symbols, rewrite: s.isRewrite })
     if (s.isRewrite) logActivity(`REWRITE: ${me} rewrote ${r} (${s.changedLines}/${s.totalLines} lines; touched ${s.symbols.join(', ') || 'n/a'})`)
+  }
+
+  // --- rollback: restore points + per-author revert + undo --------------------
+  // Each meaningful change captures a RESTORE POINT — the file's content from just
+  // before the edit — stored in that file's own doc (scope-safe) and indexed in the
+  // parent `history`. Restore = a normal forward edit (applyDiff back to the saved
+  // content): it propagates live, merges cleanly, and is itself recoverable.
+  const SNAP_KEEP = 30, SNAP_MIN_GAP_MS = 4000, META_KEEP = 400
+  const lastSnapAt = new Map(), snappedBase = new Set()
+  let lastLocalEdit = null
+  const snapTime = () => new Date().toTimeString().slice(0, 8)
+  const snapId = () => 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  function pruneMeta() {
+    if (historyMeta.size <= META_KEEP) return
+    const all = [...historyMeta.values()].filter((e) => e.kind === 'auto').sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    const overflow = historyMeta.size - META_KEEP
+    if (overflow <= 0) return
+    doc.transact(() => { for (let i = 0; i < Math.min(overflow, all.length); i++) historyMeta.delete(all[i].id) })
+  }
+  function captureSnapshot(r, content, byWho, { force = false, churn = '', kind = 'auto', label = '' } = {}) {
+    if (content == null) return null
+    const fe = fileDocs.get(r); if (!fe || !fe.snap) return null
+    const now = Date.now()
+    if (kind === 'auto' && !force && now - (lastSnapAt.get(r) || 0) < SNAP_MIN_GAP_MS) return null
+    const snap = fe.snap
+    let latest = null
+    for (const e of snap.values()) if (!latest || (e.ts || 0) > (latest.ts || 0)) latest = e
+    if (latest && latest.content === content) return null
+    const id = snapId(), at = snapTime(), pruned = []
+    fe.doc.transact(() => {
+      snap.set(id, { id, file: r, by: byWho, at, ts: now, content, churn, kind, label })
+      const autos = [...snap.values()].filter((e) => e.kind === 'auto').sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      for (let i = 0; i < autos.length - SNAP_KEEP; i++) { snap.delete(autos[i].id); pruned.push(autos[i].id) }
+    })
+    if (kind === 'auto') lastSnapAt.set(r, now)
+    doc.transact(() => { historyMeta.set(id, { id, file: r, by: byWho, at, ts: now, churn, kind, label }); for (const pid of pruned) historyMeta.delete(pid) })
+    pruneMeta()
+    return id
+  }
+  function fileOfSnap(id) {
+    const m = historyMeta.get(id); if (m && m.file) return m.file
+    for (const [rp, fe] of fileDocs) if (fe.snap && fe.snap.has(id)) return rp
+    return null
+  }
+  function restore(id, by = me) {
+    const r = fileOfSnap(id); if (!r) return { error: 'restore point not found' }
+    if (!canOpen(r)) return { error: `${r} is out of your scope` }
+    if (!canWrite(r)) return { error: `${r} is read-only for you` }
+    let fe = fileDocs.get(r); if (!fe) { openFile(r); fe = fileDocs.get(r) }
+    if (!fe) return { error: 'could not open file' }
+    const entry = fe.snap.get(id)
+    if (!entry || entry.content == null) return { error: 'restore point content unavailable (it may have aged out)' }
+    const current = fe.text.toString()
+    if (current === entry.content) return { ok: true, unchanged: true, file: r }
+    captureSnapshot(r, current, by, { force: true, kind: 'restore', label: `before restore to ${entry.at}` })
+    fe.doc.transact(() => applyDiff(fe.text, entry.content))
+    writeToDisk(r, entry.content)
+    bases.set(r, entry.content); forkBases.set(r, entry.content)
+    try { say(`↩ ${by} restored ${r} to ${entry.at}${entry.by && entry.by !== by ? ` (state before ${entry.by}'s edit)` : ''}.`) } catch {}
+    return { ok: true, file: r }
+  }
+  function restoreFileTo(r, ts, by = me) {
+    const fe = fileDocs.get(r); if (!fe) return { error: 'file not open' }
+    let best = null
+    for (const e of fe.snap.values()) if ((e.ts || 0) <= ts && (!best || (e.ts || 0) > (best.ts || 0))) best = e
+    if (!best) return { error: 'no restore point at/before that time' }
+    return restore(best.id, by)
+  }
+  function revertAuthor(who, sinceTs = 0, by = me) {
+    if (!who) return { error: 'no author given' }
+    const earliest = new Map()
+    for (const m of historyMeta.values()) {
+      if (m.by !== who || (m.ts || 0) < sinceTs) continue
+      const cur = earliest.get(m.file)
+      if (!cur || (m.ts || 0) < (cur.ts || 0)) earliest.set(m.file, m)
+    }
+    const files = []
+    for (const [file, m] of earliest) files.push({ file, ...restore(m.id, by) })
+    const ok = files.filter((f) => f.ok).length
+    if (files.length) { try { say(`⏮ ${by} reverted ${who}'s changes across ${ok}/${files.length} file(s).`) } catch {} }
+    return { ok: true, reverted: ok, files }
+  }
+  function listHistory({ file = null, by = null, limit = 200 } = {}) {
+    return [...historyMeta.values()].filter((e) => (!file || e.file === file) && (!by || e.by === by)).sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, limit)
+  }
+  function checkpoint(r, label = '', by = me) {
+    const fe = fileDocs.get(r); if (!fe) return { error: 'file not open' }
+    const id = captureSnapshot(r, fe.text.toString(), by, { force: true, kind: 'manual', label: label || `checkpoint by ${by}` })
+    return id ? { ok: true, id } : { ok: true, unchanged: true }
+  }
+  function undoLast() {
+    const r = lastLocalEdit, fe = r && fileDocs.get(r)
+    if (!fe || !fe.undo || !fe.undo.canUndo()) return { error: 'nothing to undo' }
+    fe.undo.undo(); const t = fe.text.toString(); writeToDisk(r, t); bases.set(r, t); forkBases.set(r, t)
+    return { ok: true, file: r }
+  }
+  function redoLast() {
+    const r = lastLocalEdit, fe = r && fileDocs.get(r)
+    if (!fe || !fe.undo || !fe.undo.canRedo()) return { error: 'nothing to redo' }
+    fe.undo.redo(); const t = fe.text.toString(); writeToDisk(r, t); bases.set(r, t); forkBases.set(r, t)
+    return { ok: true, file: r }
   }
   function renderBoard() {
     // HIVE_BOARD.md = full-file REWRITES only (small edits show in the live activity
@@ -1053,7 +1208,7 @@ function start(root, room, relay, linkToken) {
   })
 
   // expose chat/task actions to the panel handler
-  session = { doc, provider, root, scanTimer: null, room, relay: useRelay, me, chat, tasks, owners, invites, controls, say, assign, decide, control, stopActivity: () => { if (editingClearTimer) clearTimeout(editingClearTimer); for (const r of [...fileDocs.keys()]) closeFile(r) } }
+  session = { doc, provider, root, scanTimer: null, room, relay: useRelay, me, chat, tasks, owners, invites, controls, say, assign, decide, control, listHistory, restore, restoreFileTo, revertAuthor, checkpoint, undoLast, redoLast, stopActivity: () => { if (editingClearTimer) clearTimeout(editingClearTimer); for (const r of [...fileDocs.keys()]) closeFile(r) } }
   pushState()
 }
 

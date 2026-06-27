@@ -141,7 +141,17 @@
   .tact{display:flex;gap:8px;margin-top:12px}.tact button{padding:6px 14px;font-size:12.5px}
   .feed{padding:11px;border-radius:12px;font-size:13px}.feed:hover{background:var(--panel2)}
   .fmeta{font-family:var(--fm);font-size:11px;color:var(--dim);display:flex;gap:9px;margin-bottom:3px}.fmeta b{color:var(--mut);font-weight:500}
-  .ffile{font-family:var(--fm);color:var(--edit);font-size:11.5px}
+  .ffile{font-family:var(--fm);color:var(--edit);font-size:11.5px;word-break:break-all}
+  .recover{margin-left:8px;font-family:var(--fm);font-size:10px;color:var(--dim)}
+  .hentry{padding:11px;border-radius:12px;font-size:13px;border:1px solid transparent}.hentry:hover{background:var(--panel2);border-color:var(--line)}
+  .hrow{display:flex;align-items:center;gap:10px;margin-top:5px}
+  .hrow .ffile{flex:1;min-width:0}
+  .hrestore{padding:5px 12px;font-size:12px;flex:0 0 auto}
+  .ktag{font-family:var(--fm);font-size:9px;font-weight:500;padding:1px 6px;border-radius:5px;letter-spacing:.02em}
+  .ktag.base{background:color-mix(in srgb,var(--teal) 16%,transparent);color:#86e6c2}
+  .ktag.auto{background:var(--panel2);color:var(--mut)}
+  .ktag.manual{background:color-mix(in srgb,var(--blue) 22%,transparent);color:#9cc1fb}
+  .ktag.restore{background:color-mix(in srgb,var(--amber) 20%,transparent);color:#f4d27a}
 
   @media(max-width:1040px){main{grid-template-columns:1fr;grid-auto-rows:minmax(220px,44vh)}.stack{display:contents}}
   @media(prefers-reduced-motion:reduce){*{animation:none!important}}
@@ -197,6 +207,10 @@
         <div class="colhead"><h2>Activity</h2><span class="ct" id="ac">0</span></div>
         <div class="scroll" id="activity"></div>
       </section>
+      <section class="col">
+        <div class="colhead"><h2>History</h2><span class="ct" id="hc">0</span><span class=" recover">↩ restore points</span></div>
+        <div class="scroll" id="history"></div>
+      </section>
     </div>
   </main>
 </div>
@@ -236,7 +250,8 @@ async function connect(raw){
   const opts={connect:true};if(p.token)opts.params={token:p.token}
   try{provider=new WS(p.relay,p.room,doc,opts)}catch(e){err('Could not connect: '+e.message);return}
   provider.awareness.setLocalStateField('user',{name:me,kind:meKind,v:2})
-  window._h={chat:doc.getArray('chat'),tasks:doc.getMap('tasks'),controls:doc.getMap('controls')}
+  window._h={chat:doc.getArray('chat'),tasks:doc.getMap('tasks'),controls:doc.getMap('controls'),history:doc.getMap('history')}
+  window._conn={relay:p.relay,room:p.room,token:p.token} // kept so we can open a file's own doc to restore it
   const ok=()=>{$('dot').classList.add('on');$('connState').textContent='connected';if(timer){clearTimeout(timer);timer=null}}
   provider.on('status',(e)=>{if(e.status==='connected')ok();else{$('dot').classList.remove('on');$('connState').textContent=e.status}})
   provider.on('sync',(s)=>{if(s)ok()})
@@ -262,10 +277,10 @@ function render(){
   const mem=members()
   // Skip the DOM work when nothing changed (so the 1s sweep never flickers or drops
   // a text selection). Signature = everything the panel shows.
-  const chatArr=window._h.chat.toArray(),tasksObj=window._h.tasks.toJSON(),boardObj=doc.getMap('board').toJSON()
+  const chatArr=window._h.chat.toArray(),tasksObj=window._h.tasks.toJSON(),boardObj=doc.getMap('board').toJSON(),histObj=window._h.history.toJSON()
   // board signature uses each file's last-change stamp (ts numeric, or at string) so
   // re-editing the SAME file is detected — not just when the file COUNT changes.
-  const sig=JSON.stringify([mem.map(m=>[m.name,m.kind,m.paused,efile(m.editing)]),chatArr.length,(chatArr[chatArr.length-1]||{}).at,Object.values(tasksObj).map(t=>[t.id,t.status]),Object.entries(boardObj).map(([f,v])=>[f,v.ts||v.at])])
+  const sig=JSON.stringify([mem.map(m=>[m.name,m.kind,m.paused,efile(m.editing)]),chatArr.length,(chatArr[chatArr.length-1]||{}).at,Object.values(tasksObj).map(t=>[t.id,t.status]),Object.entries(boardObj).map(([f,v])=>[f,v.ts||v.at]),Object.keys(histObj).length])
   if(sig===_rsig)return; _rsig=sig
   $('memCount').textContent=mem.length;$('mc').textContent=mem.length
   $('members').innerHTML=mem.length?mem.map(m=>{const ai=m.kind==='ai',ef=efile(m.editing)
@@ -273,7 +288,7 @@ function render(){
     return `<div class="mcard"><div class="mtop"><div class="av ${st}" style="background:${colorFor(m.name)}">${initials(m.name)}</div>
       <div style="min-width:0"><div class="mname">${esc(m.name)}<span class="tag ${ai?'ai':'human'}">${ai?'AI':'HUMAN'}</span>${m.paused?'<span class="tag pz">PAUSED</span>':''}</div>
       <div class="estat">${ef?'editing <b>'+esc(ef)+'</b>':'idle'}</div></div></div>
-      ${ai&&m.name!==me?`<div class="mctl">${m.paused?`<button class="ok" data-act="resume" data-name="${esc(m.name)}">Resume</button>`:`<button data-act="pause" data-name="${esc(m.name)}">Pause</button>`}<button data-act="reassign" data-name="${esc(m.name)}">Reassign</button></div>`:''}
+      ${ai&&m.name!==me?`<div class="mctl">${m.paused?`<button class="ok" data-act="resume" data-name="${esc(m.name)}">Resume</button>`:`<button data-act="pause" data-name="${esc(m.name)}">Pause</button>`}<button data-act="reassign" data-name="${esc(m.name)}">Reassign</button><button class="bad" data-act="revert" data-name="${esc(m.name)}" title="Roll back everything this agent changed">Revert</button></div>`:''}
     </div>`}).join(''):'<div class="empty">No one here yet.<br>Share your room link to bring the crew in.</div>'
 
   const msgs=window._h.chat.toArray().slice(-150),cw=$('chat'),bot=cw.scrollHeight-cw.scrollTop-cw.clientHeight<70
@@ -291,10 +306,19 @@ function render(){
   const board=Object.entries(boardObj).map(([file,v])=>({file,...v})).sort((a,b)=>(b.ts||0)-(a.ts||0)||String(b.at||'').localeCompare(String(a.at||''))).slice(0,50)
   $('ac').textContent=board.length
   $('activity').innerHTML=board.length?board.map(b=>`<div class="feed"><div class="fmeta"><b>${esc(b.by||'?')}</b><span>${esc(b.at||'')}</span><span>${b.rewrite?'rewrote':'edited'} · ${esc(b.churn||'')}</span></div><div class="ffile">${esc(b.file)}</div></div>`).join(''):'<div class="empty">No activity yet.</div>'
+
+  // History: the restore-point timeline (newest first). Each row can be restored —
+  // we open that file's own doc, write the saved content back, and the editors persist it.
+  const hist=Object.values(histObj).sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,80)
+  $('hc').textContent=hist.length
+  $('history').innerHTML=hist.length?hist.map(e=>`<div class="hentry"><div class="fmeta"><b>${esc(e.by||'?')}</b><span>${esc(e.at||'')}</span><span class="ktag ${esc(e.kind||'auto')}">${esc(kindLabel(e.kind))}</span>${e.churn?`<span>${esc(e.churn)}</span>`:''}</div><div class="hrow"><span class="ffile">${esc(e.file)}</span><button class="ghost hrestore" data-id="${esc(e.id)}" data-file="${esc(e.file)}">Restore</button></div></div>`).join(''):'<div class="empty">No restore points yet.<br>They appear automatically as files change.</div>'
 }
+const kindLabel=(k)=>({base:'created',auto:'edited',manual:'checkpoint',restore:'restore point'}[k]||'edited')
 
 document.addEventListener('click',(e)=>{
   const b=e.target.closest('button');if(!b||!window._h)return
+  if(b.classList.contains('hrestore')){restoreSnap(b.dataset.id,b.dataset.file);return}
+  if(b.dataset.act==='revert'){revertAgent(b.dataset.name);return}
   const{controls,tasks}=window._h
   const pushChat=(text)=>window._h.chat.push([{by:me,kind:meKind,at:tstr(),text}]) // announce so others see it + agents wake
   if(b.dataset.act==='pause'){controls.set(b.dataset.name,{state:'paused',by:me,at:tstr()});pushChat(`${me} ⏸ paused ${b.dataset.name}`)}
@@ -318,6 +342,47 @@ function sendChat(){
   }
   i.value=''
 }
+// --- rollback from the browser ---------------------------------------------
+// To restore a file we open ITS OWN doc (where its restore points live), write the
+// saved content back into the live text, and disconnect. The connected editors see
+// that change and persist it to disk — the browser never touches anyone's files.
+async function openFileDoc(file){
+  const fdoc=new Y.Doc()
+  const opts={connect:true};if(window._conn&&window._conn.token)opts.params={token:window._conn.token}
+  const fp=new WS(window._conn.relay,window._conn.room+''+file,fdoc,opts)
+  await new Promise((res)=>{let d=false;const f=()=>{if(d)return;d=true;res()};fp.on('sync',(s)=>s&&f());setTimeout(f,6000)})
+  return{fdoc,fp,text:fdoc.getText('content'),snap:fdoc.getMap('snap')}
+}
+async function restoreCore(id,file){
+  const h=await openFileDoc(file)
+  try{
+    const entry=h.snap.get(id)
+    if(!entry||entry.content==null)return{error:'gone'}
+    const cur=h.text.toString()
+    if(cur===entry.content)return{ok:true,unchanged:true}
+    const rid='s'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),now=Date.now(),at=tstr()
+    // save the CURRENT state first (so this restore is itself undoable), then write the old content back
+    h.fdoc.transact(()=>{h.snap.set(rid,{id:rid,file,by:me,at,ts:now,content:cur,churn:'',kind:'restore',label:'before restore to '+entry.at});h.text.delete(0,h.text.length);h.text.insert(0,entry.content)})
+    window._h.history.set(rid,{id:rid,file,by:me,at,ts:now,churn:'',kind:'restore',label:'before restore to '+entry.at})
+    window._h.chat.push([{by:me,kind:meKind,at,text:`↩ ${me} restored ${file} to ${entry.at}${entry.by&&entry.by!==me?` (state before ${entry.by}'s edit)`:''}.`}])
+    await new Promise((r)=>setTimeout(r,900)) // let the change flush to the relay before disconnecting
+    return{ok:true}
+  }finally{try{h.fp.destroy();h.fdoc.destroy()}catch{}}
+}
+async function restoreSnap(id,file){
+  if(!confirm(`Restore ${file} to this point?\n\nThe current version is saved first, so you can undo this.`))return
+  const r=await restoreCore(id,file)
+  if(r&&r.error)alert('That restore point is no longer available (it may have aged out).')
+}
+async function revertAgent(who){
+  if(!confirm(`Revert ALL of ${who}'s changes?\n\nEvery file they touched rolls back to before they edited it. Their current versions are saved first, so this is undoable.`))return
+  const earliest=new Map()
+  for(const m of Object.values(window._h.history.toJSON())){if(m.by!==who)continue;const c=earliest.get(m.file);if(!c||(m.ts||0)<(c.ts||0))earliest.set(m.file,m)}
+  if(!earliest.size){alert(`No restore points found for ${who}.`);return}
+  let n=0;for(const [file,m] of earliest){const r=await restoreCore(m.id,file);if(r&&r.ok)n++}
+  window._h.chat.push([{by:me,kind:meKind,at:tstr(),text:`⏮ ${me} reverted ${who}'s changes across ${n} file(s).`}])
+}
+
 $('send').addEventListener('click',sendChat)
 $('chatInput').addEventListener('keydown',(e)=>{if(e.key==='Enter')sendChat()})
 $('connect').addEventListener('click',()=>connect($('link').value.trim()))

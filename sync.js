@@ -146,6 +146,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const tasks = doc.getMap('tasks') // id -> { id, to, by, text, status, decidedBy, at } directed work
   const owners = doc.getMap('owners') // aiName -> ownerHumanName (who may approve its tasks)
   const controls = doc.getMap('controls') // participantName -> { state: 'running'|'paused', by, at } (mission control)
+  // ROLLBACK metadata index: id -> { id, file, by, at, ts, churn, kind, label }. NO
+  // file content here — content is scope-sensitive and lives in each FILE's own doc
+  // (its `snap` map), so it inherits that file's access control. The parent only
+  // holds the timeline (who changed what, when) — same exposure as the manifest,
+  // which already lists every path. Lets a monitor (Control Room) show history.
+  const historyMeta = doc.getMap('history')
   // disableBc: do NOT sync peer-to-peer over BroadcastChannel. The relay must be
   // the ONLY path between clients — otherwise two clients on the same machine would
   // sync directly and bypass the relay's access control (auth, path scope, read-only).
@@ -165,7 +171,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const fdoc = new Y.Doc()
     const fprovider = new WebsocketProvider(relay, fileRoom(room, relPath), fdoc, wsOpts)
     const text = fdoc.getText('content')
-    e = { doc: fdoc, provider: fprovider, text, synced: false }
+    // `snap` (in the FILE's own doc, so it's scope-protected with the file) holds
+    // restore points: id -> { id, file, by, at, ts, content, churn, kind, label }.
+    // `undo` is a per-file UndoManager tracking THIS client's local edits, so a
+    // human/agent can undo their own CRDT changes (Level-0 rollback).
+    const snap = fdoc.getMap('snap')
+    const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
+    e = { doc: fdoc, provider: fprovider, text, snap, undo, synced: false }
     fileDocs.set(relPath, e)
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
     fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(relPath, 'remote') } }) // initial pull settled
@@ -174,6 +186,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function closeFile(relPath) {
     const e = fileDocs.get(relPath)
     if (!e) return
+    try { e.undo && e.undo.destroy() } catch { }
     try { e.provider.destroy() } catch { }
     try { e.doc.destroy() } catch { }
     fileDocs.delete(relPath)
@@ -268,6 +281,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       manifest.set(relPath, 1)
       known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
+      captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'created' }); snappedBase.add(relPath)
       return
     }
     const yt = fe.text
@@ -278,6 +292,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // THIS author's fork on first sight or our own local activity (a remote
       // change landing on disk doesn't mean the local author has seen it).
       if (!forkBases.has(relPath) || origin === 'local') forkBases.set(relPath, disk)
+      if (!snappedBase.has(relPath) && disk) { captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'baseline' }); snappedBase.add(relPath) }
       return
     }
     const base = bases.has(relPath) ? bases.get(relPath) : disk
@@ -309,6 +324,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       res = merge3(base, disk, docText) // incoming remote change merged into our working copy
     }
 
+    // Snapshot the state JUST BEFORE this author's edit lands, attributed to them —
+    // captured only on local origin so each change is recorded once, by its author.
+    if (origin === 'local' && res.text !== docText) {
+      const sc = summarizeChange(docText, res.text)
+      captureSnapshot(relPath, docText, name, { force: sc.isRewrite, churn: `${sc.changedLines}/${sc.totalLines} lines` })
+      lastLocalEdit = relPath
+    }
     fileDocs.get(relPath).doc.transact(() => applyDiff(yt, res.text))
     if (res.text !== disk) writeToDisk(relPath, res.text)
     known.add(relPath); bases.set(relPath, res.text)
@@ -358,6 +380,153 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     writeToDisk(BOARD_FILE, out.join('\n') + '\n')
   }
   if (syncFiles) board.observe(() => renderBoard())
+
+  // --- rollback: restore points + per-author revert + undo --------------------
+  // Every meaningful change captures a RESTORE POINT: the file's content from JUST
+  // BEFORE the edit, stored in that file's own doc (scope-safe) and indexed in the
+  // parent `history` (metadata only). Restoring is a normal forward edit (applyDiff
+  // back to the saved content) — so it propagates live to everyone, merges cleanly,
+  // and is itself recoverable. Because each client snapshots only ITS OWN local
+  // edits, every restore point is attributed to its true author exactly once.
+  const SNAP_KEEP = 30          // max AUTO restore points kept per file (manual ones never evicted)
+  const SNAP_MIN_GAP_MS = 4000  // throttle auto-capture per file (fine-grained undo is the editor's job)
+  const META_KEEP = 400         // global cap on the parent timeline index
+  const lastSnapAt = new Map()  // relPath -> ts of last auto-capture
+  const snappedBase = new Set() // files we've already floored with a baseline snapshot
+  const snapId = () => 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+
+  function pruneMeta() {
+    if (historyMeta.size <= META_KEEP) return
+    const all = [...historyMeta.values()].filter((e) => e.kind === 'auto').sort((a, b) => (a.ts || 0) - (b.ts || 0))
+    const overflow = historyMeta.size - META_KEEP
+    if (overflow <= 0) return
+    doc.transact(() => { for (let i = 0; i < Math.min(overflow, all.length); i++) historyMeta.delete(all[i].id) })
+  }
+
+  // Capture `content` as a restore point for relPath, attributed to `byWho`.
+  // kind: 'auto' (an ordinary edit), 'base' (a file's floor), 'manual' (a named
+  // checkpoint), 'restore' (the pre-restore state, kept so restore is reversible).
+  function captureSnapshot(relPath, content, byWho, { force = false, churn = '', kind = 'auto', label = '' } = {}) {
+    if (content == null) return null
+    const fe = fileDocs.get(relPath); if (!fe) return null
+    const now = Date.now()
+    if (kind === 'auto' && !force && now - (lastSnapAt.get(relPath) || 0) < SNAP_MIN_GAP_MS) return null
+    const snap = fe.snap
+    let latest = null
+    for (const e of snap.values()) if (!latest || (e.ts || 0) > (latest.ts || 0)) latest = e
+    if (latest && latest.content === content) return null // identical to the most recent point — nothing to keep
+    const id = snapId()
+    const at = fmtTime()
+    const pruned = []
+    fe.doc.transact(() => {
+      snap.set(id, { id, file: relPath, by: byWho, at, ts: now, content, churn, kind, label })
+      const autos = [...snap.values()].filter((e) => e.kind === 'auto').sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      for (let i = 0; i < autos.length - SNAP_KEEP; i++) { snap.delete(autos[i].id); pruned.push(autos[i].id) }
+    })
+    if (kind === 'auto') lastSnapAt.set(relPath, now)
+    doc.transact(() => {
+      historyMeta.set(id, { id, file: relPath, by: byWho, at, ts: now, churn, kind, label }) // metadata only — no content
+      for (const pid of pruned) historyMeta.delete(pid) // keep the index in step with evicted content
+    })
+    pruneMeta()
+    return id
+  }
+
+  // Find which file a restore-point id belongs to (via the index, else by scanning
+  // open file docs as a fallback).
+  function fileOfSnap(id) {
+    const m = historyMeta.get(id)
+    if (m && m.file) return m.file
+    for (const [rp, fe] of fileDocs) if (fe.snap.has(id)) return rp
+    return null
+  }
+
+  // Restore a file to a saved restore point. It first snapshots the CURRENT state
+  // (so the restore can itself be undone), then writes the saved content back as a
+  // normal edit — which syncs to everyone and to disk.
+  function restore(id, by = name) {
+    const relPath = fileOfSnap(id)
+    if (!relPath) return { error: 'restore point not found' }
+    if (!canOpen(relPath)) return { error: `${relPath} is out of your scope` }
+    if (!canWrite(relPath)) return { error: `${relPath} is read-only for you` }
+    let fe = fileDocs.get(relPath)
+    if (!fe) { openFile(relPath); fe = fileDocs.get(relPath) }
+    if (!fe) return { error: 'could not open file' }
+    const entry = fe.snap.get(id)
+    if (!entry || entry.content == null) return { error: 'restore point content unavailable (it may have aged out)' }
+    const current = fe.text.toString()
+    if (current === entry.content) return { ok: true, unchanged: true, file: relPath }
+    captureSnapshot(relPath, current, by, { force: true, kind: 'restore', label: `before restore to ${entry.at}` })
+    fe.doc.transact(() => applyDiff(fe.text, entry.content))
+    writeToDisk(relPath, entry.content)
+    bases.set(relPath, entry.content); forkBases.set(relPath, entry.content)
+    try { say(`↩ ${by} restored ${relPath} to ${entry.at}${entry.by && entry.by !== by ? ` (state before ${entry.by}'s edit)` : ''}.`) } catch { }
+    return { ok: true, file: relPath }
+  }
+
+  // Restore one file to its state as of timestamp `ts` (the newest point at/below ts).
+  function restoreFileTo(relPath, ts, by = name) {
+    const fe = fileDocs.get(relPath)
+    if (!fe) return { error: 'file not open' }
+    let best = null
+    for (const e of fe.snap.values()) if ((e.ts || 0) <= ts && (!best || (e.ts || 0) > (best.ts || 0))) best = e
+    if (!best) return { error: 'no restore point at/before that time' }
+    return restore(best.id, by)
+  }
+
+  // Revert everything an author did since `sinceTs` (default: all of it): for each
+  // file they touched, roll back to the state BEFORE their first edit in the window.
+  // Honest limitation: this is checkpoint-granular, so if SOMEONE ELSE also edited
+  // the same file after that point, their edits in that file are rolled back too.
+  // For the dangerous case — an agent rewriting files — that's exactly right.
+  function revertAuthor(who, sinceTs = 0, by = name) {
+    if (!who) return { error: 'no author given' }
+    const earliest = new Map() // file -> earliest meta authored by `who` in the window
+    for (const m of historyMeta.values()) {
+      if (m.by !== who || (m.ts || 0) < sinceTs) continue
+      const cur = earliest.get(m.file)
+      if (!cur || (m.ts || 0) < (cur.ts || 0)) earliest.set(m.file, m)
+    }
+    const files = []
+    for (const [file, m] of earliest) files.push({ file, ...restore(m.id, by) })
+    const ok = files.filter((f) => f.ok).length
+    if (files.length) { try { say(`⏮ ${by} reverted ${who}'s changes across ${ok}/${files.length} file(s).`) } catch { } }
+    return { ok: true, reverted: ok, files }
+  }
+
+  // The timeline (newest first), read from the parent index. Optional filters.
+  function listHistory({ file = null, by = null, limit = 200 } = {}) {
+    return [...historyMeta.values()]
+      .filter((e) => (!file || e.file === file) && (!by || e.by === by))
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+      .slice(0, limit)
+  }
+
+  // A named manual checkpoint of a file's current state (never auto-evicted).
+  function checkpoint(relPath, label = '', by = name) {
+    const fe = fileDocs.get(relPath); if (!fe) return { error: 'file not open' }
+    const id = captureSnapshot(relPath, fe.text.toString(), by, { force: true, kind: 'manual', label: label || `checkpoint by ${by}` })
+    return id ? { ok: true, id } : { ok: true, unchanged: true }
+  }
+
+  // Level-0 undo/redo: a client undoes its OWN recent CRDT edits to a file. (In an
+  // editor, native Ctrl-Z already covers your own typing; this also covers edits
+  // applied programmatically and keeps the doc, disk, and peers in step.)
+  let lastLocalEdit = null
+  function undoLast() {
+    const rp = lastLocalEdit; const fe = rp && fileDocs.get(rp)
+    if (!fe || !fe.undo || !fe.undo.canUndo()) return { error: 'nothing to undo' }
+    fe.undo.undo()
+    const t = fe.text.toString(); writeToDisk(rp, t); bases.set(rp, t); forkBases.set(rp, t)
+    return { ok: true, file: rp }
+  }
+  function redoLast() {
+    const rp = lastLocalEdit; const fe = rp && fileDocs.get(rp)
+    if (!fe || !fe.undo || !fe.undo.canRedo()) return { error: 'nothing to redo' }
+    fe.undo.redo()
+    const t = fe.text.toString(); writeToDisk(rp, t); bases.set(rp, t); forkBases.set(rp, t)
+    return { ok: true, file: rp }
+  }
 
   // --- coordination channel: the agents (and humans) talk to each other ---
   // say() posts a message into the shared, ordered chat. Everyone renders the
@@ -588,6 +757,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     control,             // pause/resume an agent (mission control)
     isPaused,            // is a participant currently paused?
     controls,            // the live control map
+    // --- rollback ---
+    listHistory,         // the restore-point timeline (newest first; filter by file/by)
+    restore,             // restore a file to a restore point by id (reversible)
+    restoreFileTo,       // restore one file to its state as of a timestamp
+    revertAuthor,        // roll back everything an author did since a time
+    checkpoint,          // save a named restore point of a file's current state
+    captureSnapshot,     // (low-level) capture a restore point
+    undoLast,            // undo this client's last local edit
+    redoLast,            // redo it
     // One entry PER NAME, not per connection: the same user open in two windows
     // (e.g. the editor + the browser Control Room) is ONE member. Merge their
     // fields so we keep whichever connection has an active `editing`/`owner`.

@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — multiplayer for AI coding agents",
   "description": "Run humans and multiple AI agents on one live codebase, with folder-scoped permissions and approval gates. No git push/pull.",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "publisher": "hivecode",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -87,12 +87,40 @@
         "title": "Hivecode: Open Control Room (browser / phone)"
       },
       {
+        "command": "hivecode.restore",
+        "title": "Hivecode: Restore a file to an earlier point…"
+      },
+      {
+        "command": "hivecode.revertAgent",
+        "title": "Hivecode: Revert an author's changes…"
+      },
+      {
+        "command": "hivecode.undo",
+        "title": "Hivecode: Undo my last synced edit"
+      },
+      {
+        "command": "hivecode.redo",
+        "title": "Hivecode: Redo my last undone edit"
+      },
+      {
         "command": "hivecode.leave",
         "title": "Hivecode: Leave Session"
       },
       {
         "command": "hivecode.endRoom",
         "title": "Hivecode: End Room (forget & start fresh)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "hivecode.undo",
+        "key": "ctrl+alt+z",
+        "mac": "cmd+alt+z"
+      },
+      {
+        "command": "hivecode.redo",
+        "key": "ctrl+alt+shift+z",
+        "mac": "cmd+alt+shift+z"
       }
     ],
     "configuration": {
