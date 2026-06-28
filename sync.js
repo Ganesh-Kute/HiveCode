@@ -349,6 +349,20 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (!snappedBase.has(relPath) && disk) { captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'baseline' }); snappedBase.add(relPath) }
       return
     }
+    // FIRST-CONTACT ADOPT (no common ancestor). We have never reconciled this file
+    // this session (no base history), yet it ALREADY exists in the room (non-empty
+    // docText) AND on local disk with DIFFERENT content. There is no shared base, so
+    // a 3-way merge would UNION the two copies — the duplicated-content bug seen when
+    // a client clones a repo and then joins a room that already has those files. A
+    // joining client adopts the ROOM's copy wholesale; its local copy is preserved as
+    // a restore point so nothing is lost and the user can revert if it was the good one.
+    if (!bases.has(relPath) && docText !== '' && disk !== docText) {
+      captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
+      writeToDisk(relPath, docText)
+      bases.set(relPath, docText); forkBases.set(relPath, docText)
+      if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(relPath) }
+      return
+    }
     const base = bases.has(relPath) ? bases.get(relPath) : disk
     const fork = forkBases.has(relPath) ? forkBases.get(relPath) : base
     if (origin === 'local') { noteCoEditing(relPath); markEditing(relPath) } // broadcast activity + warn if someone else is on this file

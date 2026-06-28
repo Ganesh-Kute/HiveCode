@@ -929,6 +929,19 @@ function start(root, room, relay, linkToken) {
       if (!snappedBase.has(r) && disk) { captureSnapshot(r, disk, me, { force: true, kind: 'base', label: 'baseline' }); snappedBase.add(r) }
       return
     }
+    // FIRST-CONTACT ADOPT (no common ancestor). Never reconciled this file this session
+    // (no base history), yet it ALREADY exists in the room (non-empty docText) AND on
+    // disk with DIFFERENT content. No shared base -> a 3-way merge would UNION the two
+    // copies (the duplicated-content bug when you open a folder that already has files
+    // and join a room that also has them). A joiner adopts the ROOM copy; the local
+    // copy is kept as a restore point so nothing is lost.
+    if (!bases.has(r) && docText !== '' && disk !== docText) {
+      captureSnapshot(r, disk, me, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
+      writeToDisk(r, docText)
+      bases.set(r, docText); forkBases.set(r, docText)
+      if (!snappedBase.has(r)) { captureSnapshot(r, docText, me, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(r) }
+      return
+    }
     const base = bases.has(r) ? bases.get(r) : disk
     const fork = forkBases.has(r) ? forkBases.get(r) : base
     if (origin === 'local') { noteCoEditing(r); markEditing(r) } // broadcast activity + warn if someone else is on this file
