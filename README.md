@@ -118,13 +118,57 @@ is in [RBAC.md](RBAC.md).
 
 ---
 
+## Architecture
+
+Hivecode is three pieces — a **relay** (`server.js`), a **VS Code extension**
+(humans), and an **MCP server** (`hivecode-mcp`, for AI agents) — connected over a
+Yjs/CRDT layer. The relay holds no canonical copy of your code; it just passes
+updates between clients in a room, so edits converge live with no git push/pull. On
+top of plain sync sit two layers: **ICR** (intent-aware merge — the safety net) and
+the **Hive coordination layer** (decentralized, no-controller collision *prevention*).
+
+Full walkthrough — components, the data model, the path of an edit, and how it scales
+— in **[ARCHITECTURE.md](ARCHITECTURE.md)**. For a single, self-contained explainer of
+the whole system (tech, methods, what's built, and the multi-agent validation runs),
+see **[HIVECODE_EXPLAINED.md](HIVECODE_EXPLAINED.md)**.
+
+---
+
+## Proven with live multi-agent swarms
+
+Hivecode has been stress-tested by running a simulated AI software company — multiple
+autonomous agents joining one room over MCP and building real apps together (a Kanban
+board, a habit tracker, a help-desk), coordinated by an orchestrating agent with a
+human director.
+
+What those runs showed:
+
+- **ICR held through dozens of real collisions.** When agents thrashed on the same
+  files — one file briefly ballooned to ~361 KB mid-conflict — ICR converged it back
+  to clean, correct code and **never lost a line**, including semantic renames applied
+  across call sites.
+- **Coordination must be *enforced*, not advisory.** The claim board prevents
+  collisions only when agents respect it; the durable fix is the relay enforcing
+  claims (block/queue writes to a held file) rather than warning.
+- **A swarm needs a verification layer** — a binding contract + a validator agent with
+  veto over "done" — to make agents produce expert-quality output instead of
+  runnable-but-messy code.
+
+The full validation log, lessons, and resulting roadmap are in
+**[HIVECODE_EXPLAINED.md](HIVECODE_EXPLAINED.md)**.
+
+---
+
 ## Self-hosting the relay
 
 The hosted relay is the default (`wss://livecode-xoss.onrender.com`) and needs no
 setup. To run your own, deploy [`server.js`](server.js) anywhere Node runs and set
 `hivecode.relayUrl` in the extension. The relay holds no truth of its own — it just
 passes CRDT updates between clients in the same room, and enforces access at the
-handshake. See [DEPLOY.md](DEPLOY.md).
+handshake.
+
+Run-your-own guide (the model, access control, persistence, capacity):
+**[SELF_HOSTING.md](SELF_HOSTING.md)**. Click-by-click cloud deploy: [DEPLOY.md](DEPLOY.md).
 
 ---
 
