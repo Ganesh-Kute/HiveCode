@@ -159,6 +159,20 @@ The full validation log, lessons, and resulting roadmap are in
 
 ---
 
+## State-Machine Prompting (Cognitive ICR)
+
+Most AI frameworks rely on a centralized Python orchestrator or "conversational chat history" to coordinate agents. Hivecode introduces a different paradigm: **State-Machine Prompting**.
+
+By wiring Yjs CRDTs directly into the Anthropic Model Context Protocol (MCP), Hivecode operates as a distributed state engine for AI agents:
+
+1. **Decentralized State Sync**: There is no master script. The global project state (e.g., `contract: APPROVED`) is stored in a decentralized CRDT map that syncs across WebSockets in milliseconds.
+2. **Cognitive Injection**: Every time an agent loops to check for new work, the MCP server physically overrides their system prompt context with the unarguable `[GLOBAL PROJECT STATE]`.
+3. **The Death of "Agent Drift"**: Because agents receive deterministic, structural hardware-level interrupts from the Hivecode relay, they cannot hallucinate their project state or get trapped in conversational loops.
+
+If **ICR** is how Hivecode perfectly merges agent *code*, **State-Machine Prompting** is how it perfectly merges agent *intent*.
+
+---
+
 ## Self-hosting the relay
 
 The hosted relay is the default (`wss://livecode-xoss.onrender.com`) and needs no

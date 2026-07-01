@@ -204,6 +204,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // Agents SENSE → FLOW → CLAIM before editing so they don't collide. No central controller;
   // claims evaporate via TTL so a stalled agent never deadlocks the hive.
   const claims = doc.getMap('claims')
+  const swarmState = doc.getMap('swarm_state')
   const coordinator = makeCoordinator(claims, name, { ttl: 300000 }) // 5-min claim TTL
   // disableBc: do NOT sync peer-to-peer over BroadcastChannel. The relay must be
   // the ONLY path between clients — otherwise two clients on the same machine would
@@ -833,6 +834,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   return {
     doc,
     provider,
+    setState: (key, val) => {
+      swarmState.set(key, val)
+      say(`STATE TRANSITION: [${key}] is now [${val}]`)
+    },
+    getState: () => {
+      const s = {}
+      for (const [k, v] of swarmState.entries()) s[k] = v
+      return s
+    },
     say,                 // post a coordination message
     assign,              // direct a task at a participant (needs approval if target AI has an owner)
     decide,              // approve/deny a task (owner only, if set)
