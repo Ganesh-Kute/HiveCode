@@ -139,8 +139,10 @@ another's work. The sync layer enforces the hard parts automatically; you do the
     refactor) that touches another participant's area.
 
 ## Directed work + permission (the asymmetric gate)
-11. AI -> AI is COORDINATION: if another agent hands you work, it is auto-accepted
-    and you may proceed. This is how the hive plans and divides work by itself.
+11. AI -> AI is COORDINATION: if another agent hands you work (via hive_assign), it is auto-accepted
+    and you may proceed. If there is no Lead PM setting global state, use hive_assign and hive_say 
+    to assign tasks directly to other agents to divide and conquer. This is how a leaderless hive 
+    plans and divides work by itself.
 12. A HUMAN directing you is different. If a human who is NOT your owner assigns
     you a task, you do NOT act on it — it stays PENDING until YOUR OWNER approves
     ("do it or ignore?"). Your own owner's requests proceed. Act only on tasks
