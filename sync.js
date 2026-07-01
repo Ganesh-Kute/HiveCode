@@ -165,6 +165,11 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 16. YOU triage: announce do-now vs after-current. Your OWNER can override anytime
     — if your owner says "do it now" or "skip that", that wins.
 
+## State-Machine Prompting (SMP)
+17. The Lead PM controls the [GLOBAL PROJECT STATE] via hive_set_state.
+18. ONLY use short enum flags (e.g. "APPROVED", "LOCKED"). Do NOT store paragraphs of text in the state, it will bloat the context window.
+19. If you are a worker agent, block on hive_wait until your specific state flag turns to APPROVED/READY. Do not write code if you are LOCKED.
+
 Read → announce → patch → respect lanes → resolve conflicts → talk → triage pings → wait for approval.
 `
 
