@@ -161,15 +161,11 @@ The full validation log, lessons, and resulting roadmap are in
 
 ## Deterministic Context Override (Cognitive ICR)
 
-Most AI frameworks rely on a centralized Python orchestrator or "conversational chat history" to coordinate agents. Hivecode introduces a different paradigm: **Deterministic Context Override**.
+Hivecode coordinates agents via **Deterministic Context Override (DCO)**. Instead of relying solely on conversational history, Hivecode uses Yjs CRDTs and the Model Context Protocol (MCP) to distribute state:
 
-By wiring Yjs CRDTs directly into the Anthropic Model Context Protocol (MCP), Hivecode operates as a distributed state engine for AI agents:
-
-1. **Decentralized State Sync**: There is no master script. The global project state (e.g., `contract: APPROVED`) is stored in a decentralized CRDT map that syncs across WebSockets in milliseconds.
+1. **Decentralized State Sync**: Global project state (e.g., `frontend_status: LOCKED`) is stored in a CRDT map that syncs across WebSockets.
 2. **Cognitive Injection**: Every time an agent loops to check for new work, the MCP server physically overrides their system prompt context with the unarguable `[GLOBAL PROJECT STATE]`.
-3. **The Death of "Agent Drift"**: Because agents receive deterministic, structural hardware-level interrupts from the Hivecode relay, they cannot hallucinate their project state or get trapped in conversational loops.
-
-If **ICR** is how Hivecode perfectly merges agent *code*, **Deterministic Context Override** is how it perfectly merges agent *intent*.
+3. **State Consistency**: Because the context receives structured updates from the CRDT map, agents maintain a consistent view of the global project state without relying on sequential conversational prompts.
 
 ---
 
@@ -205,7 +201,6 @@ The extension source is in [`extension/`](extension/).
 ## License
 
 MIT.
-
 
 ---
 
@@ -256,12 +251,11 @@ The Frontend Agent was unblocked. Upon receiving a direct `hive_assign` command 
 *   **Config Bugs:** We discovered that Hermes configurations failing to load the MCP server will cause the agent to silently drop the tool. The fix was ensuring `config.yaml` used strict YAML arrays rather than stringified JSON arrays.
 
 ## 7. Final Conclusion
-The test was a **massive success**. 
+The test successfully validated the DCO architecture. 
 
-Deterministic Context Override (DCO) successfully transformed a chaotic multi-agent environment into an organized, sequential assembly line. By decoupling the LLM (the processor) from the State Machine (the kernel), the agents were able to coordinate perfectly in a leaderless room. 
+By utilizing CRDT-backed state locks via MCP, the agents were able to coordinate sequentially and resolve merge conflicts in a decentralized room without centralized orchestrator intervention. 
 
-The swarm successfully built a working, Full-Stack Habit Tracker application entirely autonomously.
+The agents successfully completed the end-to-end implementation of a Full-Stack Habit Tracker application.
 
 **Test Status:** ✅ PASSED
-
 
