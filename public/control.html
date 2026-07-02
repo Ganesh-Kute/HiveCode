@@ -153,7 +153,35 @@
   .ktag.manual{background:color-mix(in srgb,var(--blue) 22%,transparent);color:#9cc1fb}
   .ktag.restore{background:color-mix(in srgb,var(--amber) 20%,transparent);color:#f4d27a}
 
-  @media(max-width:1040px){main{grid-template-columns:1fr;grid-auto-rows:minmax(220px,44vh)}.stack{display:contents}}
+  /* ── Mission Control band (live metrics + hive map) ── */
+  .mc{display:grid;grid-template-columns:1fr 1.15fr;gap:14px;flex:0 0 auto}
+  .panel-c{background:color-mix(in srgb,var(--panel) 40%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border:1px solid var(--line);border-radius:var(--rc);box-shadow:var(--sh1);padding:14px 16px}
+  .mcstat{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .stat{background:color-mix(in srgb,var(--panel2) 34%,transparent);border-radius:var(--ri);padding:11px 12px}
+  .stat .k{font-family:var(--fm);font-size:10px;color:var(--mut);letter-spacing:.06em;text-transform:uppercase}
+  .stat .v{font-family:var(--fd);font-weight:500;font-size:24px;margin-top:4px;line-height:1}
+  .stat .v small{font-size:12px;color:var(--mut)}
+  .stat.accent .v{color:var(--edit)}
+  .stat .sub{font-size:10.5px;color:var(--dim);margin-top:3px}
+  .tbar{height:6px;background:var(--panel2);border-radius:5px;overflow:hidden;margin-top:7px}
+  .tbar i{display:block;height:100%;background:var(--spark);width:0;transition:width .7s cubic-bezier(.2,.8,.2,1)}
+  .mchead{font-family:var(--fd);font-weight:500;font-size:13px;color:var(--mut);margin:0 0 10px;display:flex;align-items:center;gap:8px}
+  .mapwrap{overflow-x:auto}
+  #hive{width:100%;min-width:440px;height:200px;display:block}
+  .hedge{stroke:var(--line2);stroke-width:1.5;fill:none;transition:stroke .25s}
+  .hedge.act{stroke:var(--teal)}
+  .hnode .hx{fill:var(--panel2);stroke:var(--line2);stroke-width:1.5;transition:stroke .25s}
+  .hnode.working .hx{stroke:var(--teal)} .hnode.waiting .hx{stroke:var(--amber)} .hnode.offline .hx{stroke:var(--dim);opacity:.55}
+  .hnode text{fill:var(--text);font:500 10px var(--fb);text-anchor:middle}
+  .hnode .who2{fill:var(--mut);font-family:var(--fm);font-size:8px}
+  .hnode.working .pw{animation:hpulse 2.2s ease-in-out infinite}
+  @keyframes hpulse{0%,100%{opacity:0}50%{opacity:.42}}
+  .hub{fill:color-mix(in srgb,var(--blue) 22%,transparent);stroke:var(--blue);stroke-width:1.5}
+  .leg{display:flex;gap:12px;margin-top:6px;font-family:var(--fm);font-size:9.5px;color:var(--mut);flex-wrap:wrap}
+  .leg i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle}
+
+  @media(max-width:1040px){main{grid-template-columns:1fr;grid-auto-rows:minmax(220px,44vh)}.stack{display:contents}.mc{grid-template-columns:1fr}.mcstat{grid-template-columns:repeat(3,1fr)}}
+  @media(max-width:560px){.mcstat{grid-template-columns:repeat(2,1fr)}.stat .v{font-size:20px}#hive{height:176px}}
   @media(prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
 </head>
@@ -185,6 +213,23 @@
     <button class="iconbtn" id="theme" title="Light / dark">🌙</button>
     <button class="ghost" id="leave">Leave</button>
   </header>
+  <section class="mc">
+    <div class="panel-c">
+      <div class="mchead">◆ Live Metrics</div>
+      <div class="mcstat">
+        <div class="stat"><div class="k">Crew</div><div class="v" id="mc-crew">0</div><div class="sub" id="mc-split">—</div></div>
+        <div class="stat accent"><div class="k">Working</div><div class="v" id="mc-work">0</div><div class="sub">editing now</div></div>
+        <div class="stat"><div class="k">Files</div><div class="v" id="mc-files">0</div><div class="sub">touched</div></div>
+        <div class="stat"><div class="k">Messages</div><div class="v" id="mc-msgs">0</div><div class="sub">in room</div></div>
+        <div class="stat"><div class="k">Tasks</div><div class="v" id="mc-tasks">0<small id="mc-tasktot"></small></div><div class="tbar"><i id="mc-taskbar"></i></div></div>
+      </div>
+    </div>
+    <div class="panel-c">
+      <div class="mchead">◆ Live Architecture — <span style="color:var(--teal)">who's on what, right now</span></div>
+      <div class="mapwrap"><svg id="hive" viewBox="0 0 640 200" role="img" aria-label="Live room map"></svg></div>
+      <div class="leg"><span><i style="background:var(--teal)"></i>Working</span><span><i style="background:var(--amber)"></i>Waiting</span><span><i style="background:var(--dim)"></i>Paused / offline</span></div>
+    </div>
+  </section>
   <main>
     <section class="col">
       <div class="colhead"><h2>Crew</h2><span class="ct" id="mc">0</span></div>
@@ -282,6 +327,7 @@ function render(){
   // re-editing the SAME file is detected — not just when the file COUNT changes.
   const sig=JSON.stringify([mem.map(m=>[m.name,m.kind,m.paused,efile(m.editing)]),chatArr.length,(chatArr[chatArr.length-1]||{}).at,Object.values(tasksObj).map(t=>[t.id,t.status]),Object.entries(boardObj).map(([f,v])=>[f,v.ts||v.at]),Object.keys(histObj).length])
   if(sig===_rsig)return; _rsig=sig
+  try{paintMC(mem,boardObj,tasksObj,chatArr)}catch(_){}
   $('memCount').textContent=mem.length;$('mc').textContent=mem.length
   $('members').innerHTML=mem.length?mem.map(m=>{const ai=m.kind==='ai',ef=efile(m.editing)
     const st=m.paused?'paused':ef?'editing':'online'
@@ -314,6 +360,38 @@ function render(){
   $('history').innerHTML=hist.length?hist.map(e=>`<div class="hentry"><div class="fmeta"><b>${esc(e.by||'?')}</b><span>${esc(e.at||'')}</span><span class="ktag ${esc(e.kind||'auto')}">${esc(kindLabel(e.kind))}</span>${e.churn?`<span>${esc(e.churn)}</span>`:''}</div><div class="hrow"><span class="ffile">${esc(e.file)}</span><button class="ghost hrestore" data-id="${esc(e.id)}" data-file="${esc(e.file)}">Restore</button></div></div>`).join(''):'<div class="empty">No restore points yet.<br>They appear automatically as files change.</div>'
 }
 const kindLabel=(k)=>({base:'created',auto:'edited',manual:'checkpoint',restore:'restore point'}[k]||'edited')
+
+// ── Mission Control: live metric tiles + hive map (reads the SAME live data) ──
+function setV(id,v){const e=$(id);if(e&&e.textContent!==String(v))e.textContent=v}
+function hexPts(cx,cy,r){let p=[];for(let i=0;i<6;i++){const a=Math.PI/180*(60*i-90);p.push((cx+r*Math.cos(a)).toFixed(1)+','+(cy+r*Math.sin(a)).toFixed(1))}return p.join(' ')}
+function statusCol(st){return st==='working'?'var(--teal)':st==='waiting'?'var(--amber)':'var(--dim)'}
+function shortName(s){s=String(s||'');return s.length>9?s.slice(0,9)+'…':s}
+function paintMC(mem,boardObj,tasksObj,chatArr){
+  const ai=mem.filter(m=>m.kind==='ai').length, hu=mem.length-ai
+  const working=mem.filter(m=>efile(m.editing)&&!m.paused).length
+  const tasks=Object.values(tasksObj), tdone=tasks.filter(t=>{const s=(t.status||'').toLowerCase();return s==='accepted'||s==='done'}).length
+  setV('mc-crew',mem.length); const sp=$('mc-split'); if(sp)sp.textContent=ai+' AI · '+hu+' human'
+  setV('mc-work',working); setV('mc-files',Object.keys(boardObj).length); setV('mc-msgs',chatArr.length)
+  const mt=$('mc-tasks'); if(mt&&mt.firstChild)mt.firstChild.nodeValue=String(tdone)
+  const tt=$('mc-tasktot'); if(tt)tt.textContent=' / '+tasks.length
+  const tb=$('mc-taskbar'); if(tb)tb.style.width=(tasks.length?Math.round(tdone/tasks.length*100):0)+'%'
+  drawHive(mem)
+}
+function drawHive(mem){
+  const svg=$('hive'); if(!svg)return
+  const W=640,H=200,cx=W/2,cy=H/2,ry=60,rx=Math.min(250,90+mem.length*12),n=mem.length
+  let edges='',nodes=''
+  mem.forEach((m,i)=>{
+    const a=-Math.PI/2+(n?i/n*Math.PI*2:0), x=cx+Math.cos(a)*rx, y=cy+Math.sin(a)*ry
+    const ef=efile(m.editing), st=m.paused?'offline':(ef?'working':'waiting')
+    edges+=`<path class="hedge ${ef&&!m.paused?'act':''}" d="M${cx} ${cy} L${x.toFixed(1)} ${y.toFixed(1)}"/>`
+    nodes+=`<g class="hnode ${st}"><polygon class="pw" points="${hexPts(x,y,26)}" fill="${statusCol(st)}"/>`
+      +`<polygon class="hx" points="${hexPts(x,y,22)}"/><text x="${x.toFixed(1)}" y="${(y-1).toFixed(1)}">${esc(shortName(m.name))}</text>`
+      +`<text class="who2" x="${x.toFixed(1)}" y="${(y+11).toFixed(1)}">${m.kind==='ai'?'AI':'human'}</text></g>`
+  })
+  const hub=`<polygon class="hub" points="${hexPts(cx,cy,26)}"/><text x="${cx}" y="${cy+3}" style="fill:var(--text);font:500 11px var(--fb);text-anchor:middle">ROOM</text>`
+  svg.innerHTML=n?(edges+hub+nodes):'<text x="320" y="100" style="fill:var(--dim);font:400 13px var(--fb);text-anchor:middle">Waiting for the crew to join…</text>'
+}
 
 document.addEventListener('click',(e)=>{
   const b=e.target.closest('button');if(!b||!window._h)return
