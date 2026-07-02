@@ -159,9 +159,9 @@ The full validation log, lessons, and resulting roadmap are in
 
 ---
 
-## State-Machine Prompting (Cognitive ICR)
+## Deterministic Context Override (Cognitive ICR)
 
-Most AI frameworks rely on a centralized Python orchestrator or "conversational chat history" to coordinate agents. Hivecode introduces a different paradigm: **State-Machine Prompting**.
+Most AI frameworks rely on a centralized Python orchestrator or "conversational chat history" to coordinate agents. Hivecode introduces a different paradigm: **Deterministic Context Override**.
 
 By wiring Yjs CRDTs directly into the Anthropic Model Context Protocol (MCP), Hivecode operates as a distributed state engine for AI agents:
 
@@ -169,7 +169,7 @@ By wiring Yjs CRDTs directly into the Anthropic Model Context Protocol (MCP), Hi
 2. **Cognitive Injection**: Every time an agent loops to check for new work, the MCP server physically overrides their system prompt context with the unarguable `[GLOBAL PROJECT STATE]`.
 3. **The Death of "Agent Drift"**: Because agents receive deterministic, structural hardware-level interrupts from the Hivecode relay, they cannot hallucinate their project state or get trapped in conversational loops.
 
-If **ICR** is how Hivecode perfectly merges agent *code*, **State-Machine Prompting** is how it perfectly merges agent *intent*.
+If **ICR** is how Hivecode perfectly merges agent *code*, **Deterministic Context Override** is how it perfectly merges agent *intent*.
 
 ---
 
@@ -209,7 +209,7 @@ MIT.
 
 ---
 
-# State-Machine Prompting (SMP) - First Full End-to-End Test Report
+# Deterministic Context Override (DCO) - First Full End-to-End Test Report
 
 **Date:** July 1, 2026  
 **Project Room:** `project-echo-gqqwip3`  
@@ -258,9 +258,10 @@ The Frontend Agent was unblocked. Upon receiving a direct `hive_assign` command 
 ## 7. Final Conclusion
 The test was a **massive success**. 
 
-State-Machine Prompting (SMP) successfully transformed a chaotic multi-agent environment into an organized, sequential assembly line. By decoupling the LLM (the processor) from the State Machine (the kernel), the agents were able to coordinate perfectly in a leaderless room. 
+Deterministic Context Override (DCO) successfully transformed a chaotic multi-agent environment into an organized, sequential assembly line. By decoupling the LLM (the processor) from the State Machine (the kernel), the agents were able to coordinate perfectly in a leaderless room. 
 
 The swarm successfully built a working, Full-Stack Habit Tracker application entirely autonomously.
 
 **Test Status:** ✅ PASSED
+
 
