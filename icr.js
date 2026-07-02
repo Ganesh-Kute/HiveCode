@@ -26,9 +26,14 @@
 // providers for every language behind this same interface.
 
 import { javascript } from './lang-js.js'
+import { braceLanguages } from './lang-brace.js'
+import { python } from './lang-python.js'
 
 // --- language registry ----------------------------------------------------------
-const LANGUAGES = [javascript]
+// JavaScript (acorn, full intent layer) first; then structural providers for the
+// C-family (TypeScript, Go, Rust, Java, C/C++, C#, Swift, Kotlin, …) and Python.
+// These cover disjoint extensions, so order only matters on clashes (none today).
+const LANGUAGES = [javascript, ...braceLanguages, python]
 
 // Register an additional language provider. Must expose the provider contract:
 // { id, exts:[...], parses, units, declaredNames, usedIdentifiers, declBody,

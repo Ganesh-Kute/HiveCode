@@ -22,7 +22,7 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import * as Y from 'yjs'
 import { WebSocketServer } from 'ws'
-import { setupWSConnection, setPersistence } from 'y-websocket/bin/utils'
+import { setupWSConnection, setPersistence, getYDoc } from 'y-websocket/bin/utils'
 import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import * as decoding from 'lib0/decoding'
 
@@ -45,6 +45,103 @@ function makeReadOnly(conn) {
       return handler(data, ...rest)
     })
   }
+}
+
+// --- DCO / claim WRITE ENFORCEMENT (opt-in, off by default) -----------------
+// The last mile of DCO: DCO locks the coordination TOOLS in the agent's own MCP
+// server ("you shouldn't"); this makes the RELAY drop a file write when the writer
+// is globally LOCKED or the file is claimed by someone else ("you can't"). It reads
+// the live swarm_state + claims maps from the project's BASE doc and gates writes to
+// per-file rooms only. Requires HIVE_AUTH_MODE=required (needs a known identity).
+// HIVE_ENFORCE_CLAIMS: off (default) | warn (log only) | block (drop the write).
+const ENFORCE_CLAIMS = (process.env.HIVE_ENFORCE_CLAIMS || 'off').toLowerCase()
+
+function isSyncWrite(data) {
+  try {
+    const dec = decoding.createDecoder(new Uint8Array(data))
+    if (decoding.readVarUint(dec) !== 0) return false // 0 = sync message
+    const t = decoding.readVarUint(dec)
+    return t === 1 || t === 2 // 1=step2, 2=update  -> a WRITE
+  } catch { return false }
+}
+
+// Returns a reason string if this connection's write to its file should be blocked,
+// or null to allow. Fail-OPEN on anything unknown (availability > strictness — this
+// is coordination, not the access-control gate, which stays fail-closed at handshake).
+function writeBlockReason(conn) {
+  const h = conn._hive
+  if (!h || !h.identity || !h.room) return null            // unknown identity -> can't enforce
+  if (h.identity.kind === 'human') return null             // humans/overseers are exempt
+  const filePath = pathOf(h.room)
+  if (filePath === null) return null                       // base-room writes (chat/claims/state) never gated
+  let baseDoc
+  try { baseDoc = getYDoc(baseRoomOf(h.room)) } catch { return null }
+  if (!baseDoc) return null
+  const who = h.identity.name
+  try {
+    const state = baseDoc.getMap('swarm_state')
+    if (state.get(`${who}_status`) === 'LOCKED' || state.get(`${who}_locked`) === 'true') return 'DCO-locked'
+    const claim = baseDoc.getMap('claims').get(filePath)
+    const live = claim && (!claim.ttl || (claim.at || 0) + claim.ttl > Date.now())
+    if (live && claim.by && claim.by !== who) return `held by ${claim.by}`
+  } catch { return null }
+  return null
+}
+
+// Dynamic write-gate: like makeReadOnly, but decides per-message against the LIVE
+// claims/state instead of a static role fixed at handshake.
+//   block — drop a blocked write.
+//   queue — HOLD it and replay it (zero-loss) the moment the block clears (claim
+//           released / agent unlocked), so no edit is lost, it just lands later.
+//   warn  — allow, but log.
+const QUEUE_CAP = Number(process.env.HIVE_ENFORCE_QUEUE_CAP || 2000)
+
+function installWriteGate(conn) {
+  const realOn = conn.on.bind(conn)
+  conn.on = (event, handler) => {
+    if (event !== 'message') return realOn(event, handler)
+    conn._wgHandler = handler // kept so queued writes can be replayed later
+    return realOn('message', (data, ...rest) => {
+      if (isSyncWrite(data)) {
+        const reason = writeBlockReason(conn)
+        if (reason) {
+          audit('write-blocked', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason, mode: ENFORCE_CLAIMS })
+          if (ENFORCE_CLAIMS === 'block') return // drop the write
+          if (ENFORCE_CLAIMS === 'queue') { queueWrite(conn, data, rest); return } // hold + replay later
+          // 'warn' falls through (allowed, logged only)
+        }
+      }
+      return handler(data, ...rest)
+    })
+  }
+}
+
+// Buffer a blocked write and start watching for the block to clear.
+function queueWrite(conn, data, rest) {
+  if (!conn._wq) { conn._wq = []; attachFlush(conn) }
+  if (conn._wq.length >= QUEUE_CAP) { audit('write-queue-overflow', { room: conn._hive.room, who: conn._hive.identity.name, cap: QUEUE_CAP }); return } // safety valve: drop past the cap
+  conn._wq.push({ data, rest })
+}
+
+// Observe the base doc's claims + swarm_state; when either changes, try to flush.
+function attachFlush(conn) {
+  let baseDoc; try { baseDoc = getYDoc(baseRoomOf(conn._hive.room)) } catch { return }
+  if (!baseDoc) return
+  const claims = baseDoc.getMap('claims'), state = baseDoc.getMap('swarm_state')
+  const onChange = () => flushQueue(conn)
+  claims.observe(onChange); state.observe(onChange)
+  conn._wgDetach = () => { try { claims.unobserve(onChange); state.unobserve(onChange) } catch {} }
+  conn.on('close', () => { if (conn._wgDetach) conn._wgDetach() })
+}
+
+// If the connection is no longer blocked, replay its held writes in order.
+function flushQueue(conn) {
+  if (!conn._wq || !conn._wq.length) return
+  if (writeBlockReason(conn)) return // still blocked — keep holding
+  const q = conn._wq; conn._wq = []
+  audit('write-queue-flush', { room: conn._hive.room, who: conn._hive.identity.name, count: q.length })
+  for (const { data, rest } of q) { try { conn._wgHandler(data, ...rest) } catch {} }
+  if (conn._wgDetach) conn._wgDetach()
 }
 
 const PORT = process.env.PORT || 1234
@@ -279,6 +376,7 @@ wss.on('connection', (conn, req) => {
   const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'
   console.log(`[relay] a client joined room "${room}"${conn._hive ? ` as ${conn._hive.identity.name} (${conn._hive.role})` : ''}`)
   if (conn._hive && conn._hive.role === 'reader') makeReadOnly(conn) // enforce read-only BEFORE y-websocket wires its handler
+  else if (ENFORCE_CLAIMS !== 'off') installWriteGate(conn) // dynamic claim/DCO write-gate (opt-in)
   setupWSConnection(conn, req, { docName: room })
 })
 
