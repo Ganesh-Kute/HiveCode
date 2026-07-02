@@ -61,9 +61,17 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
     hive.provider.on('sync', (s) => s && finish())
     setTimeout(finish, 8000) // don't hang if the relay is cold
   })
-  hive.say(`${name} joined and is ready to work.`)
-  const rules = (() => { try { return fs.readFileSync(path.join(ROOT, 'HIVE_RULES.md'), 'utf8') } catch { return '(rules not yet written)' } })()
   const others = hive.members().filter((m) => m.name !== name).map((m) => `${m.name}(${m.kind})`)
+  
+  // Event-Driven Wakeups: notify the MCP client the millisecond the DCO state changes
+  hive.doc.getMap('swarm_state').observe(() => {
+    try {
+      server.notification({ method: 'notifications/hive_state_changed', params: { state: hive.getState() } })
+    } catch (e) {
+      // client might not support notifications, swallow error
+    }
+  })
+  
   return `${mode}\nroom: ${room}\nrelay: ${relay}\nfolder: ${ROOT}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${relay}|${room}\n\n--- FOLLOW THESE RULES ---\n${rules}`
 }
 
@@ -153,7 +161,16 @@ const TOOLS = [
   { name: 'hive_leave', description: 'Leave the room and stop syncing.', inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_set_state', description: 'PM ONLY: Set a global project state flag (e.g. key="contract", val="READY"). This physically unblocks/blocks other agents. WARNING: ONLY use short enum values. Do NOT use this to store paragraphs of text or code, as it will bloat the context window. Use files for text.', inputSchema: { type: 'object', properties: { key: { type: 'string' }, val: { type: 'string' } }, required: ['key', 'val'] } },
   { name: 'hive_read_state', description: 'Read the global project state flags.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'hive_set_schema', description: 'PM ONLY: Define strict JSON schema validation for a global state key to prevent agents from hallucinating values (e.g. key="contract", rules={"enum": ["PLANNING", "READY", "APPROVED"]}).', inputSchema: { type: 'object', properties: { key: { type: 'string' }, rules: { type: 'object' } }, required: ['key', 'rules'] } },
 ]
+
+function enforceDcoLock() {
+  const state = requireSession().hive.getState()
+  const name = requireSession().name
+  if (state[`${name}_status`] === 'LOCKED' || state[`${name}_locked`] === 'true') {
+    throw new Error(`[DCO Enforced] You are locked by the global state machine. Tool execution denied. Block on hive_wait until your status changes.`)
+  }
+}
 
 const server = new Server({ name: 'hivecode', version: '0.1.0' }, { capabilities: { tools: {} } })
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
@@ -165,7 +182,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'hive_say': { requireSession().hive.say(String(args.text || '')); return text(`sent: ${args.text}`) }
       case 'hive_read_chat': { const n = args.limit || 30; const msgs = chatArray().slice(-n).map((m) => `${m.at} ${m.by}(${m.kind}): ${m.text}`); return text(msgs.join('\n') || '(no messages yet)') }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
-      case 'hive_assign': { const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
+      case 'hive_assign': { enforceDcoLock(); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
       case 'hive_read_tasks': {
         const all = taskList(); const me = requireSession().name
         const mine = all.filter((t) => t.to === me)
@@ -196,10 +213,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       case 'hive_set_state': { requireSession().hive.setState(String(args.key), String(args.val)); return text(`Set global state [${args.key}] to [${args.val}]`) }
       case 'hive_read_state': { return text(requireSession().hive.getState()) }
+      case 'hive_set_schema': { requireSession().hive.setSchema(String(args.key), args.rules); return text(`Set schema validation for [${args.key}]`) }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
-      case 'hive_complete': { const r = requireSession().hive.complete(String(args.id), String(args.note || '')); return r.ok ? text(`completed ${args.id}`) : err(r.error) }
+      case 'hive_complete': { enforceDcoLock(); const r = requireSession().hive.complete(String(args.id), String(args.note || '')); return r.ok ? text(`completed ${args.id}`) : err(r.error) }
       case 'hive_claim': {
+        enforceDcoLock();
         const region = String(args.region || ''); if (!region) return err('need a region (file path)')
         const got = requireSession().hive.claim(region, String(args.intent || 'edit'))
         if (got) return text(`claimed ${region} — it's yours. Edit it, then call hive_release.`)

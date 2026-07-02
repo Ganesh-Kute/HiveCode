@@ -212,6 +212,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // claims evaporate via TTL so a stalled agent never deadlocks the hive.
   const claims = doc.getMap('claims')
   const swarmState = doc.getMap('swarm_state')
+  const swarmSchema = doc.getMap('swarm_schema')
   const coordinator = makeCoordinator(claims, name, { ttl: 300000 }) // 5-min claim TTL
   // disableBc: do NOT sync peer-to-peer over BroadcastChannel. The relay must be
   // the ONLY path between clients — otherwise two clients on the same machine would
@@ -842,6 +843,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     doc,
     provider,
     setState: (key, val) => {
+      const rules = swarmSchema.get(key)
+      if (rules && rules.enum && !rules.enum.includes(val)) {
+        throw new Error(`[Schema Error] Invalid state for [${key}]. Allowed values: ${rules.enum.join(', ')}`);
+      }
       swarmState.set(key, val)
       say(`STATE TRANSITION: [${key}] is now [${val}]`)
     },
@@ -849,6 +854,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const s = {}
       for (const [k, v] of swarmState.entries()) s[k] = v
       return s
+    },
+    setSchema: (key, rules) => {
+      swarmSchema.set(key, rules)
+      say(`SCHEMA UPDATED: [${key}] rules set to ${JSON.stringify(rules)}`)
     },
     say,                 // post a coordination message
     assign,              // direct a task at a participant (needs approval if target AI has an owner)
