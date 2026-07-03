@@ -65,12 +65,18 @@ function topUnits(src, strings, from = 0, to = src.length) {
 
 const DECL = /\b(function|func|fn|def|fun|class|interface|struct|enum|trait|impl|type|namespace|module|package|object|record|protocol|actor|extension)\s+([A-Za-z_$][\w$]*)/
 const VARD = /\b(const|let|var|val|static|final)\s+([A-Za-z_$][\w$]*)/
-const METH = /^(?:@[\w.]+\s+)*(?:public|private|protected|internal|static|async|final|override|open|pub|suspend|inline|virtual|export|default)?\s*(?:function\s+|fn\s+|func\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^;{]*\)\s*(?:->[^{]+|:[^={]+)?\{/
+// Method/function signature, including TYPE-FIRST forms (`int a()`, `public static
+// void main(String[] a)`, `std::string name()`): optional decorators + any number of
+// modifiers + an optional return-type token, then NAME(args){. The captured name is
+// the identifier directly before `(`.
+const METH = /^(?:@[\w.()]+\s+)*(?:(?:public|private|protected|internal|static|async|final|override|open|pub|suspend|inline|virtual|export|default|abstract|sealed|unsafe|extern|synchronized|native|constexpr)\s+)*(?:(?:function|fn|func|fun)\s+)?(?:[A-Za-z_$][\w$<>\[\].,:&*\s]*?\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^;{]*\)\s*(?:->[^{]+|:[^={]+)?\s*\{/
+// control-flow headers also look like `name (…) {` — never key them as methods
+const CTRL = new Set(['if', 'for', 'while', 'switch', 'catch', 'do', 'else', 'try', 'return', 'new', 'throw', 'match', 'select', 'when', 'until', 'lock', 'using', 'foreach', 'with'])
 
 function keyOf(text) {
   const head = text.replace(/^\s+/, '')
   let m = head.match(DECL); if (m) return m[1] + ':' + m[2]
-  m = head.match(METH); if (m) return 'method:' + m[1]
+  m = head.match(METH); if (m && !CTRL.has(m[1])) return 'method:' + m[1]
   m = head.match(VARD); if (m) return 'var:' + m[2]
   return 'stmt:' + head.split('\n')[0].trim().replace(/\s+/g, ' ')
 }
