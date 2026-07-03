@@ -203,6 +203,7 @@ function installProvenanceGuard(room) {
       t = null
       const text = content.toString()
       if (!text) return
+      if (!ledger.length) return  // this room isn't using provenance (no receipts) — stay silent, don't flag normal rooms
       const h = contentHash(text)
       const covered = ledger.toArray().some((r) => r.contentHash === h && verifyReceipt(r).ok)
       if (!covered) note('unattributed-content', { hash: h.slice(0, 12) })
