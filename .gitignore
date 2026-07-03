@@ -20,6 +20,9 @@ aiproj/
 hive-audit.log
 hive-room-revoked.json
 
+# substrate: a client's per-workspace signing identity (holds a PRIVATE key — NEVER commit)
+.hive-id.json
+
 # test temp dirs
 .collide-test/
 .clobber-test/

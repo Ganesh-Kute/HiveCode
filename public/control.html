@@ -153,6 +153,20 @@
   .ktag.manual{background:color-mix(in srgb,var(--blue) 22%,transparent);color:#9cc1fb}
   .ktag.restore{background:color-mix(in srgb,var(--amber) 20%,transparent);color:#f4d27a}
 
+  /* provenance (substrate) */
+  .pentry{padding:11px;border-radius:12px;font-size:13px;border:1px solid transparent}.pentry:hover{background:var(--panel2);border-color:var(--line)}
+  .prow{display:flex;align-items:center;gap:9px;margin-top:4px}
+  .pintent{flex:1;min-width:0;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pid{font-family:var(--fm);font-size:10px;color:var(--dim)}
+  .vbadge{font-family:var(--fm);font-size:9.5px;font-weight:500;padding:2px 8px;border-radius:6px;letter-spacing:.02em;flex:0 0 auto;display:inline-flex;align-items:center;gap:4px}
+  .vbadge.ok{background:color-mix(in srgb,var(--teal) 18%,transparent);color:#86e6c2}
+  .vbadge.bad{background:color-mix(in srgb,var(--red) 20%,transparent);color:#f6a9a3}
+  .vbadge.neu{background:var(--panel2);color:var(--mut)}
+  .pviol{background:color-mix(in srgb,var(--red) 14%,transparent);border:1px solid color-mix(in srgb,var(--red) 34%,transparent);border-radius:12px;padding:9px 12px;margin:4px 4px 10px;font-size:12.5px;color:#f6a9a3}
+  .pviol .pvt{font-family:var(--fm);font-size:10px;color:var(--dim);margin-top:2px}
+  .pentry.pcur{border-color:color-mix(in srgb,var(--teal) 40%,transparent);background:color-mix(in srgb,var(--teal) 7%,transparent)}
+  .ptag{font-family:var(--fm);font-size:9.5px;font-weight:500;padding:2px 8px;border-radius:6px;background:color-mix(in srgb,var(--blue) 20%,transparent);color:#9cc1fb;flex:0 0 auto}
+
   /* ── Mission Control band (live metrics + hive map) ── */
   .mc{display:grid;grid-template-columns:1fr 1.15fr;gap:14px;flex:0 0 auto}
   .panel-c{background:color-mix(in srgb,var(--panel) 40%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border:1px solid var(--line);border-radius:var(--rc);box-shadow:var(--sh1);padding:14px 16px}
@@ -256,6 +270,10 @@
         <div class="colhead"><h2>History</h2><span class="ct" id="hc">0</span><span class=" recover">↩ restore points</span></div>
         <div class="scroll" id="history"></div>
       </section>
+      <section class="col">
+        <div class="colhead"><h2>Provenance</h2><span class="ct" id="pc">0</span><span class=" recover">⛓ signed &amp; verified</span></div>
+        <div class="scroll" id="prov"></div>
+      </section>
     </div>
   </main>
 </div>
@@ -292,6 +310,9 @@ async function connect(raw){
   if(!(await ensureLib()))return
   const claim=decodeJwt(p.token)||{};meKind=claim.kind||'human'
   doc=new Y.Doc()
+  // fresh provenance cache per connection (tear down any file docs from a prior room)
+  if(window._prov){for(const e of window._prov.docs.values()){try{e.fp.destroy();e.fdoc.destroy()}catch{}}}
+  window._prov={docs:new Map(),verif:new Map()}
   const opts={connect:true};if(p.token)opts.params={token:p.token}
   try{provider=new WS(p.relay,p.room,doc,opts)}catch(e){err('Could not connect: '+e.message);return}
   provider.awareness.setLocalStateField('user',{name:me,kind:meKind,v:2})
@@ -358,6 +379,8 @@ function render(){
   const hist=Object.values(histObj).sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,80)
   $('hc').textContent=hist.length
   $('history').innerHTML=hist.length?hist.map(e=>`<div class="hentry"><div class="fmeta"><b>${esc(e.by||'?')}</b><span>${esc(e.at||'')}</span><span class="ktag ${esc(e.kind||'auto')}">${esc(kindLabel(e.kind))}</span>${e.churn?`<span>${esc(e.churn)}</span>`:''}</div><div class="hrow"><span class="ffile">${esc(e.file)}</span><button class="ghost hrestore" data-id="${esc(e.id)}" data-file="${esc(e.file)}">Restore</button></div></div>`).join(''):'<div class="empty">No restore points yet.<br>They appear automatically as files change.</div>'
+
+  try{paintProvenance()}catch(_){}
 }
 const kindLabel=(k)=>({base:'created',auto:'edited',manual:'checkpoint',restore:'restore point'}[k]||'edited')
 
@@ -451,6 +474,72 @@ async function restoreSnap(id,file){
   if(!confirm(`Restore ${file} to this point?\n\nThe current version is saved first, so you can undo this.`))return
   const r=await restoreCore(id,file)
   if(r&&r.error)alert('That restore point is no longer available (it may have aged out).')
+}
+
+// ── Substrate provenance ────────────────────────────────────────────────────
+// For every active file we open its own doc, read the signed `ledger`, and verify
+// each receipt IN THE BROWSER with Web Crypto Ed25519 — the SAME check the relay
+// runs, done here independently so the badge means something. We also surface the
+// violations the relay caught (posted into chat by the relay). FSEP matches the
+// per-file room separator used by sync.js (token.js FILE_SEP = U+0001).
+const FSEP=''
+window._prov=window._prov||{docs:new Map(),verif:new Map()}
+function b64urlBytes(s){s=String(s||'').replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const bin=atob(s),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u}
+function pemToDer(pem){const b=String(pem||'').replace(/-----[^-]+-----/g,'').replace(/\s+/g,''),bin=atob(b),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u}
+function provMsg(r){return [r.author,r.parent,r.intent||'',r.contentHash,r.at].join('\n')} // must match substrate.js signingMessage
+async function b64urlSha256(bytes){const d=await crypto.subtle.digest('SHA-256',bytes),u=new Uint8Array(d);let bin='';for(let i=0;i<u.length;i++)bin+=String.fromCharCode(u[i]);return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
+async function verifyReceiptBrowser(r){
+  try{
+    if(!r||!r.pk||!r.author||!r.sig||!r.contentHash)return 'bad'
+    const der=pemToDer(r.pk)
+    if((await b64urlSha256(der)).slice(0,22)!==r.author)return 'bad'   // author id == key fingerprint
+    const key=await crypto.subtle.importKey('spki',der,{name:'Ed25519'},false,['verify'])
+    const ok=await crypto.subtle.verify({name:'Ed25519'},key,b64urlBytes(r.sig),new TextEncoder().encode(provMsg(r)))
+    return ok?'ok':'bad'
+  }catch(_){return 'neu'}                                              // this browser lacks Ed25519 — the relay still enforces
+}
+function vstate(r){
+  const k=r.sig||'',P=window._prov
+  if(P.verif.has(k))return P.verif.get(k)
+  P.verif.set(k,'neu')                                                 // in-flight; don't re-queue
+  verifyReceiptBrowser(r).then(v=>{P.verif.set(k,v);try{paintProvenance()}catch(_){}})
+  return 'neu'
+}
+function ensureProvDoc(file){
+  const P=window._prov
+  if(P.docs.has(file))return P.docs.get(file)
+  if(P.docs.size>=16||!window._conn)return null                        // cap live file connections
+  let fdoc,fp
+  try{fdoc=new Y.Doc();const opts={connect:true};if(window._conn.token)opts.params={token:window._conn.token};fp=new WS(window._conn.relay,window._conn.room+FSEP+file,fdoc,opts)}catch{return null}
+  const ledger=fdoc.getArray('ledger'),head=fdoc.getMap('head')
+  const repaint=()=>{try{paintProvenance()}catch(_){}}
+  ledger.observe(repaint);head.observe(repaint)
+  const e={fdoc,fp,ledger,head};P.docs.set(file,e);return e
+}
+const VLABEL={ok:'✓ verified',bad:'✗ forged',neu:'• signed'}
+function paintProvenance(){
+  if(!window._h||!window._conn)return
+  const boardObj=doc.getMap('board').toJSON()
+  const files=Object.entries(boardObj).map(([f,v])=>({f,ts:v.ts||0})).sort((a,b)=>b.ts-a.ts).slice(0,16).map(x=>x.f)
+  for(const f of files)ensureProvDoc(f)
+  let all=[];const headHash={}
+  for(const[file,e]of window._prov.docs){
+    for(const r of e.ledger.toArray())all.push({file,...r})
+    const h=e.head&&e.head.get('cur');if(h&&h.hash)headHash[file]=h.hash   // the file's authoritative current content
+  }
+  all.sort((a,b)=>(b.at||0)-(a.at||0))
+  const pc=$('pc');if(pc)pc.textContent=all.length
+  const viol=window._h.chat.toArray().filter(m=>m.by==='relay'&&/provenance/i.test(m.text||'')).slice(-4).reverse()
+  const vhtml=viol.map(m=>`<div class="pviol">${esc(m.text)}<div class="pvt">${esc(m.at||'')}</div></div>`).join('')
+  const rows=all.slice(0,60).map(r=>{
+    const v=vstate(r),who=r.name||(r.author?String(r.author).slice(0,10)+'…':'?')
+    const cur=headHash[r.file]&&r.contentHash===headHash[r.file]   // is this receipt the live, authoritative content?
+    return `<div class="pentry${cur?' pcur':''}"><div class="fmeta"><b>${esc(who)}</b><span>${typeof r.at==='number'?ago(r.at):esc(r.at||'')}</span><span class="ffile">${esc(r.file)}</span></div>`
+      +`<div class="prow"><span class="pintent">${esc(r.intent||'edit')}</span>${cur?'<span class="ptag">live content</span>':''}<span class="vbadge ${v}">${VLABEL[v]}</span></div>`
+      +`<div class="pid">author ${esc(r.author?String(r.author).slice(0,16):'?')}…</div></div>`
+  }).join('')
+  const el=$('prov');if(!el)return
+  el.innerHTML=(vhtml||'')+(rows||(files.length?'<div class="empty">No signed changes yet.<br>Run clients with <b>HIVE_PROVENANCE=on</b>.</div>':'<div class="empty">No active files yet.</div>'))
 }
 async function revertAgent(who){
   if(!confirm(`Revert ALL of ${who}'s changes?\n\nEvery file they touched rolls back to before they edited it. Their current versions are saved first, so this is undoable.`))return

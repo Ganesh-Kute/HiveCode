@@ -24,6 +24,7 @@ import * as Y from 'yjs'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence, getYDoc } from 'y-websocket/bin/utils'
 import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
+import { verifyReceipt, contentHash, headOk, contentHealth } from './substrate.js'
 import * as decoding from 'lib0/decoding'
 
 // Enforce a read-only connection: drop the client's inbound SYNC writes (sync
@@ -142,6 +143,95 @@ function flushQueue(conn) {
   audit('write-queue-flush', { room: conn._hive.room, who: conn._hive.identity.name, count: q.length })
   for (const { data, rest } of q) { try { conn._wgHandler(data, ...rest) } catch {} }
   if (conn._wgDetach) conn._wgDetach()
+}
+
+// --- SUBSTRATE PROVENANCE ENFORCEMENT (opt-in, off by default) ---------------
+// The relay is the one place every write converges and no client controls it — so
+// it is where provenance (invariant I1) becomes enforced rather than advisory. Each
+// file's own doc carries a `ledger` (append-only signed receipts) written by clients.
+// The relay verifies them SERVER-SIDE:
+//   audit  — verify every receipt; LOG any that fail (forged/tampered) + surface it.
+//   strict — additionally REMOVE invalid receipts from the shared ledger, so forged
+//            provenance physically cannot persist in the medium. (Sound: the relay
+//            owns the doc; a provably-bad signature is deleted, not arbitrated.)
+// Content with no backing verified receipt is reported (best-effort, debounced) but
+// NOT rolled back — that would fight the CRDT; detection is surfaced to the Control
+// Room instead. HIVE_PROVENANCE: off (default) | audit | strict.
+const PROVENANCE = (process.env.HIVE_PROVENANCE || 'off').toLowerCase()
+
+function installProvenanceGuard(room) {
+  if (PROVENANCE === 'off') return
+  const filePath = pathOf(room)
+  if (filePath === null) return                     // only per-file rooms carry content + ledger
+  let fdoc; try { fdoc = getYDoc(room) } catch { return }
+  if (!fdoc || fdoc._hiveProv) return               // one guard per file doc
+  fdoc._hiveProv = true
+  const ledger = fdoc.getArray('ledger')
+  const content = fdoc.getText('content')
+  const baseRoom = baseRoomOf(room)
+  let lastNote = ''
+
+  const note = (kind, detail = {}) => {
+    audit('provenance-' + kind, { room, file: filePath, ...detail })
+    const sig = kind + ':' + (detail.hash || detail.count || '')
+    if (sig === lastNote) return                     // dedupe repeated notes for the same violation
+    lastNote = sig
+    try {
+      const bd = getYDoc(baseRoom)
+      if (bd) bd.getArray('chat').push([{ by: 'relay', kind: 'system', at: new Date().toTimeString().slice(0, 8),
+        text: `⛔ provenance ${kind} on ${filePath}${detail.author ? ` — author ${String(detail.author).slice(0, 10)}…` : ''}${PROVENANCE === 'strict' && kind === 'forged-receipt' ? ' (removed)' : ''}` }])
+    } catch { /* base doc unavailable — the audit log still has it */ }
+  }
+
+  // Verify every receipt; in strict mode delete the invalid ones (highest index first
+  // so earlier positions stay valid during deletion).
+  const checkLedger = () => {
+    const rs = ledger.toArray()
+    const bad = []
+    for (let i = 0; i < rs.length; i++) if (!verifyReceipt(rs[i]).ok) bad.push(i)
+    if (!bad.length) return
+    note('forged-receipt', { count: bad.length, author: rs[bad[0]] && rs[bad[0]].author })
+    if (PROVENANCE === 'strict') fdoc.transact(() => { for (let j = bad.length - 1; j >= 0; j--) ledger.delete(bad[j], 1) })
+  }
+
+  // Best-effort: after edits settle, flag content that no verified receipt covers.
+  // Debounced (edits and their receipts arrive as separate updates) and detection-only.
+  let t = null
+  const checkContent = () => {
+    if (t) return
+    t = setTimeout(() => {
+      t = null
+      const text = content.toString()
+      if (!text) return
+      const h = contentHash(text)
+      const covered = ledger.toArray().some((r) => r.contentHash === h && verifyReceipt(r).ok)
+      if (!covered) note('unattributed-content', { hash: h.slice(0, 12) })
+    }, 4000)
+  }
+
+  // CONTENT AUTHORITY: the file's authoritative `head` (its attested current content)
+  // must always be a VERIFIED, NON-REGRESSING attestation. The relay holds the last
+  // head it accepted; if a new head is forged, doesn't attest its own text, or parses
+  // WORSE than the last good one, strict mode reverts to the last good head — so the
+  // official current version of a file can never be forged or made more broken.
+  const head = fdoc.getMap('head')
+  let lastGood = null
+  const checkHead = () => {
+    const h = head.get('cur')
+    if (!h) return
+    const struct = headOk(h)
+    const prevHealth = lastGood ? contentHealth(lastGood.text, filePath) : 0
+    const regresses = struct.ok && contentHealth(h.text, filePath) > prevHealth
+    if (struct.ok && !regresses) { lastGood = h; return }             // accept: verified + no worse
+    note(struct.ok ? 'head-regression' : 'head-forged', { author: h.receipt && h.receipt.author })
+    if (PROVENANCE === 'strict' && lastGood) fdoc.transact(() => head.set('cur', lastGood)) // restore last verified head
+  }
+
+  ledger.observe(checkLedger)
+  content.observe(checkContent)
+  head.observe(checkHead)
+  checkLedger()
+  checkHead()
 }
 
 const PORT = process.env.PORT || 1234
@@ -378,12 +468,15 @@ wss.on('connection', (conn, req) => {
   if (conn._hive && conn._hive.role === 'reader') makeReadOnly(conn) // enforce read-only BEFORE y-websocket wires its handler
   else if (ENFORCE_CLAIMS !== 'off') installWriteGate(conn) // dynamic claim/DCO write-gate (opt-in)
   setupWSConnection(conn, req, { docName: room })
+  if (PROVENANCE !== 'off') installProvenanceGuard(room) // substrate: verify/enforce the file's provenance ledger (opt-in)
 })
 
 server.listen(PORT, () => {
   console.log(`[relay] listening on :${PORT}`)
   console.log(`[relay] room URL pattern: ws://localhost:${PORT}/<room-name>`)
   console.log(`[relay] auth mode: ${AUTH_MODE}${AUTH_MODE === 'required' ? ` (keys: ${JWT_SECRET ? 'HS256 ' : ''}${JWT_PUBKEY ? 'RS256' : ''})` : ''}`)
+  if (ENFORCE_CLAIMS !== 'off') console.log(`[relay] claim/DCO write-enforcement: ${ENFORCE_CLAIMS}`)
+  if (PROVENANCE !== 'off') console.log(`[relay] substrate provenance enforcement: ${PROVENANCE}`)
 })
 
 // --- optional keep-warm (free-tier hosts sleep after ~15 min idle) ---

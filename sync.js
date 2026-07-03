@@ -25,6 +25,7 @@ import { applyDiff, summarizeChange, changedRange, hasConflictMarkers } from './
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
+import { genIdentity, authorChange, verifyReceipt } from './substrate.js' // convergent-substrate: signed provenance for every landed change
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -36,6 +37,7 @@ const PROTOCOL_VERSION = 2
 const ALWAYS_IGNORE = [
   '.git/', 'node_modules/',
   '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
+  '.hive-id.json', // this client's substrate signing identity (holds a PRIVATE key) — never sync it
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 ]
 
@@ -45,12 +47,13 @@ const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never sync
 const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents' conversation
 const TASKS_FILE = 'HIVE_TASKS.md' // generated locally from `tasks`; directed work + approvals
 const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
+const ID_FILE = '.hive-id.json'    // this client's substrate signing identity (private); never synced
 const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
 const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
 const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder joins (via .hive.json) + behaves
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
-const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, RULES_FILE, MEMBERS_FILE, AGENTS_FILE])
+const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, AGENTS_FILE])
 
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the
@@ -214,6 +217,44 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const swarmState = doc.getMap('swarm_state')
   const swarmSchema = doc.getMap('swarm_schema')
   const coordinator = makeCoordinator(claims, name, { ttl: 300000 }) // 5-min claim TTL
+
+  // --- convergent substrate: signed provenance (opt-in via HIVE_PROVENANCE) ------
+  // When on, this client loads (or mints) a persistent Ed25519 identity and SIGNS
+  // every change it lands, appending a verifiable receipt to each file's provenance
+  // ledger. This makes invariant I1 (provenance-verified) real end-to-end: every
+  // state the room ever holds is attributable to a cryptographic author + a declared
+  // intent. Everything here is wrapped so a failure can NEVER break sync — provenance
+  // is an added guarantee, not a new dependency of the live path.
+  const PROVENANCE = (process.env.HIVE_PROVENANCE || 'off').toLowerCase() !== 'off'
+  let identity = null
+  if (PROVENANCE) {
+    const idPath = path.join(ROOT, ID_FILE)
+    try { if (fs.existsSync(idPath)) { const j = JSON.parse(fs.readFileSync(idPath, 'utf8')); if (j && j.pk && j.sk && j.id) identity = j } } catch { identity = null }
+    if (!identity) { try { identity = genIdentity(name); fs.writeFileSync(idPath, JSON.stringify(identity, null, 2)) } catch { identity = null } }
+    if (identity) log(`[${name}] substrate provenance ON — signing as ${identity.id.slice(0, 12)}…`)
+  }
+  // Record a signed receipt for a landed local change (base -> next) on a file's
+  // ledger. Intent is taken from this author's live claim on the region, so the
+  // WHY that the coordinator already knows is what gets cryptographically bound.
+  function stampProvenance(relPath, base, next) {
+    if (!PROVENANCE || !identity) return
+    const fe = fileDocs.get(relPath); if (!fe || !fe.ledger) return
+    try {
+      const c = coordinator.sense(relPath)
+      const ch = authorChange({ identity, filename: relPath, base: base == null ? '' : base, text: next, intent: (c && c.intent) || 'edit', at: Date.now() })
+      // `name` is display-only (NOT signed) — the verified identity is `author` (the key
+      // fingerprint). A UI shows both: the friendly name, and the cryptographic author it
+      // must match. Signature covers everything else, so tampering `name` can't fake trust.
+      const receipt = { ...ch.prov, name }
+      fe.doc.transact(() => {
+        fe.ledger.push([receipt])                 // append to history (audit)
+        // Advance the authoritative head to attest the new content. Every peer that
+        // reconciles to the same converged text signs the SAME contentHash, so head
+        // settles on a verified attestation of that text.
+        fe.head.set('cur', { text: next, hash: ch.prov.contentHash, at: ch.prov.at, by: name, receipt })
+      })
+    } catch { /* provenance must never break the sync path */ }
+  }
   // disableBc: do NOT sync peer-to-peer over BroadcastChannel. The relay must be
   // the ONLY path between clients — otherwise two clients on the same machine would
   // sync directly and bypass the relay's access control (auth, path scope, read-only).
@@ -238,8 +279,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // `undo` is a per-file UndoManager tracking THIS client's local edits, so a
     // human/agent can undo their own CRDT changes (Level-0 rollback).
     const snap = fdoc.getMap('snap')
+    // The file's provenance LEDGER: an append-only list of signed receipts, one per
+    // landed change. Lives in the file's own doc, so it inherits the file's access
+    // control and travels with it. Any peer can verifyReceipt() every entry.
+    const ledger = fdoc.getArray('ledger')
+    // The authoritative HEAD: a single signed pointer at the file's CURRENT content
+    // (key 'cur' -> { text, hash, at, by, receipt }). Content authority = the relay
+    // guarantees this is always a verified, non-regressing attestation of the content.
+    const head = fdoc.getMap('head')
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
-    e = { doc: fdoc, provider: fprovider, text, snap, undo, synced: false }
+    e = { doc: fdoc, provider: fprovider, text, snap, ledger, head, undo, synced: false }
     fileDocs.set(relPath, e)
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
     fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(relPath, 'remote') } }) // initial pull settled
@@ -341,6 +390,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // the relay has no copy of this path -> publish ours (a genuinely new file)
       if (disk === null) return
       fe.doc.transact(() => applyDiff(fe.text, disk))
+      stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)
       manifest.set(relPath, 1)
       known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
@@ -409,6 +459,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       lastLocalEdit = relPath
     }
     fileDocs.get(relPath).doc.transact(() => applyDiff(yt, res.text))
+    // Sign this landed local change into the file's provenance ledger (I1). Only our
+    // OWN authorship is stamped (each peer signs what it lands), so every receipt is
+    // attributable to its true author exactly once — mirroring the snapshot model.
+    if (origin === 'local' && res.text !== docText) stampProvenance(relPath, docText, res.text)
     if (res.text !== disk) writeToDisk(relPath, res.text)
     known.add(relPath); bases.set(relPath, res.text)
     if (origin === 'local') forkBases.set(relPath, res.text) // we authored this state; it's our new fork
@@ -872,6 +926,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     release: (region) => coordinator.release(String(region)),
     senseClaim: (region) => coordinator.sense(String(region)), // the live claim on a region, or null
     claimsBoard: () => coordinator.board(),                     // everything currently claimed
+    // --- convergent substrate: provenance (I1) ---
+    identity: () => identity ? { id: identity.id, name: identity.name, pk: identity.pk } : null, // never exposes the private key
+    provenanceOf: (relPath) => { const e = fileDocs.get(relPath); return e && e.ledger ? e.ledger.toArray() : [] }, // signed receipts for a file
+    headOf: (relPath) => { const e = fileDocs.get(relPath); return e && e.head ? e.head.get('cur') || null : null }, // the file's authoritative attested current content
+    // Audit a file's ledger: verify EVERY receipt's signature + author identity, and
+    // report which authors contributed. Returns { ok, count, verified, bad, authors }.
+    verifyProvenanceOf: (relPath) => {
+      const e = fileDocs.get(relPath)
+      const rs = e && e.ledger ? e.ledger.toArray() : []
+      let verified = 0; const bad = []; const authors = new Set()
+      for (let i = 0; i < rs.length; i++) { const v = verifyReceipt(rs[i]); if (v.ok) { verified++; authors.add(rs[i].author) } else bad.push({ i, reason: v.reason }) }
+      return { ok: bad.length === 0, count: rs.length, verified, bad, authors: [...authors] }
+    },
     // --- rollback ---
     listHistory,         // the restore-point timeline (newest first; filter by file/by)
     restore,             // restore a file to a restore point by id (reversible)

@@ -32,8 +32,11 @@
     "token.js",
     "icr.js",
     "lang-js.js",
+    "lang-brace.js",
+    "lang-python.js",
     "icr-merge.js",
     "hive-coord.js",
+    "substrate.js",
     "HIVE_RULES.md",
     "MCP.md",
     "README.md",
@@ -45,7 +48,12 @@
   "scripts": {
     "start": "node server.js",
     "relay": "node server.js",
-    "test": "node test.js"
+    "test": "node test.js",
+    "test:substrate": "node substrate-test.js",
+    "test:substrate:live": "node substrate-live-test.js",
+    "test:substrate:enforce": "node substrate-enforce-test.js",
+    "test:substrate:authority": "node substrate-authority-test.js",
+    "test:substrate:all": "node substrate-test.js && node substrate-live-test.js && node substrate-enforce-test.js && node substrate-authority-test.js"
   },
   "engines": {
     "node": ">=18"

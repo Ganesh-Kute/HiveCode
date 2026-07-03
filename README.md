@@ -41,6 +41,7 @@ To keep this README clean, we've modularized the documentation into separate fil
 - **[🏛️ Hivecode Architecture](docs/HIVECODE_EXPLAINED.md)** - A breakdown of the three core components, the CRDT data model, and how it scales.
 - **[🧠 ICR (Intent-Centric Resolution)](docs/ICR_EXPLAINED.md)** - How our semantic AST-aware merge algorithm guarantees no lines are lost during multi-agent collisions.
 - **[🔐 DCO (Deterministic Context Override)](docs/DCO_EXPLAINED.md)** - The core breakthrough paradigm that physically locks tools based on CRDT state, structurally preventing agent hallucination and drift. Includes our End-to-End Test Report.
+- **[🔗 The Substrate](docs/SUBSTRATE.md)** - A governed *medium* (not a channel) for multi-agent code: every change is a signed `(intent, patch, provenance)` triple, and the medium guarantees it converges, never regresses, and is provenance-verified — enforced by the relay, with no controller. Runnable + testable in one command.
 
 ---
 
@@ -50,6 +51,8 @@ To keep this README clean, we've modularized the documentation into separate fil
 npm install
 node test.js          # unit tests
 node hive-edge-test.js # adversarial / edge-case live tests
+
+npm run test:substrate:all   # the substrate: 4 suites (core + live + enforcement + content authority)
 ```
 
 Other live suites: `hive-secure-test.js`, `hive-scope-test.js`, `hive-auth-test.js`,
