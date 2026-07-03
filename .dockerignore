@@ -5,3 +5,5 @@ projB
 *.log
 *.txt
 .git
+extension
+.hive-id.json

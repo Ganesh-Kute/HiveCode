@@ -4,13 +4,13 @@
   "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/GSK7024/livecode",
+  "homepage": "https://github.com/Ganesh-Kute/HiveCode",
   "bugs": {
-    "url": "https://github.com/GSK7024/livecode/issues"
+    "url": "https://github.com/Ganesh-Kute/HiveCode/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/GSK7024/livecode"
+    "url": "https://github.com/Ganesh-Kute/HiveCode"
   },
   "keywords": [
     "mcp",

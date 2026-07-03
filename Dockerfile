@@ -8,10 +8,11 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
-# the relay + everything it loads at runtime: token.js (auth/scope verification)
-# and public/ (the landing page, Control Room, and favicons it serves).
-COPY server.js token.js ./
-COPY public ./public
+# Copy the whole app (node_modules/.git/workspace/etc. are excluded via .dockerignore).
+# We copy the FULL tree rather than a hand-picked file list so that adding a new runtime
+# import — e.g. server.js now loads substrate.js -> icr.js -> lang-*.js — never silently
+# breaks the image with "Cannot find module" again.
+COPY . .
 
 # hosts set $PORT; server.js already reads it (defaults to 1234)
 EXPOSE 1234
