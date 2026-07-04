@@ -25,6 +25,13 @@ import crypto from 'crypto'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+// Substrate defaults for MCP agents: signed provenance + the silent-fork gate are ON
+// unless explicitly disabled. Agents register this server with arbitrary (often empty)
+// env, so relying on per-registration env vars left rooms in mixed signed/unsigned mode —
+// which is exactly the condition that disabled fork detection in live testing. sync.js
+// reads these when startSync() runs (not at import), so setting them here covers every join.
+if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
+if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
@@ -42,6 +49,21 @@ function resolveRoom(link, dir) {
   return { relay: DEFAULT_RELAY, room: 'room-' + crypto.randomBytes(13).toString('base64url'), token: '', mode: 'HOSTED (new room)' }
 }
 
+// Session persistence: keyed to this process's cwd, so each agent runtime (which starts
+// its own MCP process from its own directory) resumes only its own identity. Lets the
+// session survive MCP host restarts, which otherwise silently drop the agent from the room.
+const SESSION_FILE = path.join(process.cwd(), '.hive-mcp-session.json')
+function persistSession({ dir, name, owner }) {
+  try { fs.writeFileSync(SESSION_FILE, JSON.stringify({ dir, name, owner })) } catch { /* best-effort */ }
+}
+async function tryResumeSession() {
+  try {
+    if (!fs.existsSync(SESSION_FILE)) return
+    const s = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'))
+    if (s && s.dir && s.name && fs.existsSync(path.join(path.resolve(s.dir), '.hive.json'))) await joinRoom(s)
+  } catch { /* resume is best-effort; the agent can always hive_join explicitly */ }
+}
+
 async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '' }) {
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   const ROOT = path.resolve(dir)
@@ -54,6 +76,7 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
   fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}) }, null, 2))
   const hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: useToken, log: () => {} })
   session = { hive, room, relay, dir, name }
+  persistSession({ dir, name, owner }) // survive MCP host restarts (see tryResumeSession)
   // wait for the first sync so members/board/rules are ready
   await new Promise((resolve) => {
     let done = false
@@ -72,7 +95,13 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
     }
   })
   
-  return `${mode}\nroom: ${room}\nrelay: ${relay}\nfolder: ${ROOT}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${relay}|${room}\n\n--- FOLLOW THESE RULES ---\n${rules}`
+  // The sync engine writes HIVE_RULES.md into the folder on first sync — return it inline
+  // so the agent gets the rules with its join. (Fixes a ReferenceError: `rules` was never
+  // defined, which made every hive_join return "error: rules is not defined".)
+  let rulesText = ''
+  try { rulesText = fs.readFileSync(path.join(ROOT, 'HIVE_RULES.md'), 'utf8') } catch {}
+  if (!rulesText) rulesText = 'Read HIVE_RULES.md in this folder. In short: read chat + board before editing; CLAIM a file with hive_claim before you edit it and hive_release when done; announce intent with hive_say; prefer small patches; act only on accepted tasks; resolve <<<<<<< conflict markers rather than blindly overwriting.'
+  return `${mode}\nroom: ${room}\nrelay: ${relay}\nfolder: ${ROOT}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${relay}|${room}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }
@@ -177,6 +206,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params
   try {
+    // AUTO-RESUME: the MCP host may restart this server process at any time, which
+    // wipes the in-memory session and silently kicks the agent out of its room. If a
+    // persisted session exists for this cwd, transparently rejoin before any tool runs —
+    // the agent (and its human) never see a "not in a room" flake again.
+    if (!session && name !== 'hive_join' && name !== 'hive_leave') await tryResumeSession()
     switch (name) {
       case 'hive_join': return text(await joinRoom(args))
       case 'hive_say': { requireSession().hive.say(String(args.text || '')); return text(`sent: ${args.text}`) }
@@ -229,7 +263,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'hive_claims': { const b = requireSession().hive.claimsBoard(); return text(b.length ? b.map((c) => `${c.region} — ${c.by}${c.intent ? ` (${c.intent})` : ''}`).join('\n') : '(nothing claimed right now — all open)') }
       case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
       case 'hive_status': { const s = requireSession(); return text({ room: s.room, relay: s.relay, dir: s.dir, name: s.name }) }
-      case 'hive_leave': { requireSession().hive.stop(); session = null; return text('left the room') }
+      case 'hive_leave': { requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
       default: return err(`unknown tool: ${name}`)
     }
   } catch (e) { return err(`error: ${e.message}`) }

@@ -62,3 +62,4 @@ Thumbs.db
 
 # Guardian's synced copy of the project
 guardian-workspace/
+.hive-mcp-session.json

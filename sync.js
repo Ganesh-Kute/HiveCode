@@ -21,11 +21,11 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
 import ignore from 'ignore'
-import { applyDiff, summarizeChange, changedRange, hasConflictMarkers } from './core.js'
+import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
-import { genIdentity, authorChange, verifyReceipt } from './substrate.js' // convergent-substrate: signed provenance for every landed change
+import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -226,6 +226,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // intent. Everything here is wrapped so a failure can NEVER break sync — provenance
   // is an added guarantee, not a new dependency of the live path.
   const PROVENANCE = (process.env.HIVE_PROVENANCE || 'off').toLowerCase() !== 'off'
+  // The live SILENT-FORK GATE (detect + surface concurrent same-line edits) is EXPERIMENTAL
+  // and OFF by default. It reliably surfaces conflicts for realistic (2-3 agent, non-burst)
+  // concurrency, but robustly detecting forks needs a source-level capture of each authored
+  // edit BEFORE it merges — the fs.watch/disk-diff model contaminates the authored version,
+  // so detection can't be made both complete (catch every clash) and sound (never false-flag
+  // a disjoint edit). Opt in with HIVE_FORK_GATE=on. When off, sync behaves exactly as the
+  // proven core: provenance still signs every change; only the fork surfacing is disabled.
+  const FORK_GATE = PROVENANCE && (process.env.HIVE_FORK_GATE || 'off').toLowerCase() !== 'off'
   let identity = null
   if (PROVENANCE) {
     const idPath = path.join(ROOT, ID_FILE)
@@ -236,9 +244,20 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // Record a signed receipt for a landed local change (base -> next) on a file's
   // ledger. Intent is taken from this author's live claim on the region, so the
   // WHY that the coordinator already knows is what gets cryptographically bound.
-  function stampProvenance(relPath, base, next) {
+  // Two concerns, deliberately decoupled:
+  //   stampIntent -> LEDGER receipt: the author's INTENT — the state they edited FROM (base)
+  //     -> the content they WROTE (next). With the fork gate on this comes from the SOURCE
+  //     capture (captureLocal), so it is anchored to a clean base, not the fusing shared
+  //     text — which is what keeps concurrent same-line edits fork-detectable.
+  //   attestHead -> HEAD: content AUTHORITY — attests the ACTUAL landed (converged) content,
+  //     so the relay's non-regression guard always judges real content, never partial intent.
+  function stampIntent(relPath, base, next) {
     if (!PROVENANCE || !identity) return
     const fe = fileDocs.get(relPath); if (!fe || !fe.ledger) return
+    // Idempotent: if THIS author already signed this exact (parent -> content) transition,
+    // don't duplicate it — the source capture and the edit path may both stamp the same change.
+    const pHash = contentHash(base == null ? '' : base), cHash0 = contentHash(next)
+    if (fe.ledger.toArray().some((r) => r && r.author === identity.id && r.parent === pHash && r.contentHash === cHash0)) return
     try {
       const c = coordinator.sense(relPath)
       const ch = authorChange({ identity, filename: relPath, base: base == null ? '' : base, text: next, intent: (c && c.intent) || 'edit', at: Date.now() })
@@ -247,13 +266,222 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // must match. Signature covers everything else, so tampering `name` can't fake trust.
       const receipt = { ...ch.prov, name }
       fe.doc.transact(() => {
-        fe.ledger.push([receipt])                 // append to history (audit)
-        // Advance the authoritative head to attest the new content. Every peer that
-        // reconciles to the same converged text signs the SAME contentHash, so head
-        // settles on a verified attestation of that text.
-        fe.head.set('cur', { text: next, hash: ch.prov.contentHash, at: ch.prov.at, by: name, receipt })
+        fe.ledger.push([receipt])                 // append INTENT to history (audit + fork detection)
+        // Preserve the FULL TEXT of both states, keyed by content hash — the raw material
+        // fork detection reconstructs pre-fusion versions from after the char-CRDT fuses them.
+        storeVersion(fe, base == null ? '' : base)
+        storeVersion(fe, next)
       })
     } catch { /* provenance must never break the sync path */ }
+  }
+  function attestHead(relPath, landed, base) {
+    if (!PROVENANCE || !identity || landed == null) return
+    const fe = fileDocs.get(relPath); if (!fe || !fe.head) return
+    try {
+      const cur = fe.head.get('cur')
+      if (cur && cur.hash === contentHash(landed)) return // head already attests this content
+      const c = coordinator.sense(relPath)
+      const at = Date.now()
+      const ch = authorChange({ identity, filename: relPath, base: base == null ? '' : base, text: landed, intent: (c && c.intent) || 'edit', at })
+      fe.doc.transact(() => {
+        fe.head.set('cur', { text: landed, hash: ch.prov.contentHash, at, by: name, receipt: { ...ch.prov, name } })
+        storeVersion(fe, landed)
+      })
+    } catch { /* provenance must never break the sync path */ }
+  }
+  // Compatibility wrapper: record intent AND attest the landed content (defaults to next).
+  function stampProvenance(relPath, base, next, landed) {
+    stampIntent(relPath, base, next)
+    attestHead(relPath, landed == null ? next : landed, base)
+  }
+  // Record text by its content hash, bounded: drop any stored version no longer
+  // referenced by a receipt (as a parent or a result) so the map can't grow forever.
+  function storeVersion(fe, text) {
+    if (!fe || !fe.versions || text == null) return
+    fe.versions.set(contentHash(text), text)
+    if (fe.versions.size > 64) {
+      const live = new Set()
+      for (const r of fe.ledger.toArray()) { if (r && r.parent) live.add(r.parent); if (r && r.contentHash) live.add(r.contentHash) }
+      for (const h of [...fe.versions.keys()]) if (!live.has(h)) fe.versions.delete(h)
+    }
+  }
+  // SOURCE-LEVEL EDIT CAPTURE — the subsystem that makes fork detection sound.
+  // A room folder has exactly TWO writers: this engine (every write it makes is recorded in
+  // `shadow`) and the local author (their editor/agent — everything else). So any divergence
+  // of disk from shadow IS an authored edit, and (shadow -> disk) is its true, uncontaminated
+  // (base -> text) pair — captured and signed BEFORE any merge or conflict render can
+  // overwrite the file. This is what after-the-fact disk-diffing could never provide: the
+  // author's version unpolluted by concurrent merges. It closes the capture race: the old
+  // window was the whole watcher debounce; now capture runs at the entry of every pass that
+  // could clobber, so an authored edit enters the provenance DAG before anything overwrites
+  // it. Gate-on only; the proven default path is untouched.
+  function captureLocal(relPath) {
+    if (!FORK_GATE || !identity) return false
+    const fe = fileDocs.get(relPath); if (!fe || !fe.synced || !fe.ledger) return false
+    if (SKIP.has(relPath) || isIgnored(relPath)) return false
+    let disk = null; try { disk = fs.readFileSync(path.join(ROOT, relPath), 'utf8') } catch { return false }
+    const base = shadow.get(relPath)
+    if (base == null || disk === base) return false // no baseline yet, or nothing new on disk
+    if (hasConflictMarkers(disk)) return false      // half-edited conflict block — not an authored state
+    stampIntent(relPath, base, disk)                // into the provenance DAG NOW — clobber-proof
+    shadow.set(relPath, disk)                       // the captured state is the new baseline
+    return true
+  }
+  // Build ONE clean N-way conflict block from a common parent and N divergent versions:
+  // strip the lines they (and the parent) all share as a prefix/suffix, then stack each
+  // version's differing middle between markers. Deterministic (caller sorts versions), so
+  // every peer produces byte-identical output. Returns null if nothing distinct remains.
+  function nwayConflict(parentText, versions) {
+    const P = parentText.split('\n')
+    const Vs = versions.map((v) => v.text.split('\n'))
+    const minLen = Math.min(P.length, ...Vs.map((v) => v.length))
+    let pre = 0
+    while (pre < minLen && Vs.every((v) => v[pre] === P[pre])) pre++
+    let suf = 0
+    while (suf < minLen - pre && Vs.every((v) => v[v.length - 1 - suf] === P[P.length - 1 - suf])) suf++
+    const out = [...P.slice(0, pre)]
+    let any = false
+    versions.forEach((v, i) => {
+      const mid = Vs[i].slice(pre, Vs[i].length - suf)
+      if (mid.length) any = true
+      out.push(`${i === 0 ? '<<<<<<<' : '======='} ${v.name} (${String(v.hash).slice(0, 7)})`)
+      out.push(...mid)
+    })
+    // Closing marker MUST carry a trailing label — core.js hasConflictMarkers matches
+    // /^>>>>>>> /m (note the space), so a bare ">>>>>>>" would not register as a conflict
+    // and the sync layer would treat the block as clean content.
+    out.push('>>>>>>> (resolve: keep one, delete the markers)')
+    out.push(...P.slice(P.length - suf))
+    return any ? out.join('\n') : null
+  }
+  // SILENT-FORK DETECTION — the health gate, done RIGHT (local-render model).
+  //
+  // The char-CRDT (Y.Text) always converges, even when it shouldn't: two agents editing
+  // the SAME line fuse into valid-but-unauthored code ("return 2" + "return 3" -> "return
+  // 32") that no layer flags. Nobody signs that fused byte-string, yet BOTH real versions
+  // were signed against the SAME parent. So the provenance ledger still holds the truth
+  // the char-merge destroyed.
+  //
+  // The KEY design choice: we do NOT write conflict markers back into the shared Y.Text
+  // (that just makes the markers themselves fuse — the old bug). Instead a fork is recorded
+  // as a deterministic, converged RECORD (a per-file LWW register, computed purely from the
+  // ledger so every peer derives the identical value), and each peer renders the markers to
+  // its OWN disk. Nothing concurrent is written to the shared text, so nothing can tangle.
+  // Y.Text is frozen at the fused value and simply ignored until a human resolves.
+
+  // Compute the live fork purely from the ledger. Same input -> same output on every peer,
+  // so setting the record is idempotent and needs no applier election. Returns
+  // { parent, base, versions:[{hash,name,author}] } or null.
+  function computeFork(fe) {
+    const receipts = fe.ledger.toArray()
+    if (!receipts.length) return null
+    const builtOn = new Set(receipts.map((r) => r && r.parent).filter(Boolean))
+    const byParent = new Map()
+    for (const r of receipts) {
+      if (!r || !r.parent || !r.contentHash) continue
+      if (!byParent.has(r.parent)) byParent.set(r.parent, new Map())
+      byParent.get(r.parent).set(r.contentHash, r) // dedupe divergent children by content
+    }
+    for (const [parent, kids] of byParent) {
+      if (kids.size < 2) continue
+      const base = fe.versions.get(parent)
+      if (base == null) continue
+      let arr = [...kids.values()]
+        .map((r) => ({ r, text: fe.versions.get(r.contentHash) }))
+        .filter((x) => x.text != null && !fe.forkmark.has(x.r.contentHash)) // skip versions already folded into a resolved conflict
+      const tips = arr.filter((x) => !builtOn.has(x.r.contentHash)) // prefer live heads
+      if (tips.length >= 2) arr = tips
+      if (arr.length < 2) continue
+      arr.sort((a, b) => (a.r.contentHash < b.r.contentHash ? -1 : 1)) // deterministic order across peers
+      // Discriminator: a REAL same-region fork, or disjoint edits the char-merge combined
+      // fine? If no pair actually conflicts on a 3-way against the base, leave it.
+      let real = false
+      for (let i = 0; i < arr.length && !real; i++)
+        for (let j = i + 1; j < arr.length && !real; j++) {
+          const m = merge3(base, arr[i].text, arr[j].text)
+          if (m.conflict || hasConflictMarkers(m.text)) real = true
+        }
+      if (!real) continue
+      return { parent, base, versions: arr.map((x) => ({ hash: x.r.contentHash, name: x.r.name, author: x.r.author })) }
+    }
+    return null
+  }
+  // The deterministic conflict block for a record (byte-identical on every peer).
+  function forkBlock(fe, rec) {
+    const versions = rec.versions.map((v) => ({ text: fe.versions.get(v.hash), name: v.name, hash: v.hash })).filter((v) => v.text != null)
+    if (versions.length < 2) return null
+    return nwayConflict(rec.base, versions)
+  }
+  // Read the ACTIVE fork from the conflict map. The version set is stored as a UNION of
+  // per-hash keys ('v:'+hash) that MERGE across peers (not a single LWW register), so a
+  // late-arriving version can never be lost to a last-writer-wins race — the set only grows
+  // and converges to the full set on every peer. Returns { parent, base, versions } or null.
+  function forkRecord(fe) {
+    if (!fe || !fe.conflict) return null
+    const meta = fe.conflict.get('meta'); if (!meta) return null
+    const versions = []
+    for (const key of fe.conflict.keys()) {
+      if (!key.startsWith('v:')) continue
+      const v = fe.conflict.get(key)
+      versions.push({ hash: key.slice(2), name: v.name, author: v.author })
+    }
+    if (versions.length < 2) return null
+    versions.sort((a, b) => (a.hash < b.hash ? -1 : 1)) // deterministic order across peers
+    return { parent: meta.parent, base: meta.base, versions }
+  }
+  // Render the active conflict to THIS peer's disk (local only — never Y.Text).
+  function renderConflict(relPath) {
+    const fe = fileDocs.get(relPath); if (!fe || !fe.conflict) return
+    // Before we overwrite this file with the conflict block, capture any local edit sitting
+    // on disk that hasn't been stamped yet — otherwise rendering would silently destroy it.
+    if (captureLocal(relPath)) { detectFork(relPath); return } // it grew the fork; detectFork re-renders with it included
+    const rec = forkRecord(fe); if (!rec) return
+    const block = forkBlock(fe, rec); if (!block) return
+    let disk = null; try { disk = fs.readFileSync(path.join(ROOT, relPath), 'utf8') } catch { }
+    forkBases.set(relPath, block) // this peer has now SEEN the markers — a later clean edit from here is a resolution
+    if (disk === block) return
+    writeToDisk(relPath, block)
+    if (!conflicted.has(relPath)) {
+      conflicted.add(relPath)
+      const who = rec.versions.map((v) => v.name).join(', ')
+      log(`[${name}] ⚠ SILENT FORK in ${relPath} — ${who} changed the same region at once; provenance caught it. Surfaced ALL ${rec.versions.length} versions with <<<<<<< markers (rendered locally, not into the shared text).`)
+      try { say(`⚠ SILENT FORK in ${relPath}: ${who} changed the same region concurrently. Surfaced ALL ${rec.versions.length} versions with <<<<<<< markers. Resolve before continuing.`) } catch { }
+    }
+  }
+  // A resolution landed elsewhere: the shared text is clean again. Adopt it to disk.
+  function adoptResolved(relPath) {
+    const fe = fileDocs.get(relPath); if (!fe) return
+    const dt = fe.text.toString()
+    if (hasConflictMarkers(dt)) return
+    captureLocal(relPath) // an authored edit may be sitting on disk — record it before adopting over it
+    writeToDisk(relPath, dt)
+    bases.set(relPath, dt); forkBases.set(relPath, dt)
+    conflicted.delete(relPath)
+  }
+  // Detect a live fork and record it. The version set is a CRDT UNION (per-hash keys), so
+  // this is monotonic + convergent: every peer contributes what it sees and the set grows
+  // to the full fork on all peers regardless of arrival order. Does NOT touch Y.Text.
+  function detectFork(relPath) {
+    if (!FORK_GATE) return
+    const fe = fileDocs.get(relPath)
+    if (!fe || !fe.ledger || !fe.versions || !fe.conflict || !fe.synced) return
+    const rec = computeFork(fe)
+    if (fe.conflict.has('meta')) {
+      // Already in conflict — union in any newly-seen versions (never overwrites; only adds).
+      if (rec) fe.doc.transact(() => { for (const v of rec.versions) if (!fe.conflict.has('v:' + v.hash)) fe.conflict.set('v:' + v.hash, { name: v.name, author: v.author }) })
+      renderConflict(relPath)
+      return
+    }
+    const cur = fe.text.toString()
+    // Current content is itself a signed/authored state (one side won cleanly, or a human
+    // already resolved) — not a silent fusion.
+    if (fe.ledger.toArray().some((r) => r && r.contentHash === contentHash(cur))) return
+    if (!rec) return
+    fe.doc.transact(() => {
+      fe.conflict.set('meta', { parent: rec.parent, base: rec.base })
+      for (const v of rec.versions) fe.conflict.set('v:' + v.hash, { name: v.name, author: v.author })
+    })
+    renderConflict(relPath)
   }
   // disableBc: do NOT sync peer-to-peer over BroadcastChannel. The relay must be
   // the ONLY path between clients — otherwise two clients on the same machine would
@@ -287,11 +515,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // (key 'cur' -> { text, hash, at, by, receipt }). Content authority = the relay
     // guarantees this is always a verified, non-regressing attestation of the content.
     const head = fdoc.getMap('head')
+    // versions: contentHash -> full text, for every state any author edited from or
+    // produced. The char-CRDT keeps only the fused current bytes; this keeps the
+    // pre-fusion originals so a silent fork can be reconstructed and surfaced.
+    const versions = fdoc.getMap('versions')
+    // forkmark: contentHash -> 1 for every version already folded into a surfaced
+    // conflict. Synced, so once ANY peer surfaces a fork, those versions never trigger
+    // again — the conflict stays put until a human resolves it, and a resolution can't
+    // be re-conflicted by a peer whose ledger lags its content (the re-fork race).
+    const forkmark = fdoc.getMap('forkmark')
+    // conflict: the per-file LWW fork RECORD (key 'cur' -> { parent, base, versions }).
+    // Deterministic (computed from the ledger), converged across peers, and rendered to
+    // each peer's DISK — never into the shared text — so conflict markers can't fuse.
+    const conflict = fdoc.getMap('conflict')
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
-    e = { doc: fdoc, provider: fprovider, text, snap, ledger, head, undo, synced: false }
+    e = { doc: fdoc, provider: fprovider, text, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
     fileDocs.set(relPath, e)
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
-    fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(relPath, 'remote') } }) // initial pull settled
+    // A divergent receipt can arrive slightly after (or before) the fused content — so
+    // re-run the fork check whenever the provenance ledger changes too, not only on edits.
+    ledger.observe((_ev, txn) => { if (!txn.local) detectFork(relPath) })
+    // The fork record arrived/changed from a peer: render it locally, or — if it was
+    // cleared (resolved elsewhere) — adopt the now-clean shared text to disk.
+    conflict.observe((_ev, txn) => { if (txn.local) return; if (e.conflict.has('meta')) renderConflict(relPath); else adoptResolved(relPath) })
+    fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(relPath, 'remote'); detectFork(relPath) } }) // initial pull settled
     return e
   }
   function closeFile(relPath) {
@@ -322,6 +569,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   const known = new Set()
   const mtimes = new Map()
+  const shadow = new Map()     // relPath -> exact bytes THIS ENGINE last wrote/captured (source-level edit capture)
   const bases = new Map()      // last synced content per file (advances on every reconcile)
   const forkBases = new Map()  // FORK POINT: what THIS author last saw/authored per file.
   // forkBases advances only on local authorship / first adoption — NOT when a
@@ -355,6 +603,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const full = path.join(ROOT, relPath)
     fs.mkdirSync(path.dirname(full), { recursive: true })
     fs.writeFileSync(full, content)
+    shadow.set(relPath, content) // record what THE ENGINE wrote — any later disk divergence is an authored edit
     known.add(relPath)
     try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
   }
@@ -385,6 +634,55 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
+    // SOURCE CAPTURE (fork gate): before ANYTHING in this pass can merge over or render into
+    // this file, record any authored edit sitting on disk. The edit enters the provenance
+    // DAG first; whatever happens to the disk afterwards can no longer lose it.
+    if (FORK_GATE) captureLocal(relPath)
+    // --- provenance conflict state machine (local-render model) ---
+    // While a file is in a surfaced fork, its markers live ONLY on disk; the shared
+    // Y.Text is left at the fused value. This is what avoids the marker-fusion the old
+    // in-CRDT approach suffered — nothing conflict-related is ever written to Y.Text.
+    if (FORK_GATE && fe.conflict) {
+      const rec = forkRecord(fe)
+      if (rec) {
+        const block = forkBlock(fe, rec)
+        if (origin === 'local') {
+          if (disk === block) return // our own rendered conflict — ignore
+          const fork0 = forkBases.get(relPath)
+          // Did THIS author edit FROM the conflict block (i.e. they saw the markers)? Only
+          // then is a clean edit a RESOLUTION. A clean edit from a NON-marked base is just a
+          // concurrent authored edit that happened during the fork — it must NOT be mistaken
+          // for a resolution, or that agent's work silently replaces everyone's conflict.
+          const sawMarkers = fork0 === block || hasConflictMarkers(fork0 || '')
+          if (sawMarkers && disk !== null && !hasConflictMarkers(disk)) {
+            // RESOLUTION: a human replaced the markers with clean code. Publish it to the
+            // shared text, fold the fork versions, and clear the record for everyone.
+            fe.doc.transact(() => {
+              applyDiff(fe.text, disk)
+              for (const v of rec.versions) fe.forkmark.set(v.hash, 1)
+              for (const key of [...fe.conflict.keys()]) fe.conflict.delete(key)
+            })
+            stampProvenance(relPath, block || '', disk)
+            conflicted.delete(relPath)
+            known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk)
+            try { say(`✓ conflict in ${relPath} resolved by ${name}.`) } catch { }
+            return
+          }
+          if (!sawMarkers && disk !== null && disk !== fork0) {
+            // A concurrent authored edit landed WHILE the fork was open (this agent never saw
+            // the markers). The source capture at the top of this pass already stamped it, so
+            // it is in the fork's version set — re-detect so the record grows to include it.
+            detectFork(relPath)
+            return
+          }
+          renderConflict(relPath); return // still conflicted (or partially edited) — re-assert canonical block
+        }
+        renderConflict(relPath); return // remote churn while in conflict — keep our local render
+      }
+      // No active record, but our disk still shows stale markers while the shared text is
+      // clean again -> a resolution landed elsewhere; adopt it (order-independent w/ observer).
+      if (disk !== null && hasConflictMarkers(disk) && !hasConflictMarkers(fe.text.toString())) { adoptResolved(relPath); return }
+    }
     const docText = fe.text.toString()
     if (docText === '' && !manifest.has(relPath)) {
       // the relay has no copy of this path -> publish ours (a genuinely new file)
@@ -392,7 +690,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       fe.doc.transact(() => applyDiff(fe.text, disk))
       stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)
       manifest.set(relPath, 1)
-      known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk)
+      known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk); shadow.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
       captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'created' }); snappedBase.add(relPath)
       return
@@ -400,7 +698,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const yt = fe.text
     if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); forkBases.set(relPath, docText); return }
     if (disk === docText) {
-      known.add(relPath); bases.set(relPath, disk)
+      known.add(relPath); bases.set(relPath, disk); shadow.set(relPath, disk) // agreed state = capture baseline
       // disk and doc already agree — a safe fork point, but only adopt it as
       // THIS author's fork on first sight or our own local activity (a remote
       // change landing on disk doesn't mean the local author has seen it).
@@ -459,10 +757,18 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       lastLocalEdit = relPath
     }
     fileDocs.get(relPath).doc.transact(() => applyDiff(yt, res.text))
-    // Sign this landed local change into the file's provenance ledger (I1). Only our
-    // OWN authorship is stamped (each peer signs what it lands), so every receipt is
-    // attributable to its true author exactly once — mirroring the snapshot model.
-    if (origin === 'local' && res.text !== docText) stampProvenance(relPath, docText, res.text)
+    // Sign this landed local change into the file's provenance ledger (I1). Stamp the
+    // author's TRUE intent — the state THEY edited from (fork) -> the content THEY wrote
+    // (disk) — NOT the live shared text, which under truly-concurrent edits is already
+    // fusing. Recording (fork, disk) keeps every concurrent same-line edit anchored to the
+    // SAME clean parent, so the fork stays detectable no matter how the char-CRDT fuses.
+    if (origin === 'local') {
+      // Gate ON: the author's INTENT was already captured at the source (captureLocal, top
+      // of this pass) — here we only advance the authority head to the landed content.
+      // Gate OFF (default): the proven landed-transition stamp, unchanged.
+      if (FORK_GATE) { if (res.text !== docText) attestHead(relPath, res.text, docText) }
+      else if (res.text !== docText) stampProvenance(relPath, docText, res.text)
+    }
     if (res.text !== disk) writeToDisk(relPath, res.text)
     known.add(relPath); bases.set(relPath, res.text)
     if (origin === 'local') forkBases.set(relPath, res.text) // we authored this state; it's our new fork
@@ -498,6 +804,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     } else if (!res.icrWarning && icrWarned.has(relPath)) {
       icrWarned.delete(relPath)
     }
+
+    // Health gate on the live path: after the char-CRDT has converged, check whether the
+    // current content is a SILENT FORK (a fusion nobody authored). If so, record it (the
+    // record is rendered to disk locally — never written back into the shared text).
+    detectFork(relPath)
   }
 
   const fmtTime = () => new Date().toTimeString().slice(0, 8)
@@ -603,6 +914,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const current = fe.text.toString()
     if (current === entry.content) return { ok: true, unchanged: true, file: relPath }
     captureSnapshot(relPath, current, by, { force: true, kind: 'restore', label: `before restore to ${entry.at}` })
+    captureLocal(relPath) // record any pending authored edit before the restore overwrites it
     fe.doc.transact(() => applyDiff(fe.text, entry.content))
     writeToDisk(relPath, entry.content)
     bases.set(relPath, entry.content); forkBases.set(relPath, entry.content)
