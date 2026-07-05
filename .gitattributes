@@ -1,0 +1,7 @@
+# Merge code files with ICR (intent-aware merge) — our own icr-merge package.
+# Dogfood: this repo merges itself with the tool it ships. Anyone without the
+# driver configured falls back to git's default merge (safe). To enable:
+#   npx icr-merge-install
+*.js  merge=icr
+*.mjs merge=icr
+*.cjs merge=icr

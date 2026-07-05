@@ -10,7 +10,9 @@ const git = (...args) => execFileSync('git', ['config', ...scope, ...args], { st
 
 try {
   git('merge.icr.name', 'ICR intent-aware merge')
-  git('merge.icr.driver', 'npx --yes icr-merge-driver %O %A %B %P')
+  // NOTE the --package flag: the bin lives inside the `icr-merge` package, and bare
+  // `npx icr-merge-driver` would look for a package NAMED icr-merge-driver (404).
+  git('merge.icr.driver', 'npx --yes --package icr-merge icr-merge-driver %O %A %B %P')
 } catch {
   console.error('failed to run git config — is git installed' + (scope.length ? '' : ' and are you inside a repo') + '?')
   process.exit(1)

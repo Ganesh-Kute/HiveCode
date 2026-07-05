@@ -96,5 +96,17 @@ function s3(useICR) {
   T('ICR: both versions preserved for the human', i.hasMarkers)
 }
 
+// ---------- S4: the installer registers a command npx can actually resolve ----------
+// (dogfood catch: bare `npx icr-merge-driver` 404s — the bin lives inside `icr-merge`,
+// so the registered command MUST carry `--package icr-merge`.)
+{
+  console.log('\n# S4 installer registers a resolvable driver command')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'icr-inst-'))
+  execFileSync('git', ['init', '-q', dir], { stdio: 'pipe' })
+  execFileSync(process.execPath, [path.join(HERE, '..', 'bin', 'icr-merge-install.js')], { cwd: dir, stdio: 'pipe' })
+  const drv = execFileSync('git', ['config', '--get', 'merge.icr.driver'], { cwd: dir }).toString().trim()
+  T('registered command uses --package icr-merge', /--package icr-merge\b/.test(drv) && /icr-merge-driver/.test(drv))
+}
+
 console.log(`\n=== GIT-E2E: ${fail === 0 ? 'ALL ' + pass + ' PASS' : fail + ' FAILED'} ===`)
 process.exit(fail === 0 ? 0 : 1)
