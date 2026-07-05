@@ -201,7 +201,7 @@ function enforceDcoLock() {
   }
 }
 
-const server = new Server({ name: 'hivecode', version: '0.1.0' }, { capabilities: { tools: {} } })
+const server = new Server({ name: 'hivecode', version: '0.8.0' }, { capabilities: { tools: {} } })
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params

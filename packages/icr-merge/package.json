@@ -1,0 +1,49 @@
+{
+  "name": "icr-merge",
+  "version": "0.1.0",
+  "description": "ICR — Intent-aware Code Replication: a 3-way merge that understands code structure and author intent. Structural merging, rename detection across call sites, semantic-conflict detection, parse-guaranteed output. Drop-in git merge driver. Built for AI-agent-authored code.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "bin": {
+    "icr-merge-driver": "bin/icr-merge-driver.js",
+    "icr-merge-install": "bin/icr-merge-install.js"
+  },
+  "files": [
+    "index.js",
+    "icr.js",
+    "merge3.js",
+    "lang-js.js",
+    "lang-brace.js",
+    "lang-python.js",
+    "bin/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/icr-test.js && node test/icr-lang-test.js && node test/icr-multilang-test.js && node test/icr-converge-test.js && node test/icr-fuzz-test.js && node test/icr-torture-test.js && node test/api-test.mjs"
+  },
+  "keywords": [
+    "merge",
+    "3-way-merge",
+    "diff3",
+    "git-merge-driver",
+    "ast",
+    "structural-merge",
+    "semantic-merge",
+    "rename-detection",
+    "ai-agents",
+    "multi-agent",
+    "code-generation",
+    "conflict-resolution"
+  ],
+  "author": "Ganesh Shivlal Kute (https://github.com/GSK7024)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "acorn": "^8.17.0"
+  }
+}
