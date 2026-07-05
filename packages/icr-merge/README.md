@@ -56,7 +56,7 @@ Lower-level API if you want the pieces: `structuralMerge`, `merge3`, `supports`,
 ## Use as a git merge driver
 
 ```bash
-npx --package icr-merge icr-merge-install     # this repo   (--global for all repos)
+npx --package icr-merge@latest icr-merge-install     # this repo   (--global for all repos)
 ```
 
 then route file types to it in `.gitattributes`:
