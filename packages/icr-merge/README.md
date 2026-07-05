@@ -67,7 +67,7 @@ then route file types to it in `.gitattributes`:
 *.py  merge=icr
 ```
 
-From then on `git merge`, `git rebase`, and `git cherry-pick` use intent-aware merging for those files. Renames stop being conflict walls; broken-but-"clean" merges get caught.
+From then on `git merge`, `git rebase`, and `git cherry-pick` use intent-aware merging for those files. Renames stop being conflict walls, and broken-but-"clean" merges become **real git conflicts**: when a merge would line-merge cleanly but is semantically broken (a deleted function still referenced), the driver surfaces a visible conflict block and exits non-zero instead of letting git commit it — the exact failure plain git ships silently.
 
 ## Languages
 

@@ -27,6 +27,20 @@ try {
     fs.readFileSync(theirs, 'utf8'),
     { filename: pathname || ours },
   )
+  // A meaning-level conflict (e.g. a deleted declaration still referenced) can line-merge
+  // "cleanly" — that is exactly the silent bad merge this tool exists to stop. A warning
+  // on stderr is not a catch: make it a REAL git conflict — visible block, exit 1.
+  if (r.warning && r.clean) {
+    fs.writeFileSync(ours,
+      '<<<<<<< icr-merge: semantic conflict\n' +
+      `// ${r.warning}\n` +
+      '// Both sides merged below without line conflicts, but the result is semantically\n' +
+      '// broken. Fix the issue, then delete this block.\n' +
+      '=======\n' +
+      '>>>>>>> icr-merge: resolve, then remove\n\n' + r.text)
+    console.error(`icr-merge: semantic conflict — ${r.warning}`)
+    process.exit(1)
+  }
   fs.writeFileSync(ours, r.text)
   if (r.method !== 'lines') console.error(`icr-merge: ${r.method} merge${r.renames && r.renames.length ? ' (' + r.renames.join(', ') + ')' : ''}`)
   if (r.warning) console.error(`icr-merge: semantic conflict — ${r.warning}`)

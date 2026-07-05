@@ -104,6 +104,10 @@ function mergeUnit(baseText, aText, bText) {
   if (ns && (a.named.length || b.named.length)) return null // `* as X` can't share a statement with named imports
   const seen = new Set(), named = []
   for (const s of [...a.named, ...b.named]) { const k = s.imported + '|' + s.local; if (!seen.has(k)) { seen.add(k); named.push(s) } }
+  // Canonical specifier order: the union must not depend on which side is `a` — the merge
+  // has to be SYMMETRIC (merge(a,b) === merge(b,a)) or two live peers never settle on one
+  // byte-form. (Found by the property fuzzer: a 1-in-40k NOT-SYMMETRIC violation.)
+  named.sort((x, y) => (x.imported + '|' + x.local).localeCompare(y.imported + '|' + y.local))
   return renderImport({ source: a.source, def, ns, named })
 }
 

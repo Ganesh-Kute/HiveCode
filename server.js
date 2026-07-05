@@ -20,9 +20,17 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-import * as Y from 'yjs'
+import { createRequire } from 'module'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence, getYDoc } from 'y-websocket/bin/utils'
+// CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
+// and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
+// library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
+// persistence bindState does) corrupts the doc's internal store — after a snapshot
+// reload, every client update that touches the loaded structs throws inside
+// integrateStructs and is silently DROPPED. Symptom in production: a room reloaded
+// from a snapshot "eats" ledger receipts / edits and rolls clients back. (yjs#438)
+const Y = createRequire(import.meta.url)('yjs')
 import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import { verifyReceipt, contentHash, headOk, contentHealth } from './substrate.js'
 import * as decoding from 'lib0/decoding'
