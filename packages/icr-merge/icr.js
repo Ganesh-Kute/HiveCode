@@ -185,7 +185,20 @@ function tryInnerMerge(lang, baseText, aText, bText) {
   if (pa.sig.trim() !== pbb.sig.trim()) return null
   const m = mergeKeyed(lang, pb.units, pa.units, pbb.units)
   if (m.conflicts.length) return null
-  const text = pa.sig + pa.open + m.parts.join(pa.join) + pa.close
+  // FORMAT-PRESERVING inner assembly: when the provider exposes the body text + byte-ranged
+  // units (spliceable), rebuild the body by splicing merged units back into the BASE body,
+  // so everything BETWEEN statements — comments, blank lines, indentation — survives verbatim.
+  // (Join-based reassembly with a fixed separator silently drops inner comments and reflows
+  // whitespace; found in the wild merging ICR's own source, and the C-family class-brace glue.)
+  // Objects and any non-spliceable provider fall back to the separator join.
+  let text
+  const spliceable = pb.spliceable && typeof pb.body === 'string' && pb.units.every((u) => typeof u.start === 'number' && typeof u.end === 'number')
+  if (spliceable) {
+    const body = spliceUnits(pb.body, pb.units, m.order, m.textByKey, { trimLeadingBlank: false })
+    text = pa.sig + pa.open + body + pa.close
+  } else {
+    text = pa.sig + pa.open + m.parts.join(pa.join) + pa.close
+  }
   const valid = lang.parsesUnit || lang.parses // accept class-member fragments when supported
   return valid(text) ? text : null
 }
@@ -195,7 +208,7 @@ function tryInnerMerge(lang, baseText, aText, bText) {
 // whitespace/comments BETWEEN units — survive verbatim; only changed units carry the
 // editing side's bytes, and genuinely new units are appended. This is what stops ICR from
 // reformatting code it merges. Deterministic and symmetric, so peers converge.
-function spliceUnits(baseText, baseUnits, order, textByKey) {
+function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
   const baseKeySet = new Set(baseUnits.map((u) => u.key))
   const baseByKey = new Map(baseUnits.map((u) => [u.key, u]))
   const orderSet = new Set(order)
@@ -229,7 +242,9 @@ function spliceUnits(baseText, baseUnits, order, textByKey) {
   if (pos < baseText.length) {
     emitGap(pos, baseText.length)
   }
-  return out.replace(/^\n+/, '') // drop orphan leading blank lines
+  // Top-level: drop orphan leading blank lines a deleted first decl leaves behind. Inner
+  // splice (trimLeadingBlank:false): keep the body's own leading `\n  ` so indentation holds.
+  return opts.trimLeadingBlank === false ? out : out.replace(/^\n+/, '')
 }
 
 // --- public API -----------------------------------------------------------------

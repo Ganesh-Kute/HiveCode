@@ -146,8 +146,10 @@ export function makeBraceLanguage({ id, exts, strings = ['"', "'", '`'] }) {
       const sig = src.slice(0, open)
       const body = src.slice(open + 1, close)
       const inner = keyedUnits(topUnits(body, strings), body)
-      // re-base inner ranges into `body` coordinates are already correct (topUnits used body)
-      return { sig, open: '{', close: src.slice(close), body, units: inner, join: '\n' }
+      // inner ranges are already in `body` coordinates (topUnits scanned body). spliceable:
+      // the engine rebuilds the body by splicing merged members back into it, so the class's
+      // original indentation and any comments between members survive (no brace-glue reflow).
+      return { sig, open: '{', close: src.slice(close), body, units: inner, join: '\n', spliceable: true }
     },
   }
   return provider

@@ -399,10 +399,11 @@ function splitMember(src) {
   const m = cls.body.body[0]
   if (!m || m.type !== 'MethodDefinition' || !m.value || !m.value.body || m.value.body.type !== 'BlockStatement') return null
   const off = MEMBER_WRAP.length, body = m.value.body
-  const sig = src.slice(0, body.start - off)
+  const bo = body.start - off, bc = body.end - 1 - off // brace-open / brace-close in src coords
+  const bs = bo + 1
   const ks = keyStatements(body.body)
-  const units = body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start - off, s.end - off) }))
-  return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
+  const units = body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start - off, s.end - off), start: (s.start - off) - bs, end: (s.end - off) - bs }))
+  return { sig: src.slice(0, bo), open: '{', close: src.slice(bc), body: src.slice(bs, bc), units, join: '\n  ', spliceable: true }
 }
 
 function splitUnit(src) {
@@ -416,15 +417,15 @@ function splitUnit(src) {
   // reassembly. Found in the wild: ICR merging its own source lost `export function`.
   if ((n.type === 'ExportNamedDeclaration' || n.type === 'ExportDefaultDeclaration') && n.declaration) n = n.declaration
   if (n.type === 'FunctionDeclaration' && n.body) {
-    const sig = src.slice(0, n.body.start)
+    const bs = n.body.start + 1, be = n.body.end - 1 // between the braces
     const ks = keyStatements(n.body.body)
-    const units = n.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
-    return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
+    const units = n.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end), start: s.start - bs, end: s.end - bs }))
+    return { sig: src.slice(0, n.body.start), open: '{', close: src.slice(be), body: src.slice(bs, be), units, join: '\n  ', spliceable: true }
   }
   if (n.type === 'ClassDeclaration' && n.body) {
-    const sig = src.slice(0, n.body.start)
-    const units = n.body.body.map((m, i) => ({ key: memberKey(m, i), text: src.slice(m.start, m.end) }))
-    return { sig, units, open: '{\n  ', join: '\n\n  ', close: '\n}' }
+    const bs = n.body.start + 1, be = n.body.end - 1
+    const units = n.body.body.map((m, i) => ({ key: memberKey(m, i), text: src.slice(m.start, m.end), start: m.start - bs, end: m.end - bs }))
+    return { sig: src.slice(0, n.body.start), open: '{', close: src.slice(be), body: src.slice(bs, be), units, join: '\n\n  ', spliceable: true }
   }
   // `const x = { ... }` / `const x = () => { ... }` / `const x = function () { ... }`
   // and the CommonJS twins `module.exports = function () { ... }` / `x.y = { ... }` â€”
@@ -440,10 +441,10 @@ function splitUnit(src) {
       return { sig, units, open: '{\n  ', join: ',\n  ', close: '\n}' }
     }
     if ((init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') && init.body && init.body.type === 'BlockStatement') {
-      const sig = src.slice(0, init.body.start)
+      const bs = init.body.start + 1, be = init.body.end - 1
       const ks = keyStatements(init.body.body)
-      const units = init.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
-      return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
+      const units = init.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end), start: s.start - bs, end: s.end - bs }))
+      return { sig: src.slice(0, init.body.start), open: '{', close: src.slice(be), body: src.slice(bs, be), units, join: '\n  ', spliceable: true }
     }
   }
   return null
