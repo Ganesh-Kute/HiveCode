@@ -105,15 +105,53 @@ function mergeKeyed(lang, baseU, aU, bU) {
     survives.add(k)
   }
 
-  // CONVERGENCE: the output order must be IDENTICAL no matter which side is `a` vs `b`,
-  // or two peers compute different text and never settle (then re-merging the divergence
-  // corrupts the file). So: surviving base units keep their base order; units added by a
-  // side are appended in a canonical (sorted) order — deterministic and symmetric.
+  // CONVERGENCE + TOPOLOGY: new units are inserted where their author put them — anchored
+  // to the base unit that immediately preceded them on the side that added them — while
+  // staying SYMMETRIC: merge(a,b) must equal merge(b,a) byte-for-byte or two live peers
+  // never settle. Symmetry rules: (1) a unit added by BOTH sides at different anchors gets
+  // the anchor earlier in base order (side-independent); (2) when both sides insert runs at
+  // the SAME anchor, each side's run keeps its own internal order, and the two runs are
+  // ordered by comparing their joined keys (content, not side).
   const baseOrder = dedupeOrder(baseU.map((u) => u.key))
   const baseSet = new Set(baseOrder)
+  const basePos = new Map(baseOrder.map((k, i) => [k, i]))
+
+  const anchorsFor = (units) => { // newKey -> base key it followed (null = top of file)
+    const m = new Map()
+    let lastBase = null
+    for (const u of units) {
+      if (baseSet.has(u.key)) lastBase = u.key
+      else if (survives.has(u.key) && !m.has(u.key)) m.set(u.key, lastBase)
+    }
+    return m
+  }
+  const aAnch = anchorsFor(aU), bAnch = anchorsFor(bU)
+  const anchorOf = (k) => {
+    const inA2 = aAnch.has(k), inB3 = bAnch.has(k)
+    if (inA2 && inB3) {
+      const x = aAnch.get(k), y = bAnch.get(k)
+      if (x === y) return x
+      const px = x == null ? -1 : basePos.get(x), py = y == null ? -1 : basePos.get(y)
+      return px <= py ? x : y
+    }
+    return inA2 ? aAnch.get(k) : bAnch.get(k)
+  }
+  const runsA = new Map(), runsB = new Map() // anchor -> that side's new keys, in its order
+  for (const k of aAnch.keys()) { const an = anchorOf(k); if (!runsA.has(an)) runsA.set(an, []); runsA.get(an).push(k) }
+  for (const k of bAnch.keys()) { const an = anchorOf(k); if (!runsB.has(an)) runsB.set(an, []); runsB.get(an).push(k) }
+  const newAt = (anchor) => {
+    const ra = runsA.get(anchor) || [], rb = runsB.get(anchor) || []
+    const [first, second] = ra.join('') <= rb.join('') ? [ra, rb] : [rb, ra]
+    const firstSet = new Set(first)
+    return [...first, ...second.filter((k) => !firstSet.has(k))]
+  }
+
   const final = []
-  for (const k of baseOrder) if (survives.has(k)) final.push(k)
-  for (const k of [...survives].filter((k) => !baseSet.has(k)).sort()) final.push(k)
+  final.push(...newAt(null))
+  for (const k of baseOrder) {
+    if (survives.has(k)) final.push(k)
+    final.push(...newAt(k))
+  }
 
   // Assemble, recording PROVENANCE per surviving unit: who authored the version we kept
   // ('a' / 'b' changed it, 'both' if we merged inside it, 'base' if unchanged).
@@ -144,7 +182,7 @@ function tryInnerMerge(lang, baseText, aText, bText) {
   if (!lang.splitUnit) return null
   const pb = lang.splitUnit(baseText), pa = lang.splitUnit(aText), pbb = lang.splitUnit(bText)
   if (!pb || !pa || !pbb) return null
-  if (pa.sig.trim() !== pbb.sig.trim()) return null // signature itself changed → real conflict
+  if (pa.sig.trim() !== pbb.sig.trim()) return null
   const m = mergeKeyed(lang, pb.units, pa.units, pbb.units)
   if (m.conflicts.length) return null
   const text = pa.sig + pa.open + m.parts.join(pa.join) + pa.close
@@ -159,22 +197,39 @@ function tryInnerMerge(lang, baseText, aText, bText) {
 // reformatting code it merges. Deterministic and symmetric, so peers converge.
 function spliceUnits(baseText, baseUnits, order, textByKey) {
   const baseKeySet = new Set(baseUnits.map((u) => u.key))
-  const surviving = new Set(order.filter((k) => baseKeySet.has(k)))
-  const emitted = new Set()
+  const baseByKey = new Map(baseUnits.map((u) => [u.key, u]))
+  const orderSet = new Set(order)
+  const deleted = baseUnits.filter((u) => !orderSet.has(u.key))
   let out = '', pos = 0
-  for (const u of baseUnits) {
-    out += baseText.slice(pos, u.start) // gap before this unit (comments/blank lines), verbatim
-    if (surviving.has(u.key) && !emitted.has(u.key)) { out += textByKey.get(u.key); emitted.add(u.key) }
-    pos = u.end
+
+  function emitGap(from, to) {
+    let cursor = from
+    for (const d of deleted) {
+      if (d.start >= cursor && d.end <= to) {
+        out += baseText.slice(cursor, d.start)
+        cursor = d.end
+      }
+    }
+    out += baseText.slice(cursor, to)
   }
-  const added = order.filter((k) => !baseKeySet.has(k))
-  if (added.length) {
-    const head = out.replace(/\s*$/, '')
-    out = (head ? head + '\n\n' : '') + added.map((k) => textByKey.get(k)).join('\n\n') + '\n'
-  } else {
-    out += baseText.slice(pos) // trailing whitespace (final newline) verbatim
+
+  for (const k of order) {
+    if (baseKeySet.has(k)) {
+      const u = baseByKey.get(k)
+      if (u.start >= pos) {
+        emitGap(pos, u.start)
+        pos = u.end
+      }
+      out += textByKey.get(k)
+    } else {
+      // New unit: insert it exactly where the merge order dictated
+      out += (out.endsWith('\n') ? '' : '\n') + textByKey.get(k) + '\n'
+    }
   }
-  return out.replace(/^\n+/, '') // drop orphan leading blank lines left by a deleted first unit
+  if (pos < baseText.length) {
+    emitGap(pos, baseText.length)
+  }
+  return out.replace(/^\n+/, '') // drop orphan leading blank lines
 }
 
 // --- public API -----------------------------------------------------------------
@@ -222,7 +277,10 @@ export function structuralMerge(base, a, b, opts = {}) {
   }
 
   // THE GUARANTEE: the merged result must parse, or we refuse it.
-  if (!lang.parses(text)) return { status: 'fallback', text: null, conflicts: [], reason: 'merge would not parse' }
+  // THE GUARANTEE stands: a merge that would not parse is REFUSED — text stays null so no
+  // caller can ever mistake broken output for a merge. (Debugging wants the bytes? That is
+  // what `debugText` is for; it is deliberately not `text`.)
+  if (!lang.parses(text)) return { status: 'fallback', text: null, debugText: text, conflicts: [], reason: 'merge would not parse' }
 
   // RENAME DETECTION (intent): a declaration gone from base whose identical-bodied twin
   // appears under a new name is a rename — rewrite stale call sites to the new name.
@@ -232,6 +290,7 @@ export function structuralMerge(base, a, b, opts = {}) {
   let removed = [...baseNames].filter((n) => !mergedNames.has(n))
   const renames = []
   const rename = lang.renameFreeRefs || lang.renameRefs // prefer scope-aware rewriting
+  
   if (removed.length && lang.declBody && rename) {
     const added = [...mergedNames].filter((n) => !baseNames.has(n))
     const claimed = new Set()

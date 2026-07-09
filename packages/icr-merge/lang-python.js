@@ -57,7 +57,7 @@ function blocks(src, base = 0) {
     return d
   }
   while (i < L.length) {
-    while (i < L.length && L[i].blank) i++            // skip blank/comment gap lines
+    while (i < L.length && L[i].text.trim() === '') i++ // skip ONLY pure blank lines, NOT comments
     if (i >= L.length) break
     if (L[i].indent !== base) { // stray deeper line (shouldn't happen at top) — treat as its own stmt
       const s = L[i].start; let e = L[i].end; i++

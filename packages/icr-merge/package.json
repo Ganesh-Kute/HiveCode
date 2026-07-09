@@ -22,7 +22,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/icr-test.js && node test/icr-lang-test.js && node test/icr-multilang-test.js && node test/icr-converge-test.js && node test/icr-fuzz-test.js && node test/icr-torture-test.js && node test/api-test.mjs && node test/git-e2e-test.mjs && node test/git-e2e-multilang-test.mjs"
+    "test": "node test/icr-test.js && node test/icr-lang-test.js && node test/icr-multilang-test.js && node test/icr-converge-test.js && node test/icr-fuzz-test.js && node test/icr-torture-test.js && node test/api-test.mjs && node test/rename-export-test.mjs && node test/git-e2e-test.mjs && node test/git-e2e-multilang-test.mjs"
   },
   "keywords": [
     "merge",

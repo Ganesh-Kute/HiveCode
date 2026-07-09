@@ -41,9 +41,7 @@ function topUnits(src, strings, from = 0, to = src.length) {
   while (i < to) {
     while (i < to && isWS(src[i])) i++
     if (i >= to) break
-    // A standalone comment before a declaration belongs to the GAP (kept verbatim by
-    // the engine's splice), so skip it without starting a unit.
-    if ((src[i] === '/' && (src[i + 1] === '/' || src[i + 1] === '*'))) { const s = at(i); if (s > i) { i = s; continue } }
+
     const start = i
     let depth = 0, sawBrace = false
     while (i < to) {
@@ -149,7 +147,7 @@ export function makeBraceLanguage({ id, exts, strings = ['"', "'", '`'] }) {
       const body = src.slice(open + 1, close)
       const inner = keyedUnits(topUnits(body, strings), body)
       // re-base inner ranges into `body` coordinates are already correct (topUnits used body)
-      return { sig, open: '{', close: src.slice(close), body, units: inner, join: '' }
+      return { sig, open: '{', close: src.slice(close), body, units: inner, join: '\n' }
     },
   }
   return provider

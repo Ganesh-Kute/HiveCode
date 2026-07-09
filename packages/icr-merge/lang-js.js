@@ -13,7 +13,10 @@
 import * as acorn from 'acorn'
 
 // Parse permissively: try module syntax, fall back to script (so plain snippets and
-// ESM both work). Throws only when the code genuinely won't parse either way.
+// ESM both work — statement fragments from the inner merge often only parse as script).
+// Throws only when the code genuinely won't parse either way; callers that can receive
+// fragments catch and fall through. (A null-returning parse here once turned that throw
+// into `ast.body[0]` TypeErrors deep in splitUnit — keep the throwing contract.)
 function parse(src) {
   try { return acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module' }) }
   catch { return acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script' }) }
@@ -359,6 +362,7 @@ function splitMember(src) {
 function splitUnit(src) {
   let ast
   try { ast = parse(src) } catch { return splitMember(src) } // maybe a class-member fragment
+  if (!ast || !ast.body) return splitMember(src)
   let n = ast.body[0]
   if (!n) return null
   if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
