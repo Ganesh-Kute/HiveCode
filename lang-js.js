@@ -411,15 +411,18 @@ function splitUnit(src) {
   if (!ast || !ast.body) return splitMember(src) // defensive: a null AST must never reach .body
   let n = ast.body[0]
   if (!n) return null
-  if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
+  // Unwrap export wrappers — but ALWAYS slice signatures from 0, not the inner node's
+  // start, or the wrapper text (`export `, `export default `) is silently DROPPED on
+  // reassembly. Found in the wild: ICR merging its own source lost `export function`.
+  if ((n.type === 'ExportNamedDeclaration' || n.type === 'ExportDefaultDeclaration') && n.declaration) n = n.declaration
   if (n.type === 'FunctionDeclaration' && n.body) {
-    const sig = src.slice(n.start, n.body.start)
+    const sig = src.slice(0, n.body.start)
     const ks = keyStatements(n.body.body)
     const units = n.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
     return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
   }
   if (n.type === 'ClassDeclaration' && n.body) {
-    const sig = src.slice(n.start, n.body.start)
+    const sig = src.slice(0, n.body.start)
     const units = n.body.body.map((m, i) => ({ key: memberKey(m, i), text: src.slice(m.start, m.end) }))
     return { sig, units, open: '{\n  ', join: '\n\n  ', close: '\n}' }
   }
@@ -432,12 +435,12 @@ function splitUnit(src) {
   else if (n.type === 'ExpressionStatement' && n.expression.type === 'AssignmentExpression') init = n.expression.right
   if (init) {
     if (init.type === 'ObjectExpression') {
-      const sig = src.slice(n.start, init.start)
+      const sig = src.slice(0, init.start)
       const units = init.properties.map((p, i) => ({ key: propKey(p, i), text: src.slice(p.start, p.end) }))
       return { sig, units, open: '{\n  ', join: ',\n  ', close: '\n}' }
     }
     if ((init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') && init.body && init.body.type === 'BlockStatement') {
-      const sig = src.slice(n.start, init.body.start)
+      const sig = src.slice(0, init.body.start)
       const ks = keyStatements(init.body.body)
       const units = init.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
       return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
