@@ -23,7 +23,27 @@ function parses(src) { try { parse(src); return true } catch { return false } }
 
 // A stable key per top-level node — what lets us recognize "the same declaration"
 // across two edits. Names where we have them; position as a last resort.
-function keyOf(node, i) {
+// Dotted source path of a simple expression target (Axios.prototype.request,
+// utils.forEach, this.config) — or null when it isn't a plain dotted path.
+function exprPath(node) {
+  if (!node) return null
+  if (node.type === 'Identifier') return node.name
+  if (node.type === 'ThisExpression') return 'this'
+  if (node.type === 'MemberExpression' && !node.computed) {
+    const o = exprPath(node.object)
+    return o && node.property && node.property.name ? o + '.' + node.property.name : null
+  }
+  return null
+}
+
+// CONTENT-ANCHORED key for a statement, or null for truly anonymous ones.
+// Index keys (stmt:N) are a last resort ONLY: an insertion above an index-keyed
+// statement shifts every index, so unrelated statements pair up as fake
+// same-unit conflicts — and deletions mispair so deleted code can resurrect.
+// (Both failure modes were found by the merge census replaying axios/express
+// history.) Assignments key by their target, calls by callee path plus a
+// leading string literal (`it('name')`, `describe('name')`), directives by text.
+function baseKeyOf(node) {
   let n = node
   if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
   if (n.type === 'ExportDefaultDeclaration') return 'export:default'
@@ -33,16 +53,44 @@ function keyOf(node, i) {
     return 'var:' + n.declarations[0].id.name
   // Key imports by their SOURCE MODULE, so two agents adding imports from DIFFERENT
   // modules never collide, and two touching the SAME module are merged (specifier union).
-  if (n.type === 'ImportDeclaration') return 'import:' + (n.source && n.source.value != null ? n.source.value : i)
-  return 'stmt:' + i
+  if (n.type === 'ImportDeclaration') return 'import:' + (n.source && n.source.value != null ? n.source.value : '?')
+  if (n.type === 'ExpressionStatement') {
+    const e = n.expression
+    if (e.type === 'Literal' && typeof e.value === 'string') return 'directive:' + e.value // 'use strict'
+    if (e.type === 'AssignmentExpression') { const t = exprPath(e.left); if (t) return 'assign:' + t }
+    if (e.type === 'CallExpression') {
+      const t = exprPath(e.callee)
+      if (t) {
+        const a0 = e.arguments && e.arguments[0]
+        return 'call:' + t + (a0 && a0.type === 'Literal' && typeof a0.value === 'string' ? ':' + a0.value : '')
+      }
+    }
+  }
+  return null
 }
+
+// Key an ordered statement list: content-anchored where possible (duplicates get
+// #1, #2… by occurrence), positional stmt:N only for the anonymous remainder.
+function keyStatements(nodes) {
+  const seen = new Map()
+  return nodes.map((n, i) => {
+    const k = baseKeyOf(n)
+    if (k == null) return 'stmt:' + i
+    const c = seen.get(k) || 0
+    seen.set(k, c + 1)
+    return c ? k + '#' + c : k
+  })
+}
+
+function keyOf(node, i) { const k = baseKeyOf(node); return k == null ? 'stmt:' + i : k }
 
 // Top-level units: ordered { key, text, start, end } for each declaration/statement.
 // start/end are byte offsets in `src` — used by the format-preserving splice so unchanged
 // regions (and the whitespace/comments between units) survive a merge verbatim.
 function units(src) {
   const ast = parse(src)
-  return ast.body.map((node, i) => ({ key: keyOf(node, i), text: src.slice(node.start, node.end), start: node.start, end: node.end }))
+  const keys = keyStatements(ast.body)
+  return ast.body.map((node, i) => ({ key: keys[i], text: src.slice(node.start, node.end), start: node.start, end: node.end }))
 }
 
 // Bare declared name (foo, Bar, VERSION) of a node, or null for anonymous statements.
@@ -352,7 +400,8 @@ function splitMember(src) {
   if (!m || m.type !== 'MethodDefinition' || !m.value || !m.value.body || m.value.body.type !== 'BlockStatement') return null
   const off = MEMBER_WRAP.length, body = m.value.body
   const sig = src.slice(0, body.start - off)
-  const units = body.body.map((s, i) => ({ key: keyOf(s, i), text: src.slice(s.start - off, s.end - off) }))
+  const ks = keyStatements(body.body)
+  const units = body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start - off, s.end - off) }))
   return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
 }
 
@@ -364,7 +413,8 @@ function splitUnit(src) {
   if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
   if (n.type === 'FunctionDeclaration' && n.body) {
     const sig = src.slice(n.start, n.body.start)
-    const units = n.body.body.map((s, i) => ({ key: keyOf(s, i), text: src.slice(s.start, s.end) }))
+    const ks = keyStatements(n.body.body)
+    const units = n.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
     return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
   }
   if (n.type === 'ClassDeclaration' && n.body) {
@@ -373,8 +423,13 @@ function splitUnit(src) {
     return { sig, units, open: '{\n  ', join: '\n\n  ', close: '\n}' }
   }
   // `const x = { ... }` / `const x = () => { ... }` / `const x = function () { ... }`
-  if (n.type === 'VariableDeclaration' && n.declarations.length === 1 && n.declarations[0].init) {
-    const init = n.declarations[0].init
+  // and the CommonJS twins `module.exports = function () { ... }` / `x.y = { ... }` —
+  // without descending into assignments, two sides editing DIFFERENT lines of one
+  // exported function read as a same-declaration conflict (census overcount on axios).
+  let init = null
+  if (n.type === 'VariableDeclaration' && n.declarations.length === 1 && n.declarations[0].init) init = n.declarations[0].init
+  else if (n.type === 'ExpressionStatement' && n.expression.type === 'AssignmentExpression') init = n.expression.right
+  if (init) {
     if (init.type === 'ObjectExpression') {
       const sig = src.slice(n.start, init.start)
       const units = init.properties.map((p, i) => ({ key: propKey(p, i), text: src.slice(p.start, p.end) }))
@@ -382,7 +437,8 @@ function splitUnit(src) {
     }
     if ((init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') && init.body && init.body.type === 'BlockStatement') {
       const sig = src.slice(n.start, init.body.start)
-      const units = init.body.body.map((s, i) => ({ key: keyOf(s, i), text: src.slice(s.start, s.end) }))
+      const ks = keyStatements(init.body.body)
+      const units = init.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
       return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
     }
   }
