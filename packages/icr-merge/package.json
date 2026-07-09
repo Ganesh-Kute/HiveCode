@@ -1,6 +1,6 @@
 {
   "name": "icr-merge",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "ICR — Intent-aware Code Replication: a 3-way merge that understands code structure and author intent. Structural merging, rename detection across call sites, semantic-conflict detection, parse-guaranteed output. Drop-in git merge driver. Built for AI-agent-authored code.",
   "type": "module",
   "main": "index.js",
