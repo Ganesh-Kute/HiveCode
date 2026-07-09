@@ -48,6 +48,9 @@
   "scripts": {
     "start": "node server.js",
     "relay": "node server.js",
+    "sync:engine": "node sync-engine.mjs",
+    "check:engine": "node sync-engine.mjs --check",
+    "pretest": "node sync-engine.mjs --check",
     "test": "node test.js",
     "test:substrate": "node substrate-test.js",
     "test:substrate:live": "node substrate-live-test.js",
