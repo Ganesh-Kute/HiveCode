@@ -316,6 +316,7 @@ export function structuralMerge(base, a, b, opts = {}) {
   removed = [...baseNames].filter((n) => !mergedNames.has(n))
   const refs = lang.referencedFreeNames ? lang.referencedFreeNames(merged)
     : lang.usedIdentifiers ? lang.usedIdentifiers(merged) : null
+  if (process.env.ICR_DEBUG_MERGED) console.error('--- ICR merged intermediate ---\n' + merged + '\n--- refs: ' + [...(refs || [])].join(',') + ' ---')
   if (removed.length && refs) {
     const dangling = removed.filter((n) => refs.has(n))
     if (dangling.length)

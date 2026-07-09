@@ -1,11 +1,11 @@
-// lang-js.js — the JavaScript language provider for ICR.
+﻿// lang-js.js â€” the JavaScript language provider for ICR.
 //
 // ICR's merge engine (icr.js) is language-agnostic: it merges a list of keyed "units"
 // and asks intent questions ("what names are declared / used / what's a function body").
-// Everything that actually knows about a *language* — how to parse it, what a top-level
-// declaration is, how to find references — lives behind a provider like this one.
+// Everything that actually knows about a *language* â€” how to parse it, what a top-level
+// declaration is, how to find references â€” lives behind a provider like this one.
 //
-// To add a language (Python, Go, Rust…), write another module exposing the same shape
+// To add a language (Python, Go, Rustâ€¦), write another module exposing the same shape
 // and register it with icr.js's registerLanguage(). This JS provider is just the first
 // plugin; it happens to use `acorn` because acorn is a tiny pure-JS parser. A tree-sitter
 // provider would implement the identical interface over tree-sitter grammars.
@@ -13,10 +13,7 @@
 import * as acorn from 'acorn'
 
 // Parse permissively: try module syntax, fall back to script (so plain snippets and
-// ESM both work — statement fragments from the inner merge often only parse as script).
-// Throws only when the code genuinely won't parse either way; callers that can receive
-// fragments catch and fall through. (A null-returning parse here once turned that throw
-// into `ast.body[0]` TypeErrors deep in splitUnit — keep the throwing contract.)
+// ESM both work). Throws only when the code genuinely won't parse either way.
 function parse(src) {
   try { return acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'module' }) }
   catch { return acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script' }) }
@@ -24,9 +21,29 @@ function parse(src) {
 
 function parses(src) { try { parse(src); return true } catch { return false } }
 
-// A stable key per top-level node — what lets us recognize "the same declaration"
+// A stable key per top-level node â€” what lets us recognize "the same declaration"
 // across two edits. Names where we have them; position as a last resort.
-function keyOf(node, i) {
+// Dotted source path of a simple expression target (Axios.prototype.request,
+// utils.forEach, this.config) â€” or null when it isn't a plain dotted path.
+function exprPath(node) {
+  if (!node) return null
+  if (node.type === 'Identifier') return node.name
+  if (node.type === 'ThisExpression') return 'this'
+  if (node.type === 'MemberExpression' && !node.computed) {
+    const o = exprPath(node.object)
+    return o && node.property && node.property.name ? o + '.' + node.property.name : null
+  }
+  return null
+}
+
+// CONTENT-ANCHORED key for a statement, or null for truly anonymous ones.
+// Index keys (stmt:N) are a last resort ONLY: an insertion above an index-keyed
+// statement shifts every index, so unrelated statements pair up as fake
+// same-unit conflicts â€” and deletions mispair so deleted code can resurrect.
+// (Both failure modes were found by the merge census replaying axios/express
+// history.) Assignments key by their target, calls by callee path plus a
+// leading string literal (`it('name')`, `describe('name')`), directives by text.
+function baseKeyOf(node) {
   let n = node
   if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
   if (n.type === 'ExportDefaultDeclaration') return 'export:default'
@@ -36,16 +53,44 @@ function keyOf(node, i) {
     return 'var:' + n.declarations[0].id.name
   // Key imports by their SOURCE MODULE, so two agents adding imports from DIFFERENT
   // modules never collide, and two touching the SAME module are merged (specifier union).
-  if (n.type === 'ImportDeclaration') return 'import:' + (n.source && n.source.value != null ? n.source.value : i)
-  return 'stmt:' + i
+  if (n.type === 'ImportDeclaration') return 'import:' + (n.source && n.source.value != null ? n.source.value : '?')
+  if (n.type === 'ExpressionStatement') {
+    const e = n.expression
+    if (e.type === 'Literal' && typeof e.value === 'string') return 'directive:' + e.value // 'use strict'
+    if (e.type === 'AssignmentExpression') { const t = exprPath(e.left); if (t) return 'assign:' + t }
+    if (e.type === 'CallExpression') {
+      const t = exprPath(e.callee)
+      if (t) {
+        const a0 = e.arguments && e.arguments[0]
+        return 'call:' + t + (a0 && a0.type === 'Literal' && typeof a0.value === 'string' ? ':' + a0.value : '')
+      }
+    }
+  }
+  return null
 }
 
+// Key an ordered statement list: content-anchored where possible (duplicates get
+// #1, #2â€¦ by occurrence), positional stmt:N only for the anonymous remainder.
+function keyStatements(nodes) {
+  const seen = new Map()
+  return nodes.map((n, i) => {
+    const k = baseKeyOf(n)
+    if (k == null) return 'stmt:' + i
+    const c = seen.get(k) || 0
+    seen.set(k, c + 1)
+    return c ? k + '#' + c : k
+  })
+}
+
+function keyOf(node, i) { const k = baseKeyOf(node); return k == null ? 'stmt:' + i : k }
+
 // Top-level units: ordered { key, text, start, end } for each declaration/statement.
-// start/end are byte offsets in `src` — used by the format-preserving splice so unchanged
+// start/end are byte offsets in `src` â€” used by the format-preserving splice so unchanged
 // regions (and the whitespace/comments between units) survive a merge verbatim.
 function units(src) {
   const ast = parse(src)
-  return ast.body.map((node, i) => ({ key: keyOf(node, i), text: src.slice(node.start, node.end), start: node.start, end: node.end }))
+  const keys = keyStatements(ast.body)
+  return ast.body.map((node, i) => ({ key: keys[i], text: src.slice(node.start, node.end), start: node.start, end: node.end }))
 }
 
 // Bare declared name (foo, Bar, VERSION) of a node, or null for anonymous statements.
@@ -62,7 +107,7 @@ function declaredNames(src) {
   const s = new Set()
   for (const node of parse(src).body) {
     const nm = bareName(node); if (nm) s.add(nm)
-    // Import locals count as declared names too — so if an import is ever dropped and its
+    // Import locals count as declared names too â€” so if an import is ever dropped and its
     // binding is still used, the dangling-reference check catches it (safety net for the
     // import merge). Keeps the never-emit-broken-code guarantee honest for imports.
     if (node.type === 'ImportDeclaration') for (const sp of node.specifiers) s.add(sp.local.name)
@@ -93,9 +138,9 @@ function renderImport({ source, def, ns, named }) {
   if (!parts.length) return "import '" + source + "'"
   return 'import ' + parts.join(', ') + " from '" + source + "'"
 }
-// Both sides changed an import from the SAME module → union their specifiers into one
-// statement (the common "both agents added an import" case). Returns null — meaning
-// "let the normal conflict path handle it" — for anything we can't safely combine
+// Both sides changed an import from the SAME module â†’ union their specifiers into one
+// statement (the common "both agents added an import" case). Returns null â€” meaning
+// "let the normal conflict path handle it" â€” for anything we can't safely combine
 // (different modules, clashing defaults/namespaces, namespace-mixed-with-named).
 function mergeUnit(baseText, aText, bText) {
   const a = parseImport(aText), b = parseImport(bText)
@@ -107,14 +152,14 @@ function mergeUnit(baseText, aText, bText) {
   if (ns && (a.named.length || b.named.length)) return null // `* as X` can't share a statement with named imports
   const seen = new Set(), named = []
   for (const s of [...a.named, ...b.named]) { const k = s.imported + '|' + s.local; if (!seen.has(k)) { seen.add(k); named.push(s) } }
-  // Canonical specifier order: the union must not depend on which side is `a` — the merge
+  // Canonical specifier order: the union must not depend on which side is `a` â€” the merge
   // has to be SYMMETRIC (merge(a,b) === merge(b,a)) or two live peers never settle on one
   // byte-form. (Found by the property fuzzer: a 1-in-40k NOT-SYMMETRIC violation.)
   named.sort((x, y) => (x.imported + '|' + x.local).localeCompare(y.imported + '|' + y.local))
   return renderImport({ source: a.source, def, ns, named })
 }
 
-// The BODY of a top-level declaration, by name, with the name itself excluded — so two
+// The BODY of a top-level declaration, by name, with the name itself excluded â€” so two
 // declarations that differ only in their name compare equal (that's how we spot a rename).
 function declBody(src, name) {
   for (const node of parse(src).body) {
@@ -149,7 +194,7 @@ function renameRefs(src, oldName, newName) {
 }
 
 // Every identifier USED anywhere (skips obj.prop names and non-computed object keys).
-// Approximate — good enough for the intent check; the real version is scope-aware.
+// Approximate â€” good enough for the intent check; the real version is scope-aware.
 function usedIdentifiers(src) {
   const used = new Set()
   walk(parse(src), (node, parent, key) => {
@@ -173,10 +218,10 @@ function walk(node, visit, parent = null, key = null) {
 }
 
 // --- scope-aware reference analysis ---------------------------------------------
-// The names REFERENCED in `src` that resolve to NOTHING in the file's own scopes —
+// The names REFERENCED in `src` that resolve to NOTHING in the file's own scopes â€”
 // i.e. free/global names, including any use of a top-level declaration. This is the
 // scope-aware upgrade of usedIdentifiers: a use of `x` that resolves to a LOCAL binding
-// (a param, a `const x` in the same function, a catch var, a loop var…) is NOT counted,
+// (a param, a `const x` in the same function, a catch var, a loop varâ€¦) is NOT counted,
 // because it isn't a reference to a top-level declaration. That lets ICR tell a deleted
 // top-level `helper` apart from an unrelated local `helper` that merely shares its name.
 //
@@ -197,7 +242,7 @@ function referencedFreeNames(src) {
 }
 
 // Rename ONLY the free references to oldName (those that resolve to the top-level/global
-// binding) — never a local variable that merely shares the name. Edits back-to-front.
+// binding) â€” never a local variable that merely shares the name. Edits back-to-front.
 function renameFreeRefs(src, oldName, newName) {
   const spots = []
   walkFreeRefs(src, (node) => { if (node.name === oldName) spots.push([node.start, node.end]) })
@@ -243,7 +288,7 @@ function resolveBindingDefaults(node, scope, emit) {
     } break
     case 'ArrayPattern': for (const el of node.elements) if (el) resolveBindingDefaults(el, scope, emit); break
     case 'RestElement': resolveBindingDefaults(node.argument, scope, emit); break
-    // Identifier: a pure binding — nothing to resolve.
+    // Identifier: a pure binding â€” nothing to resolve.
   }
 }
 
@@ -344,7 +389,7 @@ function memberKey(m, i) {
 // for anything else (the engine then treats the declaration as indivisible). Tolerates
 // fragments that don't parse standalone (e.g. a bare `return`).
 const MEMBER_WRAP = 'class __ICR__{'
-// A class member (method) doesn't parse standalone — wrap it in a throwaway class so we
+// A class member (method) doesn't parse standalone â€” wrap it in a throwaway class so we
 // can recurse INTO a method body that both agents edited. Offsets are mapped back to src.
 function splitMember(src) {
   let ast
@@ -355,20 +400,22 @@ function splitMember(src) {
   if (!m || m.type !== 'MethodDefinition' || !m.value || !m.value.body || m.value.body.type !== 'BlockStatement') return null
   const off = MEMBER_WRAP.length, body = m.value.body
   const sig = src.slice(0, body.start - off)
-  const units = body.body.map((s, i) => ({ key: keyOf(s, i), text: src.slice(s.start - off, s.end - off) }))
+  const ks = keyStatements(body.body)
+  const units = body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start - off, s.end - off) }))
   return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
 }
 
 function splitUnit(src) {
   let ast
   try { ast = parse(src) } catch { return splitMember(src) } // maybe a class-member fragment
-  if (!ast || !ast.body) return splitMember(src)
+  if (!ast || !ast.body) return splitMember(src) // defensive: a null AST must never reach .body
   let n = ast.body[0]
   if (!n) return null
   if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
   if (n.type === 'FunctionDeclaration' && n.body) {
     const sig = src.slice(n.start, n.body.start)
-    const units = n.body.body.map((s, i) => ({ key: keyOf(s, i), text: src.slice(s.start, s.end) }))
+    const ks = keyStatements(n.body.body)
+    const units = n.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
     return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
   }
   if (n.type === 'ClassDeclaration' && n.body) {
@@ -377,8 +424,13 @@ function splitUnit(src) {
     return { sig, units, open: '{\n  ', join: '\n\n  ', close: '\n}' }
   }
   // `const x = { ... }` / `const x = () => { ... }` / `const x = function () { ... }`
-  if (n.type === 'VariableDeclaration' && n.declarations.length === 1 && n.declarations[0].init) {
-    const init = n.declarations[0].init
+  // and the CommonJS twins `module.exports = function () { ... }` / `x.y = { ... }` â€”
+  // without descending into assignments, two sides editing DIFFERENT lines of one
+  // exported function read as a same-declaration conflict (census overcount on axios).
+  let init = null
+  if (n.type === 'VariableDeclaration' && n.declarations.length === 1 && n.declarations[0].init) init = n.declarations[0].init
+  else if (n.type === 'ExpressionStatement' && n.expression.type === 'AssignmentExpression') init = n.expression.right
+  if (init) {
     if (init.type === 'ObjectExpression') {
       const sig = src.slice(n.start, init.start)
       const units = init.properties.map((p, i) => ({ key: propKey(p, i), text: src.slice(p.start, p.end) }))
@@ -386,7 +438,8 @@ function splitUnit(src) {
     }
     if ((init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') && init.body && init.body.type === 'BlockStatement') {
       const sig = src.slice(n.start, init.body.start)
-      const units = init.body.body.map((s, i) => ({ key: keyOf(s, i), text: src.slice(s.start, s.end) }))
+      const ks = keyStatements(init.body.body)
+      const units = init.body.body.map((s, i) => ({ key: ks[i], text: src.slice(s.start, s.end) }))
       return { sig, units, open: '{\n  ', join: '\n  ', close: '\n}' }
     }
   }
@@ -402,7 +455,7 @@ function propKey(p, i) {
 }
 
 // Does `src` parse either as top-level code OR as a class member? (The inner-merge result
-// for a method is a fragment that's only valid inside a class — this lets us validate it.)
+// for a method is a fragment that's only valid inside a class â€” this lets us validate it.)
 function parsesUnit(src) {
   if (parses(src)) return true
   try { parse(MEMBER_WRAP + src + '}'); return true } catch { return false }
@@ -416,10 +469,10 @@ export const javascript = {
   units,
   declaredNames,
   usedIdentifiers,      // approximate (kept for reference)
-  referencedFreeNames,  // scope-aware — what the engine prefers for the dangling check
+  referencedFreeNames,  // scope-aware â€” what the engine prefers for the dangling check
   declBody,
   renameRefs,           // rewrites every matching identifier (kept for reference)
-  renameFreeRefs,       // scope-aware — only rewrites references that resolve to the binding
+  renameFreeRefs,       // scope-aware â€” only rewrites references that resolve to the binding
   splitUnit,            // finer granularity: split a function/class/method into keyed inner units
   parsesUnit,           // validity oracle that also accepts a class-member fragment
   mergeUnit,            // language-specific same-key merge (import specifier union)
