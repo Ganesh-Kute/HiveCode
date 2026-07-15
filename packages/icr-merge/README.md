@@ -53,6 +53,18 @@ One call, three outcomes:
 
 Lower-level API if you want the pieces: `structuralMerge`, `merge3`, `supports`, `languageFor`, `registerLanguage`, `parses`, `hasConflictMarkers`.
 
+## Use from the command line (no git required)
+
+```bash
+npx icr-merge base.js ours.js theirs.js            # merged text -> stdout
+npx icr-merge base.js ours.js theirs.js -o out.js  # -> file
+npx icr-merge base.js ours.js theirs.js --json     # machine-readable envelope (for agents/CI)
+```
+
+Exit `0` = clean merge, `1` = conflict (output still produced: markers, or a semantic
+warning on stderr), `2` = usage error. `--filename name.py` picks the language when
+your temp files aren't named like the real one.
+
 ## Intent-aware autonomous resolution (for agents)
 
 Every other merge tool merges **dead text** — two finished files, no author present, no idea *why* either change was made. When two changes truly conflict, all any of them can do is dump markers and wait for a human.

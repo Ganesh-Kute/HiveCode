@@ -8,6 +8,7 @@
     ".": "./index.js"
   },
   "bin": {
+    "icr-merge": "bin/icr-merge-cli.js",
     "icr-merge-driver": "bin/icr-merge-driver.js",
     "icr-merge-install": "bin/icr-merge-install.js"
   },
