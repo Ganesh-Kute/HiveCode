@@ -30,13 +30,16 @@ import { braceLanguages } from './lang-brace.js'
 import { python } from './lang-python.js'
 import { ruby } from './lang-ruby.js'
 import { json } from './lang-json.js'
+import { yaml } from './lang-yaml.js'
+import { toml } from './lang-toml.js'
 
 // --- language registry ----------------------------------------------------------
 // JavaScript (acorn, full intent layer) first; then structural providers for the
 // C-family (TypeScript, Go, Rust, Java, C/C++, C#, Swift, Kotlin, …), Python, and
-// Ruby; JSON merges as parsed DATA (real parser, value-wise 3-way, perfect guarantee).
+// Ruby; data languages: JSON merges as parsed DATA (real parser, value-wise 3-way,
+// perfect guarantee), YAML/TOML merge by keyed structure (sections/keys).
 // These cover disjoint extensions, so order only matters on clashes (none today).
-const LANGUAGES = [javascript, ...braceLanguages, python, ruby, json]
+const LANGUAGES = [javascript, ...braceLanguages, python, ruby, json, yaml, toml]
 
 // Register an additional language provider. Must expose the provider contract:
 // { id, exts:[...], parses, units, declaredNames, usedIdentifiers, declBody,

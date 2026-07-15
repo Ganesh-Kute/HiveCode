@@ -14,10 +14,12 @@ const T = (n, c) => { if (!c) { console.log(`  FAIL ${n}`); fail++ } else pass++
 function mulberry32(seed) { return function () { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 } }
 
 const GEN = {
-  'x.py': { unit: (i, v) => `def f${i}(x):\n    return x + ${v}\n`, join: '\n' },
-  'App.java': { unit: (i, v) => `int f${i}(int x) { return x + ${v}; }\n`, join: '\n' },
-  'main.go': { unit: (i, v) => `func f${i}(x int) int {\n\treturn x + ${v}\n}\n`, join: '\n' },
-  'x.rb': { unit: (i, v) => `def f${i}(x)\n  x + ${v}\nend\n`, join: '\n' },
+  'x.py': { unit: (i, v) => `def f${i}(x):\n    return x + ${v}\n`, join: '\n', pat: (v) => `+ ${v}` },
+  'App.java': { unit: (i, v) => `int f${i}(int x) { return x + ${v}; }\n`, join: '\n', pat: (v) => `+ ${v}` },
+  'main.go': { unit: (i, v) => `func f${i}(x int) int {\n\treturn x + ${v}\n}\n`, join: '\n', pat: (v) => `+ ${v}` },
+  'x.rb': { unit: (i, v) => `def f${i}(x)\n  x + ${v}\nend\n`, join: '\n', pat: (v) => `+ ${v}` },
+  'ci.yml': { unit: (i, v) => `f${i}:\n  value: ${v}\n`, join: '\n', pat: (v) => `value: ${v}` },
+  'Cargo.toml': { unit: (i, v) => `[s${i}]\nvalue = ${v}\n`, join: '\n', pat: (v) => `value = ${v}` },
 }
 
 for (const [filename, g] of Object.entries(GEN)) {
@@ -25,13 +27,14 @@ for (const [filename, g] of Object.entries(GEN)) {
   const rnd = mulberry32(424242)
   for (let t = 0; t < 60; t++) {
     const k = 3 + Math.floor(rnd() * 3)
-    const vals = Array.from({ length: k }, () => 100 + Math.floor(rnd() * 900))
+    // distinct per-unit value ranges so a marker replacement can never hit the wrong unit
+    const vals = Array.from({ length: k }, (_, i) => 1000 * (i + 1) + Math.floor(rnd() * 900))
     const base = vals.map((v, i) => g.unit(i, v)).join(g.join)
     // each side changes ONE unit's value to a unique marker (or adds a new unit)
     const mkEdit = (marker) => {
       if (rnd() < 0.25) return { add: true, text: g.unit(k + Math.floor(rnd() * 50) + 1, marker), marker }
       const u = Math.floor(rnd() * k)
-      return { unit: u, text: base.replace(`+ ${vals[u]}`, `+ ${marker}`), marker }
+      return { unit: u, text: base.replace(g.pat(vals[u]), g.pat(marker)), marker }
     }
     const eA = mkEdit(111111 + t), eB = mkEdit(222222 + t)
     const a = eA.add ? base + g.join + eA.text : eA.text

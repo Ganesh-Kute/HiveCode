@@ -19,7 +19,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const PKG = path.join(ROOT, 'packages', 'icr-merge')
 // The files that exist verbatim in both places. (merge3.js is package-only — root uses
 // core.js's merge3; index.js/bin are package-only. Only these four are shared copies.)
-const FILES = ['icr.js', 'lang-js.js', 'lang-brace.js', 'lang-python.js', 'lang-ruby.js', 'lang-json.js']
+const FILES = ['icr.js', 'lang-js.js', 'lang-brace.js', 'lang-python.js', 'lang-ruby.js', 'lang-json.js', 'lang-yaml.js', 'lang-toml.js']
 
 const check = process.argv.includes('--check')
 const read = (p) => fs.readFileSync(p, 'utf8')

@@ -95,9 +95,11 @@ From then on `git merge`, `git rebase`, and `git cherry-pick` use intent-aware m
 
 | Tier | Languages | What you get |
 |---|---|---|
-| Full intent (AST) | JavaScript (.js .mjs .cjs .jsx) | structural merge, scope-aware rename rewriting, dangling-reference detection |
-| Structural | TypeScript, Go, Rust, Java, C, C++, C#, Swift, Kotlin | declaration-level merge, rename detection, parse guarantee |
-| Structural | Python | declaration-level merge (indentation-aware) |
+| Full intent (AST) | JavaScript (.js .mjs .cjs) | structural merge, **scope-aware** rename rewriting, dangling-reference detection, token-level merge |
+| Structural + intent | TypeScript, JSX, Go, Rust, Java, C, C++, C#, Swift, Kotlin, Scala, PHP, Dart | declaration/statement/token merge, rename detection with call-site rewriting, dangling-reference blocking |
+| Structural + intent | Python (**indentation-validated**), Ruby (def/class…end) | same as above; Python's parse gate understands indentation, so a merge that would land a statement in the wrong block is refused |
+| Data (perfect) | JSON | merged as parsed **data**: value-wise 3-way keyed by path, delete-vs-change conflicts, disjoint array-region merge, style-preserving output — real parser, so the guarantee has no heuristic in it |
+| Data (structural) | YAML, TOML | keyed section/key merge with nested descent (two people editing different CI jobs / different Cargo dependencies merge cleanly; the same key twice is a named conflict) |
 | Line fallback | everything else | git-quality diff3 — never worse than the default |
 
 Add your own with `registerLanguage(provider)` — the engine is language-agnostic; everything language-specific lives behind a small provider interface.
@@ -109,7 +111,7 @@ Add your own with `registerLanguage(provider)` — the engine is language-agnost
 - **Convergent** — the merge is symmetric and a fixed point: peers that re-merge an agreed text get it back byte-identical (this is what lets ICR run inside a live multi-peer CRDT sync).
 - **Never throws into your code** — any internal failure degrades to the line tier.
 
-Tested by: unit suites per language, directed adversarial cases (fake defs inside Python docstrings, decorators, Go raw strings and braces-in-comments, Rust CRLF, Java deep nesting, unicode names), a seeded random 3-way fuzzer across 5 languages, and a convergence suite. Plus a real-world **gauntlet**: hundreds of parseable files from `node_modules` used as merge fodder with code edits located via the AST, run differentially against real `git merge-file` — **0 code-loss, 0 broken auto-merges, 0 convergence failures across 500+ cases, and ICR strictly beat git (auto-merged what git conflicted on) on files where edits were adjacent**. ICR also runs live inside [Hivecode](https://github.com/GSK7024), a governed real-time medium where multiple AI agents edit one project — which is where its assumptions got beaten on by real concurrent agents.
+Tested by: unit suites per language, directed adversarial cases (fake defs inside Python docstrings, decorators, Go raw strings and braces-in-comments, Rust CRLF, Java deep nesting, unicode names), seeded random 3-way fuzzers (including a metamorphic multilang fuzzer holding fixed-point, symmetry, parse-guarantee, no-loss, and honest-conflict invariants across Python/Java/Go/Ruby/YAML/TOML/JSON), and a convergence suite. Plus a real-world **gauntlet**: hundreds of parseable files from `node_modules` used as merge fodder with code edits located via the AST, run differentially against real `git merge-file` — **0 code-loss, 0 broken auto-merges, 0 convergence failures across 500+ cases, and ICR strictly beat git (auto-merged what git conflicted on) on files where edits were adjacent**. ICR also runs live inside [Hivecode](https://github.com/GSK7024), a governed real-time medium where multiple AI agents edit one project — which is where its assumptions got beaten on by real concurrent agents.
 
 ## Scope, honestly
 

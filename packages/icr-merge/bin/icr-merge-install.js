@@ -30,6 +30,7 @@ Now route file types to it — add to .gitattributes:
   *.ts   merge=icr
   *.tsx  merge=icr
   *.py   merge=icr
+  *.rb   merge=icr
   *.go   merge=icr
   *.rs   merge=icr
   *.java merge=icr
@@ -39,6 +40,13 @@ Now route file types to it — add to .gitattributes:
   *.cs   merge=icr
   *.swift merge=icr
   *.kt   merge=icr
+  *.scala merge=icr
+  *.php  merge=icr
+  *.dart merge=icr
+  *.json merge=icr
+  *.yml  merge=icr
+  *.yaml merge=icr
+  *.toml merge=icr
 
 From then on, \`git merge\` / \`git rebase\` / \`git cherry-pick\` use the
 intent-aware merge for those files. Anything ICR can't merge safely falls
