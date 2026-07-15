@@ -1,0 +1,327 @@
+{
+  "repo": "jquery",
+  "cases": 30,
+  "gtTookSide": 5,
+  "tally": {
+    "mergiraf": {
+      "MATCH": 3,
+      "MATCH-WS": 7,
+      "CLEAN-DIFF": 5,
+      "CONFLICT": 14,
+      "BROKEN": 0,
+      "CRASH": 1,
+      "ms": 10787
+    },
+    "icr": {
+      "MATCH": 1,
+      "MATCH-WS": 4,
+      "CLEAN-DIFF": 18,
+      "CONFLICT": 7,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 3059
+    }
+  },
+  "receipts": [
+    {
+      "repo": "jquery",
+      "merge": "62a4c8450367",
+      "date": "2012-04-10",
+      "file": "src/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "62a4c8450367",
+      "date": "2012-04-10",
+      "file": "test/unit/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "d638aa9c6d63",
+      "date": "2011-09-21",
+      "file": "test/unit/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "bba3d610c7e3",
+      "date": "2011-09-19",
+      "file": "src/core.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "af1dc64bee90",
+      "date": "2011-09-19",
+      "file": "src/attributes.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "ec829431feed",
+      "date": "2011-05-13",
+      "file": "test/unit/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "521ae562daa8",
+      "date": "2011-05-10",
+      "file": "test/unit/effects.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "3418f3238760",
+      "date": "2011-04-12",
+      "file": "src/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "f1d75edec707",
+      "date": "2011-04-12",
+      "file": "src/offset.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "978c0655550f",
+      "date": "2011-04-12",
+      "file": "src/core.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "978c0655550f",
+      "date": "2011-04-12",
+      "file": "src/css.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "978c0655550f",
+      "date": "2011-04-12",
+      "file": "src/event.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "jquery",
+      "merge": "a5604aedb74e",
+      "date": "2011-04-12",
+      "file": "src/css.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "a5604aedb74e",
+      "date": "2011-04-12",
+      "file": "test/unit/css.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "a5604aedb74e",
+      "date": "2011-04-12",
+      "file": "test/unit/queue.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "a5604aedb74e",
+      "date": "2011-04-12",
+      "file": "test/unit/traversing.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CRASH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "jquery",
+      "merge": "56ffad2dad13",
+      "date": "2011-04-10",
+      "file": "src/effects.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "jquery",
+      "merge": "f89edbc6e4bd",
+      "date": "2011-04-10",
+      "file": "src/attributes.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "jquery",
+      "merge": "523db95de2fe",
+      "date": "2011-04-10",
+      "file": "test/unit/traversing.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "2c74ee46ee6c",
+      "date": "2011-04-10",
+      "file": "test/unit/event.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "jquery",
+      "merge": "7fb95ebe8f1b",
+      "date": "2011-04-10",
+      "file": "src/core.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH-WS",
+      "icr": "MATCH",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "7fb95ebe8f1b",
+      "date": "2011-04-10",
+      "file": "src/support.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "987c44bee485",
+      "date": "2011-01-17",
+      "file": "src/event.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "987c44bee485",
+      "date": "2011-01-17",
+      "file": "test/unit/event.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "7e2810fa950f",
+      "date": "2010-12-31",
+      "file": "src/ajax.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "01cba2ecaaed",
+      "date": "2010-12-26",
+      "file": "src/data.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "82ac384b4942",
+      "date": "2010-12-22",
+      "file": "src/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "jquery",
+      "merge": "4fae75d575b2",
+      "date": "2010-12-12",
+      "file": "src/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "jquery",
+      "merge": "4fae75d575b2",
+      "date": "2010-12-12",
+      "file": "test/unit/manipulation.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "jquery",
+      "merge": "230614b4df31",
+      "date": "2010-01-05",
+      "file": "src/event.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    }
+  ]
+}

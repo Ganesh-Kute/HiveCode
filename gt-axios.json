@@ -1,0 +1,107 @@
+{
+  "repo": "axios",
+  "cases": 8,
+  "gtTookSide": 2,
+  "tally": {
+    "mergiraf": {
+      "MATCH": 1,
+      "MATCH-WS": 0,
+      "CLEAN-DIFF": 1,
+      "CONFLICT": 6,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 12382
+    },
+    "icr": {
+      "MATCH": 1,
+      "MATCH-WS": 1,
+      "CLEAN-DIFF": 1,
+      "CONFLICT": 5,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 369
+    }
+  },
+  "receipts": [
+    {
+      "repo": "axios",
+      "merge": "253e3ad06a7b",
+      "date": "2026-01-26",
+      "file": "tsconfig.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "axios",
+      "merge": "8699891b8e12",
+      "date": "2022-04-01",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "axios",
+      "merge": "8699891b8e12",
+      "date": "2022-04-01",
+      "file": "package-lock.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "axios",
+      "merge": "8699891b8e12",
+      "date": "2022-04-01",
+      "file": "test/specs/defaults.spec.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "MATCH",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "axios",
+      "merge": "8699891b8e12",
+      "date": "2022-04-01",
+      "file": "test/unit/adapters/http.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "axios",
+      "merge": "340ad9ec8c36",
+      "date": "2022-03-09",
+      "file": "lib/adapters/http.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "axios",
+      "merge": "340ad9ec8c36",
+      "date": "2022-03-09",
+      "file": "lib/adapters/xhr.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "axios",
+      "merge": "4e7ca3dea349",
+      "date": "2016-05-31",
+      "file": "lib/adapters/http.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    }
+  ]
+}

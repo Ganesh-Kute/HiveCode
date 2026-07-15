@@ -1,0 +1,307 @@
+{
+  "repo": "moment",
+  "cases": 28,
+  "gtTookSide": 12,
+  "tally": {
+    "mergiraf": {
+      "MATCH": 5,
+      "MATCH-WS": 1,
+      "CLEAN-DIFF": 4,
+      "CONFLICT": 18,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 8841
+    },
+    "icr": {
+      "MATCH": 0,
+      "MATCH-WS": 2,
+      "CLEAN-DIFF": 9,
+      "CONFLICT": 17,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 4281
+    }
+  },
+  "receipts": [
+    {
+      "repo": "moment",
+      "merge": "479b650557d8",
+      "date": "2013-10-13",
+      "file": "lang/zh-cn.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "51fef0e30360",
+      "date": "2013-10-03",
+      "file": "moment.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "48c742c19c96",
+      "date": "2013-10-02",
+      "file": "moment.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "4995e04fad9a",
+      "date": "2013-09-08",
+      "file": "lang/da.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "4995e04fad9a",
+      "date": "2013-09-08",
+      "file": "lang/ru.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "c4c9175491d1",
+      "date": "2013-09-08",
+      "file": "lang/nb.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "85ed279b1fa3",
+      "date": "2013-03-25",
+      "file": "min/langs.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "85ed279b1fa3",
+      "date": "2013-03-25",
+      "file": "min/langs.min.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "85ed279b1fa3",
+      "date": "2013-03-25",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "46200a34cbc5",
+      "date": "2013-02-08",
+      "file": "lang/da.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "46200a34cbc5",
+      "date": "2013-02-08",
+      "file": "lang/fr-ca.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "46200a34cbc5",
+      "date": "2013-02-08",
+      "file": "lang/fr.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "46200a34cbc5",
+      "date": "2013-02-08",
+      "file": "test/lang/da.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "46200a34cbc5",
+      "date": "2013-02-08",
+      "file": "test/lang/fr-ca.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "46200a34cbc5",
+      "date": "2013-02-08",
+      "file": "test/lang/fr.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "37e12e05a89b",
+      "date": "2012-10-01",
+      "file": "moment.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "2c15d67f0823",
+      "date": "2012-05-05",
+      "file": "min/lang-all.min.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "2c15d67f0823",
+      "date": "2012-05-05",
+      "file": "min/lang/zh-cn.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "2c15d67f0823",
+      "date": "2012-05-05",
+      "file": "min/lang/zh-tw.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "2c15d67f0823",
+      "date": "2012-05-05",
+      "file": "min/moment.min.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "2c15d67f0823",
+      "date": "2012-05-05",
+      "file": "min/moment.min.pretty.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "2c15d67f0823",
+      "date": "2012-05-05",
+      "file": "moment.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "00722f8e7d2c",
+      "date": "2012-04-02",
+      "file": "lang/zh-cn.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "00722f8e7d2c",
+      "date": "2012-04-02",
+      "file": "lang/zh-tw.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "00722f8e7d2c",
+      "date": "2012-04-02",
+      "file": "test/lang/zh-cn.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "00722f8e7d2c",
+      "date": "2012-04-02",
+      "file": "test/lang/zh-tw.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "moment",
+      "merge": "1f3e53125f42",
+      "date": "2011-06-16",
+      "file": "underscore.date.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "moment",
+      "merge": "35efaf633569",
+      "date": "2011-06-13",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    }
+  ]
+}

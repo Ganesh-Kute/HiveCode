@@ -1,0 +1,1907 @@
+{
+  "repo": "express",
+  "cases": 188,
+  "gtTookSide": 50,
+  "tally": {
+    "mergiraf": {
+      "MATCH": 16,
+      "MATCH-WS": 10,
+      "CLEAN-DIFF": 8,
+      "CONFLICT": 153,
+      "BROKEN": 0,
+      "CRASH": 1,
+      "ms": 34667
+    },
+    "icr": {
+      "MATCH": 2,
+      "MATCH-WS": 8,
+      "CLEAN-DIFF": 30,
+      "CONFLICT": 148,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 10477
+    }
+  },
+  "receipts": [
+    {
+      "repo": "express",
+      "merge": "f9256ef36fa9",
+      "date": "2024-09-09",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CRASH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e5feb9fcc9ab",
+      "date": "2024-09-09",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "dde1f7d6e8d8",
+      "date": "2024-08-02",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "dde1f7d6e8d8",
+      "date": "2024-08-02",
+      "file": "test/res.clearCookie.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c96c690dc087",
+      "date": "2024-07-25",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c96c690dc087",
+      "date": "2024-07-25",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c96c690dc087",
+      "date": "2024-07-25",
+      "file": "test/app.router.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c96c690dc087",
+      "date": "2024-07-25",
+      "file": "test/res.location.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "60fb1d2acd7f",
+      "date": "2024-03-20",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e9f9aaeebd13",
+      "date": "2024-03-20",
+      "file": "examples/downloads/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "e9f9aaeebd13",
+      "date": "2024-03-20",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e9f9aaeebd13",
+      "date": "2024-03-20",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e9f9aaeebd13",
+      "date": "2024-03-20",
+      "file": "test/exports.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e9f9aaeebd13",
+      "date": "2024-03-20",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e9f9aaeebd13",
+      "date": "2024-03-20",
+      "file": "test/utils.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "examples/auth/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "examples/downloads/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "test/app.param.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "test/app.router.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "test/app.routes.error.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "318fd4b543ff",
+      "date": "2022-02-17",
+      "file": "test/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c7d528cdc00c",
+      "date": "2021-12-16",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c7d528cdc00c",
+      "date": "2021-12-16",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c7d528cdc00c",
+      "date": "2021-12-16",
+      "file": "test/app.listen.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "121fe9982b62",
+      "date": "2019-06-08",
+      "file": "lib/express.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "121fe9982b62",
+      "date": "2019-06-08",
+      "file": "lib/request.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "121fe9982b62",
+      "date": "2019-06-08",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "302a6152b4f6",
+      "date": "2018-10-23",
+      "file": "lib/express.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "302a6152b4f6",
+      "date": "2018-10-23",
+      "file": "lib/response.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "302a6152b4f6",
+      "date": "2018-10-23",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "302a6152b4f6",
+      "date": "2018-10-23",
+      "file": "test/app.param.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "302a6152b4f6",
+      "date": "2018-10-23",
+      "file": "test/res.send.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "302a6152b4f6",
+      "date": "2018-10-23",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "62e12fe7105b",
+      "date": "2017-10-13",
+      "file": "lib/express.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "62e12fe7105b",
+      "date": "2017-10-13",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "62e12fe7105b",
+      "date": "2017-10-13",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "62e12fe7105b",
+      "date": "2017-10-13",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "62e12fe7105b",
+      "date": "2017-10-13",
+      "file": "test/Router.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "62e12fe7105b",
+      "date": "2017-10-13",
+      "file": "test/app.use.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "62e12fe7105b",
+      "date": "2017-10-13",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "19c8d64855d8",
+      "date": "2017-09-25",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c319fe260ade",
+      "date": "2017-08-07",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "rename"
+    },
+    {
+      "repo": "express",
+      "merge": "c319fe260ade",
+      "date": "2017-08-07",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "c319fe260ade",
+      "date": "2017-08-07",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "c319fe260ade",
+      "date": "2017-08-07",
+      "file": "test/app.routes.error.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "MATCH",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "c319fe260ade",
+      "date": "2017-08-07",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e5dbb0cb4e3a",
+      "date": "2017-03-06",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e5dbb0cb4e3a",
+      "date": "2017-03-06",
+      "file": "test/app.param.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e5dbb0cb4e3a",
+      "date": "2017-03-06",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "501e24e0a941",
+      "date": "2017-03-01",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "501e24e0a941",
+      "date": "2017-03-01",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "501e24e0a941",
+      "date": "2017-03-01",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "501e24e0a941",
+      "date": "2017-03-01",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "bcbb9d56c57a",
+      "date": "2017-01-28",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "1dbfee66235c",
+      "date": "2016-06-20",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "1dbfee66235c",
+      "date": "2016-06-20",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "1dbfee66235c",
+      "date": "2016-06-20",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "1dbfee66235c",
+      "date": "2016-06-20",
+      "file": "test/utils.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "7cafdb5824a1",
+      "date": "2016-01-21",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "b309b873f115",
+      "date": "2015-07-06",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "b309b873f115",
+      "date": "2015-07-06",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "b309b873f115",
+      "date": "2015-07-06",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "b309b873f115",
+      "date": "2015-07-06",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "f90e04533491",
+      "date": "2015-05-18",
+      "file": "lib/request.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "f90e04533491",
+      "date": "2015-05-18",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "f90e04533491",
+      "date": "2015-05-18",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "f6ec710534e2",
+      "date": "2015-02-23",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "f6ec710534e2",
+      "date": "2015-02-23",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "a9ef9e13fb91",
+      "date": "2015-02-01",
+      "file": "lib/utils.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "a9ef9e13fb91",
+      "date": "2015-02-01",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "8a5ecd3d8934",
+      "date": "2015-01-21",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "8a5ecd3d8934",
+      "date": "2015-01-21",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "8a5ecd3d8934",
+      "date": "2015-01-21",
+      "file": "test/res.sendFile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ab6c1895042e",
+      "date": "2014-10-29",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ccc45a74f89b",
+      "date": "2014-10-23",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ccc45a74f89b",
+      "date": "2014-10-23",
+      "file": "lib/express.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ccc45a74f89b",
+      "date": "2014-10-23",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ccc45a74f89b",
+      "date": "2014-10-23",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ccc45a74f89b",
+      "date": "2014-10-23",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ccc45a74f89b",
+      "date": "2014-10-23",
+      "file": "test/res.cookie.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "ccc45a74f89b",
+      "date": "2014-10-23",
+      "file": "test/res.send.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "2c5ed88c9024",
+      "date": "2014-10-16",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "6aa4a450ed2e",
+      "date": "2014-10-08",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "b8c8ecebb710",
+      "date": "2014-09-24",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "0300b61fdd76",
+      "date": "2014-09-19",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "b2518fe1353c",
+      "date": "2014-09-18",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "916a75cf19b4",
+      "date": "2014-09-16",
+      "file": "lib/utils.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "916a75cf19b4",
+      "date": "2014-09-16",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3dca53499565",
+      "date": "2014-09-08",
+      "file": "lib/request.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "3dca53499565",
+      "date": "2014-09-08",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "a3115882d481",
+      "date": "2014-09-05",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "20635d03fcc1",
+      "date": "2014-08-30",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "7fb7bcc0f757",
+      "date": "2014-08-27",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "9eafaa23d829",
+      "date": "2014-08-18",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "668013239274",
+      "date": "2014-08-15",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "59cb99e9be82",
+      "date": "2014-08-10",
+      "file": "lib/response.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "59cb99e9be82",
+      "date": "2014-08-10",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e05a52078a34",
+      "date": "2014-08-07",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "cca88a7c47fd",
+      "date": "2014-08-06",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "19abf7684bfa",
+      "date": "2014-08-06",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "d8237b976b64",
+      "date": "2014-08-04",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "d8237b976b64",
+      "date": "2014-08-04",
+      "file": "test/res.sendfile.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "454c4b235001",
+      "date": "2014-07-27",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "8e63521f6886",
+      "date": "2014-07-26",
+      "file": "lib/request.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "8e63521f6886",
+      "date": "2014-07-26",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "f34944c539f3",
+      "date": "2014-07-23",
+      "file": "lib/request.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "f34944c539f3",
+      "date": "2014-07-23",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "f34944c539f3",
+      "date": "2014-07-23",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "f34944c539f3",
+      "date": "2014-07-23",
+      "file": "test/res.sendfile.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "4ea6f21b02fd",
+      "date": "2014-07-11",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "4ea6f21b02fd",
+      "date": "2014-07-11",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "bcee7303547f",
+      "date": "2014-07-04",
+      "file": "lib/application.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "bcee7303547f",
+      "date": "2014-07-04",
+      "file": "lib/request.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "bcee7303547f",
+      "date": "2014-07-04",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "8a15f83d72b2",
+      "date": "2014-06-26",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "examples/auth/app.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "examples/mvc/index.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "examples/session/index.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "examples/session/redis.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "lib/express.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3ffceff3ed35",
+      "date": "2014-06-22",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "e799c0fb7b31",
+      "date": "2014-06-12",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "898dcfac8b77",
+      "date": "2014-06-09",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "9bf1247716c1",
+      "date": "2014-06-05",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "9bf1247716c1",
+      "date": "2014-06-05",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "402ec83157db",
+      "date": "2014-06-03",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "402ec83157db",
+      "date": "2014-06-03",
+      "file": "lib/utils.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "402ec83157db",
+      "date": "2014-06-03",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "402ec83157db",
+      "date": "2014-06-03",
+      "file": "test/utils.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/big-view/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/cookie-sessions/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/cookies/app.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/error-pages/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/error/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/expose-data-to-client/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/jade/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/params/app.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "examples/web-service/index.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "test/app.param.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "test/app.render.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "test/res.render.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4448dda88f",
+      "date": "2014-05-30",
+      "file": "test/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "3fbab91231ee",
+      "date": "2014-05-27",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4a061ed624",
+      "date": "2014-05-21",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4a061ed624",
+      "date": "2014-05-21",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4a061ed624",
+      "date": "2014-05-21",
+      "file": "test/app.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4a061ed624",
+      "date": "2014-05-21",
+      "file": "test/app.param.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "db4a061ed624",
+      "date": "2014-05-21",
+      "file": "test/res.json.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4a061ed624",
+      "date": "2014-05-21",
+      "file": "test/res.jsonp.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "db4a061ed624",
+      "date": "2014-05-21",
+      "file": "test/res.send.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "lib/request.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "lib/router/index.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "test/Router.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "test/acceptance/auth.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "test/middleware.basic.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "test/req.param.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "test/req.signedCookies.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "097cd0c242de",
+      "date": "2014-05-18",
+      "file": "test/res.cookie.js",
+      "gtTookOneSide": true,
+      "mergiraf": "MATCH-WS",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "35c50601bdd6",
+      "date": "2014-05-09",
+      "file": "lib/application.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "35c50601bdd6",
+      "date": "2014-05-09",
+      "file": "lib/express.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "35c50601bdd6",
+      "date": "2014-05-09",
+      "file": "lib/response.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "35c50601bdd6",
+      "date": "2014-05-09",
+      "file": "lib/utils.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "35c50601bdd6",
+      "date": "2014-05-09",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "35c50601bdd6",
+      "date": "2014-05-09",
+      "file": "test/app.router.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "35c50601bdd6",
+      "date": "2014-05-09",
+      "file": "test/res.format.js",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "MATCH-WS",
+      "icrMethod": "rename"
+    },
+    {
+      "repo": "express",
+      "merge": "8ccceacf91bf",
+      "date": "2014-04-24",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "6ac6305b533d",
+      "date": "2014-04-24",
+      "file": "lib/router/index.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "6ac6305b533d",
+      "date": "2014-04-24",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "6ac6305b533d",
+      "date": "2014-04-24",
+      "file": "test/app.options.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "26802a689cbd",
+      "date": "2013-07-04",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH",
+      "icr": "MATCH",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "e2ad0d3d6e7c",
+      "date": "2012-11-21",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "547d18ce46ec",
+      "date": "2011-11-23",
+      "file": "package.json",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "8a91749e12c2",
+      "date": "2011-11-08",
+      "file": "package.json",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "cec677062b1b",
+      "date": "2010-02-03",
+      "file": "examples/chat/app.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CLEAN-DIFF",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
+    },
+    {
+      "repo": "express",
+      "merge": "ae33e7b673d7",
+      "date": "2010-01-12",
+      "file": "lib/express/static.js",
+      "gtTookOneSide": true,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    },
+    {
+      "repo": "express",
+      "merge": "17ab8e81aaf9",
+      "date": "2009-12-30",
+      "file": "lib/express/static.js",
+      "gtTookOneSide": false,
+      "mergiraf": "CONFLICT",
+      "icr": "CONFLICT",
+      "icrMethod": "lines"
+    }
+  ]
+}

@@ -76,11 +76,76 @@ function pick(k, B, A, Bb) {
   return base != null ? base : (a != null ? a : b)
 }
 
+// SIMILARITY RE-PAIRING (the matcher): a unit that "disappeared" on one side while a
+// near-identical unit "appeared" on the SAME side is the same unit rewritten — e.g.
+// `app.use(...)` becoming `app1.use(...)` when a variable is renamed changes the unit's
+// content-derived key, and key matching alone would call that a delete + an add. Ground-
+// truth replay of real repos showed this is the #1 source of false delete-vs-edit
+// conflicts. Pair them back so the engine sees ONE unit changed on that side and the
+// normal same-key tiers (inner merge → token splice) get their shot.
+// Safety: same key KIND only (call: with call:, fn: with fn:), a high similarity bar,
+// and the best match must be UNIQUE (with margin) and MUTUAL — any ambiguity means no
+// pairing. Side-local and deterministic, so merge(a,b) === merge(b,a) is preserved.
+const keyKind = (k) => k.slice(0, k.indexOf(':') + 1)
+function shingleSet(t) {
+  const s = t.replace(/\s+/g, ' ').trim()
+  const out = new Set()
+  for (let i = 0; i + 4 <= s.length; i++) out.add(s.slice(i, i + 4))
+  return out
+}
+function shingleSim(sa, sb) {
+  if (!sa.size || !sb.size) return 0
+  let inter = 0
+  const [small, big] = sa.size <= sb.size ? [sa, sb] : [sb, sa]
+  for (const g of small) if (big.has(g)) inter++
+  return (2 * inter) / (sa.size + sb.size)
+}
+const SIM_FLOOR = 0.75, SIM_MARGIN = 0.04
+function repairSide(baseU, sideU, otherKeys) {
+  const baseKeys = new Set(baseU.map((u) => u.key))
+  const sideKeys = new Set(sideU.map((u) => u.key))
+  const deleted = baseU.filter((u) => !sideKeys.has(u.key))
+  // An added key that ALSO appears on the other side is a genuine concurrent addition
+  // (both sides wrote it) — pairing it away would fabricate a duplicate and silently
+  // absorb a same-key add/add clash the engine must surface. Never pair those.
+  const added = sideU.filter((u) => !baseKeys.has(u.key) && !otherKeys.has(u.key))
+  if (!deleted.length || !added.length || deleted.length * added.length > 900) return sideU
+  const shD = deleted.map((u) => shingleSet(u.text)), shA = added.map((u) => shingleSet(u.text))
+  const bestFor = (sh, kind, pool, shPool) => {
+    let best = -1, bestS = 0, second = 0
+    for (let j = 0; j < pool.length; j++) {
+      if (keyKind(pool[j].key) !== kind) continue
+      const s = shingleSim(sh, shPool[j])
+      if (s > bestS) { second = bestS; bestS = s; best = j } else if (s > second) second = s
+    }
+    return { best, bestS, second }
+  }
+  const rekey = new Map(), claimed = new Set()
+  for (let i = 0; i < deleted.length; i++) {
+    const kind = keyKind(deleted[i].key)
+    const f = bestFor(shD[i], kind, added, shA)
+    // Short units are mostly boilerplate (`def f(): return N`), so shingle similarity
+    // runs hot on them — demand near-identity before calling two short units "the same".
+    const floor = Math.min(shD[i].size, f.best >= 0 ? shA[f.best].size : Infinity) < 24 ? 0.9 : SIM_FLOOR
+    if (f.best < 0 || f.bestS < floor || f.bestS - f.second < SIM_MARGIN) continue
+    const back = bestFor(shA[f.best], keyKind(added[f.best].key), deleted, shD)
+    if (back.best !== i || back.bestS - back.second < SIM_MARGIN) continue
+    if (claimed.has(added[f.best].key)) continue
+    claimed.add(added[f.best].key)
+    rekey.set(added[f.best].key, deleted[i].key)
+  }
+  if (!rekey.size) return sideU
+  return sideU.map((u) => (rekey.has(u.key) ? { ...u, key: rekey.get(u.key) } : u))
+}
+
 // Core 3-way merge over a KEYED list of units (works at file level AND, recursively,
 // inside a single declaration). Returns { conflicts:[...], parts:[...text] }.
 // When both sides change the SAME key into different things, it first tries to descend
 // INTO that unit (finer granularity) — only a clash it can't resolve becomes a conflict.
 function mergeKeyed(lang, baseU, aU, bU) {
+  const aKeys = new Set(aU.map((u) => u.key)), bKeys = new Set(bU.map((u) => u.key))
+  aU = repairSide(baseU, aU, bKeys)
+  bU = repairSide(baseU, bU, aKeys)
   const B = mapOf(baseU), A = mapOf(aU), Bb = mapOf(bU)
   const keys = dedupeOrder([...baseU.map((u) => u.key), ...aU.map((u) => u.key), ...bU.map((u) => u.key)])
 
@@ -270,7 +335,20 @@ function tokenMerge(lang, baseText, aText, bText) {
   if (!B || !A || !Bb) return null
   const ra = tokenDiffRange(B.map((t) => t.k), A.map((t) => t.k))
   const rb = tokenDiffRange(B.map((t) => t.k), Bb.map((t) => t.k))
-  if (!ra || !rb) return null // a side changed only whitespace/comments → not a token-level merge
+  if (!ra && !rb) return null // both sides changed only whitespace/comments → can't rank them
+  // REFORMAT vs CONTENT: one side changed only whitespace/comments (token stream identical
+  // to base), the other changed tokens. Apply the content side's token edit ONTO the
+  // reformatting side's text — its token stream matches base's, so token indices map its
+  // own byte ranges exactly. Both intents survive: the reformat/comment edit AND the code
+  // change. (Ground-truth replay: this was a top false-conflict source on real repos.)
+  // Symmetric because the roles are decided by CONTENT (which side has the token diff).
+  if (!ra || !rb) {
+    const [wsToks, wsText, r, toks, text] = !ra ? [A, aText, rb, Bb, bText] : [Bb, bText, ra, A, aText]
+    const cStart = r.bStart < wsToks.length ? wsToks[r.bStart].start : wsText.length
+    const cEnd = r.bEnd > r.bStart ? wsToks[r.bEnd - 1].end : cStart
+    const ins = r.oEnd > r.oStart ? text.slice(toks[r.oStart].start, toks[r.oEnd - 1].end) : ''
+    return wsText.slice(0, cStart) + ins + wsText.slice(cEnd)
+  }
   const charRange = (r) => {
     const cStart = r.bStart < B.length ? B[r.bStart].start : baseText.length
     const cEnd = r.bEnd > r.bStart ? B[r.bEnd - 1].end : cStart
@@ -278,11 +356,110 @@ function tokenMerge(lang, baseText, aText, bText) {
   }
   const repl = (toks, text, r) => (r.oEnd > r.oStart ? text.slice(toks[r.oStart].start, toks[r.oEnd - 1].end) : '')
   const [aS, aE] = charRange(ra), [bS, bE] = charRange(rb)
-  if (aS < bE && bS < aE) return null // base spans overlap → real conflict
-  if (aS === bS) return null          // ambiguous shared start (e.g. two insertions) → conflict
-  const edits = [{ s: aS, e: aE, t: repl(A, aText, ra) }, { s: bS, e: bE, t: repl(Bb, bText, rb) }].sort((x, y) => y.s - x.s)
+  // Single contiguous spans that don't collide: splice both (the cheap common case).
+  if (!(aS < bE && bS < aE) && aS !== bS) {
+    const edits = [{ s: aS, e: aE, t: repl(A, aText, ra) }, { s: bS, e: bE, t: repl(Bb, bText, rb) }].sort((x, y) => y.s - x.s)
+    let out = baseText
+    for (const ed of edits) out = out.slice(0, ed.s) + ed.t + out.slice(ed.e)
+    return out
+  }
+  // The prefix/suffix spans collide — but each is the BOUNDING BOX of that side's edits,
+  // and boxes overlap whenever a side edited in two places (a wrapper rewrite touches both
+  // ends, so its box swallows the whole unit). Re-diff each side at REAL multi-hunk
+  // granularity (Myers) and do token-level diff3: disjoint hunks interleave, identical
+  // hunks dedupe, truly overlapping hunks are the only conflict. Ground-truth replay:
+  // "one side rewrote the wrapper, the other edited inside" is a real-repo staple.
+  return tokenMerge3(baseText, aText, bText, B, A, Bb)
+}
+
+// Myers O(ND) diff on token-key arrays → edit hunks {bs,be,os,oe} (base/other token ranges).
+function tokenHunks(bk, ok, maxD) {
+  const N = bk.length, M = ok.length
+  const MAX = Math.min(N + M, maxD)
+  const V = new Map([[1, 0]])
+  const trace = []
+  let D = -1
+  outer: for (let d = 0; d <= MAX; d++) {
+    trace.push(new Map(V))
+    for (let k = -d; k <= d; k += 2) {
+      let x = (k === -d || (k !== d && (V.get(k - 1) ?? 0) < (V.get(k + 1) ?? 0))) ? (V.get(k + 1) ?? 0) : (V.get(k - 1) ?? 0) + 1
+      let y = x - k
+      while (x < N && y < M && bk[x] === ok[y]) { x++; y++ }
+      V.set(k, x)
+      if (x >= N && y >= M) { D = d; break outer }
+    }
+  }
+  if (D < 0) return null // too different for the budget → caller falls back
+  // backtrack into hunks
+  const ops = [] // 1 = del base token, 2 = ins other token, stored back-to-front
+  let x = N, y = M
+  for (let d = D; d > 0; d--) {
+    const Vp = trace[d]
+    const k = x - y
+    const down = k === -d || (k !== d && (Vp.get(k - 1) ?? 0) < (Vp.get(k + 1) ?? 0))
+    const pk = down ? k + 1 : k - 1
+    const px = Vp.get(pk) ?? 0
+    const py = px - pk
+    while (x > px + (down ? 0 : 1) && y > py + (down ? 1 : 0)) { x--; y-- } // snake
+    if (down) { y--; ops.push([2, x, y]) } else { x--; ops.push([1, x, y]) }
+  }
+  ops.reverse()
+  const hunks = []
+  for (const [op, bx, oy] of ops) {
+    const last = hunks[hunks.length - 1]
+    if (op === 1) {
+      if (last && last.be === bx && last.oe === oy) last.be = bx + 1
+      else hunks.push({ bs: bx, be: bx + 1, os: oy, oe: oy })
+    } else {
+      if (last && last.be === bx && last.oe === oy) last.oe = oy + 1
+      else hunks.push({ bs: bx, be: bx, os: oy, oe: oy + 1 })
+    }
+  }
+  return hunks
+}
+
+const TOKEN3_MAX_TOKENS = 20000, TOKEN3_MAX_D = 4000
+function tokenMerge3(baseText, aText, bText, B, A, Bb) {
+  if (B.length > TOKEN3_MAX_TOKENS || A.length > TOKEN3_MAX_TOKENS || Bb.length > TOKEN3_MAX_TOKENS) return null
+  const bk = B.map((t) => t.k)
+  const ha = tokenHunks(bk, A.map((t) => t.k), TOKEN3_MAX_D)
+  const hb = tokenHunks(bk, Bb.map((t) => t.k), TOKEN3_MAX_D)
+  if (!ha || !hb) return null
+  // diff3 over hunks: identical hunks dedupe; disjoint hunks both apply; overlap → conflict.
+  // Two INSERTIONS at the same base point are ambiguous (order unknowable) → conflict.
+  const sameHunk = (x, y, oA, oB) => x.bs === y.bs && x.be === y.be && (x.oe - x.os) === (y.oe - y.os) &&
+    oA.slice(x.os, x.oe).every((k, i) => k === oB[y.os + i])
+  const ak = A.map((t) => t.k), bbk = Bb.map((t) => t.k)
+  const edits = [] // {bs,be, toks,text, os,oe}
+  let i = 0, j = 0
+  while (i < ha.length || j < hb.length) {
+    const x = ha[i], y = hb[j]
+    if (x && y) {
+      const overlap = x.bs < y.be && y.bs < x.be
+      const samePointInsert = x.bs === y.bs && x.be === x.bs && y.be === y.bs
+      if (overlap || samePointInsert) {
+        if (sameHunk(x, y, ak, bbk)) { edits.push({ h: x, toks: A, text: aText }); i++; j++; continue }
+        return null
+      }
+      if (x.bs < y.bs || (x.bs === y.bs && x.be <= y.bs && x.be < y.be)) { edits.push({ h: x, toks: A, text: aText }); i++ }
+      else { edits.push({ h: y, toks: Bb, text: bText }); j++ }
+    } else if (x) { edits.push({ h: x, toks: A, text: aText }); i++ }
+    else { edits.push({ h: y, toks: Bb, text: bText }); j++ }
+  }
+  // splice back-to-front, mapping token hunks to base char ranges; replacement bytes come
+  // from the editing side's exact text between its tokens. A guard space prevents two word
+  // tokens fusing at a splice boundary (parse validation downstream still has final say).
+  const wordish = (c) => c && /[A-Za-z0-9_$]/.test(c)
   let out = baseText
-  for (const ed of edits) out = out.slice(0, ed.s) + ed.t + out.slice(ed.e)
+  for (let e = edits.length - 1; e >= 0; e--) {
+    const { h, toks, text } = edits[e]
+    const cS = h.bs < B.length ? B[h.bs].start : baseText.length
+    const cE = h.be > h.bs ? B[h.be - 1].end : cS
+    let ins = h.oe > h.os ? text.slice(toks[h.os].start, toks[h.oe - 1].end) : ''
+    if (ins && wordish(out[cS - 1]) && wordish(ins[0])) ins = ' ' + ins
+    if (ins && wordish(out[cE]) && wordish(ins[ins.length - 1])) ins = ins + ' '
+    out = out.slice(0, cS) + ins + out.slice(cE)
+  }
   return out
 }
 

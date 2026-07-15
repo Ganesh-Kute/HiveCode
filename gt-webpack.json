@@ -1,0 +1,26 @@
+{
+  "repo": "webpack",
+  "cases": 0,
+  "gtTookSide": 0,
+  "tally": {
+    "mergiraf": {
+      "MATCH": 0,
+      "MATCH-WS": 0,
+      "CLEAN-DIFF": 0,
+      "CONFLICT": 0,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 0
+    },
+    "icr": {
+      "MATCH": 0,
+      "MATCH-WS": 0,
+      "CLEAN-DIFF": 0,
+      "CONFLICT": 0,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 0
+    }
+  },
+  "receipts": []
+}
