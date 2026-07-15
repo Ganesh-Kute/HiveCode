@@ -1,6 +1,6 @@
 {
   "name": "icr-merge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "ICR — Intent-aware Code Replication: a 3-way merge that understands code structure and author intent. Structural merging, rename detection across call sites, semantic-conflict detection, parse-guaranteed output. Drop-in git merge driver. Built for AI-agent-authored code.",
   "type": "module",
   "main": "index.js",
@@ -22,7 +22,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/icr-test.js && node test/icr-lang-test.js && node test/icr-multilang-test.js && node test/icr-converge-test.js && node test/icr-fuzz-test.js && node test/icr-torture-test.js && node test/api-test.mjs && node test/rename-export-test.mjs && node test/export-preserve-test.mjs && node test/inner-format-test.mjs && node test/git-e2e-test.mjs && node test/git-e2e-multilang-test.mjs"
+    "test": "node test/icr-test.js && node test/icr-lang-test.js && node test/icr-multilang-test.js && node test/icr-converge-test.js && node test/icr-fuzz-test.js && node test/icr-torture-test.js && node test/api-test.mjs && node test/rename-export-test.mjs && node test/export-preserve-test.mjs && node test/inner-format-test.mjs && node test/resolve-test.mjs && node test/git-e2e-test.mjs && node test/git-e2e-multilang-test.mjs"
   },
   "keywords": [
     "merge",

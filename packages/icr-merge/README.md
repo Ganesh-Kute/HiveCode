@@ -53,6 +53,28 @@ One call, three outcomes:
 
 Lower-level API if you want the pieces: `structuralMerge`, `merge3`, `supports`, `languageFor`, `registerLanguage`, `parses`, `hasConflictMarkers`.
 
+## Intent-aware autonomous resolution (for agents)
+
+Every other merge tool merges **dead text** — two finished files, no author present, no idea *why* either change was made. When two changes truly conflict, all any of them can do is dump markers and wait for a human.
+
+But when the authors are **AI agents**, they're alive and they know *why* they made a change. `resolveMerge` uses that: on a real conflict it hands the conflicting declaration — base, both versions, and each side's **intent** — to a `judge` you provide (an LLM call, or the authoring agents themselves), and reconciles automatically. The critical part: **the judge's answer is fed back through the full engine** — re-parsed, dangling-checked, everything — so a hallucinated or broken reconciliation is *rejected*, not shipped. The AI proposes; ICR verifies.
+
+```js
+import { resolveMerge } from 'icr-merge'
+
+const r = await resolveMerge(base, ours, theirs, {
+  filename: 'auth.js',
+  intents: { ours: 'raise the limit for production', theirs: 'raise it for a load test' },
+  judge: async (unit) => callYourLLM(unit),   // unit: { key, base, ours, theirs, oursIntent, theirsIntent }
+})
+
+r.resolved   // true = the conflict was reconciled AND re-validated as parseable, dangling-free code
+r.method     // 'resolved' when it was
+r.text       // the reconciled file — or, if the judge failed validation, a safe conflict (never broken)
+```
+
+If no `judge` is supplied, or the judge declines or returns code that doesn't survive re-validation, `resolveMerge` degrades to exactly what `merge()` returns — a safe conflict. **Broken code can never ship, even when an AI does the resolving.** This is the piece built specifically for multi-agent code, and nothing else on the market does it.
+
 ## Use as a git merge driver
 
 ```bash
@@ -91,7 +113,7 @@ Tested by: unit suites per language, directed adversarial cases (fake defs insid
 
 ## Scope, honestly
 
-- Structural understanding is declaration-level (top-level functions/classes/consts), not statement-level. Edits inside one declaration by both sides = a semantic conflict, surfaced as such.
+- Structural understanding runs declaration → statement → **token**: two edits to the same function merge as long as they touch different statements, or different tokens within one statement (each side edits a different argument of the same call, a different element of the same array). Only genuinely overlapping edits — the same tokens changed two different ways — are surfaced as a conflict. (JS/`acorn` today; the other languages merge at declaration/statement granularity until their tree-sitter providers land.)
 - TypeScript/Go/Rust/etc. use structural (brace-aware) parsing, not full ASTs yet — the provider interface is where tree-sitter parsers slot in.
 - **Comment merges are best-effort.** Code is never lost. But when two sides edit the *same* declaration and one side's change lives *entirely inside a comment* between that declaration's statements, the comment edit may not survive (the merged code is still correct). Comments aren't first-class units in the JS provider yet; a code edit always wins over a lost comment, never the reverse.
 - `merge()` is synchronous and pure: no I/O, no network, no state.

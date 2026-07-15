@@ -39,10 +39,15 @@ export function describeConflicts(conflicts) {
 //     semantic?,          // ICR conflict keys (e.g. ['fn:login']) when ICR saw a
 //                         //   meaning-level conflict and the line tier took over
 //     warning?,           // human sentence for `semantic`
+//     resolvable?,        // machine-resolvable conflict units [{ key, kind, base, ours,
+//                         //   theirs, oursIntent, theirsIntent, filename }] — feed to
+//                         //   resolveMerge() for intent-aware autonomous resolution
 //   }
 // opts: { filename }  — picks the language provider by extension (required for
 //                       structural tier; omit → line merge only)
 //        { authors }   — { a, b, base } real names for provenance attribution
+//        { intents }   — { ours, theirs } why each side changed the code; carried into
+//                        `resolvable` so a judge agent can reconcile by intent, not text
 export function merge(base, ours, theirs, opts = {}) {
   const filename = opts.filename || ''
   if (filename && supports(filename)) {
@@ -57,17 +62,84 @@ export function merge(base, ours, theirs, opts = {}) {
       }
     }
     if (r && r.status === 'semantic-conflict') {
-      // ICR saw a meaning-level problem. The line tier produces the bytes (both
-      // versions preserved), and we surface WHAT was semantically wrong so the
-      // caller never ships it silently.
+      // ICR saw a meaning-level problem (both sides changed the same declaration in a way
+      // that can't be reconciled, or a declaration was removed/renamed but is still used).
+      // This is NEVER clean — even when the line tier merges without textual overlap (the
+      // classic deleted-but-referenced case line-merges "cleanly" but is broken). Report
+      // clean:false so no consumer ships it silently; `text` keeps both edits (line tier),
+      // `semantic`/`warning` say exactly what's wrong. This is the failure git and every
+      // line/CRDT merge — and even tree-sitter structural mergers — ship without noticing.
       const lm = merge3(base, ours, theirs)
+      const intents = opts.intents || {}
+      // A machine-resolvable conflict: each entry carries the three exact versions of ONE
+      // conflicting declaration plus each side's INTENT (why it changed). This is what makes
+      // autonomous, intent-aware resolution possible — see resolveMerge().
+      const resolvable = (r.resolvable || []).map((u) => ({
+        key: u.key, kind: 'both-changed',
+        base: u.base, ours: u.ours, theirs: u.theirs,
+        oursIntent: intents.ours != null ? intents.ours : null,
+        theirsIntent: intents.theirs != null ? intents.theirs : null,
+        filename,
+      }))
       return {
-        text: lm.text, clean: !lm.conflict, method: 'lines',
+        text: lm.text, clean: false, method: 'lines',
         semantic: r.conflicts, warning: describeConflicts(r.conflicts),
+        resolvable,
       }
     }
     // status 'fallback' (unparseable input / merge would not parse) → lines
   }
   const lm = merge3(base, ours, theirs)
   return { text: lm.text, clean: !lm.conflict, method: 'lines' }
+}
+
+// INTENT-AWARE AUTONOMOUS RESOLUTION — the thing no other merge tool can do, because every
+// other one merges dead text with no author present. Here the authors are live agents that
+// know WHY they changed the code. When merge() reports a semantic conflict (both sides changed
+// the same declaration), we hand each conflicting unit — base/ours/theirs + each side's intent
+// — to a pluggable `judge` (an LLM/agent call the caller supplies) and ask for a reconciled
+// version. Then the crucial part: the judge's answer is fed back through the FULL engine, so a
+// hallucinated or broken reconciliation cannot ship — it is re-validated for parse-correctness
+// and dangling references exactly like any merge, and rejected (safe conflict returned) if it
+// fails. AI resolves the conflict; ICR guarantees the result is still valid code.
+//
+//   opts: { filename, intents: { ours, theirs }, judge }
+//   judge(unit) -> Promise<string|null>   // unit: { key, kind, base, ours, theirs,
+//                                          //         oursIntent, theirsIntent, filename }
+//                                          // return reconciled unit text, or null to decline
+//   returns the merge() shape, plus:
+//     resolved: boolean          // true = a conflict was reconciled AND re-validated clean
+//     method: 'resolved'         // when resolved
+//     resolutions: [{ key, reconciled }]
+export async function resolveMerge(base, ours, theirs, opts = {}) {
+  const r = merge(base, ours, theirs, opts)
+  if (r.clean) return { ...r, resolved: false }
+  const units = r.resolvable
+  if (!units || !units.length || typeof opts.judge !== 'function') return { ...r, resolved: false }
+
+  // Reconcile each conflicting unit, then rewrite BOTH sides to the reconciled text so they
+  // agree — turning the conflict into an ordinary (clean) merge that the engine re-validates.
+  let ours2 = ours, theirs2 = theirs
+  const resolutions = []
+  for (const u of units) {
+    let reconciled
+    try { reconciled = await opts.judge(u) } catch { reconciled = null }
+    if (typeof reconciled !== 'string') return { ...r, resolved: false } // judge declined → safe conflict
+    if (!ours2.includes(u.ours) || !theirs2.includes(u.theirs)) return { ...r, resolved: false }
+    ours2 = ours2.replace(u.ours, reconciled)
+    theirs2 = theirs2.replace(u.theirs, reconciled)
+    resolutions.push({ key: u.key, reconciled })
+  }
+
+  // Re-merge with the reconciled units, then re-validate. A bad reconciliation must never
+  // ship: it either re-conflicts, or — because we wrote the SAME text to both sides, the line
+  // tier would happily return that agreed text even if it's broken — we explicitly re-PARSE
+  // the result with the structural provider. Only a clean AND parseable result is accepted;
+  // anything else falls back to the original safe conflict. This is the guarantee that makes
+  // AI-resolved merges trustworthy: the judge proposes, ICR verifies.
+  const r2 = merge(base, ours2, theirs2, opts)
+  const lang = opts.filename ? languageFor(opts.filename) : null
+  const valid = !lang || lang.parses(r2.text)
+  if (r2.clean && valid) return { ...r2, method: 'resolved', resolved: true, resolutions }
+  return { ...r, resolved: false }
 }

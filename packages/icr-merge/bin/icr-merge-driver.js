@@ -12,7 +12,7 @@
 // Contract: write the merged result into <ours>; exit 0 = merged clean,
 // exit 1 = conflict (markers left in the file, exactly like git's default).
 import fs from 'fs'
-import { merge } from '../index.js'
+import { merge, hasConflictMarkers } from '../index.js'
 
 const [base, ours, theirs, pathname] = process.argv.slice(2)
 if (!base || !ours || !theirs) {
@@ -28,20 +28,21 @@ try {
     { filename: pathname || ours },
   )
   // A meaning-level conflict (e.g. a deleted declaration still referenced) can line-merge
-  // "cleanly" — that is exactly the silent bad merge this tool exists to stop. A warning
-  // on stderr is not a catch: make it a REAL git conflict — visible block, exit 1.
-  if (r.warning && r.clean) {
-    fs.writeFileSync(ours,
+  // "cleanly" — that is exactly the silent bad merge this tool exists to stop. `merge()`
+  // already reports it as not-clean; if the text carries no line-conflict markers, wrap it
+  // in a visible block so `git merge` leaves a real, resolvable conflict (exit 1) rather
+  // than a warning on stderr the developer never sees.
+  let text = r.text
+  if (r.warning && !hasConflictMarkers(text)) {
+    text =
       '<<<<<<< icr-merge: semantic conflict\n' +
       `// ${r.warning}\n` +
       '// Both sides merged below without line conflicts, but the result is semantically\n' +
       '// broken. Fix the issue, then delete this block.\n' +
       '=======\n' +
-      '>>>>>>> icr-merge: resolve, then remove\n\n' + r.text)
-    console.error(`icr-merge: semantic conflict — ${r.warning}`)
-    process.exit(1)
+      '>>>>>>> icr-merge: resolve, then remove\n\n' + text
   }
-  fs.writeFileSync(ours, r.text)
+  fs.writeFileSync(ours, text)
   if (r.method !== 'lines') console.error(`icr-merge: ${r.method} merge${r.renames && r.renames.length ? ' (' + r.renames.join(', ') + ')' : ''}`)
   if (r.warning) console.error(`icr-merge: semantic conflict — ${r.warning}`)
   process.exit(r.clean ? 0 : 1)

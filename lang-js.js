@@ -54,6 +54,13 @@ function baseKeyOf(node) {
   // Key imports by their SOURCE MODULE, so two agents adding imports from DIFFERENT
   // modules never collide, and two touching the SAME module are merged (specifier union).
   if (n.type === 'ImportDeclaration') return 'import:' + (n.source && n.source.value != null ? n.source.value : '?')
+  // Specifier-only exports (`export { a, b }`, `export { x } from './m'`, `export * from …`)
+  // carry no declaration, so without a stable key they fall to positional stmt:N — and an
+  // edit to the export list then mispairs, DUPLICATES the statement, and knocks the whole
+  // merge to the line tier (which silently skips the intent/dangling checks). A stable key
+  // pairs them so an unedited side is kept and an edited side wins cleanly.
+  if (n.type === 'ExportNamedDeclaration') return n.source && n.source.value != null ? 'export-from:' + n.source.value : 'export-names'
+  if (n.type === 'ExportAllDeclaration') return 'export-all:' + (n.source && n.source.value != null ? n.source.value : '?')
   if (n.type === 'ExpressionStatement') {
     const e = n.expression
     if (e.type === 'Literal' && typeof e.value === 'string') return 'directive:' + e.value // 'use strict'
@@ -465,6 +472,27 @@ function parsesUnit(src) {
   try { parse(MEMBER_WRAP + src + '}'); return true } catch { return false }
 }
 
+// TOKEN STREAM: lex `src` into a flat list of { start, end, k } where k is the token's
+// source text -- the atom the engine's token-level inner merge diffs on. This is what lets
+// ICR merge two edits INSIDE one statement (e.g. `foo(1, 2)` -- one side edits `1`, the
+// other `2`) the way a tree-sitter merge does, instead of conflicting on the whole line.
+// Lexing (not parsing) so it also works on fragments (`return x`, a class-member body).
+// Comments are NOT tokens -- they live in the gaps between tokens and are carried verbatim
+// by the base text, so a comment-only edit is a no-op here (the documented comment limit).
+// Returns null if the fragment can't be lexed -> the engine treats it as a conflict.
+function tokenize(src) {
+  const out = []
+  try {
+    const tz = acorn.tokenizer(src, { ecmaVersion: 'latest' })
+    for (;;) {
+      const t = tz.getToken()
+      if (t.type === acorn.tokTypes.eof) break
+      out.push({ start: t.start, end: t.end, k: src.slice(t.start, t.end) })
+    }
+  } catch { return null }
+  return out
+}
+
 // The provider contract every ICR language module implements.
 export const javascript = {
   id: 'javascript',
@@ -480,4 +508,5 @@ export const javascript = {
   splitUnit,            // finer granularity: split a function/class/method into keyed inner units
   parsesUnit,           // validity oracle that also accepts a class-member fragment
   mergeUnit,            // language-specific same-key merge (import specifier union)
+  tokenize,             // finest granularity: token stream for the token-level inner merge
 }

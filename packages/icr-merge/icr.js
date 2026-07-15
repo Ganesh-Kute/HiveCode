@@ -74,7 +74,7 @@ function mergeKeyed(lang, baseU, aU, bU) {
   const B = mapOf(baseU), A = mapOf(aU), Bb = mapOf(bU)
   const keys = dedupeOrder([...baseU.map((u) => u.key), ...aU.map((u) => u.key), ...bU.map((u) => u.key)])
 
-  const conflicts = [], resolved = new Map()
+  const conflicts = [], conflictUnits = [], resolved = new Map()
   for (const k of keys) {
     const bs = B.has(k) ? B.get(k) : null
     const as_ = A.has(k) ? A.get(k) : null
@@ -87,9 +87,13 @@ function mergeKeyed(lang, baseU, aU, bU) {
         if (inner != null) { resolved.set(k, inner); continue }
       }
       conflicts.push(k)
+      // Carry the three exact versions of the conflicting unit, so a conflict is a
+      // MACHINE-RESOLVABLE object (base/ours/theirs of just this declaration) — not a wall
+      // of text markers. This is what an intent-aware resolver (a judge agent) reconciles.
+      conflictUnits.push({ key: k, base: bs, ours: as_, theirs: bbs })
     }
   }
-  if (conflicts.length) return { conflicts, parts: [] }
+  if (conflicts.length) return { conflicts, conflictUnits, parts: [] }
 
   // No unresolved clashes → decide which keys survive, honoring one-sided deletions.
   const survives = new Set()
@@ -179,6 +183,21 @@ function tryInnerMerge(lang, baseText, aText, bText) {
     const t = lang.mergeUnit(baseText, aText, bText)
     if (t != null && lang.parses(t)) return t
   }
+  // Structural inner merge (declaration → statements, class → members): format-preserving
+  // and well-tested, so it goes first. Returns null when it can't safely resolve.
+  const structural = tryStructuralInner(lang, baseText, aText, bText)
+  if (structural != null) return structural
+  // FINEST GRANULARITY: a unit that can't be split structurally OR whose split still clashes —
+  // a single statement/expression both sides edited. Fall to a token-level 3-way merge, so two
+  // edits INSIDE one line (`foo(1, 2)` → one side edits each argument) merge the way a
+  // tree-sitter merge does, instead of conflicting on the whole statement. Validity is enforced
+  // by the caller (structuralMerge re-parses the whole file; an enclosing structural inner merge
+  // re-parses the reassembled unit), so a fragment valid only in context (a bare `return …`) is
+  // allowed through here and validated where it lands.
+  return tokenMerge(lang, baseText, aText, bText)
+}
+
+function tryStructuralInner(lang, baseText, aText, bText) {
   if (!lang.splitUnit) return null
   const pb = lang.splitUnit(baseText), pa = lang.splitUnit(aText), pbb = lang.splitUnit(bText)
   if (!pb || !pa || !pbb) return null
@@ -201,6 +220,49 @@ function tryInnerMerge(lang, baseText, aText, bText) {
   }
   const valid = lang.parsesUnit || lang.parses // accept class-member fragments when supported
   return valid(text) ? text : null
+}
+
+// TOKEN-LEVEL 3-way merge of one unit. base/a/b are the unit texts, both differing from base
+// (the caller only asks when both sides changed the same unit). Diff each side against base at
+// TOKEN granularity — one changed span via common prefix + common suffix — map each span to a
+// base CHARACTER range, and, if the two base spans are DISJOINT, splice both sides' replacement
+// text into base. Everything OUTSIDE the two edits comes from base verbatim (whitespace,
+// comments); inside, each side's exact bytes. Overlapping or ambiguously-adjacent edits → null
+// (a real conflict). Symmetric by construction: the result is base with two position-disjoint
+// substring replacements, independent of which side is a or b — so live peers converge.
+function tokenDiffRange(base, other) {
+  const n = base.length, m = other.length
+  let eq = n === m
+  if (eq) { for (let i = 0; i < n; i++) if (base[i] !== other[i]) { eq = false; break } }
+  if (eq) return null
+  let p = 0
+  const maxp = Math.min(n, m)
+  while (p < maxp && base[p] === other[p]) p++
+  let s = 0
+  while (s < n - p && s < m - p && base[n - 1 - s] === other[m - 1 - s]) s++
+  return { bStart: p, bEnd: n - s, oStart: p, oEnd: m - s }
+}
+
+function tokenMerge(lang, baseText, aText, bText) {
+  if (!lang.tokenize) return null
+  const B = lang.tokenize(baseText), A = lang.tokenize(aText), Bb = lang.tokenize(bText)
+  if (!B || !A || !Bb) return null
+  const ra = tokenDiffRange(B.map((t) => t.k), A.map((t) => t.k))
+  const rb = tokenDiffRange(B.map((t) => t.k), Bb.map((t) => t.k))
+  if (!ra || !rb) return null // a side changed only whitespace/comments → not a token-level merge
+  const charRange = (r) => {
+    const cStart = r.bStart < B.length ? B[r.bStart].start : baseText.length
+    const cEnd = r.bEnd > r.bStart ? B[r.bEnd - 1].end : cStart
+    return [cStart, cEnd]
+  }
+  const repl = (toks, text, r) => (r.oEnd > r.oStart ? text.slice(toks[r.oStart].start, toks[r.oEnd - 1].end) : '')
+  const [aS, aE] = charRange(ra), [bS, bE] = charRange(rb)
+  if (aS < bE && bS < aE) return null // base spans overlap → real conflict
+  if (aS === bS) return null          // ambiguous shared start (e.g. two insertions) → conflict
+  const edits = [{ s: aS, e: aE, t: repl(A, aText, ra) }, { s: bS, e: bE, t: repl(Bb, bText, rb) }].sort((x, y) => y.s - x.s)
+  let out = baseText
+  for (const ed of edits) out = out.slice(0, ed.s) + ed.t + out.slice(ed.e)
+  return out
 }
 
 // FORMAT-PRESERVING assembly: rebuild the merged file by splicing the merged units back
@@ -283,7 +345,7 @@ export function structuralMerge(base, a, b, opts = {}) {
   else {
     const baseUnits = lang.units(base)
     const merge = mergeKeyed(lang, baseUnits, lang.units(a), lang.units(b))
-    if (merge.conflicts.length) return { status: 'semantic-conflict', text: null, conflicts: merge.conflicts }
+    if (merge.conflicts.length) return { status: 'semantic-conflict', text: null, conflicts: merge.conflicts, resolvable: merge.conflictUnits }
     // Prefer the format-preserving splice (units carry byte ranges); fall back to a plain
     // join for languages whose units don't expose ranges.
     const canSplice = baseUnits.every((u) => typeof u.start === 'number')
