@@ -46,6 +46,10 @@ const LANGUAGES = [javascript, ...braceLanguages, python, ruby, json, yaml, toml
 //   renameRefs, fnParts }. Newest wins on extension clashes.
 export function registerLanguage(provider) { LANGUAGES.unshift(provider) }
 
+// The live provider list (the actual registered objects, not copies) — used by the
+// optional tree-sitter oracle to upgrade providers' parse checks in place.
+export function registeredLanguages() { return LANGUAGES }
+
 function extname(p) { const m = /\.[^.\/\\]+$/.exec(p || ''); return m ? m[0].toLowerCase() : '' }
 
 // The provider for a filename, or null if no registered language claims its extension.

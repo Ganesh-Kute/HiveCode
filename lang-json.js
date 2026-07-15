@@ -117,4 +117,36 @@ export const json = {
   // real merging happens in mergeWhole above.
   units: (src) => [{ key: 'doc', text: String(src), start: 0, end: String(src).length }],
   declaredNames: () => new Set(),
+  // INTENT RESOLUTION for data: a conflicted unit's "text" is a rendering of a parsed
+  // VALUE, so a judge's reconciliation is applied by setting the value at the unit's
+  // path (key 'json:<path>'), not by string replacement. The reconciled string must
+  // itself be valid JSON ('(deleted)' removes the key). Returns the re-serialized
+  // document, or null when it can't apply — resolveMerge then falls back to the safe
+  // conflict, so a malformed judgment never ships.
+  applyResolution: (text, unit, reconciled) => {
+    if (!unit || typeof unit.key !== 'string' || !unit.key.startsWith('json:')) return null
+    let doc, value
+    try { doc = JSON.parse(text) } catch { return null }
+    const del = String(reconciled).trim() === '(deleted)'
+    if (!del) { try { value = JSON.parse(reconciled) } catch { return null } }
+    const path = unit.key.slice(5)
+    if (path === '(root)' || path === '') {
+      if (del) return null
+      doc = value
+    } else {
+      const parts = path.split('.')
+      let cur = doc
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (cur == null || typeof cur !== 'object') return null
+        if (!(parts[i] in cur)) cur[parts[i]] = {}
+        cur = cur[parts[i]]
+      }
+      if (cur == null || typeof cur !== 'object') return null
+      const leaf = parts[parts.length - 1]
+      if (del) delete cur[leaf]
+      else cur[leaf] = value
+    }
+    const nl = /\n$/.test(text) ? '\n' : ''
+    return JSON.stringify(doc, null, detectIndent(text)) + nl
+  },
 }

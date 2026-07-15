@@ -119,15 +119,26 @@ export async function resolveMerge(base, ours, theirs, opts = {}) {
 
   // Reconcile each conflicting unit, then rewrite BOTH sides to the reconciled text so they
   // agree — turning the conflict into an ordinary (clean) merge that the engine re-validates.
+  // Code languages splice by exact unit text; a DATA language (JSON) exposes applyResolution
+  // (set the reconciled VALUE at the conflicted path) because its unit "text" is a rendering
+  // of a parsed value and may not appear verbatim in the document.
+  const lang0 = opts.filename ? languageFor(opts.filename) : null
   let ours2 = ours, theirs2 = theirs
   const resolutions = []
   for (const u of units) {
     let reconciled
     try { reconciled = await opts.judge(u) } catch { reconciled = null }
     if (typeof reconciled !== 'string') return { ...r, resolved: false } // judge declined → safe conflict
-    if (!ours2.includes(u.ours) || !theirs2.includes(u.theirs)) return { ...r, resolved: false }
-    ours2 = ours2.replace(u.ours, reconciled)
-    theirs2 = theirs2.replace(u.theirs, reconciled)
+    if (lang0 && typeof lang0.applyResolution === 'function') {
+      const o2 = lang0.applyResolution(ours2, u, reconciled)
+      const t2 = lang0.applyResolution(theirs2, u, reconciled)
+      if (typeof o2 !== 'string' || typeof t2 !== 'string') return { ...r, resolved: false }
+      ours2 = o2; theirs2 = t2
+    } else {
+      if (!ours2.includes(u.ours) || !theirs2.includes(u.theirs)) return { ...r, resolved: false }
+      ours2 = ours2.replace(u.ours, reconciled)
+      theirs2 = theirs2.replace(u.theirs, reconciled)
+    }
     resolutions.push({ key: u.key, reconciled })
   }
 

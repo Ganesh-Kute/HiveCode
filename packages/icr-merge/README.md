@@ -116,6 +116,27 @@ From then on `git merge`, `git rebase`, and `git cherry-pick` use intent-aware m
 
 Add your own with `registerLanguage(provider)` — the engine is language-agnostic; everything language-specific lives behind a small provider interface.
 
+## Optional: real-parser validation (tree-sitter oracle)
+
+The heuristic providers validate with balance/indent checks — honest, but weaker than
+a real parse. Opt in to grammar-level validation for ~15 languages (TS, Go, Rust,
+Java, C/C++, C#, Swift, Kotlin, Scala, PHP, Python, Ruby, YAML, TOML):
+
+```bash
+npm i web-tree-sitter tree-sitter-wasms   # optional peers (~50MB of grammars)
+```
+
+```js
+import { initTreeSitter } from 'icr-merge/treesitter.js'
+await initTreeSitter()   // one-time; merge() stays synchronous afterwards
+```
+
+Every upgraded language's parse gate becomes `heuristic AND real-grammar-parse` — a
+merged result with actual syntax errors is refused even when its delimiters balance.
+Composed, not replaced: the heuristics stay because they're sometimes *stricter* than
+the error-tolerant grammars (Python's indentation rules, for example). Without the
+optional peers installed, nothing changes and the core stays acorn-only.
+
 ## Guarantees (what the test suite actually asserts)
 
 - **Parse guarantee** — a structural merge that wouldn't parse is refused, never emitted.
@@ -128,7 +149,7 @@ Tested by: unit suites per language, directed adversarial cases (fake defs insid
 ## Scope, honestly
 
 - Structural understanding runs declaration → statement → **token**: two edits to the same function merge as long as they touch different statements, or different tokens within one statement (each side edits a different argument of the same call, a different element of the same array). Only genuinely overlapping edits — the same tokens changed two different ways — are surfaced as a conflict. (JS/`acorn` today; the other languages merge at declaration/statement granularity until their tree-sitter providers land.)
-- TypeScript/Go/Rust/etc. use structural (brace-aware) parsing, not full ASTs yet — the provider interface is where tree-sitter parsers slot in.
+- TypeScript/Go/Rust/etc. use structural (brace-aware) parsing for unit *splitting*. For *validation*, the optional tree-sitter oracle (below) upgrades their parse gate to a real grammar.
 - **Comment merges.** When two sides edit the *same* declaration and one side's change lives *entirely inside a comment* between statements, the comment edit **survives** (the comment-editing side's body becomes the splice basis and the other side's code edits land on top). If **both** sides edit only comments in the same declaration, that's a surfaced conflict — never a silent drop. Remaining honest edge: a side that edits a comment *and* code in the same declaration keeps its code edit but may lose the comment edit when the other side also changed code there.
 - `merge()` is synchronous and pure: no I/O, no network, no state.
 

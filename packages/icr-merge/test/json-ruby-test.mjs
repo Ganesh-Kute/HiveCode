@@ -1,6 +1,6 @@
 // JSON (data-wise merge, perfect guarantee) + Ruby (end-block structural + intent layer).
 import { structuralMerge, languageFor } from '../icr.js'
-import { merge } from '../index.js'
+import { merge, resolveMerge } from '../index.js'
 
 let pass = 0, fail = 0
 const T = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); c ? pass++ : fail++ }
@@ -38,6 +38,18 @@ const r3 = structuralMerge(ab, aa, abb, { filename: 'p.json' })
 T('disjoint array edits merge', r3.status === 'auto' && r3.text.includes('a0.js') && r3.text.includes('d.js'))
 const ao1 = ab.replace('"b.js"', '"b1.js"'), ao2 = ab.replace('"b.js"', '"b2.js"')
 T('same-element array edits conflict', structuralMerge(ab, ao1, ao2, { filename: 'p.json' }).status === 'semantic-conflict')
+
+console.log('# JSON: intent-aware resolution (judge reconciles a data conflict)')
+{
+  const b = '{\n  "name": "app",\n  "engines": { "node": ">=16" }\n}\n'
+  const o = b.replace('>=16', '>=18'), t = b.replace('>=16', '>=20')
+  const r = await resolveMerge(b, o, t, { filename: 'package.json', judge: async (u) => (u.key === 'json:engines.node' ? JSON.stringify('>=18') : null) })
+  T('judge resolution lands at the conflicted path', r.resolved === true && JSON.parse(r.text).engines.node === '>=18')
+  const rBad = await resolveMerge(b, o, t, { filename: 'package.json', judge: async () => 'not json {{{' })
+  T('malformed judge output rejected (safe conflict)', rBad.resolved === false)
+  const rDel = await resolveMerge(b, o, t, { filename: 'package.json', judge: async () => '(deleted)' })
+  T('deletion resolution removes the key, output valid', rDel.resolved === true && !('node' in JSON.parse(rDel.text).engines))
+}
 
 // ---------- Ruby ----------
 console.log('# Ruby: structure')
