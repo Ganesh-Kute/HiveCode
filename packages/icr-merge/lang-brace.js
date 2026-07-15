@@ -93,6 +93,38 @@ function keyedUnits(raw, src) {
   return out
 }
 
+// Generic lexer for the token-level inner merge + the intent layer. Tokens are
+// identifiers, numbers, whole strings, and single operator chars; comments live in
+// the gaps (same contract as the JS provider: a comment-only edit is a no-op here).
+// Returns [{start,end,k}] — k is the raw text, so any content change is a token change.
+function lexTokens(src, strings) {
+  const at = scannerAt(src, strings)
+  const out = []
+  const n = src.length
+  let i = 0
+  while (i < n) {
+    if (isWS(src[i])) { i++; continue }
+    const j = at(i)
+    if (j > i) {
+      if (src[i] === '/' || src[i] === '#') { i = j; continue }     // comment → gap
+      out.push({ start: i, end: j, k: src.slice(i, j) }); i = j; continue // string → one token
+    }
+    const c = src[i]
+    if (/[A-Za-z_$]/.test(c)) { let e = i + 1; while (e < n && /[\w$]/.test(src[e])) e++; out.push({ start: i, end: e, k: src.slice(i, e) }); i = e; continue }
+    if (/[0-9]/.test(c)) { let e = i + 1; while (e < n && /[\w.]/.test(src[e])) e++; out.push({ start: i, end: e, k: src.slice(i, e) }); i = e; continue }
+    out.push({ start: i, end: i + 1, k: c }); i++
+  }
+  return out
+}
+
+// Is this token a REFERENCE-position identifier (not property access `.name`)?
+function isRefToken(src, t) {
+  if (!/^[A-Za-z_$][\w$]*$/.test(t.k)) return false
+  let p = t.start - 1
+  while (p >= 0 && isWS(src[p])) p--
+  return !(p >= 0 && src[p] === '.')
+}
+
 // Approximate parse check: delimiters balanced and no unterminated string/comment,
 // ignoring the contents of strings and comments.
 function balanced(src, strings) {
@@ -125,6 +157,40 @@ export function makeBraceLanguage({ id, exts, strings = ['"', "'", '`'] }) {
       return names
     },
     parsesUnit: (src) => balanced(String(src), strings),
+    // --- intent layer (heuristic but honest): dangling refs, rename, token merge ---
+    // Every identifier used in reference position (skips `.property` access). Approximate
+    // and OVER-inclusive — which only ever makes the dangling check MORE cautious: a
+    // deleted-but-still-referenced name is surfaced as a conflict, never shipped broken.
+    usedIdentifiers: (src) => {
+      src = String(src)
+      const used = new Set()
+      for (const t of lexTokens(src, strings)) if (isRefToken(src, t)) used.add(t.k)
+      return used
+    },
+    // The declaration's text with its own name excluded, so two declarations that differ
+    // only in their name compare equal — that's how the engine spots a rename.
+    declBody: (src, name) => {
+      src = String(src)
+      for (const u of keyedUnits(topUnits(src, strings), src)) {
+        const m = u.key.match(/^([a-z]+):(.+?)(?:#\d+)?$/)
+        if (!m || m[1] === 'stmt' || m[2] !== name) continue
+        return u.text.replace(name, '').trimEnd() // trailing whitespace must not defeat the rename match
+      }
+      return null
+    },
+    // Rewrite reference-position uses of oldName (never `.oldName` property access).
+    // Back-to-front so offsets stay valid. The engine only accepts the rewrite if the
+    // result still passes parses(), so a bad rewrite can't ship.
+    renameRefs: (src, oldName, newName) => {
+      src = String(src)
+      const spots = []
+      for (const t of lexTokens(src, strings)) if (t.k === oldName && isRefToken(src, t)) spots.push(t)
+      let out = src
+      for (const t of spots.reverse()) out = out.slice(0, t.start) + newName + out.slice(t.end)
+      return out
+    },
+    // Finest granularity: token stream for the engine's token-level inner merge.
+    tokenize: (src) => lexTokens(String(src), strings),
     // Finer granularity: descend one level into a block declaration so two agents
     // editing DIFFERENT members of the same class/function merge instead of clashing.
     splitUnit: (text) => {

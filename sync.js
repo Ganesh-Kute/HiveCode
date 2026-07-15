@@ -515,6 +515,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (v.status !== 'auto') return { ok: false, reason: `resolution refused by ICR validation: ${v.reason || (v.conflicts || []).join(', ') || v.status}` }
       landed = v.text
     }
+    // INTENT COVERAGE (informational, deterministic): did each side's TOKEN-level
+    // changes survive into the landed text? Token granularity is what makes a genuine
+    // reconciliation count for both sides (a merged ternary contains both sides' new
+    // tokens) while a lazy single-winner judgment shows one side's tokens dropped.
+    // A resolution may legitimately pick one side — but that becomes VISIBLE to the
+    // room instead of silently passing as a reconciliation. Never refuses.
+    const tokSet = (s) => new Set(String(s).match(/[A-Za-z_$]\w*|\d[\w.]*/g) || [])
+    const baseToks = tokSet(rec.base || ''), landedToks = tokSet(landed)
+    const coverage = rec.versions.map((v) => {
+      const vt = fe.versions.get(v.hash)
+      const changed = vt == null ? [] : [...tokSet(vt)].filter((t) => !baseToks.has(t))
+      const missing = changed.filter((t) => !landedToks.has(t))
+      return { name: v.name, covered: missing.length === 0, missing }
+    })
+    const dropped = coverage.filter((c) => !c.covered)
     const block = forkBlock(fe, rec)
     fe.doc.transact(() => {
       applyDiff(fe.text, landed)
@@ -525,8 +540,40 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     writeToDisk(relPath, landed)
     conflicted.delete(relPath)
     known.add(relPath); bases.set(relPath, landed); forkBases.set(relPath, landed)
-    try { say(`⚖ FORK RESOLVED by ${name} (intent-aware): reconciled ${rec.versions.map((v) => v.name).join(' + ')} in ${relPath}. Validated by ICR (parses, no dangling refs) before landing.`) } catch { }
-    return { ok: true, file: relPath, text: landed }
+    const covNote = dropped.length
+      ? ` ⚠ Coverage: ${dropped.map((c) => `${c.name}'s changes (${c.missing.slice(0, 5).join(', ')}) did NOT survive`).join('; ')} — the room should sanity-check this judgment.`
+      : ' Full intent coverage: every side\'s changes survived token-level.'
+    try { say(`⚖ FORK RESOLVED by ${name} (intent-aware): reconciled ${rec.versions.map((v) => v.name).join(' + ')} in ${relPath}. Validated by ICR (parses, no dangling refs) before landing.${covNote}`) } catch { }
+    return { ok: true, file: relPath, text: landed, coverage }
+  }
+  // FIRST-CLASS AUTHORED WRITE — an agent writes THROUGH the medium instead of via
+  // disk + a debounced watcher. This closes the capture race COMPLETELY for the write:
+  // the author's declared intent is recorded and the (base -> text) transition is
+  // stamped into the provenance ledger synchronously, before any concurrent merge or
+  // conflict render could contaminate the disk (the fs.watch model's residual window
+  // does not exist on this path). The content then lands through the SAME reconcile
+  // pipeline as any local edit — merging, fork detection, and conflicts behave
+  // identically; only the capture is race-free.
+  function editFile(relPath, content, intent) {
+    relPath = String(relPath || '').replace(/\\/g, '/')
+    if (!relPath || typeof content !== 'string') return { error: 'need a file path and string content' }
+    if (!isSafeRelPath(relPath)) return { error: 'unsafe path' }
+    if (SKIP.has(relPath) || isIgnored(relPath)) return { error: `${relPath} is not a syncable file` }
+    if (!canOpen(relPath)) return { error: `${relPath} is out of your scope` }
+    if (!canWrite(relPath)) return { error: `${relPath} is read-only for you` }
+    if (intent) myIntents.set(relPath, String(intent)) // my declared WHY — what my receipt will sign
+    const full = path.join(ROOT, relPath)
+    try { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, content) }
+    catch (e) { return { error: 'write failed: ' + e.message } }
+    // Deliberately NOT via writeToDisk (which records engine writes in `shadow`):
+    // this write is AUTHORED, so disk-vs-shadow divergence is exactly what captureLocal
+    // stamps. Run the pass NOW — no debounce window at all.
+    if (FORK_GATE) captureLocal(relPath)
+    reconcile(relPath, 'local')
+    const fe = fileDocs.get(relPath)
+    const landed = fe && fe.synced ? fe.text.toString() : content
+    let disk = content; try { disk = fs.readFileSync(full, 'utf8') } catch { }
+    return { ok: true, file: relPath, landed, conflicted: hasConflictMarkers(disk) }
   }
   // Detect a live fork and record it. The version set is a CRDT UNION (per-hash keys), so
   // this is monotonic + convergent: every peer contributes what it sees and the set grows
@@ -1311,6 +1358,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // --- intent-aware fork resolution: any agent may judge; the medium validates ---
     forkInfo,            // the active fork on a file as a resolvable object (base + versions + signed intents), or null
     resolveFork,         // propose the reconciled file; ICR-validated (parse + dangling) before it lands, refused otherwise
+    edit: editFile,      // first-class authored write: intent + transition stamped race-free, then normal reconcile
     // --- convergent substrate: provenance (I1) ---
     identity: () => identity ? { id: identity.id, name: identity.name, pk: identity.pk } : null, // never exposes the private key
     provenanceOf: (relPath) => { const e = fileDocs.get(relPath); return e && e.ledger ? e.ledger.toArray() : [] }, // signed receipts for a file

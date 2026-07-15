@@ -213,7 +213,18 @@ function tryStructuralInner(lang, baseText, aText, bText) {
   let text
   const spliceable = pb.spliceable && typeof pb.body === 'string' && pb.units.every((u) => typeof u.start === 'number' && typeof u.end === 'number')
   if (spliceable) {
-    const body = spliceUnits(pb.body, pb.units, m.order, m.textByKey, { trimLeadingBlank: false })
+    // COMMENT-EDIT PRESERVATION: gaps (comments/blank lines between statements) come from
+    // the splice BASIS. Splicing from base loses a side's comment-only edit. So: if exactly
+    // ONE side changed only gaps (its units are byte-identical to base's), splice into THAT
+    // side's body — its comment edit survives and the other side's code edits land on top.
+    // If BOTH sides changed only gaps, refuse (null) so the unit surfaces as a conflict
+    // instead of silently dropping either side's comment.
+    const sameUnits = (u1, u2) => u1.length === u2.length && u1.every((u, i) => u.key === u2[i].key && u.text === u2[i].text)
+    const aGapOnly = pa.body !== pb.body && sameUnits(pa.units, pb.units)
+    const bGapOnly = pbb.body !== pb.body && sameUnits(pbb.units, pb.units)
+    if (aGapOnly && bGapOnly) return null
+    const [basisBody, basisUnits] = aGapOnly ? [pa.body, pa.units] : bGapOnly ? [pbb.body, pbb.units] : [pb.body, pb.units]
+    const body = spliceUnits(basisBody, basisUnits, m.order, m.textByKey, { trimLeadingBlank: false })
     text = pa.sig + pa.open + body + pa.close
   } else {
     text = pa.sig + pa.open + m.parts.join(pa.join) + pa.close

@@ -112,11 +112,90 @@ function balanced(src) {
   return stack.length === 0
 }
 
+// INDENTATION validity — the half of Python syntax that delimiter balance cannot see.
+// Walks LOGICAL lines (joining bracket continuations, backslash continuations, and
+// multi-line strings) and enforces Python's block rules: a line ending with ':' must
+// open a deeper-indented block; an indent may only appear after such an opener; every
+// dedent must land on an indent level already on the stack. This is what lets parses()
+// refuse a merge that spliced statements into the wrong block — balance alone passes it.
+// The first line's indent is taken as the baseline so unit fragments validate too.
+function indentsOk(src) {
+  const at = scannerAt(src)
+  const n = src.length
+  let stack = null // [indent levels]; seeded from the first logical line
+  let i = 0, prevOpened = false
+  while (i < n) {
+    let indent = 0
+    while (i < n && (src[i] === ' ' || src[i] === '\t')) { indent++; i++ }
+    if (i >= n) break
+    if (src[i] === '\r' || src[i] === '\n') { i++; continue }              // blank line
+    if (src[i] === '#') { i = Math.min(n, at(i)); continue }               // comment-only line
+    if (stack == null) stack = [indent]                                     // baseline (fragment-friendly)
+    if (prevOpened) {
+      if (indent <= stack[stack.length - 1]) return false                   // ':' promised a block; none came
+      stack.push(indent)
+    } else if (indent > stack[stack.length - 1]) {
+      return false                                                          // indent without an opener
+    } else if (indent < stack[stack.length - 1]) {
+      while (stack.length > 1 && stack[stack.length - 1] > indent) stack.pop()
+      if (stack[stack.length - 1] !== indent) return false                  // dedent to a level never opened
+    }
+    // scan to the end of this LOGICAL line (brackets, backslash, strings span physical lines)
+    let depth = 0, last = ''
+    while (i < n) {
+      const j = at(i)
+      if (j > i) { if (src[i] !== '#') last = 's'; i = Math.min(n, j); continue } // string counts as content; comment doesn't
+      const c = src[i]
+      if (c === '(' || c === '[' || c === '{') depth++
+      else if (c === ')' || c === ']' || c === '}') depth--
+      if (c === '\n') {
+        if (depth > 0 || last === '\\') { if (last === '\\') last = ''; i++; continue } // continuation
+        i++; break
+      }
+      if (c !== ' ' && c !== '\t' && c !== '\r') last = c
+      i++
+    }
+    prevOpened = last === ':'
+  }
+  return !prevOpened // must not end still promising a block
+}
+
+// Generic lexer for the token-level inner merge + the intent layer. Identifiers,
+// numbers, whole strings are tokens; comments live in the gaps (a comment-only edit
+// is a no-op at this tier, same contract as the JS provider).
+function lexTokens(src) {
+  const at = scannerAt(src)
+  const out = []
+  const n = src.length
+  let i = 0
+  while (i < n) {
+    const c = src[i]
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { i++; continue }
+    const j = at(i)
+    if (j > i) {
+      if (c === '#') { i = j; continue }                                    // comment → gap
+      out.push({ start: i, end: j, k: src.slice(i, j) }); i = j; continue   // string → one token
+    }
+    if (/[A-Za-z_]/.test(c)) { let e = i + 1; while (e < n && /\w/.test(src[e])) e++; out.push({ start: i, end: e, k: src.slice(i, e) }); i = e; continue }
+    if (/[0-9]/.test(c)) { let e = i + 1; while (e < n && /[\w.]/.test(src[e])) e++; out.push({ start: i, end: e, k: src.slice(i, e) }); i = e; continue }
+    out.push({ start: i, end: i + 1, k: c }); i++
+  }
+  return out
+}
+
+// Reference-position identifier (not attribute access `.name`)?
+function isRefToken(src, t) {
+  if (!/^[A-Za-z_]\w*$/.test(t.k)) return false
+  let p = t.start - 1
+  while (p >= 0 && (src[p] === ' ' || src[p] === '\t')) p--
+  return !(p >= 0 && src[p] === '.')
+}
+
 export const python = {
   id: 'python',
   exts: ['.py', '.pyi'],
-  parses: (src) => balanced(String(src == null ? '' : src)),
-  parsesUnit: (src) => balanced(String(src)),
+  parses: (src) => { const s = String(src == null ? '' : src); return balanced(s) && indentsOk(s) },
+  parsesUnit: (src) => { const s = String(src); return balanced(s) && indentsOk(s) },
   units: (src) => keyed(blocks(String(src), 0), String(src)),
   declaredNames: (src) => {
     const names = new Set()
@@ -126,6 +205,42 @@ export const python = {
     }
     return names
   },
+  // --- intent layer (heuristic but honest): dangling refs, rename, token merge ---
+  // Every identifier used in reference position (skips `.attribute` access). Approximate
+  // and OVER-inclusive — which only makes the dangling check MORE cautious: a deleted-
+  // but-still-referenced def/class is surfaced as a conflict, never shipped broken.
+  usedIdentifiers: (src) => {
+    src = String(src)
+    const used = new Set()
+    for (const t of lexTokens(src)) if (isRefToken(src, t)) used.add(t.k)
+    return used
+  },
+  // The def/class text with its own name excluded, so renamed twins compare equal.
+  // trimEnd(): a unit owns its trailing blank lines, and splicing can change how many
+  // survive — trailing whitespace must not defeat the rename match.
+  declBody: (src, name) => {
+    src = String(src)
+    for (const u of keyed(blocks(src, 0), src)) {
+      const m = u.key.match(/^(?:def|class):([A-Za-z_]\w*)/)
+      if (!m || m[1] !== name) continue
+      return u.text.replace(name, '').trimEnd()
+    }
+    return null
+  },
+  // Rewrite reference-position uses of oldName (never `.oldName` attribute access).
+  // The engine only accepts the rewrite if the result still passes parses().
+  renameRefs: (src, oldName, newName) => {
+    src = String(src)
+    const spots = []
+    for (const t of lexTokens(src)) if (t.k === oldName && isRefToken(src, t)) spots.push(t)
+    let out = src
+    for (const t of spots.reverse()) out = out.slice(0, t.start) + newName + out.slice(t.end)
+    return out
+  },
+  // Finest granularity: token stream for the token-level inner merge. SAFE for Python
+  // only because parses() now checks indentation — a splice that lands a statement in
+  // the wrong block is refused at the whole-file gate, not shipped.
+  tokenize: (src) => lexTokens(String(src)),
   // Descend into a class/def body so two agents editing DIFFERENT methods merge.
   splitUnit: (text) => {
     const src = String(text)

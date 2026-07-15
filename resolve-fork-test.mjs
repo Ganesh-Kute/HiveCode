@@ -35,12 +35,14 @@ await sleep(2500)
 T('B received the seed', fs.existsSync(path.join(dB, 'm.js')))
 T('Judge received the seed', fs.existsSync(path.join(dJ, 'm.js')))
 
-// both edit the SAME line ~simultaneously, each with a DECLARED intent (the WHY)
-console.log('# A: 100 -> 250 (prod throttling)   |   B: 100 -> 1000 (enterprise load test)')
-A.claim('m.js', 'prod traffic grew - 100/min throttles real users, raise to 250')
+// both edit the SAME line ~simultaneously, each with a DECLARED intent (the WHY).
+// A writes THROUGH the medium (the zero-race hive.edit path); B writes to disk and
+// is captured by the watcher — the fork must be detected across BOTH write paths.
+console.log('# A: 100 -> 250 via hive.edit (zero-race)   |   B: 100 -> 1000 via disk (watcher)')
 B.claim('m.js', 'enterprise load test needs 1000/min')
 const eA = path.join(dA, 'm.js'), eB = path.join(dB, 'm.js')
-fs.writeFileSync(eA, fs.readFileSync(eA, 'utf8').replace('return 100', 'return 250'))
+const rEdit = A.edit('m.js', fs.readFileSync(eA, 'utf8').replace('return 100', 'return 250'), 'prod traffic grew - 100/min throttles real users, raise to 250')
+T('hive.edit landed the authored write', rEdit.ok === true)
 fs.writeFileSync(eB, fs.readFileSync(eB, 'utf8').replace('return 100', 'return 1000'))
 
 // wait for the fork to surface on the JUDGE as a resolvable object
@@ -71,6 +73,7 @@ T('fork still active after the dangling refusal', !!J.forkInfo('m.js'))
 const RECONCILED = 'function limit(user) {\n  return user.tier === "enterprise" ? 1000 : 250\n}\nfunction report(user) {\n  return limit(user) * 2\n}\nmodule.exports = { limit, report }\n'
 const good = J.resolveFork('m.js', RECONCILED)
 T('intent-reconciling resolution LANDED', good.ok === true)
+T('coverage reports BOTH sides\' changes survived (true reconciliation)', Array.isArray(good.coverage) && good.coverage.length === 2 && good.coverage.every((c) => c.covered))
 
 // every peer must converge on the reconciled text, markers gone, fork cleared
 let ca, cb, cj, settled = false
