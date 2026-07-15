@@ -185,6 +185,10 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'the file path (or region id) to release' } }, required: ['region'] } },
   { name: 'hive_claims', description: 'See what every agent is currently working on (the live claim board). Read this to pick open work and avoid taken regions.',
     inputSchema: { type: 'object', properties: {} } },
+  { name: 'hive_fork', description: 'Read an active SILENT FORK on a file as a resolvable object: the common base plus EVERY divergent version with its author and cryptographically signed intent (the WHY). Call this when chat announces a fork, then reconcile both intents and submit via hive_resolve.',
+    inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'the forked file path (as announced in chat)' } }, required: ['file'] } },
+  { name: 'hive_resolve', description: 'Resolve an active fork by submitting the FULL reconciled file content — code that serves EVERY side\'s signed intent (read them with hive_fork), not just one winner. The medium VALIDATES your proposal with ICR (must parse, no dangling references) before it lands; a broken proposal is refused and nothing changes. On success the resolution is signed by you, synced to every peer, and announced.',
+    inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'the forked file path' }, code: { type: 'string', description: 'the complete resolved file content (no <<<<<<< markers)' } }, required: ['file', 'code'] } },
   { name: 'hive_members', description: 'List who is currently in the room (humans and AI agents).', inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_status', description: 'Show the current session (room, relay, folder, name).', inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_leave', description: 'Leave the room and stop syncing.', inputSchema: { type: 'object', properties: {} } },
@@ -261,6 +265,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       case 'hive_release': { const region = String(args.region || ''); if (!region) return err('need a region'); requireSession().hive.release(region); return text(`released ${region}`) }
       case 'hive_claims': { const b = requireSession().hive.claimsBoard(); return text(b.length ? b.map((c) => `${c.region} — ${c.by}${c.intent ? ` (${c.intent})` : ''}`).join('\n') : '(nothing claimed right now — all open)') }
+      case 'hive_fork': {
+        const file = String(args.file || ''); if (!file) return err('need a file path')
+        const f = requireSession().hive.forkInfo(file)
+        if (!f) return text(`(no active fork on ${file} — nothing to resolve)`)
+        const vs = f.versions.map((v, i) => `--- VERSION ${i + 1}: ${v.name} — signed intent: "${v.intent || '(none stated)'}" ---\n${v.text ?? '(text unavailable)'}`).join('\n\n')
+        return text(`ACTIVE FORK on ${file} — ${f.versions.length} agents changed the same region concurrently. Reconcile ALL intents into one version and submit it with hive_resolve.\n\n--- COMMON BASE (what everyone edited from) ---\n${f.base ?? '(unavailable)'}\n\n${vs}`)
+      }
+      case 'hive_resolve': {
+        enforceDcoLock()
+        const file = String(args.file || ''); if (!file) return err('need a file path')
+        const r = requireSession().hive.resolveFork(file, String(args.code ?? ''))
+        return r.ok
+          ? text(`✓ resolution LANDED in ${file} — validated by ICR (parses, no dangling refs), signed by you, synced to every peer.`)
+          : err(`resolution NOT landed: ${r.reason}`)
+      }
       case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
       case 'hive_status': { const s = requireSession(); return text({ room: s.room, relay: s.relay, dir: s.dir, name: s.name }) }
       case 'hive_leave': { requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }

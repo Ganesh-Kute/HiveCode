@@ -26,6 +26,7 @@ import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; fall
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
+import { structuralMerge, supports } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -217,6 +218,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const swarmState = doc.getMap('swarm_state')
   const swarmSchema = doc.getMap('swarm_schema')
   const coordinator = makeCoordinator(claims, name, { ttl: 300000 }) // 5-min claim TTL
+  // MY declared intent per region — recorded on every claim ATTEMPT, kept locally.
+  // The provenance stamp reads this (not the shared claim map) so an agent always signs
+  // ITS OWN intent: under a true concurrent collision the shared claim converges to ONE
+  // winner, and reading it would misattribute the loser's receipt with the winner's WHY.
+  const myIntents = new Map()
 
   // --- convergent substrate: signed provenance (opt-in via HIVE_PROVENANCE) ------
   // When on, this client loads (or mints) a persistent Ed25519 identity and SIGNS
@@ -260,7 +266,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (fe.ledger.toArray().some((r) => r && r.author === identity.id && r.parent === pHash && r.contentHash === cHash0)) return
     try {
       const c = coordinator.sense(relPath)
-      const ch = authorChange({ identity, filename: relPath, base: base == null ? '' : base, text: next, intent: (c && c.intent) || 'edit', at: Date.now() })
+      const intent = myIntents.get(relPath) || (c && c.by === name && c.intent) || 'edit'
+      const ch = authorChange({ identity, filename: relPath, base: base == null ? '' : base, text: next, intent, at: Date.now() })
       // `name` is display-only (NOT signed) — the verified identity is `author` (the key
       // fingerprint). A UI shows both: the friendly name, and the cryptographic author it
       // must match. Signature covers everything else, so tampering `name` can't fake trust.
@@ -282,7 +289,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (cur && cur.hash === contentHash(landed)) return // head already attests this content
       const c = coordinator.sense(relPath)
       const at = Date.now()
-      const ch = authorChange({ identity, filename: relPath, base: base == null ? '' : base, text: landed, intent: (c && c.intent) || 'edit', at })
+      const intent = myIntents.get(relPath) || (c && c.by === name && c.intent) || 'edit'
+      const ch = authorChange({ identity, filename: relPath, base: base == null ? '' : base, text: landed, intent, at })
       fe.doc.transact(() => {
         fe.head.set('cur', { text: landed, hash: ch.prov.contentHash, at, by: name, receipt: { ...ch.prov, name } })
         storeVersion(fe, landed)
@@ -445,7 +453,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       conflicted.add(relPath)
       const who = rec.versions.map((v) => v.name).join(', ')
       log(`[${name}] ⚠ SILENT FORK in ${relPath} — ${who} changed the same region at once; provenance caught it. Surfaced ALL ${rec.versions.length} versions with <<<<<<< markers (rendered locally, not into the shared text).`)
-      try { say(`⚠ SILENT FORK in ${relPath}: ${who} changed the same region concurrently. Surfaced ALL ${rec.versions.length} versions with <<<<<<< markers. Resolve before continuing.`) } catch { }
+      // Carry each side's SIGNED intent into the announcement: the WHY is what lets any
+      // agent in the room reconcile the fork (via hive_resolve) instead of picking a winner.
+      const why = rec.versions.map((v) => `${v.name}: "${versionIntent(fe, rec, v.hash) || 'no stated intent'}"`).join(' | ')
+      try { say(`⚠ SILENT FORK in ${relPath}: ${who} changed the same region concurrently. Signed intents — ${why}. Surfaced ALL ${rec.versions.length} versions with <<<<<<< markers. ANY agent may reconcile BOTH intents: call hive_resolve with the full resolved file — it is validated (parses, no dangling refs) before it lands.`) } catch { }
     }
   }
   // A resolution landed elsewhere: the shared text is clean again. Adopt it to disk.
@@ -457,6 +468,65 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     writeToDisk(relPath, dt)
     bases.set(relPath, dt); forkBases.set(relPath, dt)
     conflicted.delete(relPath)
+  }
+  // The VERIFIED signed intent behind one fork version: the receipt that produced this
+  // content from the fork's parent, signature-checked — so the WHY a judge reconciles is
+  // cryptographically the author's own declaration, not something another peer typed.
+  function versionIntent(fe, rec, hash) {
+    const r = fe.ledger.toArray().find((r) => r && r.contentHash === hash && r.parent === rec.parent && verifyReceipt(r).ok)
+    return (r && r.intent) || ''
+  }
+  // The active fork as a machine-RESOLVABLE object: the common base plus every divergent
+  // version with its author and verified intent. This is what an agent judge reads before
+  // proposing a reconciliation — the conflict is data, not just markers on a disk.
+  function forkInfo(relPath) {
+    const fe = fileDocs.get(relPath); if (!fe) return null
+    const rec = forkRecord(fe); if (!rec) return null
+    return {
+      file: relPath,
+      base: rec.base,
+      versions: rec.versions.map((v) => ({ name: v.name, author: v.author, intent: versionIntent(fe, rec, v.hash), text: fe.versions.get(v.hash) })),
+    }
+  }
+  // INTENT-AWARE FORK RESOLUTION — the judged path out of a surfaced silent fork.
+  // Any participant (typically an AI agent that has read both sides' signed intents via
+  // forkInfo / the chat announcement) proposes the FULL reconciled file; the MEDIUM
+  // validates it before it may land:
+  //   - no conflict markers left behind,
+  //   - (supported language) judged as a one-sided change from the fork's base through
+  //     ICR structuralMerge: it must PARSE and must not leave a DANGLING reference —
+  //     the same guarantee the icr-merge library's resolveMerge gives a judge, so broken
+  //     judge output physically cannot ship. (A rename in the proposal even gets its
+  //     stale call sites rewritten, same as any merge.)
+  // A landed resolution takes the exact convergent path a human resolution takes: it is
+  // signed by the resolver, folds the fork versions, clears the record on every peer,
+  // and is announced. A refused proposal changes NOTHING — the fork stays surfaced.
+  function resolveFork(relPath, proposal) {
+    const fe = fileDocs.get(relPath)
+    if (!fe || !fe.synced || !fe.conflict) return { ok: false, reason: `no active fork on ${relPath}` }
+    const rec = forkRecord(fe)
+    if (!rec) return { ok: false, reason: `no active fork on ${relPath}` }
+    if (!canWrite(relPath)) return { ok: false, reason: `${relPath} is read-only for you` }
+    if (typeof proposal !== 'string' || !proposal.trim()) return { ok: false, reason: 'empty resolution' }
+    if (hasConflictMarkers(proposal)) return { ok: false, reason: 'resolution still contains <<<<<<< conflict markers — send the final clean file' }
+    let landed = proposal
+    if (supports(relPath) && rec.base != null) {
+      const v = structuralMerge(rec.base, proposal, rec.base, { filename: relPath })
+      if (v.status !== 'auto') return { ok: false, reason: `resolution refused by ICR validation: ${v.reason || (v.conflicts || []).join(', ') || v.status}` }
+      landed = v.text
+    }
+    const block = forkBlock(fe, rec)
+    fe.doc.transact(() => {
+      applyDiff(fe.text, landed)
+      for (const vv of rec.versions) fe.forkmark.set(vv.hash, 1)
+      for (const key of [...fe.conflict.keys()]) fe.conflict.delete(key)
+    })
+    stampProvenance(relPath, block || rec.base || '', landed)
+    writeToDisk(relPath, landed)
+    conflicted.delete(relPath)
+    known.add(relPath); bases.set(relPath, landed); forkBases.set(relPath, landed)
+    try { say(`⚖ FORK RESOLVED by ${name} (intent-aware): reconciled ${rec.versions.map((v) => v.name).join(' + ')} in ${relPath}. Validated by ICR (parses, no dangling refs) before landing.`) } catch { }
+    return { ok: true, file: relPath, text: landed }
   }
   // Detect a live fork and record it. The version set is a CRDT UNION (per-hash keys), so
   // this is monotonic + convergent: every peer contributes what it sees and the set grows
@@ -1234,10 +1304,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     isPaused,            // is a participant currently paused?
     controls,            // the live control map
     // --- hive coordination: claim a region BEFORE editing (collision prevention) ---
-    claim: (region, intent) => coordinator.acquire(String(region), String(intent || 'edit')), // true iff you hold it
-    release: (region) => coordinator.release(String(region)),
+    claim: (region, intent) => { const r = String(region), i = String(intent || 'edit'); myIntents.set(r, i); return coordinator.acquire(r, i) }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
+    release: (region) => { const r = String(region); myIntents.delete(r); return coordinator.release(r) },
     senseClaim: (region) => coordinator.sense(String(region)), // the live claim on a region, or null
     claimsBoard: () => coordinator.board(),                     // everything currently claimed
+    // --- intent-aware fork resolution: any agent may judge; the medium validates ---
+    forkInfo,            // the active fork on a file as a resolvable object (base + versions + signed intents), or null
+    resolveFork,         // propose the reconciled file; ICR-validated (parse + dangling) before it lands, refused otherwise
     // --- convergent substrate: provenance (I1) ---
     identity: () => identity ? { id: identity.id, name: identity.name, pk: identity.pk } : null, // never exposes the private key
     provenanceOf: (relPath) => { const e = fileDocs.get(relPath); return e && e.ledger ? e.ledger.toArray() : [] }, // signed receipts for a file
