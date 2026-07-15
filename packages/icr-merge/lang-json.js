@@ -18,6 +18,36 @@
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const eq = (x, y) => JSON.stringify(x) === JSON.stringify(y)
 
+// PRECISION SAFETY GATE. The data merge re-serializes the whole document, which means
+// every number goes through JS float64 — and that CORRUPTS values nobody touched:
+// 9007199254740993 (beyond 2^53) silently loses a digit; 1e999 becomes Infinity and
+// then `null`. Shipping a "clean" merge that corrupts untouched data is the cardinal
+// sin, so: scan every number literal (string-aware); if ANY cannot survive the
+// round-trip value-identically, refuse the data merge entirely — the engine falls back
+// to the safe line tier, which never rewrites untouched bytes. (Found by the
+// adversarial crucible, not by users — the way it should be.)
+function numbersSafe(src) {
+  const n = src.length
+  let i = 0
+  while (i < n) {
+    const c = src[i]
+    if (c === '"') { i++; while (i < n) { if (src[i] === '\\') { i += 2; continue } if (src[i] === '"') { i++; break } i++ } continue }
+    if (c === '-' || (c >= '0' && c <= '9')) {
+      let j = i + 1
+      while (j < n && /[0-9eE+.-]/.test(src[j])) j++
+      const tok = src.slice(i, j)
+      const v = Number(tok)
+      if (!Number.isFinite(v)) return false                                  // 1e999 → Infinity → null
+      if (Number.isInteger(v) && Math.abs(v) > Number.MAX_SAFE_INTEGER) return false // beyond 2^53
+      const digits = tok.replace(/[^0-9]/g, '').replace(/^0+/, '')
+      if (digits.length > 15 && !eq(Number(tok), Number(v.toPrecision(15)))) return false // >15 sig digits at risk
+      i = j; continue
+    }
+    i++
+  }
+  return true
+}
+
 // Detect the base file's indent unit ('  ', '    ', '\t', …). Defaults to two spaces.
 function detectIndent(src) {
   const m = /\n([ \t]+)\S/.exec(src)
@@ -105,6 +135,7 @@ export const json = {
   parses: (src) => { try { JSON.parse(String(src == null ? '' : src)); return true } catch { return false } },
   // The engine's whole-document tier: merge the file as parsed data.
   mergeWhole: (base, a, b) => {
+    if (!numbersSafe(base) || !numbersSafe(a) || !numbersSafe(b)) return null // precision hazard → safe fallback, never corrupt
     let B, A, Bb
     try { B = JSON.parse(base); A = JSON.parse(a); Bb = JSON.parse(b) } catch { return null }
     const conflicts = [], resolvable = []
@@ -125,6 +156,7 @@ export const json = {
   // conflict, so a malformed judgment never ships.
   applyResolution: (text, unit, reconciled) => {
     if (!unit || typeof unit.key !== 'string' || !unit.key.startsWith('json:')) return null
+    if (!numbersSafe(text)) return null // same precision gate: never re-serialize a doc we'd corrupt
     let doc, value
     try { doc = JSON.parse(text) } catch { return null }
     const del = String(reconciled).trim() === '(deleted)'
