@@ -28,12 +28,15 @@
 import { javascript } from './lang-js.js'
 import { braceLanguages } from './lang-brace.js'
 import { python } from './lang-python.js'
+import { ruby } from './lang-ruby.js'
+import { json } from './lang-json.js'
 
 // --- language registry ----------------------------------------------------------
 // JavaScript (acorn, full intent layer) first; then structural providers for the
-// C-family (TypeScript, Go, Rust, Java, C/C++, C#, Swift, Kotlin, …) and Python.
+// C-family (TypeScript, Go, Rust, Java, C/C++, C#, Swift, Kotlin, …), Python, and
+// Ruby; JSON merges as parsed DATA (real parser, value-wise 3-way, perfect guarantee).
 // These cover disjoint extensions, so order only matters on clashes (none today).
-const LANGUAGES = [javascript, ...braceLanguages, python]
+const LANGUAGES = [javascript, ...braceLanguages, python, ruby, json]
 
 // Register an additional language provider. Must expose the provider contract:
 // { id, exts:[...], parses, units, declaredNames, usedIdentifiers, declBody,
@@ -353,6 +356,16 @@ export function structuralMerge(base, a, b, opts = {}) {
   let text, provenance
   if (a === base) { text = b; provenance = [] }
   else if (b === base) { text = a; provenance = [] }
+  else if (lang.mergeWhole) {
+    // WHOLE-DOCUMENT MERGE: a provider that understands the entire document as DATA
+    // (e.g. JSON) merges it directly — real-parser accuracy, value-wise 3-way semantics,
+    // conflicts named by path. Returns { text } on success, { conflicts, resolvable? } on
+    // a same-value clash, or null when it can't (engine falls back safely).
+    const w = lang.mergeWhole(base, a, b)
+    if (!w) return { status: 'fallback', text: null, conflicts: [], reason: 'whole-document merge failed' }
+    if (w.conflicts && w.conflicts.length) return { status: 'semantic-conflict', text: null, conflicts: w.conflicts, resolvable: w.resolvable || [] }
+    text = w.text; provenance = w.provenance || []
+  }
   else {
     const baseUnits = lang.units(base)
     const merge = mergeKeyed(lang, baseUnits, lang.units(a), lang.units(b))

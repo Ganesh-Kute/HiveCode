@@ -74,7 +74,13 @@ function blocks(src, base = 0) {
       // a block: consume the header line, then its body (blank or deeper-indented lines)
       i++ // header line
       while (i < L.length && (L[i].blank || L[i].indent > base)) i++
-      units.push({ start, end: L[i - 1].end })
+      // Trailing PURE-BLANK lines are GAP text, not part of the unit — if the unit owned
+      // them, appending a new unit after the last one would mutate the last unit's text
+      // and raise a false same-key conflict (found by multilang fuzz). Trailing comments
+      // stay attached (comment-attachment convention).
+      let last = i - 1
+      while (last > headIdx && L[last].text.trim() === '') last--
+      units.push({ start, end: L[last].end })
     } else if (head) {
       // simple statement: consume continued lines while bracket depth remains open
       let e = head.end, depth = bracketDelta(head.start, head.end); i++
@@ -259,6 +265,9 @@ export const python = {
     const sig = src.slice(0, headEnd)
     const body = src.slice(headEnd)
     const inner = keyed(blocks(body, bodyIndent), body)
-    return { sig, open: '', close: '', body, units: inner, join: '' }
+    // spliceable: inner units carry byte ranges in `body`, so the engine rebuilds the
+    // class body by splicing merged methods back in — comments/blank lines between
+    // methods survive verbatim instead of being reflowed by a join.
+    return { sig, open: '', close: '', body, units: inner, join: '', spliceable: true }
   },
 }
