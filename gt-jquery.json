@@ -10,16 +10,16 @@
       "CONFLICT": 14,
       "BROKEN": 0,
       "CRASH": 1,
-      "ms": 10787
+      "ms": 12173
     },
     "icr": {
-      "MATCH": 1,
-      "MATCH-WS": 4,
-      "CLEAN-DIFF": 18,
+      "MATCH": 3,
+      "MATCH-WS": 6,
+      "CLEAN-DIFF": 14,
       "CONFLICT": 7,
       "BROKEN": 0,
       "CRASH": 0,
-      "ms": 3059
+      "ms": 1931
     }
   },
   "receipts": [
@@ -30,7 +30,7 @@
       "file": "src/manipulation.js",
       "gtTookOneSide": false,
       "mergiraf": "MATCH-WS",
-      "icr": "CLEAN-DIFF",
+      "icr": "MATCH-WS",
       "icrMethod": "structural"
     },
     {
@@ -60,7 +60,7 @@
       "file": "src/core.js",
       "gtTookOneSide": false,
       "mergiraf": "CONFLICT",
-      "icr": "CLEAN-DIFF",
+      "icr": "MATCH",
       "icrMethod": "structural"
     },
     {
@@ -130,7 +130,7 @@
       "file": "src/css.js",
       "gtTookOneSide": true,
       "mergiraf": "MATCH-WS",
-      "icr": "CLEAN-DIFF",
+      "icr": "MATCH-WS",
       "icrMethod": "structural"
     },
     {
@@ -270,7 +270,7 @@
       "file": "src/ajax.js",
       "gtTookOneSide": true,
       "mergiraf": "CLEAN-DIFF",
-      "icr": "CLEAN-DIFF",
+      "icr": "MATCH",
       "icrMethod": "structural"
     },
     {

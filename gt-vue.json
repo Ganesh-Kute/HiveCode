@@ -10,7 +10,7 @@
       "CONFLICT": 22,
       "BROKEN": 0,
       "CRASH": 0,
-      "ms": 84146
+      "ms": 98108
     },
     "icr": {
       "MATCH": 0,
@@ -19,7 +19,7 @@
       "CONFLICT": 18,
       "BROKEN": 0,
       "CRASH": 0,
-      "ms": 14732
+      "ms": 24563
     }
   },
   "receipts": [

@@ -34,6 +34,12 @@ function lines(src) {
 
 const HEAD = /^\s*(?:async\s+def|def)\s+([A-Za-z_]\w*)/
 const CLS = /^\s*class\s+([A-Za-z_]\w*)/
+// Continuation clauses of a COMPOUND statement. They are not independent statements —
+// an `else:` only means something relative to its `if`/`for`/`try` — so blocks() must
+// attach them to the preceding unit. Keying them separately let two sides' restructured
+// if/else halves interleave into adjacent dangling `else:` blocks (ConGra, transformers
+// file_utils.py: output had `else:` twice in a row — ast-invalid, heuristics blind).
+const COMPOUND_CONT = /^\s*(?:else\b|elif\b|except\b|finally\b)/
 
 function keyOf(text) {
   let m = text.match(HEAD); if (m) return 'def:' + m[1]
@@ -85,7 +91,27 @@ function blocks(src, base = 0) {
       // simple statement: consume continued lines while bracket depth remains open
       let e = head.end, depth = bracketDelta(head.start, head.end); i++
       while (i < L.length && (depth > 0 || /\\\s*$/.test(L[i - 1].text.replace(/\r?\n$/, '')))) { depth += bracketDelta(L[i].start, L[i].end); e = L[i].end; i++ }
-      units.push({ start, end: e })
+      // COMPOUND statement (if/for/while/try/with/else/…): the logical line ends with ':',
+      // so this header OWNS its indented body — one unit, like def/class. Without this the
+      // body lines become stray per-line units and the clause structure can't survive a
+      // structured merge coherently.
+      const logicalEndsColon = (() => {
+        const at = scannerAt(src)
+        let lastC = '', k = start
+        while (k < e) { const j = at(k); if (j > k) { if (src[k] !== '#') lastC = 's'; k = Math.min(e, j); continue } const c = src[k]; if (c !== ' ' && c !== '\t' && c !== '\r' && c !== '\n') lastC = c; k++ }
+        return lastC === ':'
+      })()
+      if (logicalEndsColon) {
+        const bodyHead = i - 1
+        while (i < L.length && (L[i].blank || L[i].indent > base)) i++
+        let last = i - 1
+        while (last > bodyHead && L[last].text.trim() === '') last--
+        e = L[last].end
+      }
+      // Continuation clause (else/elif/except/finally): not an independent statement —
+      // extend the PREVIOUS unit so the whole compound statement is one mergeable unit.
+      if (COMPOUND_CONT.test(head.text) && units.length) units[units.length - 1].end = e
+      else units.push({ start, end: e })
     }
   }
   return units
@@ -189,6 +215,47 @@ function lexTokens(src) {
   return out
 }
 
+// Token stream for the token-level MERGE tier, in an indentation language. Unlike
+// lexTokens (used by the intent layer, where whitespace is noise), this emits a NEWLINE
+// token for every real line break — a statement boundary. Without it a token splice can
+// weld two statements onto one physical line (`x = f(y)if z:`), which balance+indent
+// checks read as a single logical line and wrongly accept — a parse-guarantee violation
+// found by the ConGra corpus (ast.parse rejects it). With newlines as tokens, any spliced
+// run that crosses a line carries its break, so statements can never fuse. Newlines inside
+// strings/comments stay inside those tokens; a bare `\n` between brackets is still emitted
+// (harmless: it only ever makes the token diff finer, never coarser).
+function lexTokensNL(src) {
+  const at = scannerAt(src)
+  const out = []
+  const n = src.length
+  let i = 0, depth = 0, contBackslash = false
+  while (i < n) {
+    const c = src[i]
+    if (c === '\n') {
+      // Emit a NEWLINE token only at a real statement boundary: not inside brackets, not
+      // after a line-continuation backslash. Inside brackets a newline is insignificant
+      // (like whitespace) — emitting it there corrupts multi-line-call token interleaving.
+      if (depth === 0 && !contBackslash) out.push({ start: i, end: i + 1, k: '\n' })
+      contBackslash = false; i++; continue
+    }
+    if (c === ' ' || c === '\t' || c === '\r') { i++; continue }
+    const j = at(i)
+    if (j > i) {
+      contBackslash = false
+      if (c === '#') { i = j; continue }
+      out.push({ start: i, end: j, k: src.slice(i, j) }); i = j; continue
+    }
+    if (c === '\\') { contBackslash = true; i++; continue }
+    contBackslash = false
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') { if (depth > 0) depth-- }
+    if (/[A-Za-z_]/.test(c)) { let e = i + 1; while (e < n && /\w/.test(src[e])) e++; out.push({ start: i, end: e, k: src.slice(i, e) }); i = e; continue }
+    if (/[0-9]/.test(c)) { let e = i + 1; while (e < n && /[\w.]/.test(src[e])) e++; out.push({ start: i, end: e, k: src.slice(i, e) }); i = e; continue }
+    out.push({ start: i, end: i + 1, k: c }); i++
+  }
+  return out
+}
+
 // Reference-position identifier (not attribute access `.name`)?
 function isRefToken(src, t) {
   if (!/^[A-Za-z_]\w*$/.test(t.k)) return false
@@ -197,10 +264,30 @@ function isRefToken(src, t) {
   return !(p >= 0 && src[p] === '.')
 }
 
+// PER-STATEMENT bracket nesting — the soundness backstop the whole-file `balanced()`
+// (global) and `indentsOk()` (indentation) both miss. A token merge can splice a result
+// that is GLOBALLY balanced yet LOCALLY mis-nested: side A reformats `f(x)` to span lines
+// and a concurrent edit detaches the `)`, so `( ... { ... )` lands in one statement and a
+// stray `)` balances the count elsewhere. In VALID Python every logical statement is
+// independently balanced AND properly nested, so we check exactly that: segment the token
+// stream at depth-0 NEWLINE tokens (which lexTokensNL only emits between statements) and
+// require each segment's brackets to nest correctly. Sound — it never rejects valid Python
+// — and it closes the token-merge corruption class the ConGra corpus exposed via ast.parse.
+function stmtBracketsOk(src) {
+  const pair = { ')': '(', ']': '[', '}': '{' }
+  let stack = []
+  for (const t of lexTokensNL(src)) {
+    if (t.k === '\n') { if (stack.length) return false; continue } // statement boundary: must be closed
+    if (t.k === '(' || t.k === '[' || t.k === '{') stack.push(t.k)
+    else if (pair[t.k]) { if (stack.pop() !== pair[t.k]) return false }
+  }
+  return stack.length === 0
+}
+
 export const python = {
   id: 'python',
   exts: ['.py', '.pyi'],
-  parses: (src) => { const s = String(src == null ? '' : src); return balanced(s) && indentsOk(s) },
+  parses: (src) => { const s = String(src == null ? '' : src); return balanced(s) && stmtBracketsOk(s) && indentsOk(s) },
   parsesUnit: (src) => { const s = String(src); return balanced(s) && indentsOk(s) },
   units: (src) => keyed(blocks(String(src), 0), String(src)),
   declaredNames: (src) => {
@@ -243,10 +330,10 @@ export const python = {
     for (const t of spots.reverse()) out = out.slice(0, t.start) + newName + out.slice(t.end)
     return out
   },
-  // Finest granularity: token stream for the token-level inner merge. SAFE for Python
-  // only because parses() now checks indentation — a splice that lands a statement in
-  // the wrong block is refused at the whole-file gate, not shipped.
-  tokenize: (src) => lexTokens(String(src)),
+  // Finest granularity: token stream for the token-level inner merge. NEWLINE-aware
+  // (lexTokensNL) so a token splice can never weld two statements onto one line — the
+  // parse guarantee holds even where the indentation heuristic alone would be fooled.
+  tokenize: (src) => lexTokensNL(String(src)),
   // Descend into a class/def body so two agents editing DIFFERENT methods merge.
   splitUnit: (text) => {
     const src = String(text)

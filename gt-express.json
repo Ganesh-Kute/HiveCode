@@ -10,16 +10,16 @@
       "CONFLICT": 153,
       "BROKEN": 0,
       "CRASH": 1,
-      "ms": 34667
+      "ms": 36507
     },
     "icr": {
       "MATCH": 2,
-      "MATCH-WS": 8,
-      "CLEAN-DIFF": 30,
-      "CONFLICT": 148,
+      "MATCH-WS": 9,
+      "CLEAN-DIFF": 32,
+      "CONFLICT": 145,
       "BROKEN": 0,
       "CRASH": 0,
-      "ms": 10477
+      "ms": 11578
     }
   },
   "receipts": [
@@ -90,8 +90,8 @@
       "file": "test/app.router.js",
       "gtTookOneSide": false,
       "mergiraf": "CONFLICT",
-      "icr": "CONFLICT",
-      "icrMethod": "lines"
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
     },
     {
       "repo": "express",
@@ -180,8 +180,8 @@
       "file": "examples/auth/index.js",
       "gtTookOneSide": false,
       "mergiraf": "MATCH",
-      "icr": "CONFLICT",
-      "icrMethod": "lines"
+      "icr": "MATCH-WS",
+      "icrMethod": "structural"
     },
     {
       "repo": "express",
@@ -390,8 +390,8 @@
       "file": "lib/response.js",
       "gtTookOneSide": false,
       "mergiraf": "CONFLICT",
-      "icr": "CONFLICT",
-      "icrMethod": "lines"
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
     },
     {
       "repo": "express",
@@ -1130,7 +1130,7 @@
       "file": "test/res.sendfile.js",
       "gtTookOneSide": true,
       "mergiraf": "CONFLICT",
-      "icr": "CLEAN-DIFF",
+      "icr": "CONFLICT",
       "icrMethod": "lines"
     },
     {
@@ -1780,7 +1780,7 @@
       "file": "test/app.router.js",
       "gtTookOneSide": false,
       "mergiraf": "MATCH-WS",
-      "icr": "MATCH-WS",
+      "icr": "CLEAN-DIFF",
       "icrMethod": "structural"
     },
     {
@@ -1890,8 +1890,8 @@
       "file": "lib/express/static.js",
       "gtTookOneSide": true,
       "mergiraf": "CONFLICT",
-      "icr": "CONFLICT",
-      "icrMethod": "lines"
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural"
     },
     {
       "repo": "express",

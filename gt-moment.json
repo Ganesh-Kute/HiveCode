@@ -10,16 +10,16 @@
       "CONFLICT": 18,
       "BROKEN": 0,
       "CRASH": 0,
-      "ms": 8841
+      "ms": 10300
     },
     "icr": {
       "MATCH": 0,
-      "MATCH-WS": 2,
-      "CLEAN-DIFF": 9,
+      "MATCH-WS": 3,
+      "CLEAN-DIFF": 8,
       "CONFLICT": 17,
       "BROKEN": 0,
       "CRASH": 0,
-      "ms": 4281
+      "ms": 5740
     }
   },
   "receipts": [
@@ -170,7 +170,7 @@
       "file": "test/lang/fr.js",
       "gtTookOneSide": true,
       "mergiraf": "MATCH",
-      "icr": "CLEAN-DIFF",
+      "icr": "MATCH-WS",
       "icrMethod": "structural"
     },
     {

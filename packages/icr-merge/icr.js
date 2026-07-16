@@ -262,14 +262,24 @@ function tryInnerMerge(lang, baseText, aText, bText) {
   // and well-tested, so it goes first. Returns null when it can't safely resolve.
   const structural = tryStructuralInner(lang, baseText, aText, bText)
   if (structural != null) return structural
-  // FINEST GRANULARITY: a unit that can't be split structurally OR whose split still clashes —
-  // a single statement/expression both sides edited. Fall to a token-level 3-way merge, so two
-  // edits INSIDE one line (`foo(1, 2)` → one side edits each argument) merge the way a
-  // tree-sitter merge does, instead of conflicting on the whole statement. Validity is enforced
-  // by the caller (structuralMerge re-parses the whole file; an enclosing structural inner merge
-  // re-parses the reassembled unit), so a fragment valid only in context (a bare `return …`) is
-  // allowed through here and validated where it lands.
-  return tokenMerge(lang, baseText, aText, bText)
+  // Unit-level oracle: providers with a fragment validator (parsesUnit) get every finer-
+  // grained result checked HERE, so an invalid inner merge becomes an honest per-unit
+  // conflict (judge-resolvable) instead of poisoning the whole file into fallback.
+  // Providers without one (JS: a bare `return …` fragment is valid only in context) keep
+  // deferring to the whole-file gate, as before.
+  const unitOk = lang.parsesUnit ? (t) => t != null && lang.parsesUnit(t) : (t) => t != null
+  // LINE-LEVEL diff3: whole lines as atoms, so indentation travels with its line — the
+  // safe multi-hunk tier, and the workhorse for "both sides edited different lines of the
+  // same declaration" (the most common same-unit case in real repos).
+  const lm = lineMerge3(baseText, aText, bText)
+  if (unitOk(lm)) return lm
+  // FINEST GRANULARITY: a single line/statement both sides edited — token-level 3-way, so
+  // two edits INSIDE one line (`foo(1, 2)` → one side edits each argument) merge the way a
+  // tree-sitter merge does, instead of conflicting on the whole statement. For providers
+  // without parsesUnit, validity is enforced where the result lands (whole-file re-parse).
+  const tm = tokenMerge(lang, baseText, aText, bText)
+  if (tm != null && lang.parsesUnit && !lang.parsesUnit(tm)) return null
+  return tm
 }
 
 function tryStructuralInner(lang, baseText, aText, bText) {
@@ -418,19 +428,16 @@ function tokenHunks(bk, ok, maxD) {
   return hunks
 }
 
-const TOKEN3_MAX_TOKENS = 20000, TOKEN3_MAX_D = 4000
-function tokenMerge3(baseText, aText, bText, B, A, Bb) {
-  if (B.length > TOKEN3_MAX_TOKENS || A.length > TOKEN3_MAX_TOKENS || Bb.length > TOKEN3_MAX_TOKENS) return null
-  const bk = B.map((t) => t.k)
-  const ha = tokenHunks(bk, A.map((t) => t.k), TOKEN3_MAX_D)
-  const hb = tokenHunks(bk, Bb.map((t) => t.k), TOKEN3_MAX_D)
-  if (!ha || !hb) return null
-  // diff3 over hunks: identical hunks dedupe; disjoint hunks both apply; overlap → conflict.
-  // Two INSERTIONS at the same base point are ambiguous (order unknowable) → conflict.
-  const sameHunk = (x, y, oA, oB) => x.bs === y.bs && x.be === y.be && (x.oe - x.os) === (y.oe - y.os) &&
-    oA.slice(x.os, x.oe).every((k, i) => k === oB[y.os + i])
-  const ak = A.map((t) => t.k), bbk = Bb.map((t) => t.k)
-  const edits = [] // {bs,be, toks,text, os,oe}
+// diff3 over two hunk lists: identical hunks dedupe; disjoint hunks both apply; overlap
+// → conflict (null). Two INSERTIONS at the same base point are ambiguous (order
+// unknowable) → conflict. `ak`/`bbk` are each side's atom arrays (token keys or lines),
+// used to compare replacement content for the dedupe check. Returns [{h, side}] in base
+// order, or null. Symmetric: ordering decisions are content/position-based, never
+// side-identity-based, so merge(a,b) === merge(b,a) is preserved by construction.
+function diff3Interleave(ha, hb, ak, bbk) {
+  const sameHunk = (x, y) => x.bs === y.bs && x.be === y.be && (x.oe - x.os) === (y.oe - y.os) &&
+    ak.slice(x.os, x.oe).every((k, i) => k === bbk[y.os + i])
+  const edits = []
   let i = 0, j = 0
   while (i < ha.length || j < hb.length) {
     const x = ha[i], y = hb[j]
@@ -438,21 +445,34 @@ function tokenMerge3(baseText, aText, bText, B, A, Bb) {
       const overlap = x.bs < y.be && y.bs < x.be
       const samePointInsert = x.bs === y.bs && x.be === x.bs && y.be === y.bs
       if (overlap || samePointInsert) {
-        if (sameHunk(x, y, ak, bbk)) { edits.push({ h: x, toks: A, text: aText }); i++; j++; continue }
+        if (sameHunk(x, y)) { edits.push({ h: x, side: 'a' }); i++; j++; continue }
         return null
       }
-      if (x.bs < y.bs || (x.bs === y.bs && x.be <= y.bs && x.be < y.be)) { edits.push({ h: x, toks: A, text: aText }); i++ }
-      else { edits.push({ h: y, toks: Bb, text: bText }); j++ }
-    } else if (x) { edits.push({ h: x, toks: A, text: aText }); i++ }
-    else { edits.push({ h: y, toks: Bb, text: bText }); j++ }
+      if (x.bs < y.bs || (x.bs === y.bs && x.be <= y.bs && x.be < y.be)) { edits.push({ h: x, side: 'a' }); i++ }
+      else { edits.push({ h: y, side: 'b' }); j++ }
+    } else if (x) { edits.push({ h: x, side: 'a' }); i++ }
+    else { edits.push({ h: y, side: 'b' }); j++ }
   }
+  return edits
+}
+
+const TOKEN3_MAX_TOKENS = 20000, TOKEN3_MAX_D = 4000
+function tokenMerge3(baseText, aText, bText, B, A, Bb) {
+  if (B.length > TOKEN3_MAX_TOKENS || A.length > TOKEN3_MAX_TOKENS || Bb.length > TOKEN3_MAX_TOKENS) return null
+  const bk = B.map((t) => t.k)
+  const ha = tokenHunks(bk, A.map((t) => t.k), TOKEN3_MAX_D)
+  const hb = tokenHunks(bk, Bb.map((t) => t.k), TOKEN3_MAX_D)
+  if (!ha || !hb) return null
+  const edits = diff3Interleave(ha, hb, A.map((t) => t.k), Bb.map((t) => t.k))
+  if (!edits) return null
   // splice back-to-front, mapping token hunks to base char ranges; replacement bytes come
   // from the editing side's exact text between its tokens. A guard space prevents two word
   // tokens fusing at a splice boundary (parse validation downstream still has final say).
   const wordish = (c) => c && /[A-Za-z0-9_$]/.test(c)
   let out = baseText
   for (let e = edits.length - 1; e >= 0; e--) {
-    const { h, toks, text } = edits[e]
+    const { h, side } = edits[e]
+    const [toks, text] = side === 'a' ? [A, aText] : [Bb, bText]
     const cS = h.bs < B.length ? B[h.bs].start : baseText.length
     const cE = h.be > h.bs ? B[h.be - 1].end : cS
     let ins = h.oe > h.os ? text.slice(toks[h.os].start, toks[h.oe - 1].end) : ''
@@ -461,6 +481,36 @@ function tokenMerge3(baseText, aText, bText, B, A, Bb) {
     out = out.slice(0, cS) + ins + out.slice(cE)
   }
   return out
+}
+
+// LINE-LEVEL 3-way merge of one unit: the same Myers + diff3 interleave with WHOLE LINES
+// as atoms. Every replacement carries complete lines verbatim — indentation can never be
+// stranded or doubled, which is what makes it the safe multi-hunk tier for indentation
+// languages (the ConGra corpus showed token-splice arithmetic mangling Python indent when
+// hunks straddle newline tokens: `conn = None` landing at column 0, a doubled 16-space
+// indent). Token-level still runs after this for same-line micro-edits; this tier catches
+// the far more common "both sides edited different LINES of the same unit" cleanly.
+function splitLinesKeepEnds(text) {
+  const out = []
+  let i = 0
+  while (i < text.length) { let e = text.indexOf('\n', i); e = e < 0 ? text.length : e + 1; out.push(text.slice(i, e)); i = e }
+  return out
+}
+function lineMerge3(baseText, aText, bText) {
+  const L = splitLinesKeepEnds(baseText), La = splitLinesKeepEnds(aText), Lb = splitLinesKeepEnds(bText)
+  if (L.length > TOKEN3_MAX_TOKENS) return null
+  const ha = tokenHunks(L, La, TOKEN3_MAX_D)
+  const hb = tokenHunks(L, Lb, TOKEN3_MAX_D)
+  if (!ha || !hb) return null
+  const edits = diff3Interleave(ha, hb, La, Lb)
+  if (!edits) return null
+  const out = L.slice()
+  for (let e = edits.length - 1; e >= 0; e--) {
+    const { h, side } = edits[e]
+    const src = side === 'a' ? La : Lb
+    out.splice(h.bs, h.be - h.bs, ...src.slice(h.os, h.oe))
+  }
+  return out.join('')
 }
 
 // FORMAT-PRESERVING assembly: rebuild the merged file by splicing the merged units back
@@ -615,3 +665,6 @@ export function structuralMerge(base, a, b, opts = {}) {
     provenance: attribute(provenance),
   }
 }
+
+// Internal handles for diagnostic harnesses (not part of the public API).
+export const _internals = { tokenMerge, tokenMerge3, tokenHunks, tryInnerMerge, lineMerge3 }

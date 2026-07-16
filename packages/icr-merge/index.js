@@ -90,6 +90,16 @@ export function merge(base, ours, theirs, opts = {}) {
     // status 'fallback' (unparseable input / merge would not parse) → lines
   }
   const lm = merge3(base, ours, theirs)
+  // NO SILENT BROKEN, even on the line tier: diff3 makes no parse promise, but when all
+  // three INPUTS parse and the line-merged result does not, reporting it clean would ship
+  // exactly the failure ICR exists to prevent (found by replaying the ConGra corpus
+  // against CPython's ast). The text still carries both edits — it is just not "clean".
+  if (!lm.conflict && filename) {
+    const lang = languageFor(filename)
+    if (lang && !lang.parses(lm.text) && lang.parses(base) && lang.parses(ours) && lang.parses(theirs)) {
+      return { text: lm.text, clean: false, method: 'lines', warning: 'line-merged text does not parse; a human or judge should reconcile' }
+    }
+  }
   return { text: lm.text, clean: !lm.conflict, method: 'lines' }
 }
 
