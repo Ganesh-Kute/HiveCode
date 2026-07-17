@@ -82,12 +82,19 @@ function icrClean(file, b, o, t) {
   try { const r = merge(b, o, t, { filename: path.basename(file) }); return { clean: r.clean, method: r.method, crash: false } }
   catch { return { clean: false, crash: true } }
 }
+// UNION MODE: the multi-agent policy — the medium knows the two edits serve independent
+// tasks, so same-point insertions keep BOTH (deterministic order); parse gates still rule.
+function icrUnionClean(file, b, o, t) {
+  try { const r = merge(b, o, t, { filename: path.basename(file), unionInserts: true }); return { clean: r.clean, method: r.method, crash: false } }
+  catch { return { clean: false, crash: true } }
+}
 
 // --- per-task replay -----------------------------------------------------------------
 const repoDirName = (url) => url.split('/').pop()
 const summary = { pairs: 0, gitClean: 0, gitConflict: 0, filesGitConflict: 0 }
 const engines = {
   icr: { cleanOnGitConflict: 0, crash: 0, fileCleanOnGitConflict: 0 },
+  icrUnion: { cleanOnGitConflict: 0, crash: 0, fileCleanOnGitConflict: 0 },
   mergiraf: { cleanOnGitConflict: 0, crash: 0, fileCleanOnGitConflict: 0 },
 }
 const receipts = []
@@ -137,7 +144,7 @@ for (const task of tasks) {
     const A = featureFiles.get(names[i]), B = featureFiles.get(names[j])
     const common = [...A.keys()].filter((f) => B.has(f))
     summary.pairs++; taskPairs++
-    let gitOk = true, icrOk = true, mgOk = true, icrCrash = false, mgCrash = false
+    let gitOk = true, icrOk = true, unOk = true, mgOk = true, icrCrash = false, unCrash = false, mgCrash = false
     const fileRows = []
     for (const file of common) {
       const b = baseContent.get(file) ?? ''
@@ -146,28 +153,34 @@ for (const task of tasks) {
       const ext = path.extname(file) || '.txt'
       const g = gitMergeFile(ext, b, o, t)
       const ic = icrClean(file, b, o, t)
+      const un = icrUnionClean(file, b, o, t)
       const mg = mergirafClean(ext, b, o, t)
       if (!g) {
         gitOk = false
         summary.filesGitConflict++
         if (ic.clean) engines.icr.fileCleanOnGitConflict++
+        if (un.clean) engines.icrUnion.fileCleanOnGitConflict++
         if (mg.clean) engines.mergiraf.fileCleanOnGitConflict++
       }
       if (!ic.clean) icrOk = false
       if (ic.crash) icrCrash = true
+      if (!un.clean) unOk = false
+      if (un.crash) unCrash = true
       if (!mg.clean) mgOk = false
       if (mg.crash) mgCrash = true
-      fileRows.push({ file, git: g, icr: ic.clean, icrMethod: ic.method, mergiraf: mg.clean })
+      fileRows.push({ file, git: g, icr: ic.clean, icrMethod: ic.method, icrUnion: un.clean, mergiraf: mg.clean })
     }
     if (gitOk) summary.gitClean++
     else {
       summary.gitConflict++; taskGitConf++
       if (icrOk) engines.icr.cleanOnGitConflict++
+      if (unOk) engines.icrUnion.cleanOnGitConflict++
       if (mgOk) engines.mergiraf.cleanOnGitConflict++
     }
     if (icrCrash) engines.icr.crash++
+    if (unCrash) engines.icrUnion.crash++
     if (mgCrash) engines.mergiraf.crash++
-    receipts.push({ lib: task.lib, task: task.task, pair: [names[i], names[j]], git: gitOk, icr: icrOk, mergiraf: mgOk, files: fileRows })
+    receipts.push({ lib: task.lib, task: task.task, pair: [names[i], names[j]], git: gitOk, icr: icrOk, icrUnion: unOk, mergiraf: mgOk, files: fileRows })
   }
   const g = gold.per_task[`${task.lib}/${task.task}`]
   console.log(`  ${task.lib}/${task.task}: ${taskPairs} pairs, git-conflicts ${taskGitConf}${g ? ` (paper: ${g.conflicts}/${g.total})` : ''}`)

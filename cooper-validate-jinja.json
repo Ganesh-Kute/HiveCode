@@ -36,6 +36,28 @@
     "task": "task1621",
     "pair": [
       "feature1",
+      "feature5"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature1",
+      "feature6"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature1",
       "feature8"
     ],
     "pass": true,
@@ -46,8 +68,52 @@
   {
     "task": "task1621",
     "pair": [
+      "feature1",
+      "feature9"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature2",
+      "feature5"
+    ],
+    "pass": false,
+    "t1": false,
+    "t2": false,
+    "why": "\r | src\\jinja2\\loaders.py:35: TemplateNotFound\r | =========================== short test summary info ===========================\r | FAILED tests/test_loader.py::TestLoaders::test_filesystem_loader_overlapping_names\r | !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\r "
+  },
+  {
+    "task": "task1621",
+    "pair": [
       "feature2",
       "feature6"
+    ],
+    "pass": false,
+    "t1": false,
+    "t2": false,
+    "why": "\r | src\\jinja2\\loaders.py:35: TemplateNotFound\r | =========================== short test summary info ===========================\r | FAILED tests/test_loader.py::TestLoaders::test_filesystem_loader_overlapping_names\r | !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\r "
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature2",
+      "feature9"
+    ],
+    "pass": false,
+    "t1": false,
+    "t2": false,
+    "why": "\r | src\\jinja2\\loaders.py:37: TemplateNotFound\r | =========================== short test summary info ===========================\r | FAILED tests/test_loader.py::TestLoaders::test_filesystem_loader_overlapping_names\r | !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\r "
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature2",
+      "feature10"
     ],
     "pass": false,
     "t1": false,
@@ -68,8 +134,85 @@
   {
     "task": "task1621",
     "pair": [
+      "feature5",
+      "feature9"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature5",
+      "feature10"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature6",
+      "feature8"
+    ],
+    "pass": false,
+    "t1": false,
+    "t2": false,
+    "why": "\r | src\\jinja2\\loaders.py:548: TemplateNotFound\r | =========================== short test summary info ===========================\r | FAILED tests/test_loader.py::TestPathTransformation::test_dict_loader_path_transform\r | !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!"
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature6",
+      "feature9"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature6",
+      "feature10"
+    ],
+    "pass": false,
+    "t1": false,
+    "t2": false,
+    "why": "\r | src\\jinja2\\loaders.py:98: AttributeError\r | =========================== short test summary info ===========================\r | FAILED tests/test_loader.py::TestLoaders::test_dict_loader - AttributeError: ...\r | !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!\r | 1 "
+  },
+  {
+    "task": "task1621",
+    "pair": [
       "feature8",
       "feature9"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature8",
+      "feature10"
+    ],
+    "pass": true,
+    "t1": true,
+    "t2": true,
+    "why": ""
+  },
+  {
+    "task": "task1621",
+    "pair": [
+      "feature9",
+      "feature10"
     ],
     "pass": true,
     "t1": true,

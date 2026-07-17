@@ -52,7 +52,7 @@ export function merge(base, ours, theirs, opts = {}) {
   const filename = opts.filename || ''
   if (filename && supports(filename)) {
     let r = null
-    try { r = structuralMerge(base, ours, theirs, { filename, authors: opts.authors }) }
+    try { r = structuralMerge(base, ours, theirs, { filename, authors: opts.authors, unionInserts: opts.unionInserts }) }
     catch { r = null } // the engine must never take down the caller — fall to lines
     if (r && r.status === 'auto') {
       return {

@@ -30,7 +30,7 @@ function run(cmd, args, cwd, timeoutMs = 300000) {
 const rd = (p) => { try { return fs.readFileSync(p, 'utf8') } catch { return null } }
 
 const all = JSON.parse(rd('cooper-merge.json'))
-const wins = all.receipts.filter((r) => !r.git && r.icr && r.lib.includes(LIB)).slice(0, MAX)
+const wins = all.receipts.filter((r) => !r.git && r.icrUnion && r.lib.includes(LIB)).slice(0, MAX) // union-mode integrations (superset of plain icr wins)
 if (!wins.length) { console.error('no ICR-win pairs for', LIB); process.exit(2) }
 console.log(`validating ${wins.length} ICR-clean-on-git-conflict pairs for ${wins[0].lib}`)
 
@@ -109,7 +109,7 @@ for (const w of wins) {
     if (!B.has(f)) { fs.mkdirSync(path.dirname(path.join(wt, f)), { recursive: true }); fs.writeFileSync(path.join(wt, f), contentA); continue }
     const show = run('git', ['show', `${meta.commit}:${f}`], repo)
     const base = show.code === 0 ? show.out : ''
-    const m = merge(base, contentA, B.get(f), { filename: path.basename(f) })
+    const m = merge(base, contentA, B.get(f), { filename: path.basename(f), unionInserts: true })
     if (!m.clean) { assembled = false; break } // should not happen — receipts said clean
     fs.writeFileSync(path.join(wt, f), m.text)
   }
@@ -134,7 +134,7 @@ for (const w of wins) {
     for (const [f, contentA] of A) {
       if (!B.has(f)) { fs.writeFileSync(path.join(wt, f), contentA); continue }
       const show = run('git', ['show', `${meta.commit}:${f}`], repo)
-      const m = merge(show.code === 0 ? show.out : '', contentA, B.get(f), { filename: path.basename(f) })
+      const m = merge(show.code === 0 ? show.out : '', contentA, B.get(f), { filename: path.basename(f), unionInserts: true })
       fs.writeFileSync(path.join(wt, f), m.text)
     }
     return { ok: res.code === 0, why: res.code === 0 ? '' : res.out.split('\n').slice(-6).join(' | ').slice(0, 300) }
