@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "rewrites": [
     {
       "source": "/api/(.*)",
@@ -6,10 +7,7 @@
     },
     {
       "source": "/(.*)",
-      "destination": {
-        "type": "service",
-        "service": "livecode-relay"
-      }
+      "destination": "/$1"
     }
   ],
   "headers": [
@@ -30,11 +28,5 @@
         }
       ]
     }
-  ],
-  "services": {
-    "livecode-relay": {
-      "root": ".",
-      "buildCommand": "npm install"
-    }
-  }
+  ]
 }
