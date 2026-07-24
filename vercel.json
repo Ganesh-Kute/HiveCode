@@ -1,5 +1,7 @@
 {
   "version": 2,
+  "buildCommand": "echo \"Skipping build\"",
+  "installCommand": "npm install stripe --no-save || echo \"No install\"",
   "rewrites": [
     {
       "source": "/api/(.*)",
