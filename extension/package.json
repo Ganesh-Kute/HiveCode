@@ -113,6 +113,14 @@
       {
         "command": "hivecode.endRoom",
         "title": "Hivecode: End Room (forget & start fresh)"
+      },
+      {
+        "command": "hivecode.enterLicense",
+        "title": "Hivecode: Enter License Key"
+      },
+      {
+        "command": "hivecode.upgradePro",
+        "title": "Hivecode: Upgrade to Pro"
       }
     ],
     "keybindings": [
@@ -153,6 +161,11 @@
           "type": "string",
           "default": "",
           "description": "Access token for a secured (auth-required) relay. Leave blank for open rooms."
+        },
+        "hivecode.licenseKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Hivecode Pro license key. Get one at https://hivecode.vercel.app/pricing"
         }
       }
     }

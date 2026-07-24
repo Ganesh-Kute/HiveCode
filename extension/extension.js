@@ -114,6 +114,66 @@ let secrets = null     // vscode.SecretStorage — holds room private keys invis
 let store = null       // vscode.Memento (workspaceState) — durable invite list per room
 const activity = []    // recent activity log lines (newest first)
 
+// --- License / Pro tier ---
+// Validates the user's license key against the Hivecode API and caches the result.
+// The cache lives in VS Code's globalState so it persists across restarts and is
+// refreshed at most once per day to avoid hammering the API on every startup.
+const VALIDATE_URL = 'https://hivecode.vercel.app/api/validate'
+const LICENSE_CACHE_TTL = 24 * 60 * 60 * 1000 // re-validate once per day
+let proTier = false // true when a valid Pro license is active
+
+async function validateLicense(globalState) {
+  const key = vscode.workspace.getConfiguration('hivecode').get('licenseKey') || ''
+  if (!key) { proTier = false; return }
+
+  // Check cache first
+  const cached = globalState.get('hivecode.licenseCache')
+  if (cached && cached.key === key && (Date.now() - cached.at) < LICENSE_CACHE_TTL) {
+    proTier = cached.valid
+    return
+  }
+
+  // Call the validation API
+  try {
+    const https = require('https')
+    const body = JSON.stringify({ licenseKey: key })
+    const data = await new Promise((resolve, reject) => {
+      const req = https.request(VALIDATE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        let chunks = ''
+        res.on('data', (c) => chunks += c)
+        res.on('end', () => { try { resolve(JSON.parse(chunks)) } catch { reject(new Error('bad json')) } })
+      })
+      req.on('error', reject)
+      req.write(body)
+      req.end()
+    })
+    proTier = data.valid === true
+    globalState.update('hivecode.licenseCache', { key, valid: proTier, plan: data.plan, at: Date.now() })
+  } catch {
+    // Network error — use cached result if available, otherwise assume free tier
+    proTier = cached ? cached.valid : false
+  }
+}
+
+function requirePro(featureName) {
+  if (proTier) return true
+  vscode.window.showInformationMessage(
+    `${featureName} requires Hivecode Pro. Upgrade at https://hivecode.vercel.app/pricing`,
+    'Enter License Key', 'Get Pro'
+  ).then((choice) => {
+    if (choice === 'Enter License Key') vscode.commands.executeCommand('hivecode.enterLicense')
+    if (choice === 'Get Pro') vscode.env.openExternal(vscode.Uri.parse('https://hivecode.vercel.app/pricing'))
+  })
+  return false
+}
+
+// Pro-gated limits
+const FREE_MAX_AGENTS = 2
+const FREE_MAX_DURATION_MS = 60 * 60 * 1000 // 1 hour
+
 function activate(context) {
   secrets = context.secrets
   store = context.workspaceState
@@ -122,6 +182,9 @@ function activate(context) {
   status.show()
 
   panel = new HivecodeViewProvider()
+
+  // Validate license on startup (non-blocking)
+  validateLicense(context.globalState)
 
   context.subscriptions.push(
     status,
@@ -137,7 +200,27 @@ function activate(context) {
     vscode.commands.registerCommand('hivecode.restore', restoreCommand),
     vscode.commands.registerCommand('hivecode.revertAgent', revertAgentCommand),
     vscode.commands.registerCommand('hivecode.undo', () => { const r = session && session.undoLast(); if (r && r.error) vscode.window.showInformationMessage('Hivecode: ' + r.error) }),
-    vscode.commands.registerCommand('hivecode.redo', () => { const r = session && session.redoLast(); if (r && r.error) vscode.window.showInformationMessage('Hivecode: ' + r.error) })
+    vscode.commands.registerCommand('hivecode.redo', () => { const r = session && session.redoLast(); if (r && r.error) vscode.window.showInformationMessage('Hivecode: ' + r.error) }),
+    // --- Pro tier commands ---
+    vscode.commands.registerCommand('hivecode.enterLicense', async () => {
+      const key = await vscode.window.showInputBox({
+        prompt: 'Enter your Hivecode Pro license key',
+        placeHolder: 'HIVE-PRO-xxxxxxxxxxxx',
+        password: false,
+      })
+      if (key) {
+        await vscode.workspace.getConfiguration('hivecode').update('licenseKey', key.trim(), vscode.ConfigurationTarget.Global)
+        await validateLicense(context.globalState)
+        if (proTier) {
+          vscode.window.showInformationMessage('✅ Hivecode Pro activated! All features unlocked.')
+        } else {
+          vscode.window.showWarningMessage('Invalid or expired license key. Check your key and try again.')
+        }
+      }
+    }),
+    vscode.commands.registerCommand('hivecode.upgradePro', () => {
+      vscode.env.openExternal(vscode.Uri.parse('https://hivecode.vercel.app/pricing'))
+    })
   )
 
   // Auto-resume the LAST room for this folder, so closing/reopening the IDE drops
@@ -341,6 +424,7 @@ function pushState() {
     me: session ? session.me : null,
     canInvite: !!(session && session.keys), // this window hosts a secured room -> can invite/manage
     secured: !!(session && session.secured),
+    proTier,
     members,
     activity,
     chat,
@@ -1405,10 +1489,14 @@ function getHtml() {
   .note{font-size:10.5px;color:var(--dim);margin:6px 2px 0;line-height:1.5}
   .note b{color:var(--acc)}
   .hidden{display:none}
+  .pro-badge{margin-left:auto;font-family:var(--mono);font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:6px;cursor:pointer;letter-spacing:.04em;text-transform:uppercase}
+  .pro-badge.pro{background:var(--accdim);color:var(--acc)}
+  .pro-badge.free{background:rgba(255,255,255,.06);color:var(--mut)}
 </style></head><body>
   <div class="brand">
     <svg viewBox="0 0 24 24" fill="none"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffc24d"/><stop offset="1" stop-color="#ff8a3d"/></linearGradient></defs><path d="M12 2.6l8.2 4.75v9.3L12 21.4 3.8 16.65v-9.3z" stroke="url(#lg)" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 7.4l4 2.3v4.6L12 16.6 8 14.3V9.7z" fill="url(#lg)" fill-opacity=".25" stroke="url(#lg)" stroke-width="1.4" stroke-linejoin="round"/></svg>
     Hivecode
+    <span id="tier" class="pro-badge free">Free</span>
   </div>
   <div class="status"><span id="dot" class="dot off"></span><span id="statustext">Not in a session</span><span id="roomlbl" class="rm"></span></div>
 
@@ -1476,6 +1564,9 @@ function getHtml() {
     $('dot').className = 'dot ' + (s.connected ? 'on' : 'off');
     $('statustext').textContent = s.connected ? 'Connected' : 'Not in a session';
     $('roomlbl').textContent = s.connected ? (s.room || '') : '';
+    $('tier').className = 'pro-badge ' + (s.proTier ? 'pro' : 'free');
+    $('tier').textContent = s.proTier ? 'Pro' : 'Free';
+    $('tier').onclick = () => send(s.proTier ? 'upgradePro' : 'upgradePro'); // opens pricing page either way
     $('offControls').className = s.connected ? 'hidden' : '';
     $('onControls').className = s.connected ? '' : 'hidden';
     $('inviteControls').className = s.canInvite ? '' : 'hidden';
