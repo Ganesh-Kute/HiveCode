@@ -1284,3 +1284,4 @@ prompts get ~80% of the way; enforcement is what makes a layer foundational.
   40.8% of the measured multi-agent coordination tax at 96.2% test-verified precision —
   3.7× mergiraf** — plus live swarm runs whose failures defined the roadmap:
   advisory → structural.
+
