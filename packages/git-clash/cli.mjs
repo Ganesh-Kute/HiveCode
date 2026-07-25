@@ -460,7 +460,7 @@ function renderReport(results) {
   console.log(`  ${c.cyan}${c.bold}      transition your agent fleet from "Advisory Isolation"${c.reset}`)
   console.log(`  ${c.cyan}${c.bold}      to "Pre-Write Admission Control."${c.reset}`)
   console.log()
-  console.log(`  ${c.cyan}${c.bold}  >>> Deploy the Hivecode MCP Coordination Server:${c.reset}`)
+  console.log(`  ${c.cyan}${c.bold}  >>> Install the Hivecode Pre-Write Daemon ($29/committer/mo):${c.reset}`)
   console.log(`  ${c.cyan}${c.bold}      ${c.white}https://hivecode.vercel.app${c.reset}`)
   console.log()
   console.log(`  ${c.white}${'═'.repeat(60)}${c.reset}`)
