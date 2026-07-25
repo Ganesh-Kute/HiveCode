@@ -443,8 +443,9 @@ const server = http.createServer((req, res) => {
       '/favicon.ico': 'favicon.ico',
       '/favicon-32.png': 'favicon-32.png',
       '/apple-touch-icon.png': 'apple-touch-icon.png',
+      '/Hivecode___ICR.mp4': 'Hivecode___ICR.mp4'
     }
-    const TYPES = { '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon', '.png': 'image/png', '.svg': 'image/svg+xml' }
+    const TYPES = { '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon', '.png': 'image/png', '.svg': 'image/svg+xml', '.mp4': 'video/mp4' }
     const file = STATIC[(req.url || '').split('?')[0]]
     if (file) {
       try {
