@@ -1,0 +1,19 @@
+{
+  "name": "git-clash",
+  "version": "1.0.0",
+  "description": "Forensic Semantic Drift Analyzer for Multi-Agent Repos",
+  "main": "dist/git-clash.mjs",
+  "bin": {
+    "git-clash": "./dist/git-clash.mjs"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "npx esbuild cli.mjs --bundle --platform=node --format=esm --outfile=dist/git-clash.mjs --banner:js=\"#!/usr/bin/env node\"",
+    "prepublishOnly": "npm run build"
+  },
+  "author": "Hivecode",
+  "license": "MIT",
+  "dependencies": {
+    "acorn": "^8.17.0"
+  }
+}
