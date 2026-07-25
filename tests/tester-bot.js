@@ -17,7 +17,7 @@
 //   EVENT TASK <id> | by=<name> | <text>
 
 import fs from 'fs'
-import { startSync, parseLink } from './sync.js'
+import { startSync, parseLink } from '../sync.js'
 
 const [LINK = '', DIR = '.', OUTBOX = '', NAME = 'testai'] = process.argv.slice(2)
 const ME = NAME

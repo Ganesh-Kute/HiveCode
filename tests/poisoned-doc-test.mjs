@@ -11,8 +11,8 @@ import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
 import * as Y from 'yjs'; import { WebsocketProvider } from 'y-websocket'; import { WebSocket } from 'ws'
-import { startSync } from './sync.js'
-import { verifyReceipt } from './substrate.js'
+import { startSync } from '../sync.js'
+import { verifyReceipt } from '../substrate.js'
 
 const PORT = 1341, FSEP = String.fromCharCode(1)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

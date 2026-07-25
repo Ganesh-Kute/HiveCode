@@ -11,6 +11,7 @@
 // └─────────────────────────────────────────────────────────────────────────┘
 
 import { merge, structuralMerge, supports } from '../icr-merge/index.js'
+import { execSync } from 'child_process'
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 const c = {
@@ -287,6 +288,70 @@ function await_import_merge3() {
   }
 }
 
+// ── Git integration ─────────────────────────────────────────────────────────
+
+function runGit(cmd) {
+  try {
+    return execSync(`git ${cmd}`, { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8' }).trim()
+  } catch (e) {
+    return null
+  }
+}
+
+function runScan(baseRef, headRef) {
+  console.log(`  ${c.dim}Scanning merge: ${c.magenta}${headRef}${c.dim} into ${c.magenta}${baseRef}${c.reset}`)
+  
+  const mergeBase = runGit(`merge-base ${baseRef} ${headRef}`)
+  if (!mergeBase) {
+    console.log(`  ${c.red}Error: Could not find merge base between ${baseRef} and ${headRef}${c.reset}`)
+    process.exit(1)
+  }
+
+  const diffFiles = runGit(`diff --name-only ${mergeBase}...${headRef}`)
+  if (!diffFiles) {
+    console.log(`  ${c.green}No files changed in this branch.${c.reset}`)
+    return
+  }
+
+  const files = diffFiles.split('\\n').map(f => f.trim()).filter(f => f && supports(f))
+  console.log(`  ${c.dim}Found ${files.length} supported files modified.${c.reset}\\n`)
+
+  if (files.length === 0) return
+
+  const results = []
+  for (const file of files) {
+    const baseText = runGit(`show ${mergeBase}:${file}`) || ''
+    const oursText = runGit(`show ${baseRef}:${file}`) || ''
+    const theirsText = runGit(`show ${headRef}:${file}`) || ''
+
+    if (!baseText && !oursText && !theirsText) continue
+    if (baseText === oursText && baseText === theirsText) continue
+    
+    const scenario = {
+      name: `Drift Analysis`,
+      file,
+      branchA: baseRef,
+      branchB: headRef,
+      description: `Analyzing concurrent mutations in ${file}`,
+      base: baseText,
+      ours: oursText,
+      theirs: theirsText,
+      failureType: 'SEMANTIC_DRIFT'
+    }
+    
+    results.push(analyzeScenario(scenario))
+  }
+
+  renderReport(results)
+  
+  // Fail the CI build if there is semantic drift
+  const phantoms = results.filter(r => r.phantomDetected)
+  if (phantoms.length > 0) {
+    console.log(`\\n  ${c.bgRed}${c.white}${c.bold} CI PIPELINE BLOCKED ${c.reset} ${c.red}Fix the semantic drift before merging.${c.reset}\\n`)
+    process.exit(1)
+  }
+}
+
 
 // ── Report renderer ─────────────────────────────────────────────────────────
 
@@ -420,7 +485,8 @@ function renderReport(results) {
 function main() {
   banner()
 
-  const isDemo = process.argv.includes('--demo') || process.argv.length <= 2
+  const args = process.argv.slice(2)
+  const isDemo = args.includes('--demo') || args.length === 0
 
   if (isDemo) {
     console.log(`  ${c.dim}Running built-in demo: 3 real-world multi-agent collision scenarios...${c.reset}`)
@@ -429,9 +495,16 @@ function main() {
 
     const results = SCENARIOS.map(analyzeScenario)
     renderReport(results)
+  } else if (args.includes('--scan')) {
+    const baseArg = args.find(a => a.startsWith('--base='))
+    const headArg = args.find(a => a.startsWith('--head='))
+    
+    const baseRef = baseArg ? baseArg.split('=')[1] : 'main'
+    const headRef = headArg ? headArg.split('=')[1] : 'HEAD'
+    
+    runScan(baseRef, headRef)
   } else {
-    console.log(`  ${c.yellow}Full repository scan mode coming soon.${c.reset}`)
-    console.log(`  ${c.dim}For now, run with --demo to see the analysis in action.${c.reset}`)
+    console.log(`  ${c.yellow}Usage: npx git-clash --demo OR npx git-clash --scan --base=main --head=feature-branch${c.reset}`)
   }
 }
 

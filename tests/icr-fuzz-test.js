@@ -7,7 +7,7 @@
 // Generates random base files, two independent random edits, merges them, and checks the
 // invariant — thousands of times. On any violation it prints the exact triple that broke it.
 
-import { structuralMerge, parses } from './icr.js'
+import { structuralMerge, parses } from '../icr.js'
 
 const ITER = 4000
 let failed = 0, autos = 0, conflicts = 0, fallbacks = 0

@@ -9,7 +9,7 @@ import { spawn } from 'child_process'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { sign } from './token.js'
+import { sign } from '../token.js'
 
 const SECRET = 'test-secret-123'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

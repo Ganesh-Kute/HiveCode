@@ -7,7 +7,7 @@
 //
 //   node icr-test.js
 
-import { structuralMerge, parses } from './icr.js'
+import { structuralMerge, parses } from '../icr.js'
 
 let failed = 0
 const assert = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }

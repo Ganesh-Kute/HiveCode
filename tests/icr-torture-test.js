@@ -14,7 +14,7 @@
 //
 //   node icr-torture-test.js [seed]
 
-import { structuralMerge } from './icr.js'
+import { structuralMerge } from '../icr.js'
 
 const SEED = Number(process.argv[2] || 12345)
 let failed = 0, ran = 0

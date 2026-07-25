@@ -8,7 +8,7 @@
 // forms and oscillated. We check: symmetry, fixed-point, absorption, and a multi-round
 // random simulation — plus the specific routes scenario that broke before.
 
-import { structuralMerge } from './icr.js'
+import { structuralMerge } from '../icr.js'
 
 let failed = 0
 const assert = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }

@@ -15,7 +15,7 @@ import { spawn } from 'child_process'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { sign, fileRoom } from './token.js'
+import { sign, fileRoom } from '../token.js'
 
 process.setMaxListeners(50)
 const PORT = 1271

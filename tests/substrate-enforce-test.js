@@ -10,8 +10,8 @@ import { spawn } from 'child_process'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { fileRoom } from './token.js'
-import { genIdentity, authorChange, verifyReceipt } from './substrate.js'
+import { fileRoom } from '../token.js'
+import { genIdentity, authorChange, verifyReceipt } from '../substrate.js'
 
 const BASE = 'provproj'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

@@ -8,7 +8,7 @@
 import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
-import { startSync } from './sync.js'
+import { startSync } from '../sync.js'
 
 const PORT = 1317
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

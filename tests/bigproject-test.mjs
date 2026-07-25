@@ -14,8 +14,8 @@
 import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
-import { startSync } from './sync.js'
-import { contentHash } from './substrate.js'
+import { startSync } from '../sync.js'
+import { contentHash } from '../substrate.js'
 
 const PORT = 1331, N = 5
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

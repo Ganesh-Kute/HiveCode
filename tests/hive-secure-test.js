@@ -16,8 +16,8 @@ import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { startSync } from './sync.js'
-import { sign, makeSecuredRoomId, fileRoom } from './token.js'
+import { startSync } from '../sync.js'
+import { sign, makeSecuredRoomId, fileRoom } from '../token.js'
 
 const PORT = 1274
 const RELAY = `ws://localhost:${PORT}`

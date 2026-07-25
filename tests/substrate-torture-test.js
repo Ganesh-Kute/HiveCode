@@ -17,8 +17,8 @@
 import {
   genIdentity, authorChange, publish, emptyState,
   verifyProvenance, verifyReceipt, verifyChain, headOk, contentHealth, contentHash,
-} from './substrate.js'
-import { parses, languageFor } from './icr.js'
+} from '../substrate.js'
+import { parses, languageFor } from '../icr.js'
 
 const SEED = Number(process.env.SEED || 20260703)
 const ROUNDS = Number(process.env.ROUNDS || 300)

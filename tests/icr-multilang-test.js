@@ -6,7 +6,7 @@
 //
 //   node icr-multilang-test.js
 
-import { structuralMerge, supports } from './icr.js'
+import { structuralMerge, supports } from '../icr.js'
 
 let failed = 0
 const ok = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }

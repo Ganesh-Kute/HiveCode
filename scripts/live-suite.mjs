@@ -9,8 +9,8 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
 import crypto from 'crypto'
-import { startSync } from './sync.js'
-import { verifyReceipt, headOk, contentHash, genIdentity, authorChange } from './substrate.js'
+import { startSync } from '../sync.js'
+import { verifyReceipt, headOk, contentHash, genIdentity, authorChange } from '../substrate.js'
 
 const relay = 'wss://livecode-xoss.onrender.com'
 const room = 'room-' + crypto.randomBytes(10).toString('hex')

@@ -1,6 +1,6 @@
 // Raw audit of the multi-file test rooms in room-clean-run-9 (prod relay).
 import * as Y from 'yjs'; import { WebsocketProvider } from 'y-websocket'; import { WebSocket } from 'ws'
-import { verifyReceipt } from './substrate.js'
+import { verifyReceipt } from '../substrate.js'
 const FSEP = String.fromCharCode(1)
 const RELAY = 'wss://livecode-xoss.onrender.com', ROOM = 'room-clean-run-9'
 const FILES = process.argv.slice(2).length ? process.argv.slice(2) : ['src/app.js', 'lib/util.js', 'src/api/users.js']

@@ -1,7 +1,7 @@
 // One-shot SIGNED seeder: joins the room as its own peer (own folder, so it can never
 // collide with the lead's MCP client), writes the test file with full provenance, exits.
 import fs from 'fs'; import os from 'os'; import path from 'path'
-import { startSync } from './sync.js'
+import { startSync } from '../sync.js'
 
 process.env.HIVE_PROVENANCE = 'on'
 process.env.HIVE_FORK_GATE = 'on'

@@ -1,0 +1,21 @@
+name: CI Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  drift_analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Hivecode Semantic Drift Gate
+        uses: ./
+        with:
+          base_sha: ${{ github.event.pull_request.base.sha || github.sha }}
+          head_sha: ${{ github.event.pull_request.head.sha || github.sha }}

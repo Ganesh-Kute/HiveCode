@@ -567,10 +567,42 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
   return opts.trimLeadingBlank === false ? out : out.replace(/^\n+/, '')
 }
 
+// --- HyperAST Caching -----------------------------------------------------------
+// A memory cache to bypass redundant AST parsing. This gives O(1) lookups for
+// unchanged structures during interleaved diff3 merges, dropping engine execution
+// time drastically on large files.
+const providerCache = new WeakMap();
+
+function withHyperAST(lang) {
+  if (providerCache.has(lang)) return providerCache.get(lang);
+
+  const cache = new Map();
+  const get = (op, text, fn) => {
+    if (typeof text !== 'string' || text.length > 500000) return fn(); // Bypass for massive strings
+    const key = op + ':' + text;
+    let res = cache.get(key);
+    if (res !== undefined) return res;
+    res = fn();
+    if (cache.size > 10000) cache.clear();
+    cache.set(key, res);
+    return res;
+  };
+
+  const wrapped = Object.create(lang);
+  if (lang.parses) wrapped.parses = (src) => get('parses', src, () => lang.parses(src));
+  if (lang.units) wrapped.units = (src) => get('units', src, () => lang.units(src));
+  if (lang.tokenize) wrapped.tokenize = (src) => get('tokenize', src, () => lang.tokenize(src));
+  if (lang.splitUnit) wrapped.splitUnit = (src) => get('splitUnit', src, () => lang.splitUnit(src));
+  if (lang.declaredNames) wrapped.declaredNames = (src) => get('declaredNames', src, () => lang.declaredNames(src));
+  
+  providerCache.set(lang, wrapped);
+  return wrapped;
+}
+
 // --- public API -----------------------------------------------------------------
 
 // Does this source parse under the given (or default JS) language?
-export function parses(src, lang = javascript) { return lang.parses(src) }
+export function parses(src, lang = javascript) { return withHyperAST(lang).parses(src) }
 
 // 3-way STRUCTURAL + INTENT merge of `a` and `b` against common ancestor `base`.
 // opts: { lang } a provider, or { filename } to pick one by extension (defaults to JS).
@@ -581,7 +613,8 @@ export function parses(src, lang = javascript) { return lang.parses(src) }
 //   'fallback'          — couldn't merge safely (unparseable input, or the merge wouldn't
 //                         parse, or unsupported language); caller keeps both. Never broken.
 export function structuralMerge(base, a, b, opts = {}) {
-  const lang = opts.lang || (opts.filename ? languageFor(opts.filename) : javascript) || javascript
+  let lang = opts.lang || (opts.filename ? languageFor(opts.filename) : javascript) || javascript
+  lang = withHyperAST(lang)
 
   if (!lang.parses(base) || !lang.parses(a) || !lang.parses(b))
     return { status: 'fallback', text: null, conflicts: [], reason: 'unparseable input' }

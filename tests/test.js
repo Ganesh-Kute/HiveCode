@@ -6,8 +6,8 @@
 
 import * as Y from 'yjs'
 import crypto from 'crypto'
-import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3, summarizeChange, hasConflictMarkers } from './core.js'
-import { sign, verify, roomMatches, scopeForRoom, isSafeRelPath, FILE_SEP, keyFingerprint, roomFingerprint, isSecuredRoom, makeSecuredRoomId, pathAllowed } from './token.js'
+import { applyDiff, safeBump, lockHeldByOther, lockOrder, negotiate, mergeEdit, merge3, summarizeChange, hasConflictMarkers } from '../core.js'
+import { sign, verify, roomMatches, scopeForRoom, isSafeRelPath, FILE_SEP, keyFingerprint, roomFingerprint, isSecuredRoom, makeSecuredRoomId, pathAllowed } from '../token.js'
 
 let passed = 0
 let failed = 0

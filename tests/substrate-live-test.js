@@ -10,8 +10,8 @@ import { spawn } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { startSync } from './sync.js'
-import { verifyReceipt } from './substrate.js'
+import { startSync } from '../sync.js'
+import { verifyReceipt } from '../substrate.js'
 
 const PORT = 1273
 const ROOM = 'subproj'

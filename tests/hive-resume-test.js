@@ -9,8 +9,8 @@ import { spawn } from 'child_process'
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
-import { startSync } from './sync.js'
-import { sign, makeSecuredRoomId } from './token.js'
+import { startSync } from '../sync.js'
+import { sign, makeSecuredRoomId } from '../token.js'
 
 const PORT = 1284
 const RELAY = `ws://localhost:${PORT}`

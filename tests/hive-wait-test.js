@@ -7,7 +7,7 @@
 import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
-import { startSync } from './sync.js'
+import { startSync } from '../sync.js'
 
 const PORT = 1246
 const RELAY = `ws://localhost:${PORT}`

@@ -6,8 +6,8 @@
 //   node icr-merge-test.js
 
 import { icrMerge3 } from './icr-merge.js'
-import { merge3 } from './core.js'
-import { parses } from './icr.js'
+import { merge3 } from '../core.js'
+import { parses } from '../icr.js'
 
 let failed = 0
 const assert = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }

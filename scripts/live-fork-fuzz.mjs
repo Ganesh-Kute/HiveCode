@@ -10,7 +10,7 @@
 // Seeded PRNG so a failing run is reproducible: `node live-fork-fuzz.mjs <seed> <trials>`.
 import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
-import { startSync } from './sync.js'
+import { startSync } from '../sync.js'
 
 const SEED = Number(process.argv[2] || 1234)
 const TRIALS = Number(process.argv[3] || 12)

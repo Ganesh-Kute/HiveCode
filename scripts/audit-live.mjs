@@ -2,7 +2,7 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { verifyReceipt, headOk, contentHash } from './substrate.js'
+import { verifyReceipt, headOk, contentHash } from '../substrate.js'
 
 const relay = 'wss://livecode-xoss.onrender.com'
 const room = 'room-0758W50NsPQdqmNERgapp.js'

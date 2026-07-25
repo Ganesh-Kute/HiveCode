@@ -16,9 +16,9 @@ import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { startSync } from './sync.js'
-import { fileRoom } from './token.js'
-import { genIdentity, authorChange, headOk, contentHash } from './substrate.js'
+import { startSync } from '../sync.js'
+import { fileRoom } from '../token.js'
+import { genIdentity, authorChange, headOk, contentHash } from '../substrate.js'
 
 const PORT = 1291
 const ROOM = 'authproj'

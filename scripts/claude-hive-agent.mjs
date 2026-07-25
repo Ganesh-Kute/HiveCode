@@ -5,7 +5,7 @@
 //
 //   node claude-hive-agent.mjs "wss://relay|room"
 //
-import { startSync, parseLink } from './sync.js'
+import { startSync, parseLink } from '../sync.js'
 
 const LINK = process.argv[2] || 'wss://livecode-xoss.onrender.com|room-k_SUz4ryCDfpT4oPKw'
 const { relay, room, token } = parseLink(LINK)

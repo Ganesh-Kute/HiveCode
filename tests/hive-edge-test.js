@@ -22,8 +22,8 @@ import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { startSync } from './sync.js'
-import { sign, fileRoom } from './token.js'
+import { startSync } from '../sync.js'
+import { sign, fileRoom } from '../token.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let failed = 0

@@ -11,7 +11,7 @@
 // coordinator: there is no function that assigns work; each agent only reads/writes the
 // shared map and decides for itself.
 
-import { makeCoordinator } from './hive-coord.js'
+import { makeCoordinator } from '../hive-coord.js'
 
 let failed = 0
 const assert = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }

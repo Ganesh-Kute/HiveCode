@@ -10,7 +10,7 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { makeCoordinator } from './hive-coord.js'
+import { makeCoordinator } from '../hive-coord.js'
 
 const RELAY = 'wss://livecode-xoss.onrender.com'
 const ROOM = 'hive-2agent-live-demo'

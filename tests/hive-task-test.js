@@ -8,7 +8,7 @@
 //   node hive-task-test.js
 
 import { spawn } from 'child_process'
-import { startSync } from './sync.js'
+import { startSync } from '../sync.js'
 
 const PORT = 1245
 const RELAY = `ws://localhost:${PORT}`

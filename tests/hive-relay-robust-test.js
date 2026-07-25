@@ -9,7 +9,7 @@ import crypto from 'crypto'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { sign, makeSecuredRoomId, fileRoom } from './token.js'
+import { sign, makeSecuredRoomId, fileRoom } from '../token.js'
 
 const PORT = 1314
 const RELAY = `ws://localhost:${PORT}`

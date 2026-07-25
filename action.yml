@@ -1,0 +1,27 @@
+name: 'Hivecode Semantic Drift Gate'
+description: 'Blocks PRs if the Semantic Drift Index (Ds) > 0.15 or if Phantom Regressions are detected.'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  base_sha:
+    description: 'The base commit SHA'
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  head_sha:
+    description: 'The head commit SHA'
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Run git-clash engine
+      run: node packages/git-clash/cli.mjs --scan --base=${{ inputs.base_sha }} --head=${{ inputs.head_sha }}
+      shell: bash

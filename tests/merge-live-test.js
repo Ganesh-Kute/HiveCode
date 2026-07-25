@@ -13,7 +13,7 @@ import { spawn } from 'child_process'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { applyDiff } from './core.js'
+import { applyDiff } from '../core.js'
 
 const PORT = 1239
 const RELAY = `ws://localhost:${PORT}`

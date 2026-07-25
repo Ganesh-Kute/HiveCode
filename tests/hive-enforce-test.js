@@ -12,7 +12,7 @@ import { spawn } from 'child_process'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { WebSocket } from 'ws'
-import { sign, fileRoom } from './token.js'
+import { sign, fileRoom } from '../token.js'
 
 const PORT = 1259
 const SECRET = 'enforce-secret'
