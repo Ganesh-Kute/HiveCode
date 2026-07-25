@@ -1,0 +1,20 @@
+{
+  "repo": "mongoose",
+  "scannedMerges": 400,
+  "replayed": 105,
+  "filesChecked": 224,
+  "textualConflicts": 136,
+  "cleanLineMerges": 88,
+  "findings": [
+    {
+      "repo": "mongoose",
+      "merge": "15538b0d42a4",
+      "date": "2026-01-23",
+      "file": "lib/types/arraySubdocument.js",
+      "grade": "SAME-DECL FUSION",
+      "conflicts": [
+        "assign:ArraySubdocument.prototype.$__setParent"
+      ]
+    }
+  ]
+}

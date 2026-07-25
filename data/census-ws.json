@@ -1,0 +1,30 @@
+{
+  "repo": "ws",
+  "scannedMerges": 200,
+  "replayed": 39,
+  "filesChecked": 55,
+  "textualConflicts": 25,
+  "cleanLineMerges": 30,
+  "findings": [
+    {
+      "repo": "ws",
+      "merge": "dc2c2bdc9be7",
+      "date": "2015-07-14",
+      "file": "lib/WebSocketServer.js",
+      "grade": "SAME-DECL FUSION",
+      "conflicts": [
+        "fn:WebSocketServer"
+      ]
+    },
+    {
+      "repo": "ws",
+      "merge": "71a167520340",
+      "date": "2012-01-01",
+      "file": "lib/WebSocket.js",
+      "grade": "SAME-DECL FUSION",
+      "conflicts": [
+        "fn:WebSocket"
+      ]
+    }
+  ]
+}

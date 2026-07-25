@@ -1,0 +1,9 @@
+{
+  "repo": "express",
+  "scannedMerges": 382,
+  "replayed": 91,
+  "filesChecked": 425,
+  "textualConflicts": 306,
+  "cleanLineMerges": 119,
+  "findings": []
+}

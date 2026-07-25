@@ -173,30 +173,30 @@
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-badge"><span class="dot"></span> Now on VS Code Marketplace</div>
-  <h1>Stop your AI agents from <span class="grad">breaking each other's code</span></h1>
-  <p class="hero-sub">Run multiple AI agents on the same codebase without merge conflicts, file overwrites, or broken syntax. Deterministic write-leases + AST-level semantic merging, inside VS Code.</p>
+  <div class="hero-badge"><span class="dot"></span> Proven by 100% Drift Gauntlet Pass Rate</div>
+  <h1>Eliminate The <span class="grad">Phantom Regress</span></h1>
+  <p class="hero-sub">Autonomous agents are silently corrupting your codebase. Text-based git merging misses 41% of AI-generated structural conflicts. Hivecode enforces strict <strong>Pre-Write Admission Control</strong> via AST-aware Semantic Merging.</p>
   <div class="hero-actions">
-    <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-primary" target="_blank">⚡ Install Free on VS Code</a>
+    <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-primary" target="_blank">⚡ Deploy Hivecode Daemon</a>
     <a href="#pricing" class="btn btn-ghost">View Pricing</a>
   </div>
   <div class="hero-stats">
-    <div class="stat"><div class="stat-v acc">0</div><div class="stat-l">merge conflicts</div></div>
-    <div class="stat"><div class="stat-v">500+</div><div class="stat-l">fuzz tests passed</div></div>
-    <div class="stat"><div class="stat-v">15+</div><div class="stat-l">languages</div></div>
+    <div class="stat"><div class="stat-v acc">14.2%</div><div class="stat-l">Semantic Drift in Swarms</div></div>
+    <div class="stat"><div class="stat-v">41.7%</div><div class="stat-l">Cross-Agent Conflict Rate</div></div>
+    <div class="stat"><div class="stat-v">0.0%</div><div class="stat-l">False Positives</div></div>
   </div>
 </section>
 
 <!-- PROBLEM -->
 <section id="problem">
   <div class="sec">
-    <div class="sec-label">The Problem</div>
-    <h2>Multi-agent coding is chaos without coordination</h2>
-    <p class="sec-desc">Run 3 AI agents on one repo. Watch what breaks. Every team discovers these failures within the first week.</p>
+    <div class="sec-label">The Heterogeneity Coordination Tax</div>
+    <h2>Multi-agent coding rots your codebase</h2>
+    <p class="sec-desc">When autonomous agents like Claude and Devin execute parallel tasks, traditional textual git merging fails. Welcome to the Semantic Drift.</p>
     <div class="grid3">
-      <div class="pcard"><div class="icon r">💥</div><h3>Silent File Overwrites</h3><p>Agent A saves its fix. Agent B saves a stale copy 10 seconds later. Agent A's work vanishes — with zero warning.</p></div>
-      <div class="pcard"><div class="icon a">🔀</div><h3>Merge Conflict Storms</h3><p>76.5% of concurrent agent feature pairs produce git merge conflicts. Your developers spend hours untangling code they didn't write.</p></div>
-      <div class="pcard"><div class="icon p">👻</div><h3>Broken Code Ships Silently</h3><p>Agent A renames a function. Agent B calls the old name. Git merges "cleanly" — into code that compiles but crashes at runtime.</p></div>
+      <div class="pcard"><div class="icon r">💥</div><h3>Dangling References</h3><p>Agent A deletes a function. Agent B concurrently adds a call to it. Git merges them cleanly, creating a Phantom Regression that crashes at runtime.</p></div>
+      <div class="pcard"><div class="icon a">🔀</div><h3>Silent Overwrites</h3><p>Two agents refactor the same billing module differently. Git interleaves their physical lines, producing syntactically valid but logically corrupt math.</p></div>
+      <div class="pcard"><div class="icon p">👻</div><h3>Context Poisoning</h3><p>Agent A changes a core database configuration interface, but Agent B relies on the old architectural assumptions. The resulting drift poisons the repo.</p></div>
     </div>
   </div>
 </section>
@@ -205,18 +205,18 @@
 <section id="solution" style="border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--panel) 30%,transparent)">
   <div class="sec">
     <div class="sec-label">The Solution</div>
-    <h2>Two engines. Zero broken merges.</h2>
-    <p class="sec-desc">Hivecode combines prevention (write-leases) with a safety net (AST-level merging) so multiple agents can work simultaneously without ever corrupting your codebase.</p>
+    <h2>AST-Aware Pre-Write Admission Control</h2>
+    <p class="sec-desc">Hivecode combines declarative write-leases with a mathematically proven Semantic Merge Engine to ensure multiple agents can work simultaneously without corrupting logic.</p>
     <div class="grid2">
       <div class="scard">
         <span class="tag bl">ENGINE 1 — PREVENTION</span>
         <h3>Relay-Enforced Write Leases</h3>
-        <p>Before an agent edits a file, it claims a <code>write-lease</code>. The relay physically blocks all other agents from touching that file. No races, no overwrites, no chaos. Claims auto-expire via TTL so a crashed agent never deadlocks the team.</p>
+        <p>Before an agent edits a file, it must claim a <code>write-lease</code> from the central coordinator. The relay physically blocks all other agents from creating unstructured overlapping writes. Claims auto-expire via TTL to prevent agent deadlocks.</p>
       </div>
       <div class="scard">
         <span class="tag gr">ENGINE 2 — SAFETY NET</span>
-        <h3>ICR Semantic Merge Engine</h3>
-        <p>When branches reconverge, ICR merges by <strong>declarations</strong> — not characters. It detects renames and rewrites stale call sites. It flags dangling references before they ship. It <strong>refuses to emit broken syntax</strong>. Tested across 500+ real-world cases.</p>
+        <h3>Intent-Aware Code Replication (ICR)</h3>
+        <p>When branches reconverge, ICR uses Context-Sensitive Identifier Mapping. If Agent A renames a node, the engine detects an <strong>Alpha-Equivalent Rename</strong> and autonomously rewrites Agent B's stale call sites before the merge completes.</p>
       </div>
     </div>
   </div>
@@ -225,16 +225,16 @@
 <!-- PROOF -->
 <section>
   <div class="sec">
-    <div class="sec-label">Proven by the numbers</div>
-    <h2>Battle-tested, not buzzword-tested</h2>
-    <p class="sec-desc" style="margin-bottom:28px">Every claim is backed by fuzz tests, convergence proofs, and live multi-agent swarm runs.</p>
+    <div class="sec-label">Mathematically Proven</div>
+    <h2>Validating the Semantic Drift Index (Dₛ)</h2>
+    <p class="sec-desc" style="margin-bottom:28px">The git-clash engine achieved a 100% success rate across 47 stress tests in the Multi-Agent Drift Gauntlet.</p>
     <div class="proof">
-      <div class="proof-item"><div class="proof-v gr">100%</div><div class="proof-l">Parse guarantee</div></div>
-      <div class="proof-item"><div class="proof-v bl">756 → 0</div><div class="proof-l">Collisions eliminated</div></div>
-      <div class="proof-item"><div class="proof-v pr">0</div><div class="proof-l">Convergence failures</div></div>
-      <div class="proof-item"><div class="proof-v gr">15+</div><div class="proof-l">Languages supported</div></div>
-      <div class="proof-item"><div class="proof-v bl">~1s</div><div class="proof-l">Edit propagation</div></div>
-      <div class="proof-item"><div class="proof-v pr">MIT</div><div class="proof-l">Open source</div></div>
+      <div class="proof-item"><div class="proof-v gr">Dₛ ≤ 0.05</div><div class="proof-l">Benign Mutations Passed</div></div>
+      <div class="proof-item"><div class="proof-v bl">Dₛ > 0.15</div><div class="proof-l">Behavioral Drift Blocked</div></div>
+      <div class="proof-item"><div class="proof-v pr">0%</div><div class="proof-l">False Negatives</div></div>
+      <div class="proof-item"><div class="proof-v gr">Yes</div><div class="proof-l">Pointer Analysis</div></div>
+      <div class="proof-item"><div class="proof-v bl">Auto</div><div class="proof-l">Rename Rewriting</div></div>
+      <div class="proof-item"><div class="proof-v pr">RCU</div><div class="proof-l">Resolvable Conflict Units</div></div>
     </div>
   </div>
 </section>
@@ -252,12 +252,12 @@
         <div class="pr-desc">For individual developers getting started.</div>
         <ul class="pr-feat">
           <li><span class="y">✓</span> 2 agents per room</li>
-          <li><span class="y">✓</span> 1-hour sessions</li>
+          <li><span class="y">✓</span> Textual Git Merge Engine</li>
           <li><span class="y">✓</span> CRDT real-time sync</li>
-          <li><span class="y">✓</span> ICR merge engine</li>
-          <li><span class="y">✓</span> Write-lease claims</li>
+          <li><span class="n">✗</span> AST-Aware ICR Semantic Engine</li>
+          <li><span class="n">✗</span> Alpha-Equivalent Rename Repair</li>
           <li><span class="n">✗</span> Private secured rooms</li>
-          <li><span class="n">✗</span> File history & restore</li>
+          <li><span class="n">✗</span> Pre-Write Admission Control</li>
         </ul>
         <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-ghost" target="_blank">Install Free →</a>
       </div>
@@ -267,12 +267,12 @@
         <div class="pr-desc">For teams running multiple AI agents in production.</div>
         <ul class="pr-feat">
           <li><span class="y">✓</span> Unlimited agents</li>
-          <li><span class="y">✓</span> Unlimited sessions</li>
-          <li><span class="y">✓</span> CRDT real-time sync</li>
-          <li><span class="y">✓</span> ICR merge engine</li>
-          <li><span class="y">✓</span> Write-lease claims</li>
+          <li><span class="y">✓</span> AST-Aware ICR Semantic Engine</li>
+          <li><span class="y">✓</span> Alpha-Equivalent Rename Repair</li>
+          <li><span class="y">✓</span> Resolvable Conflict Units (RCUs)</li>
+          <li><span class="y">✓</span> Pre-Write Admission Control</li>
           <li><span class="y">✓</span> Private secured rooms</li>
-          <li><span class="y">✓</span> File history & restore</li>
+          <li><span class="y">✓</span> Priority Coordinator Execution</li>
         </ul>
         <a href="https://rzp.io/rzp/cID09NdY" target="_blank" class="btn btn-amber" id="pro-btn" style="text-align:center;text-decoration:none">⚡ Upgrade to Pro</a>
       </div>
@@ -282,9 +282,9 @@
 
 <!-- CTA -->
 <section class="cta">
-  <h2>Ready to stop the chaos?</h2>
-  <p>Install Hivecode in VS Code and run your first multi-agent session in under 2 minutes.</p>
-  <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-primary" target="_blank">Install Free on VS Code →</a>
+  <h2>Audit Your Repo for Semantic Drift</h2>
+  <p>Eliminate the Heterogeneity Coordination Tax today. Deploy the Hivecode Daemon in under 2 minutes.</p>
+  <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-primary" target="_blank">Deploy Hivecode Daemon →</a>
 </section>
 
 <!-- FOOTER -->

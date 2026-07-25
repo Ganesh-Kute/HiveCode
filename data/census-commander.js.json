@@ -1,0 +1,20 @@
+{
+  "repo": "commander.js",
+  "scannedMerges": 233,
+  "replayed": 42,
+  "filesChecked": 63,
+  "textualConflicts": 34,
+  "cleanLineMerges": 29,
+  "findings": [
+    {
+      "repo": "commander.js",
+      "merge": "831d52faee86",
+      "date": "2019-07-23",
+      "file": "index.js",
+      "grade": "SAME-DECL FUSION",
+      "conflicts": [
+        "assign:Command.prototype.executeSubCommand"
+      ]
+    }
+  ]
+}

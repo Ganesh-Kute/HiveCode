@@ -1,0 +1,20 @@
+{
+  "repo": "axios",
+  "scannedMerges": 163,
+  "replayed": 30,
+  "filesChecked": 49,
+  "textualConflicts": 26,
+  "cleanLineMerges": 23,
+  "findings": [
+    {
+      "repo": "axios",
+      "merge": "fbb5d4d0d1d4",
+      "date": "2017-10-24",
+      "file": "lib/adapters/http.js",
+      "grade": "SAME-DECL FUSION",
+      "conflicts": [
+        "assign:module.exports"
+      ]
+    }
+  ]
+}

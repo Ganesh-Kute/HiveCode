@@ -1,0 +1,1987 @@
+{
+  "lang": "scrapy",
+  "cases": 245,
+  "skippedNoGitConflict": 0,
+  "tally": {
+    "icr": {
+      "MATCH": 40,
+      "MATCH-WS": 19,
+      "CLEAN-DIFF": 78,
+      "CONFLICT": 108,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 2646
+    },
+    "mergiraf": {
+      "MATCH": 72,
+      "MATCH-WS": 4,
+      "CLEAN-DIFF": 56,
+      "CONFLICT": 113,
+      "BROKEN": 0,
+      "CRASH": 0,
+      "ms": 40891
+    }
+  },
+  "receipts": [
+    {
+      "idx": 1,
+      "pair": "conflict_files_0",
+      "file": "test_command_check.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 2,
+      "pair": "conflict_files_1",
+      "file": "httpcompression.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 3,
+      "pair": "conflict_files_1",
+      "file": "response.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 4,
+      "pair": "conflict_files_1",
+      "file": "test_crawler.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 5,
+      "pair": "conflict_files_1",
+      "file": "test_downloadermiddleware_httpcompression.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 6,
+      "pair": "conflict_files_1",
+      "file": "test_utils_response.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 7,
+      "pair": "conflict_files_10",
+      "file": "feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 8,
+      "pair": "conflict_files_100",
+      "file": "logformatter.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 9,
+      "pair": "conflict_files_101",
+      "file": "spidermw.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 10,
+      "pair": "conflict_files_102",
+      "file": "test_contracts.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 11,
+      "pair": "conflict_files_102",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 12,
+      "pair": "conflict_files_103",
+      "file": "test_contracts.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 13,
+      "pair": "conflict_files_104",
+      "file": "test_contracts.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 14,
+      "pair": "conflict_files_105",
+      "file": "test_contracts.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 15,
+      "pair": "conflict_files_106",
+      "file": "test_contracts.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 16,
+      "pair": "conflict_files_107",
+      "file": "test_contracts.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 17,
+      "pair": "conflict_files_108",
+      "file": "spidermw.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 18,
+      "pair": "conflict_files_109",
+      "file": "robotstxt.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 19,
+      "pair": "conflict_files_11",
+      "file": "test_downloadermiddleware_httpproxy.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 20,
+      "pair": "conflict_files_110",
+      "file": "gz.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 21,
+      "pair": "conflict_files_111",
+      "file": "test_utils_iterators.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 22,
+      "pair": "conflict_files_112",
+      "file": "lxmlhtml.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 23,
+      "pair": "conflict_files_112",
+      "file": "test_linkextractors.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 24,
+      "pair": "conflict_files_113",
+      "file": "webclient.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 25,
+      "pair": "conflict_files_114",
+      "file": "__init__.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 26,
+      "pair": "conflict_files_115",
+      "file": "shell.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 27,
+      "pair": "conflict_files_116",
+      "file": "httpcache.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 28,
+      "pair": "conflict_files_116",
+      "file": "test_downloadermiddleware_httpcache.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 29,
+      "pair": "conflict_files_117",
+      "file": "log.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 30,
+      "pair": "conflict_files_118",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 31,
+      "pair": "conflict_files_119",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 32,
+      "pair": "conflict_files_12",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 33,
+      "pair": "conflict_files_120",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 34,
+      "pair": "conflict_files_121",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 35,
+      "pair": "conflict_files_122",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 36,
+      "pair": "conflict_files_123",
+      "file": "engine.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 37,
+      "pair": "conflict_files_13",
+      "file": "test_exporters.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 38,
+      "pair": "conflict_files_14",
+      "file": "test_pipeline_media.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 39,
+      "pair": "conflict_files_15",
+      "file": "files.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 40,
+      "pair": "conflict_files_16",
+      "file": "files.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 41,
+      "pair": "conflict_files_17",
+      "file": "robotstxt.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 42,
+      "pair": "conflict_files_17",
+      "file": "setup.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 43,
+      "pair": "conflict_files_17",
+      "file": "test_downloadermiddleware_robotstxt.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 44,
+      "pair": "conflict_files_17",
+      "file": "test_http_request.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 45,
+      "pair": "conflict_files_17",
+      "file": "test_pipeline_files.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 46,
+      "pair": "conflict_files_17",
+      "file": "test_pipeline_images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 47,
+      "pair": "conflict_files_17",
+      "file": "test_pipeline_media.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 48,
+      "pair": "conflict_files_17",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 49,
+      "pair": "conflict_files_18",
+      "file": "console.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 50,
+      "pair": "conflict_files_18",
+      "file": "images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 51,
+      "pair": "conflict_files_18",
+      "file": "mail.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 52,
+      "pair": "conflict_files_18",
+      "file": "pipelines.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 53,
+      "pair": "conflict_files_18",
+      "file": "setup.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 54,
+      "pair": "conflict_files_18",
+      "file": "stream.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 55,
+      "pair": "conflict_files_18",
+      "file": "test_crawl.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 56,
+      "pair": "conflict_files_18",
+      "file": "test_downloadermiddleware_useragent.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 57,
+      "pair": "conflict_files_18",
+      "file": "test_downloader_handlers.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 58,
+      "pair": "conflict_files_18",
+      "file": "test_feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 59,
+      "pair": "conflict_files_18",
+      "file": "test_http_response.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 60,
+      "pair": "conflict_files_18",
+      "file": "test_linkextractors.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 61,
+      "pair": "conflict_files_18",
+      "file": "test_pipeline_images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 62,
+      "pair": "conflict_files_18",
+      "file": "test_request_attribute_binding.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 63,
+      "pair": "conflict_files_18",
+      "file": "test_spidermiddleware_referer.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 64,
+      "pair": "conflict_files_18",
+      "file": "test_utils_asyncio.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 65,
+      "pair": "conflict_files_18",
+      "file": "test_utils_deprecate.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 66,
+      "pair": "conflict_files_18",
+      "file": "test_utils_display.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 67,
+      "pair": "conflict_files_18",
+      "file": "test_utils_python.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 68,
+      "pair": "conflict_files_18",
+      "file": "tls.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 69,
+      "pair": "conflict_files_19",
+      "file": "images.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 70,
+      "pair": "conflict_files_19",
+      "file": "log.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 71,
+      "pair": "conflict_files_19",
+      "file": "setup.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 72,
+      "pair": "conflict_files_19",
+      "file": "test_command_shell.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 73,
+      "pair": "conflict_files_19",
+      "file": "test_http_response.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 74,
+      "pair": "conflict_files_2",
+      "file": "crawler.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 75,
+      "pair": "conflict_files_2",
+      "file": "test_crawl.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 76,
+      "pair": "conflict_files_2",
+      "file": "test_crawler.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 77,
+      "pair": "conflict_files_2",
+      "file": "test_downloader_handlers.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 78,
+      "pair": "conflict_files_2",
+      "file": "test_spider.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 79,
+      "pair": "conflict_files_2",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 80,
+      "pair": "conflict_files_20",
+      "file": "test_downloader_handlers.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 81,
+      "pair": "conflict_files_21",
+      "file": "images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 82,
+      "pair": "conflict_files_21",
+      "file": "test_pipeline_images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 83,
+      "pair": "conflict_files_22",
+      "file": "test_pipeline_images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 84,
+      "pair": "conflict_files_23",
+      "file": "misc.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 85,
+      "pair": "conflict_files_24",
+      "file": "test_utils_python.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 86,
+      "pair": "conflict_files_25",
+      "file": "spidermw.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 87,
+      "pair": "conflict_files_26",
+      "file": "test_crawler.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 88,
+      "pair": "conflict_files_27",
+      "file": "defer.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 89,
+      "pair": "conflict_files_28",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 90,
+      "pair": "conflict_files_29",
+      "file": "form.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 91,
+      "pair": "conflict_files_3",
+      "file": "crawler.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 92,
+      "pair": "conflict_files_30",
+      "file": "test_utils_python.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 93,
+      "pair": "conflict_files_31",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 94,
+      "pair": "conflict_files_32",
+      "file": "scraper.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 95,
+      "pair": "conflict_files_33",
+      "file": "asyncgen.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 96,
+      "pair": "conflict_files_33",
+      "file": "defer.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 97,
+      "pair": "conflict_files_33",
+      "file": "referer.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 98,
+      "pair": "conflict_files_33",
+      "file": "spidermw.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 99,
+      "pair": "conflict_files_34",
+      "file": "spidermw.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 100,
+      "pair": "conflict_files_35",
+      "file": "conftest.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 101,
+      "pair": "conflict_files_35",
+      "file": "test_utils_defer.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 102,
+      "pair": "conflict_files_36",
+      "file": "spidermw.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 103,
+      "pair": "conflict_files_37",
+      "file": "test_downloader_handlers.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 104,
+      "pair": "conflict_files_38",
+      "file": "setup.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 105,
+      "pair": "conflict_files_39",
+      "file": "test_feedexport.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 106,
+      "pair": "conflict_files_4",
+      "file": "crawler.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 107,
+      "pair": "conflict_files_4",
+      "file": "misc.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 108,
+      "pair": "conflict_files_4",
+      "file": "test.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 109,
+      "pair": "conflict_files_40",
+      "file": "httpcompression.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 110,
+      "pair": "conflict_files_41",
+      "file": "iterators.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 111,
+      "pair": "conflict_files_42",
+      "file": "http11.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 112,
+      "pair": "conflict_files_43",
+      "file": "spiders.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 113,
+      "pair": "conflict_files_43",
+      "file": "test_crawl.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 114,
+      "pair": "conflict_files_44",
+      "file": "test_middleware.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 115,
+      "pair": "conflict_files_45",
+      "file": "images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 116,
+      "pair": "conflict_files_45",
+      "file": "test_pipeline_images.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 117,
+      "pair": "conflict_files_46",
+      "file": "iterators.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 118,
+      "pair": "conflict_files_47",
+      "file": "setup.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 119,
+      "pair": "conflict_files_48",
+      "file": "exporters.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 120,
+      "pair": "conflict_files_48",
+      "file": "test_exporters.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 121,
+      "pair": "conflict_files_48",
+      "file": "test_feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 122,
+      "pair": "conflict_files_49",
+      "file": "spiders.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 123,
+      "pair": "conflict_files_5",
+      "file": "datatypes.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 124,
+      "pair": "conflict_files_5",
+      "file": "python.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 125,
+      "pair": "conflict_files_50",
+      "file": "test_feedexport.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 126,
+      "pair": "conflict_files_51",
+      "file": "test_feedexport.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH-WS"
+    },
+    {
+      "idx": 127,
+      "pair": "conflict_files_52",
+      "file": "test_commands.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 128,
+      "pair": "conflict_files_53",
+      "file": "test_crawl.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 129,
+      "pair": "conflict_files_54",
+      "file": "crawler.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 130,
+      "pair": "conflict_files_54",
+      "file": "engine.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 131,
+      "pair": "conflict_files_55",
+      "file": "feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 132,
+      "pair": "conflict_files_55",
+      "file": "test_feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 133,
+      "pair": "conflict_files_56",
+      "file": "setup.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 134,
+      "pair": "conflict_files_57",
+      "file": "exporters.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 135,
+      "pair": "conflict_files_58",
+      "file": "test_engine.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 136,
+      "pair": "conflict_files_59",
+      "file": "test_linkextractors.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH-WS"
+    },
+    {
+      "idx": 137,
+      "pair": "conflict_files_59",
+      "file": "test_utils_sitemap.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 138,
+      "pair": "conflict_files_6",
+      "file": "files.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 139,
+      "pair": "conflict_files_6",
+      "file": "headers.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 140,
+      "pair": "conflict_files_6",
+      "file": "test_utils_datatypes.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 141,
+      "pair": "conflict_files_60",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH-WS"
+    },
+    {
+      "idx": 142,
+      "pair": "conflict_files_61",
+      "file": "test_dupefilters.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 143,
+      "pair": "conflict_files_62",
+      "file": "test_utils_url.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH-WS"
+    },
+    {
+      "idx": 144,
+      "pair": "conflict_files_63",
+      "file": "feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 145,
+      "pair": "conflict_files_63",
+      "file": "test_feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 146,
+      "pair": "conflict_files_64",
+      "file": "http11.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 147,
+      "pair": "conflict_files_65",
+      "file": "webclient.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 148,
+      "pair": "conflict_files_66",
+      "file": "test_feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 149,
+      "pair": "conflict_files_67",
+      "file": "form.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 150,
+      "pair": "conflict_files_68",
+      "file": "test_spidermiddleware_referer.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 151,
+      "pair": "conflict_files_69",
+      "file": "test_feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 152,
+      "pair": "conflict_files_7",
+      "file": "cmdline.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 153,
+      "pair": "conflict_files_7",
+      "file": "conf.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 154,
+      "pair": "conflict_files_7",
+      "file": "crawler.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 155,
+      "pair": "conflict_files_7",
+      "file": "deprecate.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 156,
+      "pair": "conflict_files_7",
+      "file": "interfaces.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 157,
+      "pair": "conflict_files_7",
+      "file": "middleware.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 158,
+      "pair": "conflict_files_7",
+      "file": "misc.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 159,
+      "pair": "conflict_files_7",
+      "file": "test.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 160,
+      "pair": "conflict_files_7",
+      "file": "test_crawl.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 161,
+      "pair": "conflict_files_7",
+      "file": "test_crawler.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 162,
+      "pair": "conflict_files_7",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 163,
+      "pair": "conflict_files_70",
+      "file": "http11.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 164,
+      "pair": "conflict_files_71",
+      "file": "http11.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 165,
+      "pair": "conflict_files_72",
+      "file": "conftest.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 166,
+      "pair": "conflict_files_72",
+      "file": "http11.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 167,
+      "pair": "conflict_files_72",
+      "file": "test_crawl.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 168,
+      "pair": "conflict_files_72",
+      "file": "__init__.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 169,
+      "pair": "conflict_files_73",
+      "file": "default_settings.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 170,
+      "pair": "conflict_files_73",
+      "file": "test.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 171,
+      "pair": "conflict_files_73",
+      "file": "test_feedexport.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 172,
+      "pair": "conflict_files_74",
+      "file": "test_crawl.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "rename",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 173,
+      "pair": "conflict_files_75",
+      "file": "test_crawl.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "rename",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 174,
+      "pair": "conflict_files_76",
+      "file": "test_crawl.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 175,
+      "pair": "conflict_files_77",
+      "file": "test_crawler.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 176,
+      "pair": "conflict_files_78",
+      "file": "test_crawl.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 177,
+      "pair": "conflict_files_79",
+      "file": "test_crawl.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 178,
+      "pair": "conflict_files_8",
+      "file": "feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 179,
+      "pair": "conflict_files_80",
+      "file": "defer.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 180,
+      "pair": "conflict_files_81",
+      "file": "files.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 181,
+      "pair": "conflict_files_81",
+      "file": "test.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 182,
+      "pair": "conflict_files_82",
+      "file": "text.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 183,
+      "pair": "conflict_files_83",
+      "file": "s3.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 184,
+      "pair": "conflict_files_84",
+      "file": "exporters.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 185,
+      "pair": "conflict_files_84",
+      "file": "test_exporters.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 186,
+      "pair": "conflict_files_84",
+      "file": "test_feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 187,
+      "pair": "conflict_files_84",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 188,
+      "pair": "conflict_files_85",
+      "file": "mockserver.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 189,
+      "pair": "conflict_files_85",
+      "file": "test_crawler.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 190,
+      "pair": "conflict_files_86",
+      "file": "text.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 191,
+      "pair": "conflict_files_86",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 192,
+      "pair": "conflict_files_87",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 193,
+      "pair": "conflict_files_88",
+      "file": "cookies.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 194,
+      "pair": "conflict_files_88",
+      "file": "crawler.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 195,
+      "pair": "conflict_files_88",
+      "file": "httpproxy.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 196,
+      "pair": "conflict_files_89",
+      "file": "__init__.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 197,
+      "pair": "conflict_files_9",
+      "file": "feedexport.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 198,
+      "pair": "conflict_files_90",
+      "file": "curl.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 199,
+      "pair": "conflict_files_90",
+      "file": "engine.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 200,
+      "pair": "conflict_files_90",
+      "file": "mockserver.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 201,
+      "pair": "conflict_files_90",
+      "file": "test_http_request.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 202,
+      "pair": "conflict_files_90",
+      "file": "test_utils_reqser.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 203,
+      "pair": "conflict_files_90",
+      "file": "test_utils_url.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 204,
+      "pair": "conflict_files_91",
+      "file": "test_spider.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 205,
+      "pair": "conflict_files_92",
+      "file": "ajaxcrawl.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 206,
+      "pair": "conflict_files_92",
+      "file": "robotstxt.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 207,
+      "pair": "conflict_files_92",
+      "file": "test_utils_python.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 208,
+      "pair": "conflict_files_93",
+      "file": "text.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 209,
+      "pair": "conflict_files_94",
+      "file": "test_proxy_connect.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 210,
+      "pair": "conflict_files_95",
+      "file": "boto.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 211,
+      "pair": "conflict_files_95",
+      "file": "conf.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 212,
+      "pair": "conflict_files_95",
+      "file": "cookies.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 213,
+      "pair": "conflict_files_95",
+      "file": "datatypes.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 214,
+      "pair": "conflict_files_95",
+      "file": "decompression.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 215,
+      "pair": "conflict_files_95",
+      "file": "exporters.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 216,
+      "pair": "conflict_files_95",
+      "file": "feedexport.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 217,
+      "pair": "conflict_files_95",
+      "file": "fetch.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 218,
+      "pair": "conflict_files_95",
+      "file": "files.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 219,
+      "pair": "conflict_files_95",
+      "file": "httpproxy.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 220,
+      "pair": "conflict_files_95",
+      "file": "images.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 221,
+      "pair": "conflict_files_95",
+      "file": "iterators.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 222,
+      "pair": "conflict_files_95",
+      "file": "mail.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 223,
+      "pair": "conflict_files_95",
+      "file": "python.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 224,
+      "pair": "conflict_files_95",
+      "file": "request.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 225,
+      "pair": "conflict_files_95",
+      "file": "robotstxt.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 226,
+      "pair": "conflict_files_95",
+      "file": "spidermw.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 227,
+      "pair": "conflict_files_95",
+      "file": "test_downloadermiddleware_robotstxt.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 228,
+      "pair": "conflict_files_95",
+      "file": "test_downloader_handlers.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 229,
+      "pair": "conflict_files_95",
+      "file": "test_feedexport.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 230,
+      "pair": "conflict_files_95",
+      "file": "test_http_request.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 231,
+      "pair": "conflict_files_95",
+      "file": "test_link.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 232,
+      "pair": "conflict_files_95",
+      "file": "test_pipeline_files.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 233,
+      "pair": "conflict_files_95",
+      "file": "test_pipeline_media.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 234,
+      "pair": "conflict_files_95",
+      "file": "test_utils_datatypes.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 235,
+      "pair": "conflict_files_95",
+      "file": "test_utils_python.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 236,
+      "pair": "conflict_files_95",
+      "file": "test_utils_trackref.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 237,
+      "pair": "conflict_files_95",
+      "file": "text.py",
+      "icr": "MATCH-WS",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    },
+    {
+      "idx": 238,
+      "pair": "conflict_files_95",
+      "file": "_monkeypatches.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 239,
+      "pair": "conflict_files_95",
+      "file": "__init__.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 240,
+      "pair": "conflict_files_96",
+      "file": "conftest.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 241,
+      "pair": "conflict_files_96",
+      "file": "test_proxy_connect.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 242,
+      "pair": "conflict_files_96",
+      "file": "test_utils_python.py",
+      "icr": "CONFLICT",
+      "icrMethod": "lines",
+      "mergiraf": "CLEAN-DIFF"
+    },
+    {
+      "idx": 243,
+      "pair": "conflict_files_97",
+      "file": "default_settings.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 244,
+      "pair": "conflict_files_98",
+      "file": "default_settings.py",
+      "icr": "MATCH",
+      "icrMethod": "structural",
+      "mergiraf": "CONFLICT"
+    },
+    {
+      "idx": 245,
+      "pair": "conflict_files_99",
+      "file": "feedexport.py",
+      "icr": "CLEAN-DIFF",
+      "icrMethod": "structural",
+      "mergiraf": "MATCH"
+    }
+  ]
+}

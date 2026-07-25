@@ -1,0 +1,31 @@
+{
+  "habits": [
+    {
+      "id": "1782921683586",
+      "name": "Exercise",
+      "streak": 1,
+      "lastChecked": "2026-07-01",
+      "history": [
+        "2026-07-01"
+      ]
+    },
+    {
+      "id": "1782924088030",
+      "name": "Sleep Early",
+      "streak": 1,
+      "lastChecked": "2026-07-01",
+      "history": [
+        "2026-07-01"
+      ]
+    },
+    {
+      "id": "1782924703518",
+      "name": "play cricket",
+      "streak": 1,
+      "lastChecked": "2026-07-01",
+      "history": [
+        "2026-07-01"
+      ]
+    }
+  ]
+}

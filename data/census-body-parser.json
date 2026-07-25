@@ -1,0 +1,9 @@
+{
+  "repo": "body-parser",
+  "scannedMerges": 4,
+  "replayed": 3,
+  "filesChecked": 14,
+  "textualConflicts": 12,
+  "cleanLineMerges": 2,
+  "findings": []
+}

@@ -65,3 +65,4 @@ guardian-workspace/
 .hive-mcp-session.json
 
 .vercel
+.env*

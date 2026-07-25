@@ -1,0 +1,9 @@
+{
+  "repo": "debug",
+  "scannedMerges": 81,
+  "replayed": 8,
+  "filesChecked": 9,
+  "textualConflicts": 7,
+  "cleanLineMerges": 2,
+  "findings": []
+}

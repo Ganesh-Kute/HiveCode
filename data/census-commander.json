@@ -1,0 +1,9 @@
+{
+  "repo": "commander",
+  "scannedMerges": 233,
+  "replayed": 45,
+  "filesChecked": 81,
+  "textualConflicts": 44,
+  "cleanLineMerges": 37,
+  "findings": []
+}

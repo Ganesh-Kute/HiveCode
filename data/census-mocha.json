@@ -1,0 +1,30 @@
+{
+  "repo": "mocha",
+  "scannedMerges": 400,
+  "replayed": 58,
+  "filesChecked": 70,
+  "textualConflicts": 34,
+  "cleanLineMerges": 36,
+  "findings": [
+    {
+      "repo": "mocha",
+      "merge": "d811eb9614e5",
+      "date": "2015-12-28",
+      "file": "lib/interfaces/bdd.js",
+      "grade": "SAME-DECL FUSION",
+      "conflicts": [
+        "assign:module.exports"
+      ]
+    },
+    {
+      "repo": "mocha",
+      "merge": "9961156dd14d",
+      "date": "2013-06-13",
+      "file": "lib/reporters/xunit.js",
+      "grade": "SAME-DECL FUSION",
+      "conflicts": [
+        "fn:XUnit"
+      ]
+    }
+  ]
+}

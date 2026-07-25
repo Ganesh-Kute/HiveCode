@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StreakBoard - Habit Tracker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🔥 StreakBoard</h1>
+      <p>Build habits, track streaks</p>
+    </header>
+
+    <section class="add-habit">
+      <form id="habit-form">
+        <input type="text" id="habit-input" placeholder="Add a new habit..." required>
+        <button type="submit">Add</button>
+      </form>
+    </section>
+
+    <section class="habits-list">
+      <ul id="habits-ul"></ul>
+      <p id="empty-state" class="hidden">No habits yet. Add one above!</p>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html><!DOCTYPE html>

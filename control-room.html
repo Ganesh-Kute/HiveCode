@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hivecode · Control Room</title>
+<style>
+  /* ── Palette (committed) ───────────────────────────────────
+     ground #0B0E13 · panel #141923 · inset #1B2230 · line #2A3342
+     text #E8ECF3 · muted #8893A6 · honey #FFB02E · honey-lo #C9821A
+     working #3FB950 · waiting #E3B341 · testing #58A6FF
+     conflict #F85149 · offline #6E7681 ──────────────────────── */
+  :root{
+    --ground:#0B0E13; --panel:#141923; --inset:#1B2230; --line:#2A3342;
+    --text:#E8ECF3; --muted:#8893A6; --honey:#FFB02E; --honey-lo:#C9821A;
+    --working:#3FB950; --waiting:#E3B341; --testing:#58A6FF;
+    --conflict:#F85149; --offline:#6E7681;
+    --mono:ui-monospace,"Cascadia Code","Cascadia Mono",Menlo,Consolas,monospace;
+    --ui:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(1200px 600px at 85% -10%, rgba(255,176,46,.06), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(88,166,255,.05), transparent 60%),
+      var(--ground);
+    color:var(--text); font-family:var(--ui);
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  .wrap{max-width:1280px; margin:0 auto; padding:18px 22px 40px}
+
+  /* ── Top bar ─────────────────────────────────────────── */
+  header.bar{
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    padding:14px 18px; margin-bottom:16px;
+    background:linear-gradient(180deg,rgba(255,176,46,.05),transparent), var(--panel);
+    border:1px solid var(--line); border-radius:14px;
+  }
+  .brand{display:flex; align-items:center; gap:12px}
+  .hexmark{width:34px; height:38px; flex:none; filter:drop-shadow(0 0 10px rgba(255,176,46,.35))}
+  .brand h1{font-size:17px; margin:0; letter-spacing:.14em; text-transform:uppercase; font-weight:700}
+  .brand .sub{font-size:11px; color:var(--muted); letter-spacing:.22em; text-transform:uppercase}
+  .bar .spacer{flex:1}
+  .pill{
+    display:inline-flex; align-items:center; gap:8px; font-family:var(--mono);
+    font-size:12px; color:var(--muted); padding:7px 12px;
+    background:var(--inset); border:1px solid var(--line); border-radius:999px;
+  }
+  .pill b{color:var(--text); font-weight:600}
+  .live{color:var(--working)}
+  .blink{animation:blink 1.6s steps(2,start) infinite}
+  @keyframes blink{50%{opacity:.25}}
+
+  /* ── Metric strip ────────────────────────────────────── */
+  .metrics{display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:16px}
+  .metric{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:14px 16px; position:relative; overflow:hidden;
+  }
+  .metric .k{font-size:11px; color:var(--muted); letter-spacing:.14em; text-transform:uppercase}
+  .metric .v{font-family:var(--mono); font-size:30px; font-weight:600; margin-top:6px; line-height:1}
+  .metric .v small{font-size:13px; color:var(--muted); font-weight:500}
+  .metric.accent .v{color:var(--honey)}
+  .metric .spark{position:absolute; right:12px; top:12px; width:8px; height:8px; border-radius:50%}
+  .bump{animation:bump .5s ease}
+  @keyframes bump{0%{transform:scale(1)}35%{transform:scale(1.18); color:var(--honey)}100%{transform:scale(1)}}
+
+  /* ── Main grid ───────────────────────────────────────── */
+  .grid{display:grid; grid-template-columns:1.55fr 1fr; gap:16px; align-items:start}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px}
+  .card h2{
+    font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted);
+    margin:0 0 14px; font-weight:700;
+  }
+  .card h2 .dot{display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--honey); margin-right:8px; vertical-align:middle}
+
+  /* ── Architecture map ────────────────────────────────── */
+  .mapwrap{overflow-x:auto; -webkit-overflow-scrolling:touch; border-radius:10px}
+  #map{width:100%; min-width:520px; height:auto; aspect-ratio:760/430; display:block}
+  .edge{stroke:var(--line); stroke-width:2; fill:none; transition:stroke .2s}
+  .edge.flow{stroke:var(--honey)}
+  .pulse{fill:var(--honey); r:5}
+  .pulse.test{fill:var(--testing)}
+  .pulse.ok{fill:var(--working)}
+  .edge.reject{stroke:var(--conflict); stroke-width:3; animation:rejectFlash .9s ease}
+  @keyframes rejectFlash{0%,100%{stroke:var(--line)}20%,60%{stroke:var(--conflict)}}
+  .node{cursor:pointer}
+  .node .hex{stroke:var(--line); stroke-width:2; fill:var(--inset); transition:stroke .25s, fill .25s, filter .25s}
+  .node.sel .hex{stroke:var(--honey); filter:drop-shadow(0 0 8px rgba(255,176,46,.5))}
+  .node.working .hex{stroke:var(--working)}
+  .node.waiting .hex{stroke:var(--waiting)}
+  .node.testing .hex{stroke:var(--testing)}
+  .node.conflict .hex{stroke:var(--conflict); animation:nodeShake .4s ease}
+  .node.offline .hex{stroke:var(--offline); opacity:.5}
+  @keyframes nodeShake{0%,100%{transform:translateX(0)}25%{transform:translateX(-2px)}75%{transform:translateX(2px)}}
+  .node.working .breathe{animation:breathe 2.4s ease-in-out infinite}
+  @keyframes breathe{0%,100%{opacity:.0}50%{opacity:.35}}
+  .node .role{fill:var(--text); font:600 14px var(--ui); text-anchor:middle}
+  .node .who{fill:var(--muted); font:500 11px var(--mono); text-anchor:middle; letter-spacing:.05em}
+  .node .light{stroke:var(--ground); stroke-width:2}
+
+  /* ── Right column ────────────────────────────────────── */
+  .sprint .barwrap{height:14px; background:var(--inset); border-radius:8px; overflow:hidden; border:1px solid var(--line)}
+  .sprint .fill{height:100%; width:0; background:linear-gradient(90deg,var(--honey-lo),var(--honey)); border-radius:8px; transition:width .8s cubic-bezier(.2,.8,.2,1)}
+  .sprint .pct{font-family:var(--mono); font-size:28px; font-weight:600; margin:2px 0 12px}
+  .tickets{display:flex; gap:10px; margin-top:14px}
+  .tk{flex:1; background:var(--inset); border:1px solid var(--line); border-radius:10px; padding:10px; text-align:center}
+  .tk .n{font-family:var(--mono); font-size:22px; font-weight:600}
+  .tk .l{font-size:10px; color:var(--muted); letter-spacing:.1em; text-transform:uppercase; margin-top:3px}
+  .tk.done .n{color:var(--working)} .tk.run .n{color:var(--waiting)} .tk.wait .n{color:var(--muted)}
+
+  .agents{display:flex; flex-direction:column; gap:8px}
+  .agent{
+    display:flex; align-items:center; gap:11px; padding:10px 12px; border-radius:11px;
+    background:var(--inset); border:1px solid var(--line); cursor:pointer;
+    transition:border-color .2s, transform .08s;
+  }
+  .agent:hover{border-color:var(--honey-lo)}
+  .agent:active{transform:scale(.99)}
+  .agent.sel{border-color:var(--honey); background:linear-gradient(90deg,rgba(255,176,46,.08),var(--inset))}
+  .agent:focus-visible{outline:2px solid var(--honey); outline-offset:2px}
+  .led{width:12px; height:12px; border-radius:50%; flex:none; position:relative}
+  .led::after{content:""; position:absolute; inset:-4px; border-radius:50%; opacity:.5}
+  .led.working{background:var(--working)} .led.working::after{box-shadow:0 0 0 0 var(--working); animation:ping 1.8s infinite}
+  .led.waiting{background:var(--waiting)}
+  .led.testing{background:var(--testing)} .led.testing::after{box-shadow:0 0 0 0 var(--testing); animation:ping 1.4s infinite}
+  .led.conflict{background:var(--conflict)} .led.conflict::after{box-shadow:0 0 0 0 var(--conflict); animation:ping .8s infinite}
+  .led.offline{background:var(--offline)}
+  @keyframes ping{0%{box-shadow:0 0 0 0 currentColor; opacity:.5}70%{box-shadow:0 0 0 9px transparent; opacity:0}100%{opacity:0}}
+  .agent .nm{font-weight:600; font-size:13px}
+  .agent .rl{font-size:11px; color:var(--muted)}
+  .agent .st{margin-left:auto; font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.08em}
+  .st.working{color:var(--working)} .st.waiting{color:var(--waiting)} .st.testing{color:var(--testing)} .st.conflict{color:var(--conflict)} .st.offline{color:var(--offline)}
+
+  /* ── Bottom row: feed + detail ───────────────────────── */
+  .bottom{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px}
+  .feed{height:210px; overflow:hidden; position:relative}
+  .feed .scroll{display:flex; flex-direction:column; gap:7px}
+  .ln{font-family:var(--mono); font-size:12px; display:flex; gap:9px; align-items:baseline; animation:slideIn .35s ease}
+  @keyframes slideIn{from{opacity:0; transform:translateY(-4px)}to{opacity:1; transform:none}}
+  .ln .t{color:var(--muted); flex:none}
+  .ln .who{color:var(--honey); flex:none; min-width:74px}
+  .ln.evt-conflict .msg{color:var(--conflict)} .ln.evt-ok .msg{color:var(--working)} .ln.evt-test .msg{color:var(--testing)}
+
+  .detail .empty{color:var(--muted); font-size:13px; padding:20px 4px; text-align:center}
+  .detail .dhead{display:flex; align-items:center; gap:11px; margin-bottom:14px}
+  .detail .dhead .nm{font-size:18px; font-weight:700}
+  .detail .dhead .rl{font-size:11px; color:var(--muted); letter-spacing:.1em; text-transform:uppercase}
+  .drow{display:flex; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid var(--line); font-size:13px}
+  .drow .dk{color:var(--muted)} .drow .dv{font-family:var(--mono); text-align:right}
+  .dprog{height:8px; background:var(--inset); border-radius:6px; overflow:hidden; margin-top:4px; min-width:120px}
+  .dprog i{display:block; height:100%; background:linear-gradient(90deg,var(--honey-lo),var(--honey)); transition:width .6s}
+
+  footer{margin-top:20px; color:var(--muted); font-size:11px; font-family:var(--mono); text-align:center; line-height:1.7}
+  @media (max-width:980px){
+    .metrics{grid-template-columns:repeat(3,1fr)} .grid{grid-template-columns:1fr} .bottom{grid-template-columns:1fr}
+  }
+  @media (max-width:560px){
+    .wrap{padding:12px 12px 32px}
+    header.bar{padding:11px 13px; gap:9px 10px}
+    .brand h1{font-size:15px} .brand .sub{font-size:10px; letter-spacing:.16em}
+    .hexmark{width:28px; height:32px}
+    .pill{font-size:11px; padding:6px 10px}
+    .metrics{grid-template-columns:repeat(2,1fr); gap:9px}
+    .metric{padding:11px 12px} .metric .v{font-size:23px}
+    .card{padding:13px} .card h2{margin-bottom:11px}
+    #map{min-width:480px}
+    .feed{height:168px}
+    .sprint .pct{font-size:24px}
+    .tickets{gap:7px} .tk{padding:8px} .tk .n{font-size:19px}
+    footer{font-size:10px}
+  }
+  @media (max-width:380px){ .metrics{grid-template-columns:1fr 1fr} .metric .v{font-size:21px} }
+  @media (prefers-reduced-motion:reduce){ *{animation:none!important; transition:none!important} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="bar">
+    <div class="brand">
+      <svg class="hexmark" viewBox="0 0 34 38" aria-hidden="true">
+        <polygon points="17,1 33,10 33,28 17,37 1,28 1,10" fill="none" stroke="#FFB02E" stroke-width="2"/>
+        <polygon points="17,9 25,14 25,24 17,29 9,24 9,14" fill="#FFB02E" opacity=".85"/>
+      </svg>
+      <div>
+        <h1>Hivecode <span style="color:var(--honey)">Control Room</span></h1>
+        <div class="sub">Agent Swarm · Mission Control</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill">Director <b>Ganesh</b></span>
+    <span class="pill">Server <b class="live">🟢 Running</b></span>
+    <span class="pill" id="clock">--:--:--</span>
+    <span class="pill"><span class="live blink">●</span> <b>LIVE</b></span>
+  </header>
+
+  <section class="metrics">
+    <div class="metric"><div class="k">Agents</div><div class="v" id="m-agents">5</div><span class="spark" style="background:var(--working)"></span></div>
+    <div class="metric"><div class="k">Files Edited</div><div class="v" id="m-files">0</div></div>
+    <div class="metric accent"><div class="k">Conflicts Prevented</div><div class="v" id="m-conflicts">0</div></div>
+    <div class="metric"><div class="k">Tests Passed</div><div class="v" id="m-tests">0 <small>✔</small></div></div>
+    <div class="metric"><div class="k">Server</div><div class="v" style="font-size:20px;color:var(--working)">🟢 UP</div><div style="font-size:11px;color:var(--muted);margin-top:4px;font-family:var(--mono)" id="m-uptime">00:00</div></div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2><span class="dot"></span>Live Architecture Map</h2>
+      <div class="mapwrap">
+        <svg id="map" viewBox="0 0 760 430" role="img" aria-label="Agent architecture map">
+          <g id="edges"></g>
+          <g id="pulses"></g>
+          <g id="nodes"></g>
+        </svg>
+      </div>
+    </div>
+
+    <div>
+      <div class="card sprint" style="margin-bottom:16px">
+        <h2><span class="dot"></span>Sprint Progress — HelpDesk</h2>
+        <div class="pct"><span id="s-pct">0</span>%</div>
+        <div class="barwrap"><div class="fill" id="s-fill"></div></div>
+        <div class="tickets">
+          <div class="tk done"><div class="n" id="s-done">0</div><div class="l">✔ Done</div></div>
+          <div class="tk run"><div class="n" id="s-run">0</div><div class="l">🟡 Running</div></div>
+          <div class="tk wait"><div class="n" id="s-wait">0</div><div class="l">⏳ Waiting</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2><span class="dot"></span>Agents</h2>
+        <div class="agents" id="agentList"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="bottom">
+    <div class="card">
+      <h2><span class="dot"></span>Activity Feed</h2>
+      <div class="feed"><div class="scroll" id="feed"></div></div>
+    </div>
+    <div class="card detail">
+      <h2><span class="dot"></span>Agent Inspector</h2>
+      <div id="detail"><div class="empty">▸ Click an agent or a hex node to inspect it.</div></div>
+    </div>
+  </section>
+
+  <footer>
+    Hivecode Control Room · <b style="color:var(--honey)">v2 · mobile-optimized</b> · self-contained demo (built-in live telemetry)<br>
+    Wire to a real room: point the data layer at the relay's <code>members</code> / <code>claims</code> / <code>chat</code> / <code>tasks</code> maps.
+  </footer>
+</div>
+
+<script>
+"use strict";
+/* ── Model ───────────────────────────────────────────── */
+const STATUS = {
+  working:{label:"Working", emoji:"🟢"}, waiting:{label:"Waiting", emoji:"🟡"},
+  testing:{label:"Testing", emoji:"🔵"}, conflict:{label:"Conflict", emoji:"🔴"},
+  offline:{label:"Offline", emoji:"⚪"}
+};
+// node positions on the 760x430 canvas (PM top → BE/FE/QA → Validator bottom)
+const agents = [
+  {id:"pm",  role:"PM",        who:"PM",     x:380, y:58,  status:"working", file:"CONTRACT.md", task:"Coordinate sprint", progress:62, last:"Assigned Ticket 2", eta:"—"},
+  {id:"be",  role:"Backend",   who:"Agent2", x:160, y:200, status:"working", file:"server.js",   task:"REST API endpoints", progress:81, last:"Added PATCH /tickets/:id", eta:"2 min"},
+  {id:"fe",  role:"Frontend",  who:"Agent4", x:380, y:200, status:"working", file:"public/app.js",task:"Ticket detail view", progress:54, last:"Rendered comment thread", eta:"5 min"},
+  {id:"qa",  role:"QA",        who:"Agent1", x:600, y:200, status:"waiting", file:"test/api.test.js", task:"Awaiting build", progress:20, last:"Drafted GET tests", eta:"—"},
+  {id:"val", role:"Validator", who:"Gate",   x:380, y:350, status:"waiting", file:"—",           task:"Review queue", progress:0,  last:"Idle", eta:"—"},
+];
+const edges = [ ["pm","be"],["pm","fe"],["pm","qa"],["be","val"],["fe","val"],["qa","val"] ];
+const metrics = {files:18, conflicts:3, tests:11, agents:5};
+const sprint = {pct:34, done:3, run:3, wait:4};
+let uptime = 740; // seconds, for display
+
+/* ── Render: nodes + edges ───────────────────────────── */
+const SVGNS="http://www.w3.org/2000/svg";
+const elNodes=document.getElementById("nodes"), elEdges=document.getElementById("edges"), elPulses=document.getElementById("pulses");
+const byId=id=>agents.find(a=>a.id===id);
+function hexPoints(cx,cy,r){
+  let p=[]; for(let i=0;i<6;i++){const a=Math.PI/180*(60*i-90); p.push((cx+r*Math.cos(a)).toFixed(1)+","+(cy+r*Math.sin(a)).toFixed(1));} return p.join(" ");
+}
+function edgeKey(a,b){return a+"-"+b}
+const edgeEls={};
+edges.forEach(([a,b])=>{
+  const A=byId(a),B=byId(b);
+  const ln=document.createElementNS(SVGNS,"path");
+  ln.setAttribute("d",`M ${A.x} ${A.y} L ${B.x} ${B.y}`);
+  ln.setAttribute("class","edge"); ln.dataset.key=edgeKey(a,b);
+  elEdges.appendChild(ln); edgeEls[edgeKey(a,b)]=ln;
+});
+let selected=null;
+function drawNodes(){
+  elNodes.innerHTML="";
+  agents.forEach(a=>{
+    const g=document.createElementNS(SVGNS,"g");
+    g.setAttribute("class","node "+a.status+(selected===a.id?" sel":""));
+    g.setAttribute("tabindex","0"); g.setAttribute("role","button");
+    g.setAttribute("aria-label",a.role+" "+STATUS[a.status].label);
+    const breathe=document.createElementNS(SVGNS,"polygon");
+    breathe.setAttribute("points",hexPoints(a.x,a.y,52)); breathe.setAttribute("class","breathe");
+    breathe.setAttribute("fill",cssStatus(a.status)); breathe.setAttribute("opacity","0");
+    const hex=document.createElementNS(SVGNS,"polygon");
+    hex.setAttribute("points",hexPoints(a.x,a.y,46)); hex.setAttribute("class","hex");
+    const role=document.createElementNS(SVGNS,"text");
+    role.setAttribute("x",a.x); role.setAttribute("y",a.y-2); role.setAttribute("class","role"); role.textContent=a.role;
+    const who=document.createElementNS(SVGNS,"text");
+    who.setAttribute("x",a.x); who.setAttribute("y",a.y+15); who.setAttribute("class","who"); who.textContent=a.who;
+    const light=document.createElementNS(SVGNS,"circle");
+    light.setAttribute("cx",a.x+32); light.setAttribute("cy",a.y-30); light.setAttribute("r",6);
+    light.setAttribute("class","light"); light.setAttribute("fill",cssStatus(a.status));
+    g.append(breathe,hex,role,who,light);
+    g.addEventListener("click",()=>select(a.id));
+    g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();select(a.id);}});
+    elNodes.appendChild(g);
+  });
+}
+function cssStatus(s){return getComputedStyle(document.documentElement).getPropertyValue("--"+s).trim()||"#888"}
+
+/* ── Render: side panels ─────────────────────────────── */
+const elAgentList=document.getElementById("agentList");
+function drawAgents(){
+  elAgentList.innerHTML="";
+  agents.forEach(a=>{
+    const d=document.createElement("div");
+    d.className="agent"+(selected===a.id?" sel":""); d.tabIndex=0;
+    d.innerHTML=`<span class="led ${a.status}"></span>
+      <div><div class="nm">${a.who} <span class="rl">· ${a.role}</span></div>
+      <div class="rl">${a.task}</div></div>
+      <span class="st ${a.status}">${STATUS[a.status].label}</span>`;
+    d.addEventListener("click",()=>select(a.id));
+    d.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();select(a.id);}});
+    elAgentList.appendChild(d);
+  });
+}
+function select(id){ selected=id; drawNodes(); drawAgents(); drawDetail(); }
+const elDetail=document.getElementById("detail");
+function drawDetail(){
+  const a=byId(selected);
+  if(!a){elDetail.innerHTML='<div class="empty">▸ Click an agent or a hex node to inspect it.</div>';return;}
+  elDetail.innerHTML=`
+    <div class="dhead"><span class="led ${a.status}"></span>
+      <div><div class="nm">${a.who}</div><div class="rl">${a.role}</div></div>
+      <span class="st ${a.status}" style="margin-left:auto">${STATUS[a.status].emoji} ${STATUS[a.status].label}</span></div>
+    <div class="drow"><span class="dk">Current task</span><span class="dv">${a.task}</span></div>
+    <div class="drow"><span class="dk">Current file</span><span class="dv">${a.file}</span></div>
+    <div class="drow"><span class="dk">Progress</span><span class="dv">${a.progress}%<div class="dprog"><i style="width:${a.progress}%"></i></div></span></div>
+    <div class="drow"><span class="dk">Last action</span><span class="dv">${a.last}</span></div>
+    <div class="drow"><span class="dk">ETA</span><span class="dv">${a.eta}</span></div>`;
+}
+
+/* ── Metrics / sprint paint ──────────────────────────── */
+function setText(id,v){const e=document.getElementById(id); if(e.textContent!==String(v)){e.textContent=v; e.classList.remove("bump"); void e.offsetWidth; e.classList.add("bump");}}
+function paintMetrics(){
+  document.getElementById("m-agents").textContent=metrics.agents;
+  setText("m-files",metrics.files);
+  setText("m-conflicts",metrics.conflicts);
+  document.getElementById("m-tests").innerHTML=metrics.tests+' <small>✔</small>';
+}
+function paintSprint(){
+  setText("s-pct",sprint.pct); document.getElementById("s-fill").style.width=sprint.pct+"%";
+  setText("s-done",sprint.done); setText("s-run",sprint.run); setText("s-wait",sprint.wait);
+}
+
+/* ── Activity feed ───────────────────────────────────── */
+const elFeed=document.getElementById("feed");
+function nowStr(){const d=new Date(); return d.toTimeString().slice(0,8);}
+function log(msg,kind){
+  const ln=document.createElement("div"); ln.className="ln"+(kind?" evt-"+kind:"");
+  ln.innerHTML=`<span class="t">${nowStr()}</span><span class="msg">${msg}</span>`;
+  elFeed.prepend(ln);
+  while(elFeed.children.length>9) elFeed.lastChild.remove();
+}
+
+/* ── Edge animation (the "wow") ──────────────────────── */
+function animateEdge(fromId,toId,kind){
+  const a=byId(fromId), b=byId(toId);
+  const key=edgeEls[edgeKey(fromId,toId)]?edgeKey(fromId,toId):edgeKey(toId,fromId);
+  const edge=edgeEls[key];
+  if(kind==="reject"){ if(edge){edge.classList.remove("reject"); void edge.offsetWidth; edge.classList.add("reject"); setTimeout(()=>edge.classList.remove("reject"),900);} return; }
+  if(edge){ edge.classList.add("flow"); setTimeout(()=>edge.classList.remove("flow"),700); }
+  const p=document.createElementNS(SVGNS,"circle");
+  p.setAttribute("class","pulse"+(kind==="test"?" test":kind==="ok"?" ok":""));
+  p.setAttribute("r","5"); elPulses.appendChild(p);
+  const t0=performance.now(), dur=650;
+  (function step(t){
+    const k=Math.min(1,(t-t0)/dur);
+    p.setAttribute("cx",a.x+(b.x-a.x)*k); p.setAttribute("cy",a.y+(b.y-a.y)*k);
+    if(k<1) requestAnimationFrame(step); else p.remove();
+  })(t0);
+}
+function setStatus(id,s){ const a=byId(id); a.status=s; drawNodes(); drawAgents(); if(selected===id) drawDetail(); }
+
+/* ── Scripted live simulation (loops; demo-safe) ─────── */
+const script=[
+  {t:1200, do:()=>{ setStatus("pm","working"); animateEdge("pm","be","assign"); log('PM → <b>Backend</b>: assigned Ticket 2 (REST API)'); }},
+  {t:1400, do:()=>{ setStatus("be","working"); byId("be").last="Wrote GET /api/tickets"; byId("be").progress=68; metrics.files++; paintMetrics(); if(selected==="be")drawDetail(); }},
+  {t:1600, do:()=>{ animateEdge("pm","fe","assign"); setStatus("fe","working"); log('PM → <b>Frontend</b>: assigned ticket detail view'); }},
+  {t:1500, do:()=>{ metrics.conflicts++; paintMetrics(); setStatus("fe","conflict"); log('⚠ Collision on <b>app.js</b> — claim held by Agent4, write blocked','conflict'); }},
+  {t:1300, do:()=>{ setStatus("fe","working"); log('✓ Conflict prevented — Backend rerouted to server.js','ok'); }},
+  {t:1500, do:()=>{ byId("be").progress=81; byId("be").last="Added PATCH /tickets/:id"; metrics.files++; paintMetrics(); animateEdge("be","val","review"); setStatus("val","testing"); setStatus("qa","testing"); log('Backend → <b>Validator</b>: submitted API for review','test'); }},
+  {t:1800, do:()=>{ animateEdge("val","be","reject"); setStatus("be","conflict"); log('✗ Validator REJECTED: 2 tests <b>.skip</b>ped — not done','conflict'); }},
+  {t:1400, do:()=>{ setStatus("be","working"); byId("be").last="Un-skipped API tests"; log('Backend reworking — removing skipped tests'); }},
+  {t:1500, do:()=>{ metrics.tests+=6; paintMetrics(); animateEdge("be","val","test"); setStatus("val","testing"); log('Re-running suite — 6 new tests','test'); }},
+  {t:1600, do:()=>{ animateEdge("val","be","ok"); setStatus("be","working"); setStatus("val","waiting"); sprint.done++; sprint.run--; sprint.pct=Math.min(99,sprint.pct+11); paintSprint(); log('✓ Validator APPROVED Ticket 2 — merged','ok'); }},
+  {t:1500, do:()=>{ animateEdge("fe","val","review"); setStatus("qa","testing"); setStatus("val","testing"); byId("fe").progress=88; if(selected==="fe")drawDetail(); log('Frontend → <b>Validator</b>: ticket detail view ready','test'); }},
+  {t:1500, do:()=>{ metrics.tests+=4; paintMetrics(); animateEdge("val","fe","ok"); setStatus("fe","working"); setStatus("val","waiting"); sprint.done++; sprint.run--; sprint.pct=Math.min(99,sprint.pct+9); paintSprint(); log('✓ Validator APPROVED frontend — merged','ok'); }},
+  {t:1400, do:()=>{ animateEdge("pm","qa","assign"); setStatus("qa","working"); sprint.run++; sprint.wait--; log('PM → <b>QA</b>: write persistence tests'); }},
+  {t:1600, do:()=>{ metrics.files++; metrics.conflicts++; paintMetrics(); log('✓ Conflict prevented — QA claimed test/ before edit','ok'); }},
+  {t:1500, do:()=>{ setStatus("pm","waiting"); byId("pm").last="Reviewing board"; log('PM standup — sprint '+sprint.pct+'% complete'); }},
+];
+let step=0;
+function tick(){
+  const s=script[step % script.length];
+  s.do();
+  step++;
+  // gentle drift so numbers feel alive between scripted beats
+  setTimeout(tick, s.t);
+}
+
+/* ── Boot ────────────────────────────────────────────── */
+function clock(){ document.getElementById("clock").textContent=nowStr();
+  const h=String(Math.floor(uptime/3600)).padStart(2,"0"), m=String(Math.floor(uptime%3600/60)).padStart(2,"0"), s=String(uptime%60).padStart(2,"0");
+  document.getElementById("m-uptime").textContent=(uptime>=3600?h+":":"")+m+":"+s; uptime++; }
+drawNodes(); drawAgents(); drawDetail(); paintMetrics(); paintSprint();
+log('Control Room online — 5 agents in room <b>room-Uoe3…2hA</b>');
+clock(); setInterval(clock,1000);
+select("be");
+setTimeout(tick, 1400);
+</script>
+</body>
+</html>
