@@ -263,18 +263,28 @@
       </div>
       <div class="prcard feat">
         <div class="pr-name">Pro</div>
-        <div class="pr-price"><span class="amt">₹999</span><span class="per">/ month</span></div>
-        <div class="pr-desc">For teams running multiple AI agents in production.</div>
+        <div class="pr-price"><span class="amt" id="pro-price">$29</span><span class="per">/ committer / mo</span></div>
+        <div class="pr-desc">For enterprise teams running AI agents in production.</div>
+        
+        <div style="margin: 24px 0; text-align: left;">
+          <label for="committer-count" style="font-size: 14px; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 12px;">
+            Active Committers: <span id="committer-display" style="color: var(--text); font-weight: bold; font-size: 16px;">1</span>
+          </label>
+          <input type="range" id="committer-count" min="1" max="100" value="1" style="width: 100%; accent-color: #D96570; height: 6px; border-radius: 4px; outline: none; -webkit-appearance: none; background: color-mix(in srgb, var(--line) 80%, transparent);">
+          <div style="font-size: 14px; color: var(--text-muted); margin-top: 16px; text-align: center; background: color-mix(in srgb, var(--panel) 50%, transparent); padding: 8px; border-radius: 8px; border: 1px solid var(--line);">
+            Total: <strong style="color: var(--text); font-size: 18px;">$<span id="total-price">29</span></strong> / month
+          </div>
+        </div>
+
         <ul class="pr-feat">
-          <li><span class="y">✓</span> Unlimited agents</li>
+          <li><span class="y">✓</span> <span id="feat-agents">1 active committer</span></li>
           <li><span class="y">✓</span> AST-Aware ICR Semantic Engine</li>
           <li><span class="y">✓</span> Alpha-Equivalent Rename Repair</li>
           <li><span class="y">✓</span> Resolvable Conflict Units (RCUs)</li>
           <li><span class="y">✓</span> Pre-Write Admission Control</li>
-          <li><span class="y">✓</span> Private secured rooms</li>
           <li><span class="y">✓</span> Priority Coordinator Execution</li>
         </ul>
-        <a href="https://rzp.io/rzp/cID09NdY" target="_blank" class="btn btn-amber" id="pro-btn" style="text-align:center;text-decoration:none">⚡ Upgrade to Pro</a>
+        <button id="rzp-button1" class="btn btn-amber" style="width: 100%; font-size: 16px; cursor: pointer; border: none; padding: 14px;">⚡ Upgrade to Pro</button>
       </div>
     </div>
   </div>
@@ -289,7 +299,62 @@
 
 <!-- FOOTER -->
 <footer>
-  <p>Built by <a href="https://github.com/GSK7024" target="_blank">Ganesh Kute</a> · <a href="https://github.com/GSK7024/livecode" target="_blank">GitHub</a> · MIT License · © 2026</p>
+  <div class="sec">
+    <div style="display:flex;justify-content:space-between;align-items:center;color:var(--text-muted);font-size:14px">
+      <div>&copy; 2026 Hivecode. Built for the Agentic Future.</div>
+      <div style="display:flex;gap:20px">
+        <a href="https://github.com/GSK7024/livecode" target="_blank" style="color:var(--text-muted);text-decoration:none">GitHub</a>
+      </div>
+    </div>
+  </div>
 </footer>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+  const slider = document.getElementById('committer-count');
+  const display = document.getElementById('committer-display');
+  const total = document.getElementById('total-price');
+  const featAgents = document.getElementById('feat-agents');
+  
+  if (slider) {
+    slider.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      display.textContent = val;
+      total.textContent = val * 29;
+      featAgents.textContent = val === 1 ? '1 active committer' : val + ' active committers';
+    });
+
+    document.getElementById('rzp-button1').onclick = function(e){
+      const committers = parseInt(slider.value, 10);
+      const amountInCents = committers * 29 * 100;
+      
+      var options = {
+        "key": "rzp_test_mock_key", 
+        "amount": amountInCents, 
+        "currency": "USD",
+        "name": "Hivecode Pro",
+        "description": committers + " Active Committer License",
+        "image": "https://hivecode.vercel.app/favicon.ico",
+        "handler": function (response){
+            alert("Payment successful! Your License Key is:\\n\\nHC-PRO-" + response.razorpay_payment_id + "\\n\\nAdd this to your daemon configuration to unlock " + committers + " committers.");
+        },
+        "prefill": {
+            "name": "CTO / Lead Engineer",
+            "email": "engineering@example.com",
+            "contact": "9999999999"
+        },
+        "theme": {
+            "color": "#D96570"
+        }
+      };
+      var rzp1 = new Razorpay(options);
+      rzp1.on('payment.failed', function (response){
+          alert("Payment Failed: " + response.error.description);
+      });
+      rzp1.open();
+      e.preventDefault();
+    }
+  }
+</script>
 </body>
 </html>

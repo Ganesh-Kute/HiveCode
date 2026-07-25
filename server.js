@@ -409,6 +409,31 @@ const server = http.createServer((req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
     if (req.method === 'POST') return void handleRevoke(req, res)
   }
+  
+  // SaaS Billing Endpoint: Validate Hivecode Pro licenses against Supabase (Mocked)
+  if (req.url === '/api/validate-license') {
+    if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
+    if (req.method === 'POST') {
+      let body = ''
+      req.on('data', chunk => body += chunk.toString())
+      req.on('end', () => {
+        try {
+          const { license_key } = JSON.parse(body)
+          // Mock Supabase Check
+          if (license_key && license_key.startsWith('HC-PRO-')) {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            return res.end(JSON.stringify({ valid: true, max_committers: parseInt(process.env.MOCK_MAX_COMMITTERS || '10', 10) }))
+          }
+          res.writeHead(402, { 'Content-Type': 'application/json' })
+          return res.end(JSON.stringify({ valid: false, error: 'Payment Required: Invalid or missing license.' }))
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          return res.end(JSON.stringify({ error: 'bad request' }))
+        }
+      })
+      return
+    }
+  }
   // Static pages: the relay doubles as the website + the browser control room, so
   // one deploy serves everything. Map a small allowlist of paths to public/ files.
   if (req.method === 'GET') {
@@ -443,12 +468,21 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
-  let room = 'default', token = ''
+  let room = 'default', token = '', license = ''
   try {
     const u = new URL(req.url, 'http://localhost')
     room = decodeURIComponent(u.pathname.slice(1)) || 'default'
     token = u.searchParams.get('token') || ''
+    license = u.searchParams.get('license') || ''
   } catch { /* keep defaults */ }
+
+  // SaaS Enforcer: Block unauthorized connections
+  if (process.env.HIVE_REQUIRE_LICENSE === 'true' && !license.startsWith('HC-PRO-')) {
+    audit('reject-license', { room, reason: 'Payment Required' })
+    socket.write(`HTTP/1.1 402 Payment Required\\r\\nConnection: close\\r\\n\\r\\n`)
+    socket.destroy()
+    return
+  }
 
   // Fail CLOSED on any unexpected error in authorization — a thrown exception here
   // must reject the connection, never crash the relay process (which would take down
