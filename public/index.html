@@ -238,6 +238,14 @@ tr.is-ours .bar span{background:var(--spark)}
 .steps .n{font-family:var(--mono);font-size:11px;color:var(--verified);border:1px solid rgba(53,201,240,.34);border-radius:999px;width:24px;height:24px;display:grid;place-items:center;margin-top:2px}
 .steps code{font-family:var(--mono);font-size:12.5px;color:var(--verified)}
 
+/* ═══ VIDEO ═══ */
+.vid{max-width:720px;margin:38px auto 0}
+.vid__player{
+  display:block;width:100%;aspect-ratio:16/9;height:auto;object-fit:contain;
+  border:1px solid var(--line-soft);border-radius:var(--r-lg);background:var(--sunk);
+}
+.vid__cap{font-family:var(--mono);font-size:11.5px;color:var(--dim);text-align:center;margin-top:11px}
+
 /* ═══ PRICING ═══ */
 .plans{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));max-width:800px;margin:44px auto 0}
 .plan{background:linear-gradient(180deg,rgba(20,27,43,.8),rgba(14,19,32,.55));border:1px solid var(--line-soft);border-radius:var(--r-lg);padding:28px;display:flex;flex-direction:column}
@@ -647,10 +655,11 @@ VERIFY → re-read after sync; lost? back off</code></pre>
         </span>
       </article>
     </div>
-    <div style="margin-top:34px" data-reveal>
-      <video src="/hivecode-icr-demo.mp4" controls preload="none" poster="/hivecode-logo.png" width="1120" height="630"
-             style="border-radius:var(--r-lg);border:1px solid var(--line-soft);width:100%;height:auto"></video>
-    </div>
+    <figure class="vid" data-reveal>
+      <video class="vid__player" src="/hivecode-icr-demo.mp4" controls preload="none"
+             poster="/hivecode-logo.png" width="1280" height="720"></video>
+      <figcaption class="vid__cap">Full ICR walkthrough · 9 min</figcaption>
+    </figure>
   </div>
 </section>
 
