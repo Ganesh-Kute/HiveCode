@@ -3,361 +3,778 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hivecode — Pre-Write Admission Control for Multi-Agent Teams</title>
-<meta name="description" content="Stop your AI agents from corrupting your codebase. Deterministic write-leases and AST-level semantic merging, inside VS Code.">
+<title>Hivecode — merge AI agents' code by meaning, not by lines</title>
+<meta name="description" content="When two AI agents edit one repo, git merges by lines and ships silent breaks. Hivecode's ICR engine merges by structure and intent — and never emits code that doesn't parse. Measured on Stanford's CooperBench.">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:title" content="Hivecode — merge AI agents' code by meaning, not by lines">
+<meta property="og:description" content="Git merged it clean. Your build broke anyway. Hivecode merges by structure and intent, with a hard guarantee it never ships unparseable code.">
+<meta property="og:image" content="/hivecode-logo.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css?family=Google+Sans:400,500,700|Google+Sans+Text:400,500&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-  :root{
-    --ground:#0E0E10; --panel:#1E1F22; --panel2:#272A2E; --raise:#303338;
-    --line:rgba(255,255,255,.06); --line2:rgba(255,255,255,.11);
-    --text:#E3E3E6; --mut:#9AA0A6; --dim:#6E747B;
-    --blue:#1A73E8; --blue-h:#4285F4; --teal:#34D399; --amber:#FBBF24; --red:#F28B82; --edit:#8AB4F8;
-    --spark:linear-gradient(105deg,#4285F4,#9B72CB 50%,#D96570);
-    --sh1:0 1px 3px rgba(0,0,0,.5);
-    --sh2:0 24px 70px -30px rgba(0,0,0,.85);
-    --glow:rgba(26,115,232,.52);
-    --rc:24px; --ri:16px;
-    --fd:"Google Sans","Product Sans",Roboto,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-    --fb:"Google Sans Text","Google Sans",Roboto,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-    --fm:"Roboto Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  html{scroll-behavior:smooth}
-  body{font-family:var(--fb);font-size:15px;line-height:1.6;color:var(--text);background:var(--ground);
-    -webkit-font-smoothing:antialiased;overflow-x:hidden;
-    background-image:radial-gradient(1200px 900px at 50% 0%,var(--glow),transparent 62%);background-attachment:fixed}
-  ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:10px;border:3px solid transparent;background-clip:content-box}
-  a{color:var(--edit);text-decoration:none}
+/* ═══ TOKENS ═══════════════════════════════════════════════════════════════
+   Palette is taken from the Hivecode mark: graphite-navy ground, cyan / violet /
+   magenta spark. The two working colours carry the product's verdict —
+   cyan = verified, amber = merged clean but silently broken. */
+:root{
+  --ground:#080B12; --surface:#0E1320; --raised:#141B2B; --sunk:#050810;
+  --line:rgba(158,180,215,.13); --line-soft:rgba(158,180,215,.07); --line-hot:rgba(158,180,215,.26);
+  --text:#E9EDF5; --muted:#96A3BA; --dim:#66738C;
+  --verified:#35C9F0; --verified-deep:#0E7FA8;
+  --broken:#F9A23B; --crash:#FF5C7A; --violet:#7B6CEB; --magenta:#FF4D8D;
+  --spark:linear-gradient(100deg,#35C9F0 0%,#7B6CEB 46%,#FF4D8D 100%);
+  --sans:"Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --r-lg:18px; --r-md:12px; --r-sm:8px;
+  --shadow:0 32px 90px -40px rgba(0,0,0,.9);
+  --pad:clamp(20px,5vw,32px);
+}
+*,*::before,*::after{box-sizing:border-box}
+*{margin:0}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{
+  font-family:var(--sans);font-size:16px;line-height:1.65;color:var(--text);
+  background:var(--ground);-webkit-font-smoothing:antialiased;overflow-x:hidden;
+}
+body.is-locked{overflow:hidden}
+img,video{max-width:100%;display:block}
+a{color:var(--verified);text-decoration:none}
+a:hover{text-decoration:underline;text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--verified);outline-offset:3px;border-radius:4px}
+::selection{background:rgba(53,201,240,.28)}
 
-  /* ── NAV ── */
-  nav{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;
-    padding:14px 28px;background:color-mix(in srgb,var(--ground) 72%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);
-    border-bottom:1px solid var(--line)}
-  .nav-brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--text)}
-  .wordmark{font-family:var(--fd);font-weight:500;font-size:18px}
-  .spark{width:26px;height:26px}
-  .nav-links{display:flex;align-items:center;gap:22px}
-  .nav-links a{color:var(--mut);text-decoration:none;font-size:13.5px;font-weight:500;transition:color .2s}
-  .nav-links a:hover{color:var(--text)}
+/* ═══ PRIMITIVES ═══ */
+.wrap{width:100%;max-width:1120px;margin-inline:auto;padding-inline:var(--pad)}
+.section{padding-block:clamp(64px,9vw,116px)}
+.section--edged{border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);background:linear-gradient(180deg,rgba(20,27,43,.42),rgba(8,11,18,0))}
+.eyebrow{
+  font-family:var(--mono);font-size:11.5px;font-weight:500;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--verified);display:flex;align-items:center;gap:10px;
+}
+.eyebrow::after{content:"";height:1px;flex:1;max-width:120px;background:linear-gradient(90deg,var(--line-hot),transparent)}
+h1,h2,h3{font-family:var(--sans);font-weight:600;letter-spacing:-.02em;line-height:1.1}
+h1{font-size:clamp(34px,6vw,62px);letter-spacing:-.035em}
+h2{font-size:clamp(27px,4vw,42px);margin-block:14px 16px}
+h3{font-size:17px;letter-spacing:-.01em;line-height:1.35}
+.lede{font-size:clamp(16px,1.6vw,18.5px);color:var(--muted);max-width:62ch;line-height:1.68}
+.grad{background:var(--spark);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}
+[data-reveal]{opacity:0;transform:translateY(18px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
+[data-reveal].is-shown{opacity:1;transform:none}
 
-  /* ── BUTTONS ── */
-  .btn{display:inline-flex;align-items:center;gap:8px;border:none;cursor:pointer;font-family:var(--fb);
-    border-radius:999px;padding:11px 22px;font-size:14px;font-weight:500;transition:all .2s}
-  .btn-primary{background:var(--blue);color:#fff;box-shadow:0 2px 12px rgba(26,115,232,.3)}
-  .btn-primary:hover{background:var(--blue-h);box-shadow:0 4px 20px rgba(26,115,232,.4);transform:translateY(-1px)}
-  .btn-ghost{background:transparent;color:var(--mut);box-shadow:inset 0 0 0 1px var(--line2)}
-  .btn-ghost:hover{background:var(--panel2);color:var(--text)}
-  .btn-amber{background:linear-gradient(180deg,#ffc24d,#ff8a3d);color:#241400;box-shadow:0 2px 12px rgba(255,178,36,.25)}
-  .btn-amber:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:9px;cursor:pointer;
+  font-family:var(--sans);font-size:14.5px;font-weight:600;letter-spacing:-.005em;
+  padding:12px 22px;border-radius:999px;border:1px solid transparent;
+  transition:background .2s,border-color .2s,transform .2s,box-shadow .2s,color .2s;
+  text-decoration:none;white-space:nowrap;
+}
+.btn:hover{text-decoration:none}
+.btn--primary{background:var(--verified);color:#04222E;box-shadow:0 8px 30px -12px rgba(53,201,240,.7)}
+.btn--primary:hover{background:#5AD6F5;transform:translateY(-1px)}
+.btn--ghost{background:rgba(158,180,215,.05);border-color:var(--line);color:var(--text)}
+.btn--ghost:hover{background:rgba(158,180,215,.11);border-color:var(--line-hot)}
+.btn--sm{padding:7px 14px;font-size:13px}
+.btn--wide{width:100%}
 
-  /* ── HERO ── */
-  .hero{padding:150px 28px 90px;text-align:center;position:relative}
-  .hero::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--line2),transparent)}
-  .hero-badge{display:inline-flex;align-items:center;gap:8px;padding:5px 14px;border-radius:999px;
-    background:color-mix(in srgb,var(--teal) 12%,transparent);border:1px solid color-mix(in srgb,var(--teal) 22%,transparent);
-    color:var(--teal);font-family:var(--fm);font-size:12px;font-weight:500;margin-bottom:28px;animation:fadeUp .6s ease}
-  .hero-badge .dot{width:7px;height:7px;border-radius:50%;background:var(--teal);animation:pulse 2s ease-in-out infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+/* command chip with copy button */
+.cmd{
+  display:inline-flex;align-items:stretch;gap:0;border:1px solid var(--line);border-radius:999px;
+  background:var(--sunk);overflow:hidden;max-width:100%;
+}
+.cmd code{
+  font-family:var(--mono);font-size:13.5px;color:var(--text);padding:11px 6px 11px 18px;
+  white-space:nowrap;overflow-x:auto;scrollbar-width:none;
+}
+.cmd code::-webkit-scrollbar{display:none}
+.cmd code .sigil{color:var(--dim)}
+.cmd__copy{
+  flex:0 0 auto;border:0;border-left:1px solid var(--line-soft);background:transparent;cursor:pointer;
+  color:var(--muted);padding:0 15px;font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;
+  text-transform:uppercase;transition:color .2s,background .2s;
+}
+.cmd__copy:hover{color:var(--text);background:rgba(158,180,215,.07)}
+.cmd__copy.is-copied{color:var(--verified)}
+.cmd__copy.is-copied::after{content:"✓ copied"}
+.cmd__copy:not(.is-copied)::after{content:"copy"}
 
-  h1{font-family:var(--fd);font-size:clamp(34px,5vw,58px);font-weight:400;line-height:1.12;letter-spacing:-.01em;
-    max-width:780px;margin:0 auto 20px;animation:fadeUp .6s ease .1s both}
-  h1 .grad{background:var(--spark);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-  .hero-sub{font-size:16px;color:var(--mut);max-width:540px;margin:0 auto 36px;line-height:1.7;animation:fadeUp .6s ease .2s both}
-  .hero-actions{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;animation:fadeUp .6s ease .3s both}
+/* ═══ NAV ═══ */
+.nav{
+  position:sticky;top:0;z-index:60;display:flex;align-items:center;justify-content:space-between;
+  gap:20px;padding:14px var(--pad);border-bottom:1px solid transparent;transition:border-color .3s,background .3s,backdrop-filter .3s;
+}
+.nav.is-stuck{background:rgba(8,11,18,.82);backdrop-filter:blur(18px) saturate(1.5);-webkit-backdrop-filter:blur(18px) saturate(1.5);border-bottom-color:var(--line-soft)}
+.brand{display:flex;align-items:center;gap:11px;color:var(--text)}
+.brand:hover{text-decoration:none}
+.brand svg{width:27px;height:27px;flex:0 0 auto}
+.brand__name{font-size:17.5px;font-weight:700;letter-spacing:-.02em}
+.nav__links{display:flex;align-items:center;gap:26px}
+.nav__links a:not(.btn){font-size:14px;font-weight:500;color:var(--muted);transition:color .2s}
+.nav__links a:not(.btn):hover{color:var(--text);text-decoration:none}
+.skip{position:absolute;left:-9999px;top:8px;z-index:80;background:var(--verified);color:#04222E;padding:10px 16px;border-radius:8px;font-weight:600}
+.skip:focus{left:12px}
 
-  .hero-stats{display:flex;justify-content:center;gap:40px;margin-top:56px;animation:fadeUp .6s ease .4s both}
-  .stat{text-align:center}
-  .stat-v{font-family:var(--fd);font-size:26px;font-weight:500;color:var(--text);font-feature-settings:'tnum'}
-  .stat-v.acc{color:var(--edit)}
-  .stat-l{font-family:var(--fm);font-size:11px;color:var(--dim);margin-top:2px;text-transform:uppercase;letter-spacing:.05em}
+/* ═══ HERO ═══ */
+.hero{position:relative;padding-block:clamp(48px,8vw,92px) clamp(40px,6vw,64px);overflow:hidden}
+.hero__glow{
+  position:absolute;inset:-30% -10% auto;height:760px;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(620px 420px at 22% 26%,rgba(53,201,240,.20),transparent 70%),
+    radial-gradient(560px 400px at 74% 14%,rgba(123,108,235,.20),transparent 72%),
+    radial-gradient(420px 320px at 52% 60%,rgba(255,77,141,.10),transparent 74%);
+  filter:blur(6px);
+}
+.hero__inner{position:relative;z-index:1}
+.hero h1{max-width:19ch;margin-block:22px 20px}
+.hero .lede{max-width:58ch}
+.hero__actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:30px}
+.hero__meta{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:16px}
 
-  /* ── SECTION ── */
-  .sec{max-width:1060px;margin:0 auto;padding:90px 28px}
-  .sec-label{font-family:var(--fm);font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.1em;color:var(--edit);margin-bottom:12px}
-  h2{font-family:var(--fd);font-size:clamp(26px,3.5vw,38px);font-weight:400;line-height:1.15;letter-spacing:-.005em;margin-bottom:16px}
-  .sec-desc{font-size:15px;color:var(--mut);max-width:540px;line-height:1.7;margin-bottom:40px}
+/* ═══ DEMO ═══ */
+.demo{margin-top:clamp(38px,6vw,60px);border:1px solid var(--line);border-radius:var(--r-lg);background:linear-gradient(180deg,var(--surface),var(--sunk));box-shadow:var(--shadow);overflow:hidden}
+.demo__bar{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.demo__tabs{display:flex;gap:6px;flex-wrap:wrap}
+.demo__tab{
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;
+  padding:6px 13px;border-radius:999px;border:1px solid transparent;background:transparent;
+  color:var(--dim);cursor:pointer;transition:color .2s,background .2s,border-color .2s;
+}
+.demo__tab:hover{color:var(--muted)}
+.demo__tab.is-active{color:var(--text);background:rgba(53,201,240,.12);border-color:rgba(53,201,240,.35)}
+.demo__hint{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim)}
+.demo__rail{height:2px;background:var(--line-soft);position:relative;overflow:hidden}
+.demo__rail::after{content:"";position:absolute;inset:0 100% 0 0;background:var(--spark)}
+.demo__rail.is-running::after{animation:rail 4.2s linear forwards}
+@keyframes rail{from{inset:0 100% 0 0}to{inset:0 0 0 0}}
+.demo__stage{display:grid;gap:1px;background:var(--line-soft);grid-template-columns:1fr}
+.demo__stage.stage--split{grid-template-columns:repeat(auto-fit,minmax(290px,1fr))}
+.demo__caption{padding:14px 18px;border-top:1px solid var(--line-soft);font-size:14px;color:var(--muted);background:rgba(5,8,16,.6)}
 
-  /* ── PROBLEM CARDS ── */
-  .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
-  .pcard{background:color-mix(in srgb,var(--panel) 60%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);
-    border:1px solid var(--line);border-radius:var(--rc);padding:26px;transition:all .25s}
-  .pcard:hover{border-color:var(--line2);transform:translateY(-2px);box-shadow:var(--sh2)}
-  .pcard .icon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:18px;margin-bottom:14px}
-  .pcard .icon.r{background:color-mix(in srgb,var(--red) 16%,transparent)}
-  .pcard .icon.a{background:color-mix(in srgb,var(--amber) 16%,transparent)}
-  .pcard .icon.p{background:color-mix(in srgb,#9B72CB 16%,transparent)}
-  .pcard h3{font-family:var(--fd);font-weight:500;font-size:16px;margin-bottom:8px}
-  .pcard p{font-size:13.5px;color:var(--mut);line-height:1.6}
+.pane{background:var(--sunk);padding:16px 0 0;min-width:0;position:relative}
+.pane::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:var(--line)}
+.pane--broken::before{background:var(--broken)}
+.pane--clean::before{background:var(--verified)}
+.pane__head{display:flex;align-items:center;gap:10px;padding:0 18px 12px;flex-wrap:wrap}
+.pane__title{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.pane__badge{font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:2px 9px}
+.pane--broken .pane__badge{color:var(--broken);border-color:rgba(249,162,59,.4)}
+.pane--clean .pane__badge{color:var(--verified);border-color:rgba(53,201,240,.4)}
+.pane__code{padding:0 18px 16px;overflow-x:auto}
+.pane__code code{font-family:var(--mono);font-size:13px;line-height:1.85;display:block;min-width:max-content}
+.ln{display:block;white-space:pre;border-radius:3px}
+.ln--dim{color:var(--dim)}
+.ln--add{color:var(--text);box-shadow:inset 2px 0 0 var(--verified);padding-left:8px;margin-left:-8px;background:rgba(53,201,240,.07)}
+.ln--ok{color:var(--verified);box-shadow:inset 2px 0 0 var(--verified);padding-left:8px;margin-left:-8px;background:rgba(53,201,240,.1)}
+.ln--del{color:var(--broken);box-shadow:inset 2px 0 0 var(--broken);padding-left:8px;margin-left:-8px;background:rgba(249,162,59,.08)}
+.ln--warn{color:var(--crash);font-weight:500}
+.pane__verdict{
+  font-family:var(--mono);font-size:11.5px;padding:10px 18px;border-top:1px solid var(--line-soft);
+  color:var(--muted);letter-spacing:.02em;
+}
+.pane--broken .pane__verdict{color:var(--broken);background:rgba(249,162,59,.07)}
+.pane--clean .pane__verdict{color:var(--verified);background:rgba(53,201,240,.07)}
 
-  /* ── SOLUTION CARDS ── */
-  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
-  .scard{background:color-mix(in srgb,var(--panel) 50%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);
-    border:1px solid var(--line);border-radius:var(--rc);padding:30px;position:relative;overflow:hidden;transition:all .25s}
-  .scard:hover{border-color:color-mix(in srgb,var(--blue) 40%,transparent);box-shadow:0 0 40px rgba(26,115,232,.12)}
-  .scard::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--spark);opacity:0;transition:opacity .25s}
-  .scard:hover::before{opacity:1}
-  .tag{font-family:var(--fm);font-size:10px;font-weight:500;padding:3px 9px;border-radius:6px;display:inline-block;margin-bottom:14px;letter-spacing:.03em}
-  .tag.bl{background:color-mix(in srgb,var(--blue) 18%,transparent);color:#9cc1fb}
-  .tag.gr{background:color-mix(in srgb,var(--teal) 16%,transparent);color:#86e6c2}
-  .scard h3{font-family:var(--fd);font-weight:500;font-size:17px;margin-bottom:8px}
-  .scard p{font-size:13.5px;color:var(--mut);line-height:1.7}
-  .scard code{font-family:var(--fm);font-size:12px;background:color-mix(in srgb,var(--blue) 12%,transparent);padding:2px 6px;border-radius:4px;color:var(--edit)}
+/* ═══ STATS ═══ */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(214px,1fr));gap:1px;background:var(--line-soft);border-block:1px solid var(--line-soft)}
+.stat{background:var(--ground);padding:26px var(--pad)}
+.stat__v{font-size:clamp(28px,3.4vw,38px);font-weight:700;letter-spacing:-.035em;line-height:1;font-variant-numeric:tabular-nums}
+.stat__v--cy{color:var(--verified)} .stat__v--am{color:var(--broken)} .stat__v--vi{color:var(--violet)}
+.stat__l{font-size:14px;color:var(--muted);margin-top:9px;line-height:1.5}
+.stat__src{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:8px;letter-spacing:.03em;text-transform:uppercase}
 
-  /* ── PROOF GRID ── */
-  .proof{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;background:var(--line);border-radius:var(--rc);overflow:hidden}
-  .proof-item{background:color-mix(in srgb,var(--panel) 60%,transparent);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
-    padding:28px;text-align:center;transition:background .2s}
-  .proof-item:hover{background:var(--panel2)}
-  .proof-v{font-family:var(--fd);font-size:30px;font-weight:500;margin-bottom:4px}
-  .proof-v.bl{color:var(--edit)} .proof-v.gr{color:var(--teal)} .proof-v.pr{color:#c9b0ed}
-  .proof-l{font-family:var(--fm);font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+/* ═══ CARD GRIDS ═══ */
+.grid{display:grid;gap:16px;margin-top:44px}
+.grid--3{grid-template-columns:repeat(auto-fit,minmax(288px,1fr))}
+.grid--2{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+.card{
+  background:linear-gradient(180deg,rgba(20,27,43,.7),rgba(14,19,32,.5));
+  border:1px solid var(--line-soft);border-radius:var(--r-lg);padding:24px;
+  transition:border-color .25s,transform .25s;min-width:0;
+}
+.card:hover{border-color:var(--line);transform:translateY(-2px)}
+.card__tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);display:block;margin-bottom:12px}
+.card h3{margin-bottom:9px}
+.card p{font-size:14.5px;color:var(--muted);line-height:1.65}
+.card p + p{margin-top:10px}
+.card p code{font-family:var(--mono);font-size:12.5px;color:var(--verified);background:rgba(53,201,240,.1);padding:1px 6px;border-radius:4px}
+.card--broken{border-left:2px solid rgba(249,162,59,.5)}
+.snip{
+  margin:14px 0 0;background:var(--sunk);border:1px solid var(--line-soft);border-radius:var(--r-md);
+  padding:13px 15px;overflow-x:auto;
+}
+.snip code{font-family:var(--mono);font-size:12.5px;line-height:1.8;color:var(--muted);display:block;white-space:pre;min-width:max-content}
+.snip .c{color:var(--dim)} .snip .k{color:var(--violet)} .snip .s{color:var(--verified)} .snip .b{color:var(--broken)} .snip .w{color:var(--crash)}
+.verdict-line{font-family:var(--mono);font-size:12px;margin-top:12px;display:flex;gap:8px;align-items:flex-start}
+.verdict-line--bad{color:var(--broken)} .verdict-line--good{color:var(--verified)}
 
-  /* ── PRICING ── */
-  .pricing-bg{background:color-mix(in srgb,var(--panel) 30%,transparent);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-  .pricing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;max-width:680px;margin:0 auto}
-  .prcard{background:color-mix(in srgb,var(--panel) 60%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);
-    border:1px solid var(--line);border-radius:var(--rc);padding:34px 30px;display:flex;flex-direction:column;transition:all .3s}
-  .prcard:hover{transform:translateY(-3px);box-shadow:var(--sh2)}
-  .prcard.feat{border-color:var(--blue);box-shadow:0 0 36px rgba(26,115,232,.18);position:relative}
-  .prcard.feat::before{content:'MOST POPULAR';position:absolute;top:-11px;left:50%;transform:translateX(-50%);
-    padding:3px 14px;background:var(--spark);color:#fff;font-family:var(--fm);font-size:10px;font-weight:500;border-radius:999px;letter-spacing:.04em}
-  .pr-name{font-family:var(--fd);font-weight:500;font-size:17px;margin-bottom:6px}
-  .pr-price{display:flex;align-items:baseline;gap:4px;margin-bottom:4px}
-  .pr-price .amt{font-family:var(--fd);font-weight:500;font-size:38px}
-  .pr-price .per{font-size:13px;color:var(--dim)}
-  .pr-desc{font-size:13px;color:var(--mut);margin-bottom:22px;padding-bottom:22px;border-bottom:1px solid var(--line)}
-  .pr-feat{list-style:none;flex:1;margin-bottom:24px}
-  .pr-feat li{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--mut);padding:5px 0}
-  .pr-feat .y{color:var(--teal);font-weight:bold;font-size:15px} .pr-feat .n{color:var(--dim)}
-  .prcard .btn{width:100%;justify-content:center}
+/* ═══ PROOF TABLE ═══ */
+.tablewrap{margin-top:40px;border:1px solid var(--line-soft);border-radius:var(--r-lg);overflow-x:auto;background:var(--surface)}
+table{width:100%;border-collapse:collapse;min-width:620px}
+caption{text-align:left;padding:18px 20px 0;font-size:14px;color:var(--muted)}
+th,td{padding:14px 20px;text-align:left;border-bottom:1px solid var(--line-soft);font-size:14.5px}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:500}
+tbody tr:last-child td{border-bottom:0}
+tbody tr.is-ours{background:rgba(53,201,240,.07)}
+td.num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13.5px}
+.tool{font-weight:600}
+.tool small{display:block;font-weight:400;font-size:12.5px;color:var(--dim);font-family:var(--mono)}
+.bar{height:5px;border-radius:999px;background:rgba(158,180,215,.12);overflow:hidden;margin-top:7px;max-width:180px}
+.bar span{display:block;height:100%;border-radius:999px;background:var(--line-hot)}
+tr.is-ours .bar span{background:var(--spark)}
 
-  /* ── CTA ── */
-  .cta{text-align:center;padding:90px 28px;background-image:radial-gradient(800px 600px at 50% 50%,var(--glow),transparent 62%)}
-  .cta h2{margin-bottom:14px}
-  .cta p{color:var(--mut);font-size:15px;max-width:460px;margin:0 auto 28px}
+/* ═══ MEDIUM (logo band) ═══ */
+.medium{display:grid;gap:clamp(28px,5vw,52px);grid-template-columns:1fr;align-items:center}
+@media(min-width:900px){.medium{grid-template-columns:1.05fr .95fr}}
+.medium__art{position:relative;border-radius:var(--r-lg);overflow:hidden;border:1px solid var(--line-soft);background:var(--sunk)}
+.medium__art img{width:100%;height:auto}
+.medium__art::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 55%,rgba(8,11,18,.72));pointer-events:none}
+.steps{list-style:none;padding:0;margin-top:26px;display:grid;gap:14px}
+.steps li{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:start;font-size:14.5px;color:var(--muted)}
+.steps b{color:var(--text);font-weight:600}
+.steps .n{font-family:var(--mono);font-size:11px;color:var(--verified);border:1px solid rgba(53,201,240,.34);border-radius:999px;width:24px;height:24px;display:grid;place-items:center;margin-top:2px}
+.steps code{font-family:var(--mono);font-size:12.5px;color:var(--verified)}
 
-  /* ── FOOTER ── */
-  footer{padding:36px 28px;text-align:center;border-top:1px solid var(--line)}
-  footer p{font-size:12px;color:var(--dim)}
-  footer a{color:var(--mut);transition:color .2s} footer a:hover{color:var(--edit)}
+/* ═══ PRICING ═══ */
+.plans{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));max-width:800px;margin:44px auto 0}
+.plan{background:linear-gradient(180deg,rgba(20,27,43,.8),rgba(14,19,32,.55));border:1px solid var(--line-soft);border-radius:var(--r-lg);padding:28px;display:flex;flex-direction:column}
+.plan--pro{border-color:rgba(53,201,240,.42);box-shadow:0 0 0 1px rgba(53,201,240,.1),0 30px 80px -50px rgba(53,201,240,.7);position:relative}
+.plan__name{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.plan--pro .plan__name{color:var(--verified)}
+.plan__price{display:flex;align-items:baseline;gap:6px;margin-top:12px}
+.plan__amt{font-size:42px;font-weight:700;letter-spacing:-.04em;line-height:1}
+.plan__per{font-size:13.5px;color:var(--dim)}
+.plan__note{font-size:14px;color:var(--muted);margin-top:10px;padding-bottom:20px;border-bottom:1px solid var(--line-soft)}
+.seats{margin:20px 0 4px}
+.seats__row{display:flex;justify-content:space-between;align-items:baseline;font-size:14px;color:var(--muted);margin-bottom:10px}
+.seats__row strong{color:var(--text);font-family:var(--mono);font-size:15px}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;border-radius:999px;background:rgba(158,180,215,.16);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:19px;height:19px;border-radius:50%;background:var(--verified);cursor:pointer;border:3px solid var(--ground);box-shadow:0 0 0 1px var(--verified)}
+input[type=range]::-moz-range-thumb{width:19px;height:19px;border-radius:50%;background:var(--verified);cursor:pointer;border:3px solid var(--ground)}
+.seats__total{margin-top:16px;padding:11px 14px;border:1px solid var(--line-soft);border-radius:var(--r-md);background:var(--sunk);font-size:14px;color:var(--muted);text-align:center}
+.seats__total b{color:var(--text);font-size:18px;font-family:var(--mono)}
+.feats{list-style:none;padding:0;margin:22px 0;display:grid;gap:9px;flex:1}
+.feats li{display:grid;grid-template-columns:auto 1fr;gap:10px;font-size:14px;color:var(--muted);align-items:start}
+.feats .y{color:var(--verified)} .feats .n{color:var(--dim)}
+.plan__foot{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:14px;text-align:center}
 
-  /* ── RESPONSIVE ── */
-  @media(max-width:768px){
-    nav{padding:12px 16px} .nav-links a:not(.btn){display:none}
-    .hero{padding:120px 20px 70px} .hero-stats{gap:20px}
-    .sec{padding:60px 20px} .proof{grid-template-columns:1fr}
-  }
+/* ═══ FAQ ═══ */
+.faq{margin-top:40px;border-top:1px solid var(--line-soft)}
+details{border-bottom:1px solid var(--line-soft)}
+summary{cursor:pointer;padding:19px 0;font-size:16.5px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:14px;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"+";font-family:var(--mono);color:var(--verified);font-size:17px;flex:0 0 auto;transition:transform .2s}
+details[open] summary::before{content:"−"}
+details p{padding:0 0 20px 28px;font-size:14.5px;color:var(--muted);max-width:74ch}
+details p + p{padding-top:0;margin-top:-8px}
+details code{font-family:var(--mono);font-size:13px;color:var(--verified)}
+
+/* ═══ CTA + FOOTER ═══ */
+.cta{text-align:center;position:relative;overflow:hidden}
+.cta__glow{position:absolute;inset:auto -20% -60%;height:520px;background:radial-gradient(closest-side,rgba(53,201,240,.18),transparent 72%);pointer-events:none}
+.cta h2{max-width:22ch;margin-inline:auto}
+.cta .lede{margin:0 auto 30px}
+.cta__actions{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+.foot{border-top:1px solid var(--line-soft);padding-block:34px;font-size:13.5px;color:var(--dim)}
+.foot__row{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center}
+.foot__links{display:flex;gap:22px;flex-wrap:wrap}
+.foot a{color:var(--muted)}
+
+/* ═══ MODAL ═══ */
+.modal{position:fixed;inset:0;z-index:90;display:grid;place-items:center;padding:20px;background:rgba(3,5,10,.78);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.modal[hidden]{display:none}
+.modal__card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:30px;max-width:520px;width:100%;box-shadow:var(--shadow)}
+.modal__title{font-size:21px;margin-bottom:10px}
+.modal__body{font-size:14.5px;color:var(--muted);margin-bottom:18px}
+.modal__key{display:flex;gap:10px;align-items:center;background:var(--sunk);border:1px solid var(--line-soft);border-radius:var(--r-md);padding:12px 14px;margin-bottom:20px;flex-wrap:wrap}
+.modal__key code{font-family:var(--mono);font-size:13.5px;color:var(--verified);word-break:break-all;flex:1;min-width:180px}
+.modal__close{width:100%}
+
+@media(max-width:760px){
+  .nav__links a:not(.btn){display:none}
+  .hero h1{max-width:none}
+  .demo__hint{display:none}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}
+}
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 
-<!-- NAV -->
-<nav>
-  <a href="/" class="nav-brand">
-    <svg class="spark" viewBox="0 0 24 24" fill="none"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4285F4"/><stop offset=".5" stop-color="#9B72CB"/><stop offset="1" stop-color="#D96570"/></linearGradient></defs><path d="M12 2L2 7l10 5 10-5-10-5z" stroke="url(#g)" stroke-width="1.5" fill="none"/><path d="M2 17l10 5 10-5" stroke="url(#g)" stroke-width="1.5"/><path d="M2 12l10 5 10-5" stroke="url(#g)" stroke-width="1.5"/></svg>
-    <span class="wordmark">Hivecode</span>
+<!-- ═══ NAV ═══ -->
+<header class="nav" data-nav>
+  <a class="brand" href="/" aria-label="Hivecode home">
+    <svg viewBox="0 0 100 100" fill="none" aria-hidden="true">
+      <defs><linearGradient id="sp" x1="8" y1="8" x2="92" y2="92" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#35C9F0"/><stop offset=".5" stop-color="#7B6CEB"/><stop offset="1" stop-color="#FF4D8D"/>
+      </linearGradient></defs>
+      <g stroke="url(#sp)" stroke-width="5.6" stroke-linecap="round">
+        <g><path d="M50 7C72 9 86 27 71 43"/><circle cx="50" cy="7" r="3.4" fill="url(#sp)" stroke="none"/></g>
+        <g transform="rotate(120 50 50)"><path d="M50 7C72 9 86 27 71 43"/><circle cx="50" cy="7" r="3.4" fill="url(#sp)" stroke="none"/></g>
+        <g transform="rotate(240 50 50)"><path d="M50 7C72 9 86 27 71 43"/><circle cx="50" cy="7" r="3.4" fill="url(#sp)" stroke="none"/></g>
+      </g>
+      <polygon points="69,50 59.5,66.5 40.5,66.5 31,50 40.5,33.5 59.5,33.5" fill="url(#sp)"/>
+    </svg>
+    <span class="brand__name">Hivecode</span>
   </a>
-  <div class="nav-links">
-    <a href="#problem">Problem</a>
-    <a href="#solution">Solution</a>
+  <nav class="nav__links" aria-label="Main">
+    <a href="#failure">Why git misses it</a>
+    <a href="#proof">Benchmarks</a>
+    <a href="#install">Install</a>
     <a href="#pricing">Pricing</a>
-    <a href="https://github.com/GSK7024/livecode" target="_blank">GitHub</a>
-    <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-primary" target="_blank">Install Free →</a>
-  </div>
-</nav>
+    <a class="btn btn--ghost btn--sm" href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">GitHub</a>
+  </nav>
+</header>
 
-<!-- HERO -->
+<main id="main">
+
+<!-- ═══ HERO ═══ -->
 <section class="hero">
-  <div class="hero-badge"><span class="dot"></span> Proven by 100% Drift Gauntlet Pass Rate</div>
-  <h1>Eliminate The <span class="grad">Phantom Regress</span></h1>
-  <p class="hero-sub">Autonomous agents are silently corrupting your codebase. Text-based git merging misses 41% of AI-generated structural conflicts. Hivecode enforces strict <strong>Pre-Write Admission Control</strong> via AST-aware Semantic Merging.</p>
-  <div class="hero-actions">
-    <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-primary" target="_blank">⚡ Deploy Hivecode Daemon</a>
-    <a href="#pricing" class="btn btn-ghost">View Pricing</a>
-  </div>
-  <div class="hero-stats">
-    <div class="stat"><div class="stat-v acc">14.2%</div><div class="stat-l">Semantic Drift in Swarms</div></div>
-    <div class="stat"><div class="stat-v">41.7%</div><div class="stat-l">Cross-Agent Conflict Rate</div></div>
-    <div class="stat"><div class="stat-v">0.0%</div><div class="stat-l">False Positives</div></div>
-  </div>
-  <div style="margin-top: 60px; max-width: 900px; margin-left: auto; margin-right: auto; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); box-shadow: 0 20px 40px rgba(0,0,0,0.4);">
-    <video src="/Hivecode___ICR.mp4" controls width="100%" style="display: block;" poster="/apple-touch-icon.png"></video>
-  </div>
-</section>
-
-<!-- PROBLEM -->
-<section id="problem">
-  <div class="sec">
-    <div class="sec-label">The Heterogeneity Coordination Tax</div>
-    <h2>Multi-agent coding rots your codebase</h2>
-    <p class="sec-desc">When autonomous agents like Claude and Devin execute parallel tasks, traditional textual git merging fails. Welcome to the Semantic Drift.</p>
-    <div class="grid3">
-      <div class="pcard"><div class="icon r">💥</div><h3>Dangling References</h3><p>Agent A deletes a function. Agent B concurrently adds a call to it. Git merges them cleanly, creating a Phantom Regression that crashes at runtime.</p></div>
-      <div class="pcard"><div class="icon a">🔀</div><h3>Silent Overwrites</h3><p>Two agents refactor the same billing module differently. Git interleaves their physical lines, producing syntactically valid but logically corrupt math.</p></div>
-      <div class="pcard"><div class="icon p">👻</div><h3>Context Poisoning</h3><p>Agent A changes a core database configuration interface, but Agent B relies on the old architectural assumptions. The resulting drift poisons the repo.</p></div>
+  <div class="hero__glow" aria-hidden="true"></div>
+  <div class="wrap hero__inner">
+    <p class="eyebrow">ICR · intent-aware code replication</p>
+    <h1>The merge was clean.<br>The code was <span class="grad">broken</span>.</h1>
+    <p class="lede">
+      Two AI agents edit one repo. One renames a function; the other adds a call to the old
+      name. Git compares <em>lines</em>, finds no overlap, and reports success — then your
+      build dies at runtime. Hivecode merges by <strong>structure and intent</strong>: it
+      recognises the rename, rewrites the stale call site, and refuses to emit code that
+      doesn't parse.
+    </p>
+    <div class="hero__actions">
+      <span class="cmd">
+        <code><span class="sigil">$</span> npx git-clash scan</code>
+        <button type="button" class="cmd__copy" data-copy="npx git-clash scan" aria-label="Copy command"></button>
+      </span>
+      <a class="btn btn--ghost" href="#proof">See the benchmarks</a>
     </div>
-  </div>
-</section>
+    <p class="hero__meta">Audits your real merge history for silent breaks. Runs locally, nothing uploaded.</p>
 
-<!-- SOLUTION -->
-<section id="solution" style="border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--panel) 30%,transparent)">
-  <div class="sec">
-    <div class="sec-label">The Solution</div>
-    <h2>AST-Aware Pre-Write Admission Control</h2>
-    <p class="sec-desc">Hivecode combines declarative write-leases with a mathematically proven Semantic Merge Engine to ensure multiple agents can work simultaneously without corrupting logic.</p>
-    <div class="grid2">
-      <div class="scard">
-        <span class="tag bl">ENGINE 1 — PREVENTION</span>
-        <h3>Relay-Enforced Write Leases</h3>
-        <p>Before an agent edits a file, it must claim a <code>write-lease</code> from the central coordinator. The relay physically blocks all other agents from creating unstructured overlapping writes. Claims auto-expire via TTL to prevent agent deadlocks.</p>
+    <!-- the thesis, as a demo rather than a claim -->
+    <div class="demo" data-demo>
+      <div class="demo__bar">
+        <div class="demo__tabs" data-demo-tabs role="group" aria-label="Merge walkthrough steps"></div>
+        <span class="demo__hint">auto-plays · click any step</span>
       </div>
-      <div class="scard">
-        <span class="tag gr">ENGINE 2 — SAFETY NET</span>
-        <h3>Intent-Aware Code Replication (ICR)</h3>
-        <p>When branches reconverge, ICR uses Context-Sensitive Identifier Mapping. If Agent A renames a node, the engine detects an <strong>Alpha-Equivalent Rename</strong> and autonomously rewrites Agent B's stale call sites before the merge completes.</p>
+      <div class="demo__rail" data-demo-rail aria-hidden="true"></div>
+      <div class="demo__stage" data-demo-stage aria-live="polite"></div>
+      <p class="demo__caption" data-demo-caption></p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ STATS ═══ -->
+<section class="stats" aria-label="Measured results">
+  <div class="stat">
+    <div class="stat__v stat__v--am">76.5%</div>
+    <p class="stat__l">of independent feature pairs conflict when merged with git — on <em>professionally written</em> patches, not agent output</p>
+    <p class="stat__src">CooperBench · 505 of 652 pairs</p>
+  </div>
+  <div class="stat">
+    <div class="stat__v stat__v--cy">3.7×</div>
+    <p class="stat__l">more of those conflicts integrated cleanly by ICR than by mergiraf, the best free structural merger</p>
+    <p class="stat__src">40.8% vs 11.1%</p>
+  </div>
+  <div class="stat">
+    <div class="stat__v stat__v--cy">96.2%</div>
+    <p class="stat__l">of ICR's integrations pass <em>both</em> features' own test suites — verified, not asserted</p>
+    <p class="stat__src">50 of 52 scoreable pairs</p>
+  </div>
+  <div class="stat">
+    <div class="stat__v stat__v--vi">0</div>
+    <p class="stat__l">unparseable merges across 6,430 real Python conflicts, checked with CPython's own parser</p>
+    <p class="stat__src">ConGra · 0 crashes</p>
+  </div>
+</section>
+
+<!-- ═══ FAILURE MODES ═══ -->
+<section class="section" id="failure">
+  <div class="wrap">
+    <div data-reveal>
+      <p class="eyebrow">the failure class</p>
+      <h2>Three ways a “clean” merge ships broken code</h2>
+      <p class="lede">
+        None of these produce a conflict marker. None fail a linter. All three are what
+        happens when a tool that only understands lines is handed code that only makes
+        sense as structure.
+      </p>
+    </div>
+    <div class="grid grid--3" data-reveal>
+
+      <article class="card card--broken">
+        <span class="card__tag">01 · dangling reference</span>
+        <h3>Deleted, but still called</h3>
+        <p>Agent A removes a helper it believes is dead. Agent B, at the same time, writes a new caller for it. The edits touch different lines, so git merges happily.</p>
+        <pre class="snip"><code><span class="c">// agent A removes it</span>
+<span class="b">- function formatCents(n) { … }</span>
+
+<span class="c">// agent B adds a caller</span>
+<span class="s">+ total = formatCents(sum)</span></code></pre>
+        <p class="verdict-line verdict-line--good"><span aria-hidden="true">→</span> ICR resolves references after merging and reports <code>ref:formatCents</code> — <code>clean: false</code>, so nothing ships silently.</p>
+      </article>
+
+      <article class="card card--broken">
+        <span class="card__tag">02 · character fusion</span>
+        <h3>Code nobody wrote</h3>
+        <p>In a live CRDT editor two agents change the same value at once. Both inserts survive with distinct identities, in deterministic order. Every peer converges — on a number neither author chose.</p>
+        <pre class="snip"><code><span class="c">base</span>   return 1
+<span class="c">A</span>      return 2
+<span class="c">B</span>      return 3
+<span class="c">merged</span> <span class="w">return 23</span>  <span class="c">← valid, convergent, unauthored</span></code></pre>
+        <p class="verdict-line verdict-line--good"><span aria-hidden="true">→</span> Signed provenance keeps both real versions, so the fused text — which nothing attests — is detected and surfaced as a genuine conflict.</p>
+      </article>
+
+      <article class="card card--broken">
+        <span class="card__tag">03 · divergent intent</span>
+        <h3>Two right answers</h3>
+        <p>Both agents rewrite the same function — one adds rate limiting, one converts it to async. Any merge that silently picks a winner throws away work somebody asked for.</p>
+        <pre class="snip"><code>{ key: <span class="s">'fn:login'</span>,
+  base, ours, theirs,
+  oursIntent:   <span class="s">'add rate limiting'</span>,
+  theirsIntent: <span class="s">'make login async'</span> }</code></pre>
+        <p class="verdict-line verdict-line--good"><span aria-hidden="true">→</span> The conflict is emitted as a machine-resolvable object carrying both intents — an agent can reconcile it, and the engine re-validates the result before it lands.</p>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══ HOW ═══ -->
+<section class="section section--edged" id="how">
+  <div class="wrap">
+    <div data-reveal>
+      <p class="eyebrow">how it works</p>
+      <h2>Four layers, each with a job git doesn't have</h2>
+      <p class="lede">
+        The engine is open source and runs anywhere — as a library, as a git merge driver,
+        or live inside a shared workspace.
+      </p>
+    </div>
+    <div class="grid grid--2" data-reveal>
+
+      <article class="card">
+        <span class="card__tag">layer 1 · identity</span>
+        <h3>Merge declarations, not lines</h3>
+        <p>Each version is parsed and split into keyed units — <code>fn:login</code>, <code>class:Auth</code>, <code>import:./db</code>. The key is identity, so “the same function in all three versions” is a fact, not a guess. Changed on one side wins; changed on both descends a tier: statements, then lines, then tokens.</p>
+        <pre class="snip"><code><span class="k">import</span> { merge } <span class="k">from</span> <span class="s">'icr-merge'</span>
+
+<span class="k">const</span> r = merge(base, ours, theirs, { filename: <span class="s">'auth.js'</span> })
+<span class="c">// r.method → 'structural' | 'rename' | 'lines'</span></code></pre>
+      </article>
+
+      <article class="card">
+        <span class="card__tag">layer 2 · the guarantee</span>
+        <h3>Never emit code more broken than the input</h3>
+        <p>Every merged unit and every final result is re-parsed before it is allowed out. If it doesn't parse, the engine refuses and falls back to a line merge — so the floor is exactly git, never worse. Held across thousands of fuzzed merges per run and 6,430 real conflicts.</p>
+        <pre class="snip"><code><span class="c">// all three inputs parse but the result doesn't?</span>
+{ clean: <span class="b">false</span>,
+  warning: <span class="s">'line-merged text does not parse'</span> }</code></pre>
+      </article>
+
+      <article class="card">
+        <span class="card__tag">layer 3 · prevention</span>
+        <h3>Claim before you write</h3>
+        <p>Agents sense a shared claim map, take a lease, verify after sync, and back off if they lost the race — Ethernet's collision detection with ant-colony expiry. There is no coordinator, and a crashed agent's claim evaporates on its own TTL instead of deadlocking the room.</p>
+        <pre class="snip"><code>SENSE  → is this file taken?
+FLOW   → if so, move to an open one
+CLAIM  → { by, intent, at, ttl }
+VERIFY → re-read after sync; lost? back off</code></pre>
+      </article>
+
+      <article class="card">
+        <span class="card__tag">layer 4 · provenance</span>
+        <h3>Every byte signed, with its reason</h3>
+        <p>Each edit is an Ed25519-signed receipt over author, the exact state it was made from, the result, and the <em>intent</em>. Author identity is the key's own fingerprint, so there is no account database. Unattributable bytes stand out precisely because nobody signed them.</p>
+        <pre class="snip"><code>{ author:  fingerprint(pubKey),
+  parent:  sha256(stateEditedFrom),
+  content: sha256(result),
+  intent:  <span class="s">'add rate limiting to login'</span> }</code></pre>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══ PROOF ═══ -->
+<section class="section" id="proof">
+  <div class="wrap">
+    <div data-reveal>
+      <p class="eyebrow">receipts, not adjectives</p>
+      <h2>Measured on someone else's benchmark</h2>
+      <p class="lede">
+        CooperBench (Stanford, 2026) gives two agents independent features on one repo and
+        scores the result by running <em>both</em> features' test suites. Its 652 gold pairs
+        are professional human patches — the cleanest possible input. 505 of them still
+        conflict under git. Here is how much of that loss each merge layer recovers.
+      </p>
+    </div>
+
+    <div class="tablewrap" data-reveal>
+      <table>
+        <caption>Of the 505 git-conflicted pairs — integrated cleanly, then test-verified.</caption>
+        <thead>
+          <tr><th scope="col">Merge layer</th><th scope="col">Pairs integrated</th><th scope="col">Share</th><th scope="col">Passes both test suites</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="tool">git merge<small>line-based, the baseline</small></td>
+            <td class="num">0</td>
+            <td class="num">0%<div class="bar"><span style="width:0"></span></div></td>
+            <td class="num">—</td>
+          </tr>
+          <tr>
+            <td class="tool">mergiraf 0.18<small>tree-sitter structural</small></td>
+            <td class="num">56</td>
+            <td class="num">11.1%<div class="bar"><span style="width:11%"></span></div></td>
+            <td class="num">—</td>
+          </tr>
+          <tr class="is-ours">
+            <td class="tool">ICR — safe default<small>structure + intent</small></td>
+            <td class="num">112</td>
+            <td class="num">22.2%<div class="bar"><span style="width:22%"></span></div></td>
+            <td class="num">100% <small>27 / 27</small></td>
+          </tr>
+          <tr class="is-ours">
+            <td class="tool">ICR — union mode<small>the multi-agent policy</small></td>
+            <td class="num">206</td>
+            <td class="num">40.8%<div class="bar"><span style="width:41%"></span></div></td>
+            <td class="num">96.2% <small>50 / 52</small></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid grid--3" data-reveal>
+      <article class="card">
+        <span class="card__tag">ground truth</span>
+        <h3>279 conflicts humans already resolved</h3>
+        <p>Replay real OSS conflicts and compare each tool's output against what the maintainer actually committed. ICR matched <strong>87</strong>; mergiraf <strong>64</strong>. Zero broken outputs, and ICR led on all five repositories.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">public benchmark</span>
+        <h3>ConGra — 6,430 Python conflicts</h3>
+        <p>Verified with CPython's own <code>ast.parse</code>. ICR resolves 32.1% to mergiraf's 31.8%, with <strong>zero crashes and zero parse-guarantee violations</strong>. Running it found and fixed 17 real engine bugs first.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">properties</span>
+        <h3>Tested as maths, not examples</h3>
+        <p>Symmetry (<code>M(b,x,y) = M(b,y,x)</code>), fixed-point, no-loss and the parse guarantee, under seeded fuzz across 20+ languages — 13,000+ assertions, green. Convergence isn't a nicety: without it, live peers diverge.</p>
+      </article>
+    </div>
+
+    <div class="hero__actions" data-reveal style="margin-top:34px">
+      <span class="cmd">
+        <code><span class="sigil">$</span> node scripts/cooper-merge-bench.mjs</code>
+        <button type="button" class="cmd__copy" data-copy="node scripts/cooper-merge-bench.mjs" aria-label="Copy command"></button>
+      </span>
+      <span style="font-size:14px;color:var(--muted)">Every harness and raw receipt is in the repo — reproduce it, don't trust it.</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ THE MEDIUM ═══ -->
+<section class="section section--edged">
+  <div class="wrap medium">
+    <div data-reveal>
+      <p class="eyebrow">upstream of the merge</p>
+      <h2>Or don't collide in the first place</h2>
+      <p class="lede">
+        A merge engine is a safety net. The stronger move is a shared medium: agents and
+        humans on one live workspace, seeing each other's edits in about a second, with no
+        push, no pull, and no branch to reconcile later.
+      </p>
+      <ol class="steps">
+        <li><span class="n">1</span><span><b>Agents join over MCP.</b> One line of config; they call <code>hive_join</code> and live in a <code>hive_wait</code> loop — no scripts, no polling.</span></li>
+        <li><span class="n">2</span><span><b>Every edit syncs in ~1s.</b> A room is a CRDT document, one sub-document per file, mirrored to each participant's real files on disk.</span></li>
+        <li><span class="n">3</span><span><b>You keep control.</b> Watch every edit live, fence an agent to a folder it cannot see past, gate risky work behind approval, and undo any agent instantly.</span></li>
+        <li><span class="n">4</span><span><b>Overlaps fall to ICR.</b> What prevention misses, the engine merges by meaning — or names precisely, with both intents attached.</span></li>
+      </ol>
+    </div>
+    <div data-reveal>
+      <div class="medium__art">
+        <img src="/hivecode-logo.png" alt="The Hivecode mark: many streams of concurrent code converging into a single codebase" width="1024" height="1024" loading="lazy">
       </div>
+      <p class="hero__meta" style="text-align:center">Many agents. One codebase. No branch to reconcile.</p>
     </div>
   </div>
 </section>
 
-<!-- PROOF -->
-<section>
-  <div class="sec">
-    <div class="sec-label">Mathematically Proven</div>
-    <h2>Validating the Semantic Drift Index (Dₛ)</h2>
-    <p class="sec-desc" style="margin-bottom:28px">The git-clash engine achieved a 100% success rate across 47 stress tests in the Multi-Agent Drift Gauntlet.</p>
-    <div class="proof">
-      <div class="proof-item"><div class="proof-v gr">Dₛ ≤ 0.05</div><div class="proof-l">Benign Mutations Passed</div></div>
-      <div class="proof-item"><div class="proof-v bl">Dₛ > 0.15</div><div class="proof-l">Behavioral Drift Blocked</div></div>
-      <div class="proof-item"><div class="proof-v pr">0%</div><div class="proof-l">False Negatives</div></div>
-      <div class="proof-item"><div class="proof-v gr">Yes</div><div class="proof-l">Pointer Analysis</div></div>
-      <div class="proof-item"><div class="proof-v bl">Auto</div><div class="proof-l">Rename Rewriting</div></div>
-      <div class="proof-item"><div class="proof-v pr">RCU</div><div class="proof-l">Resolvable Conflict Units</div></div>
+<!-- ═══ INSTALL ═══ -->
+<section class="section" id="install">
+  <div class="wrap">
+    <div data-reveal>
+      <p class="eyebrow">three ways in</p>
+      <h2>Start with the audit. It costs nothing.</h2>
+      <p class="lede">Each of these is published and installable right now.</p>
+    </div>
+    <div class="grid grid--3" data-reveal>
+      <article class="card">
+        <span class="card__tag">diagnose</span>
+        <h3>git-clash</h3>
+        <p>Replays your repository's own merge history and reports the merges that were clean to git but semantically broken. Read-only, entirely local.</p>
+        <span class="cmd" style="margin-top:16px">
+          <code><span class="sigil">$</span> npx git-clash scan</code>
+          <button type="button" class="cmd__copy" data-copy="npx git-clash scan" aria-label="Copy command"></button>
+        </span>
+      </article>
+      <article class="card">
+        <span class="card__tag">fix · MIT licensed</span>
+        <h3>icr-merge</h3>
+        <p>The engine as a library, a CLI, and a three-line git merge driver — so every <code>git merge</code> and rebase in your repo starts merging by structure instead of by line.</p>
+        <span class="cmd" style="margin-top:16px">
+          <code><span class="sigil">$</span> npm i icr-merge</code>
+          <button type="button" class="cmd__copy" data-copy="npm i icr-merge" aria-label="Copy command"></button>
+        </span>
+      </article>
+      <article class="card">
+        <span class="card__tag">prevent</span>
+        <h3>hivecode-mcp</h3>
+        <p>The live medium for agents: claims, chat, task approval, presence and provenance, exposed as MCP tools any capable agent can call natively.</p>
+        <span class="cmd" style="margin-top:16px">
+          <code><span class="sigil">$</span> npx hivecode-mcp</code>
+          <button type="button" class="cmd__copy" data-copy="npx hivecode-mcp" aria-label="Copy command"></button>
+        </span>
+      </article>
+    </div>
+    <div style="margin-top:34px" data-reveal>
+      <video src="/Hivecode___ICR.mp4" controls preload="none" poster="/hivecode-logo.png" width="1120" height="630"
+             style="border-radius:var(--r-lg);border:1px solid var(--line-soft);width:100%;height:auto"></video>
     </div>
   </div>
 </section>
 
-<!-- PRICING -->
-<section id="pricing" class="pricing-bg">
-  <div class="sec" style="text-align:center">
-    <div class="sec-label">Pricing</div>
-    <h2>Start free. Scale when ready.</h2>
-    <p class="sec-desc" style="margin:0 auto 44px;text-align:center">The free tier is fully functional for solo agents. Pro unlocks multi-agent teams and priority infrastructure.</p>
-    <div class="pricing-grid">
-      <div class="prcard">
-        <div class="pr-name">Free</div>
-        <div class="pr-price"><span class="amt">$0</span><span class="per">/ forever</span></div>
-        <div class="pr-desc">For individual developers getting started.</div>
-        <ul class="pr-feat">
-          <li><span class="y">✓</span> 2 agents per room</li>
-          <li><span class="y">✓</span> Textual Git Merge Engine</li>
-          <li><span class="y">✓</span> CRDT real-time sync</li>
-          <li><span class="n">✗</span> AST-Aware ICR Semantic Engine</li>
-          <li><span class="n">✗</span> Alpha-Equivalent Rename Repair</li>
-          <li><span class="n">✗</span> Private secured rooms</li>
-          <li><span class="n">✗</span> Pre-Write Admission Control</li>
+<!-- ═══ PRICING ═══ -->
+<section class="section section--edged" id="pricing" data-pricing>
+  <div class="wrap">
+    <div data-reveal>
+      <p class="eyebrow">pricing</p>
+      <h2>The engine is free forever. The medium is the product.</h2>
+      <p class="lede">
+        ICR is MIT-licensed and always will be — merge safety shouldn't be a paywall. Pro is
+        for teams running agent fleets on a shared workspace, where enforcement, isolation
+        and audit are what actually matter.
+      </p>
+    </div>
+
+    <div class="plans" data-reveal>
+      <article class="plan">
+        <p class="plan__name">Free</p>
+        <div class="plan__price"><span class="plan__amt">$0</span><span class="plan__per">/ forever</span></div>
+        <p class="plan__note">Everything an individual developer needs.</p>
+        <ul class="feats">
+          <li><span class="y" aria-hidden="true">✓</span><span>The full ICR engine — structure, intent, renames, the parse guarantee</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Git merge driver + CLI, 20+ languages</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Unlimited <code>git-clash</code> audits</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Live rooms, up to 2 committers</span></li>
+          <li><span class="n" aria-hidden="true">·</span><span>Relay-enforced write leases</span></li>
+          <li><span class="n" aria-hidden="true">·</span><span>Private folder-scoped rooms</span></li>
+          <li><span class="n" aria-hidden="true">·</span><span>Signed provenance ledger</span></li>
         </ul>
-        <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-ghost" target="_blank">Install Free →</a>
-      </div>
-      <div class="prcard feat">
-        <div class="pr-name">Pro</div>
-        <div class="pr-price"><span class="amt" id="pro-price">$29</span><span class="per">/ committer / mo</span></div>
-        <div class="pr-desc">For enterprise teams running AI agents in production.</div>
-        
-        <div style="margin: 24px 0; text-align: left;">
-          <label for="committer-count" style="font-size: 14px; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 12px;">
-            Active Committers: <span id="committer-display" style="color: var(--text); font-weight: bold; font-size: 16px;">1</span>
-          </label>
-          <input type="range" id="committer-count" min="1" max="100" value="1" style="width: 100%; accent-color: #D96570; height: 6px; border-radius: 4px; outline: none; -webkit-appearance: none; background: color-mix(in srgb, var(--line) 80%, transparent);">
-          <div style="font-size: 14px; color: var(--text-muted); margin-top: 16px; text-align: center; background: color-mix(in srgb, var(--panel) 50%, transparent); padding: 8px; border-radius: 8px; border: 1px solid var(--line);">
-            Total: <strong style="color: var(--text); font-size: 18px;">$<span id="total-price">29</span></strong> / month
+        <a class="btn btn--ghost btn--wide" href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">Get the engine</a>
+        <p class="plan__foot">no account, no telemetry</p>
+      </article>
+
+      <article class="plan plan--pro">
+        <p class="plan__name">Pro</p>
+        <div class="plan__price"><span class="plan__amt">$29</span><span class="plan__per">/ committer / month</span></div>
+        <p class="plan__note">For teams running AI agents on a shared codebase.</p>
+
+        <div class="seats">
+          <div class="seats__row">
+            <label for="seats">Active committers</label>
+            <strong data-seats-value>1</strong>
           </div>
+          <input id="seats" type="range" min="1" max="100" value="1" step="1"
+                 data-seats-input aria-label="Number of active committers">
+          <p class="seats__total">Total <b>$<span data-seats-total>29</span></b> / month</p>
         </div>
 
-        <ul class="pr-feat">
-          <li><span class="y">✓</span> <span id="feat-agents">1 active committer</span></li>
-          <li><span class="y">✓</span> AST-Aware ICR Semantic Engine</li>
-          <li><span class="y">✓</span> Alpha-Equivalent Rename Repair</li>
-          <li><span class="y">✓</span> Resolvable Conflict Units (RCUs)</li>
-          <li><span class="y">✓</span> Pre-Write Admission Control</li>
-          <li><span class="y">✓</span> Priority Coordinator Execution</li>
+        <ul class="feats">
+          <li><span class="y" aria-hidden="true">✓</span><span data-seats-feature>1 active committer</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Relay-enforced write leases — block or queue, not just warn</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Private rooms with per-folder scoping and read-only roles</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Signed provenance ledger + silent-fork detection</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Restore points and undo-by-agent</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Priority relay, or self-host it yourself</span></li>
         </ul>
-        <button id="rzp-button1" class="btn btn-amber" style="width: 100%; font-size: 16px; cursor: pointer; border: none; padding: 14px;">⚡ Upgrade to Pro</button>
-      </div>
+        <button type="button" class="btn btn--primary btn--wide" data-checkout data-razorpay-key="rzp_test_mock_key">
+          Upgrade to Pro
+        </button>
+        <p class="plan__foot">cancel anytime · self-hosting always available</p>
+      </article>
     </div>
   </div>
 </section>
 
-<!-- CTA -->
-<section class="cta">
-  <h2>Audit Your Repo for Semantic Drift</h2>
-  <p>Eliminate the Heterogeneity Coordination Tax today. Deploy the Hivecode Daemon in under 2 minutes.</p>
-  <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" class="btn btn-primary" target="_blank">Deploy Hivecode Daemon →</a>
+<!-- ═══ FAQ ═══ -->
+<section class="section">
+  <div class="wrap">
+    <div data-reveal>
+      <p class="eyebrow">straight answers</p>
+      <h2>Including the ones that don't flatter us</h2>
+    </div>
+    <div class="faq" data-reveal>
+      <details>
+        <summary>What can't ICR do?</summary>
+        <p>It guarantees <em>structure</em>, not <em>semantics</em>. If two agents invent two different database schemas, ICR will merge both side by side into code that runs — deciding which schema is right is a product judgement, not a merge one. A comment and code edited on the same side can lose the comment. Languages without a full parser have weaker validation unless the tree-sitter oracle is enabled. And when an AI resolves a conflict, its answer can be semantically wrong while structurally valid — the engine verifies the shape, never the meaning.</p>
+      </details>
+      <details>
+        <summary>Does this replace git?</summary>
+        <p>No. ICR installs <em>as</em> a git merge driver, so it improves the merges you already do. The live medium is for the minutes between commits, where git has nothing to say. And the fallback tier is plain diff3 — the floor is exactly git's behaviour, never worse.</p>
+      </details>
+      <details>
+        <summary>Which languages are supported?</summary>
+        <p>20+. Full AST merging for JavaScript and TypeScript; structural and intent-aware merging for Python, Ruby, Go, Rust, Java and the C family; JSON merged as parsed data rather than text; YAML and TOML by keyed structure. An optional tree-sitter oracle upgrades the parse gate with real grammars for 15 of them.</p>
+      </details>
+      <details>
+        <summary>Do you see my code?</summary>
+        <p><code>git-clash</code> and <code>icr-merge</code> run entirely on your machine and send nothing anywhere. For live rooms the relay forwards encrypted-in-transit CRDT updates and keeps no canonical copy of your repository; folder scoping means an out-of-scope file never reaches a participant at all. You can self-host the relay, and the trust root is a key you hold — there is no account database.</p>
+      </details>
+      <details>
+        <summary>Why not just give each agent a git worktree?</summary>
+        <p>That's today's default, and it's a deferral rather than a fix: it converts live coordination into a merge you deal with later. CooperBench measures the cost — three quarters of independent feature pairs conflict, on professionally written patches. Isolation doesn't reduce that number; it just decides when you meet it.</p>
+      </details>
+    </div>
+  </div>
 </section>
 
-<!-- FOOTER -->
-<footer>
-  <div class="sec">
-    <div style="display:flex;justify-content:space-between;align-items:center;color:var(--text-muted);font-size:14px">
-      <div>&copy; 2026 Hivecode. Built for the Agentic Future.</div>
-      <div style="display:flex;gap:20px">
-        <a href="https://github.com/GSK7024/livecode" target="_blank" style="color:var(--text-muted);text-decoration:none">GitHub</a>
-      </div>
+<!-- ═══ CTA ═══ -->
+<section class="section cta">
+  <div class="cta__glow" aria-hidden="true"></div>
+  <div class="wrap">
+    <h2>Find out whether it already happened to you</h2>
+    <p class="lede">One command, read-only, no signup. It replays your merge history and tells you which “clean” merges weren't.</p>
+    <div class="cta__actions">
+      <span class="cmd">
+        <code><span class="sigil">$</span> npx git-clash scan</code>
+        <button type="button" class="cmd__copy" data-copy="npx git-clash scan" aria-label="Copy command"></button>
+      </span>
+      <a class="btn btn--ghost" href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Read the source</a>
     </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot__row">
+    <p>© 2026 Hivecode · ICR is MIT licensed</p>
+    <nav class="foot__links" aria-label="Footer">
+      <a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a>
+      <a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a>
+      <a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a>
+      <a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">GitHub</a>
+    </nav>
   </div>
 </footer>
 
-<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-<script>
-  const slider = document.getElementById('committer-count');
-  const display = document.getElementById('committer-display');
-  const total = document.getElementById('total-price');
-  const featAgents = document.getElementById('feat-agents');
-  
-  if (slider) {
-    slider.addEventListener('input', (e) => {
-      const val = parseInt(e.target.value, 10);
-      display.textContent = val;
-      total.textContent = val * 29;
-      featAgents.textContent = val === 1 ? '1 active committer' : val + ' active committers';
-    });
-
-    document.getElementById('rzp-button1').onclick = function(e){
-      const committers = parseInt(slider.value, 10);
-      const amountInCents = committers * 29 * 100;
-      
-      var options = {
-        "key": "rzp_test_mock_key", 
-        "amount": amountInCents, 
-        "currency": "USD",
-        "name": "Hivecode Pro",
-        "description": committers + " Active Committer License",
-        "image": "https://hivecode.vercel.app/favicon.ico",
-        "handler": function (response){
-            alert("Payment successful! Your License Key is:\\n\\nHC-PRO-" + response.razorpay_payment_id + "\\n\\nAdd this to your daemon configuration to unlock " + committers + " committers.");
-        },
-        "prefill": {
-            "name": "CTO / Lead Engineer",
-            "email": "engineering@example.com",
-            "contact": "9999999999"
-        },
-        "theme": {
-            "color": "#D96570"
-        }
-      };
-      var rzp1 = new Razorpay(options);
-      rzp1.on('payment.failed', function (response){
-          alert("Payment Failed: " + response.error.description);
-      });
-      rzp1.open();
-      e.preventDefault();
-    }
-  }
-</script>
+<script src="https://checkout.razorpay.com/v1/checkout.js" defer></script>
+<script src="/app.js" defer></script>
 </body>
 </html>

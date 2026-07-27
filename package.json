@@ -52,7 +52,9 @@
     "sync:engine": "node sync-engine.mjs",
     "check:engine": "node sync-engine.mjs --check",
     "pretest": "node sync-engine.mjs --check",
-    "test": "node test.js",
+    "test": "node tests/test.js",
+    "check:web": "tsc --noEmit",
+    "build:web": "esbuild web/src/main.ts --bundle --minify --format=iife --target=es2019 --outfile=public/app.js",
     "test:substrate": "node substrate-test.js",
     "test:substrate:live": "node substrate-live-test.js",
     "test:substrate:enforce": "node substrate-enforce-test.js",
@@ -70,5 +72,9 @@
     "ws": "^8.18.0",
     "y-websocket": "^2.0.4",
     "yjs": "^13.6.18"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2"
   }
 }
