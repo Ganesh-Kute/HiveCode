@@ -1,17 +1,50 @@
+# Vercel needs public/ (the site), api/ (the serverless functions), and
+# vercel.json + package.json. Everything else is repo, not deploy.
+#
+# Keep this tight: the CLI uploads every non-ignored file from your machine, so one stray
+# 45 MB asset or a 17 MB scratch directory is the difference between a deploy that works
+# on a normal connection and one that dies at 100%.
+
 .git
 .vscode
 node_modules
 extension
 packages
+
+# tooling + scratch state
+.claude
+.github
+.vercel
+.vexp
+.tasktmp
+.hive-relay-data
+
+# source and docs that never reach a browser
+docs
+tests
+web
+marketing
+data
+brand
+enterprise-test
+real-test-scenario
+hive-work-resolve
 demo-recording*
-*.json
+*.md
+
+# build artefacts and non-web files
 *.vsix
 *.wasm
 *.mjs
 *.txt
 *.cpp
 *.java
+*.json
 *.html
+
+# the uncompressed master recording (45 MB); the site serves the 17 MB
+# hivecode-icr-demo.mp4 re-encode instead
+public/Hivecode___ICR.mp4
 
 !package.json
 !vercel.json
