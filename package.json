@@ -46,7 +46,7 @@
     "access": "public"
   },
   "scripts": {
-    "prepare": "node scripts/install-hooks.mjs",
+    "prepare": "node scripts/install-hooks.mjs || exit 0",
     "start": "node server.js",
     "relay": "node server.js",
     "sync:engine": "node sync-engine.mjs",
