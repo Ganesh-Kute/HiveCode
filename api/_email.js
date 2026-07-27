@@ -14,12 +14,13 @@
 //                      verified with Resend.
 
 import {
-  AGENT_GUIDE_URL,
+  AGENT_STEPS,
+  EDITOR_STEPS,
   MCP_CONFIG_JSON,
   SELF_HOST_NOTE,
-  SETUP_STEPS,
   SITE_URL,
-  setupStepsAsText,
+  WORKFLOW_GUIDE_URL,
+  stepsAsText,
 } from '../shared/onboarding.js'
 
 const ENDPOINT = 'https://api.resend.com/emails'
@@ -45,16 +46,26 @@ function textBody({ licenseKey, committers }) {
     `Licence key:  ${licenseKey}`,
     `Covers:       ${committers}`,
     '',
-    'FOUR STEPS TO YOUR FIRST ROOM',
+    'There are two ways to start. Pick the one that describes you.',
     '',
-    setupStepsAsText(),
+    '─────────────────────────────────────────────────────────────',
+    'A) YOU AND YOUR TEAM — people editing, with agents alongside',
+    '─────────────────────────────────────────────────────────────',
+    '',
+    stepsAsText(EDITOR_STEPS),
+    '',
+    '─────────────────────────────────────────────────────────────',
+    'B) AGENTS ONLY — no editor, no account, no server',
+    '─────────────────────────────────────────────────────────────',
+    '',
+    stepsAsText(AGENT_STEPS),
     '',
     'For Claude Desktop or Cursor, add this to the MCP config instead of running the',
-    'command in step 4:',
+    '`claude mcp add` command:',
     '',
     MCP_CONFIG_JSON.split('\n').map((line) => `    ${line}`).join('\n'),
     '',
-    `Full agent setup guide: ${AGENT_GUIDE_URL}`,
+    `The full walkthrough, both routes end to end: ${WORKFLOW_GUIDE_URL}`,
     '',
     SELF_HOST_NOTE,
     '',
@@ -65,9 +76,9 @@ function textBody({ licenseKey, committers }) {
   ].join('\n')
 }
 
-/** @param {{licenseKey: string, committers: string}} params */
-function htmlBody({ licenseKey, committers }) {
-  const steps = SETUP_STEPS.map((step, i) => {
+/** @param {readonly import('../shared/onboarding.js').Step[]} steps */
+function renderStepRows(steps) {
+  return steps.map((step, i) => {
     const literal =
       step.kind === 'link' && step.url
         ? `<a href="${escapeHtml(step.url)}" style="color:#0F7FA8;font-weight:600">${escapeHtml(step.literal)}</a>`
@@ -90,7 +101,10 @@ function htmlBody({ licenseKey, committers }) {
         </td>
       </tr>`
   }).join('')
+}
 
+/** @param {{licenseKey: string, committers: string}} params */
+function htmlBody({ licenseKey, committers }) {
   return `<!doctype html>
 <html><body style="margin:0;padding:0;background:#EEF1F5">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F5">
@@ -112,18 +126,35 @@ function htmlBody({ licenseKey, committers }) {
       </div>
     </td></tr>
 
-    <tr><td style="padding:0 0 18px;border-top:1px solid #E4E9EF">
-      <p style="margin:22px 0 18px;font-size:17px;font-weight:600;color:#10202E">Four steps to your first room</p>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${steps}</table>
+    <tr><td style="padding:0 0 4px;border-top:1px solid #E4E9EF">
+      <p style="margin:22px 0 4px;font-size:17px;font-weight:600;color:#10202E">Two ways to start</p>
+      <p style="margin:0 0 22px;font-size:14px;line-height:1.6;color:#63748A">
+        Pick the one that describes you — you do not need both.
+      </p>
+    </td></tr>
+
+    <tr><td style="padding:0 0 8px">
+      <p style="margin:0 0 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8494A6">route A</p>
+      <p style="margin:0 0 16px;font-size:15.5px;font-weight:600;color:#10202E">You and your team — people editing, agents alongside</p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${renderStepRows(EDITOR_STEPS)}</table>
+    </td></tr>
+
+    <tr><td style="padding:6px 0 8px;border-top:1px solid #E4E9EF">
+      <p style="margin:20px 0 4px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#8494A6">route B</p>
+      <p style="margin:0 0 6px;font-size:15.5px;font-weight:600;color:#10202E">Agents only — no editor, no account, no server</p>
+      <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#63748A">
+        The agent creates the room itself and hands you back the link. You watch from a browser.
+      </p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${renderStepRows(AGENT_STEPS)}</table>
     </td></tr>
 
     <tr><td style="padding:0 0 22px">
       <p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:#63748A">
-        Using Claude Desktop or Cursor? They read a config file rather than a CLI, so add this instead of running the step&nbsp;4 command:
+        Using Claude Desktop or Cursor? They read a config file rather than a CLI, so add this instead of running <code style="font-family:ui-monospace,Menlo,Consolas,monospace">claude mcp add</code>:
       </p>
       <pre style="margin:0;background:#F1F4F8;border:1px solid #DCE3EC;border-radius:8px;padding:13px 15px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;color:#10202E;overflow-x:auto">${escapeHtml(MCP_CONFIG_JSON)}</pre>
       <p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#63748A">
-        <a href="${escapeHtml(AGENT_GUIDE_URL)}" style="color:#0F7FA8">Full agent setup guide →</a>
+        <a href="${escapeHtml(WORKFLOW_GUIDE_URL)}" style="color:#0F7FA8">The full walkthrough, both routes end to end →</a>
       </p>
     </td></tr>
 

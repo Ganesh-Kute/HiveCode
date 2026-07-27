@@ -313,8 +313,12 @@ function runScan(baseRef, headRef) {
     return
   }
 
-  const files = diffFiles.split('\\n').map(f => f.trim()).filter(f => f && supports(f))
-  console.log(`  ${c.dim}Found ${files.length} supported files modified.${c.reset}\\n`)
+  // '\\n' here was a literal backslash-n, so this never split: every changed path became ONE
+  // pseudo-filename, `git show <ref>:<that>` returned nothing, and --scan reported CLEAN on
+  // every real repository. The one command meant to prove the problem in a customer's own
+  // repo was a guaranteed false negative.
+  const files = diffFiles.split('\n').map(f => f.trim()).filter(f => f && supports(f))
+  console.log(`  ${c.dim}Found ${files.length} supported files modified.${c.reset}\n`)
 
   if (files.length === 0) return
 
@@ -347,7 +351,7 @@ function runScan(baseRef, headRef) {
   // Fail the CI build if there is semantic drift
   const phantoms = results.filter(r => r.phantomDetected)
   if (phantoms.length > 0) {
-    console.log(`\\n  ${c.bgRed}${c.white}${c.bold} CI PIPELINE BLOCKED ${c.reset} ${c.red}Fix the semantic drift before merging.${c.reset}\\n`)
+    console.log(`\n  ${c.bgRed}${c.white}${c.bold} CI PIPELINE BLOCKED ${c.reset} ${c.red}Fix the semantic drift before merging.${c.reset}\n`)
     process.exit(1)
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "git-clash",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "description": "Forensic Semantic Drift Analyzer for Multi-Agent Repos",
   "main": "dist/git-clash.mjs",
   "bin": {

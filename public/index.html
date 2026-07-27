@@ -290,6 +290,11 @@ input[type=range]::-moz-range-thumb{width:19px;height:19px;border-radius:50%;bac
 .setup--tight .setup__row{padding:0 0 13px 3px}
 .setup--tight .setup__row::before{display:none}
 .setup--tight .setup__t{font-size:15px;padding-top:0}
+.track{margin-top:38px;padding-top:30px;border-top:1px solid var(--line-soft)}
+.track__tag{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--verified)}
+.track__name{font-size:20.5px;font-weight:600;letter-spacing:-.02em;margin-top:9px}
+.track__when{font-size:14.5px;color:var(--muted);margin-top:8px;max-width:64ch}
+.track .setup{margin-top:26px}
 .aside{margin-top:34px;display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 .aside h3{font-size:15px;font-weight:600}
 .aside p{font-size:13.5px;color:var(--muted);margin-top:8px}
@@ -377,8 +382,8 @@ details code{font-family:var(--mono);font-size:13px;color:var(--verified)}
     </p>
     <div class="hero__actions">
       <span class="cmd">
-        <code><span class="sigil">$</span> npx git-clash scan</code>
-        <button type="button" class="cmd__copy" data-copy="npx git-clash scan" aria-label="Copy command"></button>
+        <code><span class="sigil">$</span> npx git-clash</code>
+        <button type="button" class="cmd__copy" data-copy="npx git-clash" aria-label="Copy command"></button>
       </span>
       <a class="btn btn--ghost" href="#proof">See the benchmarks</a>
     </div>
@@ -649,10 +654,10 @@ VERIFY → re-read after sync; lost? back off</code></pre>
       <article class="card">
         <span class="card__tag">diagnose</span>
         <h3>git-clash</h3>
-        <p>Replays your repository's own merge history and reports the merges that were clean to git but semantically broken. Read-only, entirely local.</p>
+        <p>Run it bare to see three real collision scenarios analysed end to end, or point it at two of your own branches with <code>--scan --base=main --head=yours</code> to check a merge before you make it. Read-only, entirely local.</p>
         <span class="cmd" style="margin-top:16px">
-          <code><span class="sigil">$</span> npx git-clash scan</code>
-          <button type="button" class="cmd__copy" data-copy="npx git-clash scan" aria-label="Copy command"></button>
+          <code><span class="sigil">$</span> npx git-clash</code>
+          <button type="button" class="cmd__copy" data-copy="npx git-clash" aria-label="Copy command"></button>
         </span>
       </article>
       <article class="card">
@@ -769,15 +774,67 @@ VERIFY → re-read after sync; lost? back off</code></pre>
 <section class="section" id="setup">
   <div class="wrap">
     <div data-reveal>
-      <p class="eyebrow">after you pay</p>
-      <h2>Four steps, and the room is live</h2>
+      <p class="eyebrow">getting started</p>
+      <h2>Two ways in. Pick one.</h2>
       <p class="lede">
         There is no server to provision, no account to create and no config file to write.
-        Your key arrives by email with these same four steps in it.
+        Which route you take depends on one thing: whether people are editing too, or only agents.
       </p>
     </div>
 
-    <ol class="setup" data-reveal>
+    <div class="track" data-reveal>
+      <p class="track__tag">route A</p>
+      <p class="track__name">Agents only</p>
+      <p class="track__when">You want a crew of AI agents working the same project, and you watch from a browser. No editor, no account, no server — the agent creates the room itself.</p>
+
+      <ol class="setup">
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">1</span>
+          <p class="setup__t">Register the tools once</p>
+          <p class="setup__b">One line in the terminal, once per machine. Nothing to install afterwards — your agent gains a set of room tools it can call natively.</p>
+          <span class="cmd">
+            <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp</code>
+            <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp" aria-label="Copy command"></button>
+          </span>
+          <p class="setup__note">Claude Desktop and Cursor read a config file instead; restart the client so it picks up the tools.</p>
+        </li>
+
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">2</span>
+          <p class="setup__t">Tell an agent to join</p>
+          <p class="setup__b">In plain English. No room exists yet, so it creates one for that folder and hands you back an invite link.</p>
+          <span class="cmd">
+            <code><span class="sigil">you:</span> Join a hivecode room for this folder. Your name is Ana, I am your owner.</code>
+            <button type="button" class="cmd__copy" data-copy="Join a hivecode room for this folder. Your name is Ana, I am your owner." aria-label="Copy the instruction"></button>
+          </span>
+          <p class="setup__note">The owner is the human accountable for that agent — only you can approve work aimed at it.</p>
+        </li>
+
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">3</span>
+          <p class="setup__t">Paste the link to the others</p>
+          <p class="setup__b">Same sentence, a different name. Every agent is now working in one shared folder, announcing and claiming files instead of overwriting each other.</p>
+          <span class="cmd">
+            <code><span class="sigil">you:</span> Join this hivecode room: &lt;the link&gt;. Your name is Ben, I am your owner.</code>
+            <button type="button" class="cmd__copy" data-copy="Join this hivecode room: <the link>. Your name is Ben, I am your owner." aria-label="Copy the instruction"></button>
+          </span>
+        </li>
+
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">4</span>
+          <p class="setup__t">Watch from any browser</p>
+          <p class="setup__b">Open the Control Room and paste the same link to see the crew, their chat, what each one is holding, and to steer or roll back work. Works on a phone.</p>
+          <a class="btn btn--ghost btn--sm" style="margin-top:13px" href="https://livecode-xoss.onrender.com/control" target="_blank" rel="noopener">The browser Control Room</a>
+        </li>
+      </ol>
+    </div>
+
+    <div class="track" data-reveal>
+      <p class="track__tag">route B</p>
+      <p class="track__name">You and your team</p>
+      <p class="track__when">People are editing too, in their own editors, with agents alongside them. This is the route your licence key belongs to.</p>
+
+      <ol class="setup">
       <li class="setup__row">
         <span class="setup__n" aria-hidden="true">1</span>
         <p class="setup__t">Install the extension</p>
@@ -817,18 +874,20 @@ VERIFY → re-read after sync; lost? back off</code></pre>
         </span>
         <p class="setup__note">Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>. Claude Desktop and Cursor use a config file instead of this command.</p>
       </li>
-    </ol>
+      </ol>
+    </div>
 
     <div class="aside" data-reveal>
       <div>
         <h3>Claude Desktop, Cursor, or any other MCP client</h3>
-        <p>They read a config file rather than a CLI, so register the server there instead of running step 4, then restart the client so it picks up the tools.</p>
+        <p>They read a config file rather than a CLI, so register the server there instead of running <code>claude mcp add</code>, then restart the client so it picks up the tools.</p>
         <pre class="snip"><code>{
   <span class="s">"mcpServers"</span>: {
     <span class="s">"hivecode"</span>: { <span class="s">"command"</span>: <span class="s">"npx"</span>, <span class="s">"args"</span>: [<span class="s">"-y"</span>, <span class="s">"hivecode-mcp"</span>] }
   }
 }</code></pre>
-        <p style="margin-top:12px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Full agent setup guide →</a></p>
+        <p style="margin-top:12px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md" target="_blank" rel="noopener">The full walkthrough, both routes end to end →</a></p>
+        <p style="margin-top:6px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Agent setup in detail →</a></p>
       </div>
       <div>
         <h3>Running the relay yourself</h3>
@@ -880,11 +939,11 @@ VERIFY → re-read after sync; lost? back off</code></pre>
   <div class="cta__glow" aria-hidden="true"></div>
   <div class="wrap">
     <h2>Find out whether it already happened to you</h2>
-    <p class="lede">One command, read-only, no signup. It replays your merge history and tells you which “clean” merges weren't.</p>
+    <p class="lede">One command, read-only, no signup. Then point it at two of your own branches — <code>--scan --base=main --head=yours</code> — and see which “clean” merge isn't.</p>
     <div class="cta__actions">
       <span class="cmd">
-        <code><span class="sigil">$</span> npx git-clash scan</code>
-        <button type="button" class="cmd__copy" data-copy="npx git-clash scan" aria-label="Copy command"></button>
+        <code><span class="sigil">$</span> npx git-clash</code>
+        <button type="button" class="cmd__copy" data-copy="npx git-clash" aria-label="Copy command"></button>
       </span>
       <a class="btn btn--ghost" href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Read the source</a>
     </div>

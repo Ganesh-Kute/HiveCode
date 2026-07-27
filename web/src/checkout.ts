@@ -15,7 +15,7 @@ import {
   clampSeats,
   monthlyTotal,
 } from '../../shared/license.js'
-import { SETUP_STEPS } from '../../shared/onboarding.js'
+import { EDITOR_STEPS } from '../../shared/onboarding.js'
 
 interface RazorpayFailure {
   readonly error?: { readonly description?: string }
@@ -140,7 +140,9 @@ function buildDialog(): Dialog {
 
         const list = document.createElement('ol')
         list.className = 'setup setup--tight'
-        for (const step of SETUP_STEPS) {
+        // The editor route only. An agents-only customer has a shorter path that does not
+        // involve VS Code at all, and it is one link away rather than crammed in here.
+        for (const step of EDITOR_STEPS) {
           const item = document.createElement('li')
           item.className = 'setup__row'
 
@@ -162,7 +164,7 @@ function buildDialog(): Dialog {
         const more = document.createElement('a')
         more.className = 'modal__more'
         more.href = '#setup'
-        more.textContent = 'See the full walkthrough →'
+        more.textContent = 'Running agents without an editor? See both routes →'
         more.addEventListener('click', () => closeBtn.click())
         stepsWrap.appendChild(more)
       }

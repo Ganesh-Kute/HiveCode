@@ -232,7 +232,8 @@ section('the licence email is the instruction manual')
 // checked against the extension's own command contributions.
 
 const { _render } = await import('../api/_email.js')
-const { SETUP_STEPS, MCP_ADD_COMMAND, SELF_HOST_NOTE } = await import('../shared/onboarding.js')
+const { TRACKS, MCP_ADD_COMMAND, SELF_HOST_NOTE } = await import('../shared/onboarding.js')
+const ALL_STEPS = TRACKS.flatMap((t) => t.steps)
 const contributedTitles = JSON.parse(
   await (await import('fs/promises')).readFile(new URL('../extension/package.json', import.meta.url), 'utf8'),
 ).contributes.commands.map((c) => c.title)
@@ -241,7 +242,8 @@ const mailArgs = { licenseKey: 'HC-PRO-0123456789ABCDEF0123456789ABCDEF', commit
 const mailText = _render.textBody(mailArgs)
 const mailHtml = _render.htmlBody(mailArgs)
 
-for (const step of SETUP_STEPS) {
+T('both routes are offered, not just the editor one', TRACKS.length === 2)
+for (const step of ALL_STEPS) {
   T(`text email carries step "${step.title}"`, mailText.includes(step.title))
   T(`html email carries step "${step.title}"`, mailHtml.includes(step.title))
   if (step.kind !== 'command') continue
