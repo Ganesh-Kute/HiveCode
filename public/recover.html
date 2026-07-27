@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recover your Hivecode licence key</title>
+<meta name="description" content="Lost your Hivecode Pro licence key? Look it up with the payment reference from your Razorpay receipt.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* A deliberate subset of the landing page's tokens — this page is small enough that
+   duplicating four rules beats loading the whole site stylesheet for one form. */
+:root{
+  --ground:#080B12; --surface:#0E1320; --sunk:#050810;
+  --line:rgba(158,180,215,.13); --line-soft:rgba(158,180,215,.07); --line-hot:rgba(158,180,215,.26);
+  --text:#E9EDF5; --muted:#96A3BA; --dim:#66738C;
+  --verified:#35C9F0; --broken:#F9A23B; --crash:#FF5C7A;
+  --sans:"Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --r-lg:18px; --r-md:12px; --r-sm:8px;
+}
+*,*::before,*::after{box-sizing:border-box}
+*{margin:0}
+body{font-family:var(--sans);font-size:16px;line-height:1.65;color:var(--text);background:var(--ground);-webkit-font-smoothing:antialiased}
+a{color:var(--verified);text-decoration:none}
+a:hover{text-decoration:underline;text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--verified);outline-offset:3px;border-radius:4px}
+img{display:block;max-width:100%}
+
+.nav{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px clamp(20px,5vw,32px);border-bottom:1px solid var(--line-soft)}
+.brand{display:flex;align-items:center;gap:11px;color:var(--text)}
+.brand:hover{text-decoration:none}
+.brand__mark{width:30px;height:30px;border-radius:7px}
+.brand__name{font-size:17.5px;font-weight:700;letter-spacing:-.02em}
+.nav a:not(.brand){font-size:14px;color:var(--muted)}
+
+main{width:100%;max-width:620px;margin-inline:auto;padding:clamp(44px,8vw,84px) clamp(20px,5vw,32px) 64px}
+.eyebrow{font-family:var(--mono);font-size:11.5px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--verified)}
+h1{font-size:clamp(28px,5vw,40px);font-weight:600;letter-spacing:-.03em;line-height:1.1;margin-block:14px 16px}
+.lede{font-size:16.5px;color:var(--muted);line-height:1.68}
+
+form{margin-top:34px}
+label{display:block;font-size:14px;font-weight:500;margin-bottom:9px}
+.hint{font-size:13.5px;color:var(--dim);margin-top:9px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+input[type=text]{
+  flex:1 1 240px;min-width:0;font-family:var(--mono);font-size:14.5px;color:var(--text);
+  background:var(--sunk);border:1px solid var(--line);border-radius:var(--r-md);padding:13px 15px;
+}
+input[type=text]::placeholder{color:var(--dim)}
+input[type=text]:focus{border-color:var(--line-hot);outline:none;box-shadow:0 0 0 3px rgba(53,201,240,.14)}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:9px;cursor:pointer;
+  font-family:var(--sans);font-size:14.5px;font-weight:600;padding:13px 24px;border-radius:999px;
+  border:1px solid transparent;background:var(--verified);color:#04222E;transition:background .2s,opacity .2s;
+}
+.btn:hover{background:#5AD6F5}
+.btn[disabled]{opacity:.55;cursor:progress}
+.btn--ghost{background:rgba(158,180,215,.05);border-color:var(--line);color:var(--text)}
+.btn--ghost:hover{background:rgba(158,180,215,.11)}
+.btn--sm{padding:8px 15px;font-size:13px}
+
+.out{margin-top:30px}
+.out:empty{display:none}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:24px}
+.card--warn{border-color:rgba(249,162,59,.4)}
+.card--bad{border-color:rgba(255,92,122,.4)}
+.card h2{font-size:19px;font-weight:600;letter-spacing:-.02em;line-height:1.25}
+.card p{font-size:14.5px;color:var(--muted);margin-top:10px}
+.keybox{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--sunk);border:1px solid var(--line-soft);border-radius:var(--r-md);padding:13px 15px;margin-top:18px}
+.keybox code{flex:1;min-width:180px;font-family:var(--mono);font-size:14px;color:var(--verified);word-break:break-all}
+.meta{display:flex;gap:18px;flex-wrap:wrap;margin-top:16px;font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
+.meta b{color:var(--muted);font-weight:500}
+.next{margin-top:20px;padding-top:18px;border-top:1px solid var(--line-soft);font-size:14px;color:var(--muted)}
+.aside{margin-top:38px;padding-top:26px;border-top:1px solid var(--line-soft)}
+.aside h3{font-size:15px;font-weight:600}
+.aside p{font-size:13.5px;color:var(--muted);margin-top:8px}
+.aside code{font-family:var(--mono);font-size:12.5px;color:var(--verified)}
+.foot{border-top:1px solid var(--line-soft);padding:26px clamp(20px,5vw,32px);font-size:13.5px;color:var(--dim)}
+@media(prefers-reduced-motion:reduce){*{transition-duration:.001ms!important}}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <img class="brand__mark" src="/mark-64.png" alt="" width="30" height="30">
+    <span class="brand__name">Hivecode</span>
+  </a>
+  <a href="/#pricing">Pricing</a>
+</header>
+
+<main>
+  <p class="eyebrow">licence recovery</p>
+  <h1>Get your key back</h1>
+  <p class="lede">
+    Your licence is stored the moment your payment clears, so it is never lost — even if you
+    closed the tab. Enter the payment reference from your Razorpay receipt and we will look it up.
+  </p>
+
+  <form id="form" novalidate>
+    <label for="pid">Razorpay payment reference</label>
+    <div class="row">
+      <input id="pid" name="pid" type="text" inputmode="text" autocomplete="off" spellcheck="false"
+             placeholder="pay_XXXXXXXXXXXXXX" aria-describedby="hint">
+      <button class="btn" type="submit" id="go">Find my key</button>
+    </div>
+    <p class="hint" id="hint">
+      It is in the receipt Razorpay emailed you at the time of purchase, labelled
+      <b>Payment Id</b>, and starts with <code>pay_</code>.
+    </p>
+  </form>
+
+  <div class="out" id="out" role="status" aria-live="polite"></div>
+
+  <div class="aside">
+    <h3>Why we do not look this up by email address</h3>
+    <p>
+      Because then anyone who knows your email could take your key. The payment reference is
+      proof of purchase — only you and Razorpay have it. If you no longer have the receipt,
+      <a id="mail" href="mailto:gkgk7024@gmail.com?subject=Hivecode%20licence%20recovery">email us</a>
+      from the address you paid with and we will find it for you.
+    </p>
+  </div>
+</main>
+
+<footer class="foot">
+  © 2026 Hivecode · <a href="/">back to the site</a>
+</footer>
+
+<script>
+(function () {
+  'use strict'
+
+  // Same shape the API enforces, so an obvious typo is caught here instead of costing a
+  // round trip. Deliberately not stricter than the server: the server is the authority.
+  var SHAPE = /^[A-Za-z0-9_]{6,64}$/
+
+  // The relay serves this page too, and it has no /api/license — so anywhere other than the
+  // canonical host, call Vercel directly. CORS is open on /api/* for exactly this reason.
+  var API = location.hostname === 'hivecode.vercel.app' ? '' : 'https://hivecode.vercel.app'
+
+  var form = document.getElementById('form')
+  var input = document.getElementById('pid')
+  var button = document.getElementById('go')
+  var out = document.getElementById('out')
+
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+    })
+  }
+
+  function show(html) { out.innerHTML = html }
+
+  function card(kind, title, body, extra) {
+    return '<div class="card' + (kind ? ' card--' + kind : '') + '">' +
+      '<h2>' + esc(title) + '</h2><p>' + body + '</p>' + (extra || '') + '</div>'
+  }
+
+  function showKey(data) {
+    var seats = Number(data.seats) || 1
+    var committers = seats === 1 ? '1 committer' : seats + ' committers'
+    var active = data.active === true
+
+    var body = active
+      ? 'This licence is active and covers ' + esc(committers) + '.'
+      : 'We found your licence, but its status is <b>' + esc(String(data.status || 'unknown')) +
+        '</b> rather than active — so it will not admit committers until the subscription is ' +
+        'restored. The key itself is below.'
+
+    var key = '<div class="keybox"><code id="key">' + esc(data.licenseKey) + '</code>' +
+      '<button type="button" class="btn btn--ghost btn--sm" id="copy">Copy</button></div>' +
+      '<div class="meta"><span>plan <b>' + esc(String(data.plan || 'pro')) + '</b></span>' +
+      '<span>seats <b>' + seats + '</b></span>' +
+      '<span>status <b>' + esc(String(data.status || 'unknown')) + '</b></span></div>' +
+      '<p class="next">Next: run <b>Hivecode: Enter License Key</b> from the VS Code Command ' +
+      'Palette and paste it in — or set <code>HIVE_LICENSE</code> to it on a self-hosted relay. ' +
+      '<a href="/#setup">See both routes →</a></p>'
+
+    show(card(active ? '' : 'warn', active ? 'Here it is' : 'Found, but not active', body, key))
+
+    var copy = document.getElementById('copy')
+    copy.addEventListener('click', function () {
+      var text = document.getElementById('key').textContent
+      var done = function () {
+        copy.textContent = 'Copied'
+        window.setTimeout(function () { copy.textContent = 'Copy' }, 1600)
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { select() })
+      } else {
+        select()
+      }
+      function select() {
+        var range = document.createRange()
+        range.selectNodeContents(document.getElementById('key'))
+        var sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+        copy.textContent = 'Select and copy'
+      }
+    })
+  }
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault()
+    var value = input.value.trim()
+
+    if (!value) {
+      show(card('warn', 'Enter your payment reference', 'It is in the Razorpay receipt, labelled Payment Id.'))
+      input.focus()
+      return
+    }
+    if (!SHAPE.test(value)) {
+      show(card('warn', 'That does not look like a payment reference',
+        'Razorpay references look like <code>pay_</code> followed by letters and numbers. ' +
+        'Check the receipt and try again — this is not your licence key.'))
+      input.focus()
+      return
+    }
+
+    button.disabled = true
+    show(card('', 'Looking it up…', 'One moment.'))
+
+    fetch(API + '/api/license?payment_id=' + encodeURIComponent(value))
+      .then(function (res) {
+        return res.json().then(function (data) { return { status: res.status, data: data } })
+      })
+      .then(function (result) {
+        var data = result.data || {}
+        if (result.status === 200 && data.found && data.licenseKey) return showKey(data)
+
+        if (result.status === 404) {
+          return show(card('warn', 'Nothing issued against that reference yet',
+            'If you paid in the last minute or two, the licence may still be on its way — wait a ' +
+            'moment and try again. Otherwise check the reference: it should be the <b>Payment Id</b> ' +
+            'from your Razorpay receipt, not the order id.'))
+        }
+        if (result.status === 400) {
+          return show(card('warn', 'That reference is malformed',
+            'Copy it directly from the receipt, without extra spaces.'))
+        }
+        // 503 and anything else: "we could not check" must never read as "you did not pay".
+        return show(card('bad', 'We cannot check right now',
+          'This is our problem, not yours — your licence is safe and unchanged. Try again in a ' +
+          'few minutes, or <a href="mailto:gkgk7024@gmail.com?subject=Hivecode%20licence%20recovery">email us</a> ' +
+          'with that reference and we will send the key over.'))
+      })
+      .catch(function () {
+        show(card('bad', 'Could not reach the lookup service',
+          'Check your connection and try again. Your licence is unaffected — nothing about it ' +
+          'depends on this page.'))
+      })
+      .then(function () { button.disabled = false })
+  })
+
+  // Deep link: /recover?payment_id=pay_… fills and submits, so the receipt link can go
+  // straight here.
+  try {
+    var pre = new URLSearchParams(location.search).get('payment_id')
+    if (pre) { input.value = pre; form.dispatchEvent(new Event('submit', { cancelable: true })) }
+  } catch (e) { /* older browser: the form still works by hand */ }
+})()
+</script>
+</body>
+</html>

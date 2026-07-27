@@ -55,14 +55,15 @@
     "test": "node tests/test.js",
     "test:billing": "node tests/billing-test.mjs",
     "test:license": "node tests/hive-license-test.js",
-    "test:money": "node tests/billing-test.mjs && node tests/hive-license-test.js",
+    "test:money": "node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs",
     "check:web": "tsc --noEmit",
     "build:web": "esbuild web/src/main.ts --bundle --minify --format=iife --target=es2019 --outfile=public/app.js",
     "test:substrate": "node substrate-test.js",
     "test:substrate:live": "node substrate-live-test.js",
     "test:substrate:enforce": "node substrate-enforce-test.js",
     "test:substrate:authority": "node substrate-authority-test.js",
-    "test:substrate:all": "node substrate-test.js && node substrate-live-test.js && node substrate-enforce-test.js && node substrate-authority-test.js"
+    "test:substrate:all": "node substrate-test.js && node substrate-live-test.js && node substrate-enforce-test.js && node substrate-authority-test.js",
+    "test:recover": "node tests/recover-test.mjs"
   },
   "engines": {
     "node": ">=18"

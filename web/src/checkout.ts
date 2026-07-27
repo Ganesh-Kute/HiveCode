@@ -56,6 +56,7 @@ interface Dialog {
   setBody(body: string): void
   showKey(key: string): void
   showSteps(): void
+  showRecovery(paymentId: string): void
 }
 
 function buildDialog(): Dialog {
@@ -73,6 +74,7 @@ function buildDialog(): Dialog {
         <button type="button" class="btn btn--ghost btn--sm" data-modal-copy>Copy</button>
       </div>
       <div class="modal__next" data-modal-steps hidden></div>
+      <a class="modal__more" data-modal-recover hidden></a>
       <button type="button" class="btn btn--primary modal__close" data-modal-close>Done</button>
     </div>`
   document.body.appendChild(overlay)
@@ -82,6 +84,7 @@ function buildDialog(): Dialog {
   const keyWrap = overlay.querySelector<HTMLElement>('[data-modal-key]')!
   const keyText = overlay.querySelector<HTMLElement>('[data-modal-key-text]')!
   const stepsWrap = overlay.querySelector<HTMLElement>('[data-modal-steps]')!
+  const recoverLink = overlay.querySelector<HTMLAnchorElement>('[data-modal-recover]')!
   const copyBtn = overlay.querySelector<HTMLButtonElement>('[data-modal-copy]')!
   const closeBtn = overlay.querySelector<HTMLButtonElement>('[data-modal-close]')!
 
@@ -117,6 +120,7 @@ function buildDialog(): Dialog {
       bodyEl.textContent = body
       keyWrap.hidden = true
       stepsWrap.hidden = true
+      recoverLink.hidden = true
       overlay.hidden = false
       document.body.classList.add('is-locked')
       closeBtn.focus()
@@ -170,6 +174,13 @@ function buildDialog(): Dialog {
       }
       stepsWrap.hidden = false
     },
+    // Shown only when the key has not arrived in time. Pre-filling the payment id means the
+    // customer never has to copy a reference between two places to get their own licence.
+    showRecovery(paymentId) {
+      recoverLink.href = `/recover?payment_id=${encodeURIComponent(paymentId)}`
+      recoverLink.textContent = 'Retrieve it here as soon as it lands →'
+      recoverLink.hidden = false
+    },
   }
 }
 
@@ -213,9 +224,10 @@ async function revealKey(dialog: Dialog, paymentId: string, seats: number): Prom
   // Give them the payment id so support (or /api/license) can recover it — and still show
   // the steps, because step 1 needs no key and the key is arriving by email.
   dialog.setBody(
-    `Your payment went through and your licence for ${committers} is being issued — it will ` +
-      `arrive by email shortly. If it does not, quote this payment reference: ${paymentId}`,
+    `Your payment went through and your licence for ${committers} is being issued. Your payment ` +
+      `reference is ${paymentId} — keep it, it is all you need to claim the key.`,
   )
+  dialog.showRecovery(paymentId)
   dialog.showSteps()
 }
 

@@ -17,6 +17,7 @@ import {
   AGENT_STEPS,
   EDITOR_STEPS,
   MCP_CONFIG_JSON,
+  RECOVER_URL,
   SELF_HOST_NOTE,
   SITE_URL,
   WORKFLOW_GUIDE_URL,
@@ -69,8 +70,10 @@ function textBody({ licenseKey, committers }) {
     '',
     SELF_HOST_NOTE,
     '',
-    'Keep this email — the key is the only thing you need. If you lose it, reply here and',
-    'we will look it up from your payment.',
+    'Keep this email — the key is the only thing you need. If you lose it, you can look it up',
+    'yourself with the Payment Id from your Razorpay receipt:',
+    '',
+    `    ${RECOVER_URL}`,
     '',
     SITE_URL,
   ].join('\n')
@@ -161,8 +164,10 @@ function htmlBody({ licenseKey, committers }) {
     <tr><td style="padding:18px 0 0;border-top:1px solid #E4E9EF">
       <p style="margin:0 0 10px;font-size:13px;line-height:1.6;color:#63748A">${escapeHtml(SELF_HOST_NOTE)}</p>
       <p style="margin:0;font-size:13px;line-height:1.6;color:#63748A">
-        Keep this email — the key is the only thing you need. Lost it? Reply here and we will
-        look it up from your payment. &nbsp;·&nbsp; <a href="${escapeHtml(SITE_URL)}" style="color:#0F7FA8">hivecode.vercel.app</a>
+        Keep this email — the key is the only thing you need. Lost it? Look it up yourself with
+        the Payment&nbsp;Id from your Razorpay receipt at
+        <a href="${escapeHtml(RECOVER_URL)}" style="color:#0F7FA8">hivecode.vercel.app/recover</a>.
+        &nbsp;·&nbsp; <a href="${escapeHtml(SITE_URL)}" style="color:#0F7FA8">hivecode.vercel.app</a>
       </p>
     </td></tr>
 

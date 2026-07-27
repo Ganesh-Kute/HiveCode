@@ -24,6 +24,9 @@ export const WORKFLOW_GUIDE_URL =
 /** The hosted relay also serves the browser Control Room — no install, works on a phone. */
 export const CONTROL_ROOM_URL = 'https://livecode-xoss.onrender.com/control'
 
+/** Self-service key recovery, keyed on the payment reference from the Razorpay receipt. */
+export const RECOVER_URL = `${SITE_URL}/recover`
+
 /** Registers the MCP server for Claude Code. One line, once per machine. */
 export const MCP_ADD_COMMAND = 'claude mcp add hivecode -- npx -y hivecode-mcp'
 

@@ -262,5 +262,40 @@ T('angle brackets in step notes are escaped for HTML', mailHtml.includes('&lt;yo
 T('no raw placeholder tag leaked into the HTML', !mailHtml.includes('<your link>'))
 T('the HTML body has a text alternative of similar substance', mailText.length > 600)
 
+// ───────────────────────────────────────────────────────────────────────────────────────
+section('the recovery page')
+// Without an email service configured, this page IS licence delivery: Razorpay's own receipt
+// carries the payment id, and the page turns it back into the key. So it has to exist, be
+// reachable from the places customers actually look, and never grow an email lookup.
+
+const fsp = await import('fs/promises')
+const recoverPath = new URL('../public/recover.html', import.meta.url)
+let recover = ''
+try { recover = await fsp.readFile(recoverPath, 'utf8') } catch { /* reported below */ }
+
+T('public/recover.html exists', recover.length > 0)
+T('it queries the licence endpoint by payment id', recover.includes('/api/license?payment_id='))
+T('the input shape matches what api/license.js accepts', recover.includes('/^[A-Za-z0-9_]{6,64}$/'))
+// The one thing this page must never do. api/license.js refuses email lookup on purpose;
+// a form field here asking for an email would imply otherwise.
+T('it does NOT offer lookup by email address', !/name="email"|type="email"/.test(recover))
+T('a 503 is not reported as "you did not pay"', recover.includes('We cannot check right now'))
+T('it accepts a prefilled ?payment_id= deep link', recover.includes("get('payment_id')"))
+T('it works when served from the relay, which has no /api/license', recover.includes('https://hivecode.vercel.app'))
+T('search engines are asked to skip it', recover.includes('name="robots" content="noindex"'))
+
+const indexHtml = await fsp.readFile(new URL('../public/index.html', import.meta.url), 'utf8')
+T('the site links to it from the footer', indexHtml.includes('href="/recover"'))
+T('the FAQ answers "I lost my key"', /lost my licence key/i.test(indexHtml))
+
+const vercelJson = JSON.parse(await fsp.readFile(new URL('../vercel.json', import.meta.url), 'utf8'))
+T(
+  '/recover is routed, not just /recover.html',
+  vercelJson.rewrites.some((r) => r.source === '/recover' && r.destination === '/recover.html'),
+)
+const relay = await fsp.readFile(new URL('../server.js', import.meta.url), 'utf8')
+T("the relay serves it too (it hosts the site)", relay.includes("'/recover': 'recover.html'"))
+T('the licence email points at it', mailText.includes('/recover') && mailHtml.includes('/recover'))
+
 console.log(`\n=== BILLING: ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

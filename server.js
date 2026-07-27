@@ -454,6 +454,9 @@ const server = http.createServer((req, res) => {
     const STATIC = {
       '/': 'index.html', '/index.html': 'index.html',
       '/control': 'control.html', '/control.html': 'control.html',
+      // Licence recovery. The page calls Vercel's /api/license directly (CORS is open for
+      // exactly this), so it works served from here even though this host has no such route.
+      '/recover': 'recover.html', '/recover.html': 'recover.html',
       '/app.js': 'app.js',
       '/favicon.ico': 'favicon.ico',
       '/favicon-32.png': 'favicon-32.png',

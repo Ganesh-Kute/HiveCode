@@ -125,13 +125,42 @@ Closing it needs three things:
 Until then, either treat sales as one-off perpetual licences (and change the pricing copy
 to match), or set `expires_at` on issue and check it in `/api/validate`.
 
+## Losing the key, and getting it back
+
+`public/recover.html`, served at **`/recover`**, takes the **Payment Id** from the buyer's
+Razorpay receipt and returns their licence key. It is the reason a purchase cannot be lost:
+
+- The key is stored by the webhook before anything else happens, so it exists independently of
+  whether the browser tab survived or the email was delivered.
+- Razorpay sends its own receipt from its own domain, carrying that Payment Id. **So while
+  `RESEND_API_KEY` is unset, this page is licence delivery** — the buyer sees the key on screen
+  at checkout, and this is how they get it back afterwards.
+- The post-payment dialog links here with `?payment_id=…` prefilled when the webhook has not
+  landed within 30 seconds, so the customer never has to copy a reference between two places.
+- It is reachable from the footer and from a FAQ entry, because that is where people look.
+
+**Lookup is by payment reference only, never by email address** — otherwise anyone who knew a
+customer's address could take their key. `api/license.js` enforces that, and
+`tests/recover-test.mjs` asserts an `?email=` query returns 400 with no key in the body.
+
+There is still no way to **rotate** a key. A key that leaks into a shared config or a committed
+file stays valid, because keys have no expiry and nothing revokes them. Closing that needs a
+`POST /api/rotate` that mints a replacement and marks the old row canceled, plus a revocation
+check in `license-check.js` — the relay caches valid verdicts for 10 minutes, so a rotated-away
+key would otherwise keep working for that long.
+
 ## Tests
 
 ```bash
-npm run test:billing   # format, seat clamping, signature enforcement, idempotency
+npm run test:billing   # format, seat clamping, signature enforcement, idempotency, email bodies
 npm run test:license   # a real relay process refusing a forged key at the handshake
-npm run test:money     # both
+npm run test:recover   # the recovery page and the real /api/license handler, over HTTP
+npm run test:money     # all three
 ```
+
+`test:recover` mounts the actual `api/license.js` next to the static page and asserts that
+every status code the page branches on — 200, 404, 400, 503 — is one the handler really
+returns. A page that handles cases the server never produces is a page nobody has tested.
 
 `test:license` spawns the actual relay against a fake validator and asserts that
 `HC-PRO-9999-pay_anything` is answered **402**, not admitted. That is the regression test

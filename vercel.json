@@ -11,6 +11,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/recover",
+      "destination": "/recover.html"
+    },
+    {
       "source": "/(.*)",
       "destination": "/$1"
     }
