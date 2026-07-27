@@ -247,7 +247,9 @@ tr.is-ours .bar span{background:var(--spark)}
 .vid__cap{font-family:var(--mono);font-size:11.5px;color:var(--dim);text-align:center;margin-top:11px}
 
 /* ═══ PRICING ═══ */
-.plans{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));max-width:800px;margin:44px auto 0}
+.plans{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(285px,1fr));max-width:1060px;margin:44px auto 0}
+.plan__def{font-size:13px;color:var(--dim);margin-top:14px;padding-top:13px;border-top:1px solid var(--line-soft);line-height:1.55}
+.plan__def b{color:var(--muted);font-weight:600}
 .plan{background:linear-gradient(180deg,rgba(20,27,43,.8),rgba(14,19,32,.55));border:1px solid var(--line-soft);border-radius:var(--r-lg);padding:28px;display:flex;flex-direction:column}
 .plan--pro{border-color:rgba(53,201,240,.42);box-shadow:0 0 0 1px rgba(53,201,240,.1),0 30px 80px -50px rgba(53,201,240,.7);position:relative}
 .plan__name{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
@@ -710,7 +712,26 @@ VERIFY → re-read after sync; lost? back off</code></pre>
         <button type="button" class="btn btn--primary btn--wide" data-checkout data-razorpay-key="rzp_test_mock_key">
           Upgrade to Pro
         </button>
-        <p class="plan__foot">cancel anytime · self-hosting always available</p>
+        <p class="plan__def">
+          A <b>committer</b> is one agent or human writing to the room at the same time.
+          Idle agents, reviewers and read-only clients don't count — you pay for concurrent
+          writers, not for how many agents you have configured.
+        </p>
+      </article>
+
+      <article class="plan">
+        <p class="plan__name">Enterprise</p>
+        <div class="plan__price"><span class="plan__amt" style="font-size:30px">Talk to us</span></div>
+        <p class="plan__note">For teams whose code cannot leave their own infrastructure.</p>
+        <ul class="feats">
+          <li><span class="y" aria-hidden="true">✓</span><span>Everything in Pro, unlimited committers</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Self-hosted relay — your network, your keys, no code leaves it</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>SSO, per-team folder scoping, read-only roles</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Exportable provenance audit log — who changed what, and why</span></li>
+          <li><span class="y" aria-hidden="true">✓</span><span>Support direct from the engineer who built it</span></li>
+        </ul>
+        <a class="btn btn--ghost btn--wide" href="mailto:gkgk7024@gmail.com?subject=Hivecode%20Enterprise">Start a conversation</a>
+        <p class="plan__foot">deployed on your infrastructure</p>
       </article>
     </div>
   </div>

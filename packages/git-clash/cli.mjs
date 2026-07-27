@@ -456,12 +456,22 @@ function renderReport(results) {
   // CTA
   console.log(`  ${c.white}${'═'.repeat(60)}${c.reset}`)
   console.log()
-  console.log(`  ${c.cyan}${c.bold}  >>> [CURE] To prevent these fissions structurally,${c.reset}`)
-  console.log(`  ${c.cyan}${c.bold}      transition your agent fleet from "Advisory Isolation"${c.reset}`)
-  console.log(`  ${c.cyan}${c.bold}      to "Pre-Write Admission Control."${c.reset}`)
+  // Give the fix away before asking for money. The merge driver is MIT-licensed and its
+  // engine is already inside this binary, so anyone who ran a scan can stop this class of
+  // break recurring with one command. Leading with the paid daemon meant a reader who was
+  // not ready to buy left with nothing, and we lost the chance to sit in their git config
+  // — the one place that helps them on every merge they do.
+  console.log(`  ${c.cyan}${c.bold}  >>> FIX IT AT MERGE TIME — free, MIT, one command:${c.reset}`)
+  console.log(`  ${c.cyan}${c.bold}      ${c.white}npx icr-merge-install${c.reset}`)
+  console.log(`  ${c.dim}      Registers the ICR merge driver with git. Then add to .gitattributes:${c.reset}`)
+  console.log(`  ${c.dim}        *.js *.ts *.py *.go *.rs *.java  merge=icr${c.reset}`)
+  console.log(`  ${c.dim}      Every merge and rebase after that resolves by structure, so a rename${c.reset}`)
+  console.log(`  ${c.dim}      on one side rewrites the stale call sites on the other.${c.reset}`)
   console.log()
-  console.log(`  ${c.cyan}${c.bold}  >>> Install the Hivecode Pre-Write Daemon ($29/committer/mo):${c.reset}`)
-  console.log(`  ${c.cyan}${c.bold}      ${c.white}https://hivecode.vercel.app${c.reset}`)
+  console.log(`  ${c.cyan}${c.bold}  >>> PREVENT IT AT WRITE TIME — Hivecode Pro:${c.reset}`)
+  console.log(`  ${c.dim}      A merge driver only runs when git merges. It cannot stop two agents${c.reset}`)
+  console.log(`  ${c.dim}      clobbering each other live, mid-session, before a commit exists.${c.reset}`)
+  console.log(`  ${c.dim}      That needs a shared medium: ${c.white}https://hivecode.vercel.app${c.reset}`)
   console.log()
   console.log(`  ${c.white}${'═'.repeat(60)}${c.reset}`)
   console.log()

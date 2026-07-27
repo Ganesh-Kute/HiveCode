@@ -1,22 +1,20 @@
 // Pricing seat selector + Razorpay checkout.
 //
-// Every price, seat count, and key string comes from ./license.ts so the browser cannot
-// drift from the API again. Payment behaviour itself is unchanged from the previous page:
-// same Razorpay options, same amount arithmetic.
+// Every price and seat number comes from shared/license.js, which the serverless
+// functions import too, so the browser cannot drift from the API again.
 //
-// KNOWN GAP (deliberately left visible rather than papered over): the key shown after
-// payment is still minted in the browser from the payment id. It is well-formed but not
-// server-issued, so it proves nothing to the relay. Replacing `mintProvisionalKey` with a
-// POST to a server issue-endpoint is the whole fix, and it is the only place to change.
+// The browser NO LONGER MINTS A KEY. It used to build `HC-PRO-<seats>-<paymentId>` in a
+// handler and show it in an alert(), which meant the key was never recorded server-side
+// (so the relay could not check it, and anyone could type an equivalent string) and was
+// lost forever if the dialog was dismissed. Now the webhook issues and stores the key,
+// emails it, and this page polls /api/license to display it as soon as it exists.
 
 import {
   PLANS,
   amountInMinorUnits,
   clampSeats,
-  formatLicenseKey,
   monthlyTotal,
-  type LicenseKey,
-} from './license.js'
+} from '../../shared/license.js'
 
 interface RazorpayFailure {
   readonly error?: { readonly description?: string }
@@ -48,12 +46,14 @@ declare const Razorpay: undefined | (new (options: RazorpayOptions) => RazorpayI
 
 const PRO = PLANS.pro
 
-function mintProvisionalKey(seats: number, paymentId: string): LicenseKey {
-  return { plan: 'pro', seats, token: paymentId.replace(/[^A-Za-z0-9_]/g, '') }
-}
+/** How long to wait for the webhook to land before falling back to "check your email". */
+const POLL_ATTEMPTS = 12
+const POLL_INTERVAL_MS = 2500
 
 interface Dialog {
-  open(title: string, body: string, keyText?: string): void
+  open(title: string, body: string): void
+  setBody(body: string): void
+  showKey(key: string): void
 }
 
 function buildDialog(): Dialog {
@@ -107,21 +107,66 @@ function buildDialog(): Dialog {
   })
 
   return {
-    open(title, body, key) {
+    open(title, body) {
       lastFocused = document.activeElement as HTMLElement | null
       titleEl.textContent = title
       bodyEl.textContent = body
-      if (key) {
-        keyText.textContent = key
-        keyWrap.hidden = false
-      } else {
-        keyWrap.hidden = true
-      }
+      keyWrap.hidden = true
       overlay.hidden = false
       document.body.classList.add('is-locked')
       closeBtn.focus()
     },
+    setBody(body) {
+      bodyEl.textContent = body
+    },
+    showKey(key) {
+      keyText.textContent = key
+      keyWrap.hidden = false
+    },
   }
+}
+
+/** Ask the API for the key issued against this payment. The webhook may not have arrived
+ *  yet, so 404 means "not yet", not "never". */
+async function fetchIssuedKey(paymentId: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/license?payment_id=${encodeURIComponent(paymentId)}`)
+    if (!res.ok) return null
+    const data = (await res.json()) as { found?: boolean; licenseKey?: string }
+    return data.found && data.licenseKey ? data.licenseKey : null
+  } catch {
+    return null
+  }
+}
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+async function revealKey(dialog: Dialog, paymentId: string, seats: number): Promise<void> {
+  const committers = seats === 1 ? '1 committer' : `${seats} committers`
+  dialog.open(
+    'Payment received',
+    `Your Pro licence covers ${committers}. Issuing your key — this usually takes a few seconds.`,
+  )
+
+  for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
+    const key = await fetchIssuedKey(paymentId)
+    if (key) {
+      dialog.setBody(
+        `Your Pro licence covers ${committers}. We have emailed this key to you as well — ` +
+          `paste it into the Hivecode extension, or set it as HIVE_LICENSE on a self-hosted relay.`,
+      )
+      dialog.showKey(key)
+      return
+    }
+    await wait(POLL_INTERVAL_MS)
+  }
+
+  // Still nothing: the payment is safe and recorded, the key just has not been issued yet.
+  // Give them the payment id so support (or /api/license) can recover it.
+  dialog.setBody(
+    `Your payment went through and your licence for ${committers} is being issued. It will ` +
+      `arrive by email shortly. If it does not, quote this payment reference: ${paymentId}`,
+  )
 }
 
 export function mountCheckout(root: HTMLElement): void {
@@ -174,16 +219,12 @@ export function mountCheckout(root: HTMLElement): void {
       currency: 'USD',
       name: 'Hivecode Pro',
       description: n === 1 ? '1 active committer' : `${n} active committers`,
-      image: '/favicon-32.png',
+      image: '/mark-64.png',
+      // The webhook reads seats from here, so this is what the licence is issued for.
       notes: { plan: PRO.id, seats: String(n) },
       theme: { color: '#35C9F0' },
       handler(response) {
-        const key = formatLicenseKey(mintProvisionalKey(n, response.razorpay_payment_id))
-        dialog.open(
-          'Payment received',
-          `Your Pro licence covers ${n === 1 ? '1 committer' : `${n} committers`}. Save this key — you will paste it into the Hivecode extension or set it as HIVE_LICENSE on a self-hosted relay.`,
-          key,
-        )
+        void revealKey(dialog, response.razorpay_payment_id, n)
       },
     })
 

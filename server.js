@@ -18,6 +18,7 @@ import https from 'https'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { verifyLicense } from './license-check.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import { createRequire } from 'module'
@@ -410,26 +411,36 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST') return void handleRevoke(req, res)
   }
   
-  // SaaS Billing Endpoint: Validate Hivecode Pro licenses against Supabase (Mocked)
+  // SaaS Billing Endpoint: check a Hivecode Pro licence. This used to be a mock that
+  // returned valid:true for anything starting with "HC-PRO-", with the seat count coming
+  // from MOCK_MAX_COMMITTERS. It now defers to the real validator (see license-check.js),
+  // which reads the seat count from the stored record rather than from the key.
   if (req.url === '/api/validate-license') {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
     if (req.method === 'POST') {
       let body = ''
       req.on('data', chunk => body += chunk.toString())
-      req.on('end', () => {
-        try {
-          const { license_key } = JSON.parse(body)
-          // Mock Supabase Check
-          if (license_key && license_key.startsWith('HC-PRO-')) {
-            res.writeHead(200, { 'Content-Type': 'application/json' })
-            return res.end(JSON.stringify({ valid: true, max_committers: parseInt(process.env.MOCK_MAX_COMMITTERS || '10', 10) }))
-          }
-          res.writeHead(402, { 'Content-Type': 'application/json' })
-          return res.end(JSON.stringify({ valid: false, error: 'Payment Required: Invalid or missing license.' }))
-        } catch {
+      req.on('end', async () => {
+        let license_key
+        try { ({ license_key } = JSON.parse(body)) }
+        catch {
           res.writeHead(400, { 'Content-Type': 'application/json' })
           return res.end(JSON.stringify({ error: 'bad request' }))
         }
+        const verdict = await verifyLicense(license_key || '')
+        if (verdict.valid) {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          return res.end(JSON.stringify({ valid: true, max_committers: verdict.seats, status: verdict.status }))
+        }
+        // 503 when we could not reach the validator: "unknown" must not be reported as
+        // "unpaid", or a billing outage reads as an expired licence.
+        const unavailable = verdict.source === 'unavailable'
+        res.writeHead(unavailable ? 503 : 402, { 'Content-Type': 'application/json' })
+        return res.end(JSON.stringify({
+          valid: false,
+          error: unavailable ? 'Licence check temporarily unavailable' : 'Payment Required: invalid or missing licence.',
+          reason: verdict.reason,
+        }))
       })
       return
     }
@@ -437,15 +448,24 @@ const server = http.createServer((req, res) => {
   // Static pages: the relay doubles as the website + the browser control room, so
   // one deploy serves everything. Map a small allowlist of paths to public/ files.
   if (req.method === 'GET') {
+    // Keep this in step with what public/index.html actually references — the relay
+    // serves the site too, so a missing entry here means the page loads on this host with
+    // no script and no images while looking fine on Vercel.
     const STATIC = {
       '/': 'index.html', '/index.html': 'index.html',
       '/control': 'control.html', '/control.html': 'control.html',
+      '/app.js': 'app.js',
       '/favicon.ico': 'favicon.ico',
       '/favicon-32.png': 'favicon-32.png',
       '/apple-touch-icon.png': 'apple-touch-icon.png',
+      '/mark-64.png': 'mark-64.png',
+      '/mark.jpg': 'mark.jpg',
+      '/mark-wide.jpg': 'mark-wide.jpg',
+      '/hivecode-logo.png': 'hivecode-logo.png',
+      '/hivecode-icr-demo.mp4': 'hivecode-icr-demo.mp4',
       '/Hivecode___ICR.mp4': 'Hivecode___ICR.mp4'
     }
-    const TYPES = { '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon', '.png': 'image/png', '.svg': 'image/svg+xml', '.mp4': 'video/mp4' }
+    const TYPES = { '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.js': 'text/javascript; charset=utf-8' }
     const file = STATIC[(req.url || '').split('?')[0]]
     if (file) {
       try {
@@ -467,8 +487,9 @@ const server = http.createServer((req, res) => {
 // so an unauthorized client never establishes a socket and never receives any
 // CRDT bytes for the room.
 const wss = new WebSocketServer({ noServer: true })
+const roomAgents = new Map() // Tracks active committers: room -> Set(agent_id)
 
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   let room = 'default', token = '', license = ''
   try {
     const u = new URL(req.url, 'http://localhost')
@@ -477,12 +498,28 @@ server.on('upgrade', (req, socket, head) => {
     license = u.searchParams.get('license') || ''
   } catch { /* keep defaults */ }
 
-  // SaaS Enforcer: Block unauthorized connections
-  if (process.env.HIVE_REQUIRE_LICENSE === 'true' && !license.startsWith('HC-PRO-')) {
-    audit('reject-license', { room, reason: 'Payment Required' })
-    socket.write(`HTTP/1.1 402 Payment Required\\r\\nConnection: close\\r\\n\\r\\n`)
-    socket.destroy()
-    return
+  // SaaS Enforcer: entitlement comes from the licence RECORD, never from the key string.
+  // The previous version admitted anything prefixed "HC-PRO-" and read the seat count out
+  // of the key, so HC-PRO-9999-anything bought nothing and granted 9,999 committers.
+  let committerLimit = Infinity
+  if (process.env.HIVE_REQUIRE_LICENSE === 'true') {
+    let verdict
+    try { verdict = await verifyLicense(license) }
+    catch (e) {
+      verdict = { valid: false, seats: 0, source: 'unavailable', reason: 'verification threw' }
+      console.error('[relay] verifyLicense threw:', e && e.message)
+    }
+    if (!verdict.valid) {
+      audit('reject-license', { room, reason: verdict.reason || 'payment required', source: verdict.source })
+      // 503 for "we could not check", 402 for "you have not paid" — a billing outage must
+      // not tell a paying customer their licence is invalid.
+      const unavailable = verdict.source === 'unavailable'
+      const line = unavailable ? '503 Service Unavailable' : '402 Payment Required'
+      socket.write(`HTTP/1.1 ${line}\r\nConnection: close\r\n\r\n`)
+      socket.destroy()
+      return
+    }
+    committerLimit = verdict.seats > 0 ? verdict.seats : 1
   }
 
   // Fail CLOSED on any unexpected error in authorization — a thrown exception here
@@ -499,8 +536,32 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy()
     return
   }
+
+  // Enforce Committer Limit
+  const agentId = auth.identity.name
+  if (process.env.HIVE_REQUIRE_LICENSE === 'true') {
+    const active = roomAgents.get(room) || new Set()
+    if (!active.has(agentId) && active.size >= committerLimit) {
+      audit('reject-limit', { room, identity: agentId, limit: committerLimit })
+      socket.write(`HTTP/1.1 402 Payment Required: License Limit Reached. Upgrade at hivecode.vercel.app\r\nConnection: close\r\n\r\n`)
+      socket.destroy()
+      return
+    }
+  }
+
   wss.handleUpgrade(req, socket, head, (conn) => {
     conn._hive = { room, identity: auth.identity, role: auth.role }
+    
+    // Add agent to active committers list
+    if (!roomAgents.has(room)) roomAgents.set(room, new Set())
+    roomAgents.get(room).add(agentId)
+
+    // Remove agent when connection drops
+    conn.on('close', () => {
+      const active = roomAgents.get(room)
+      if (active) active.delete(agentId)
+    })
+
     audit('connect', { room, identity: auth.identity, role: auth.role })
     wss.emit('connection', conn, req)
   })
