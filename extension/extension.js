@@ -161,11 +161,11 @@ async function validateLicense(globalState) {
 function requirePro(featureName) {
   if (proTier) return true
   vscode.window.showInformationMessage(
-    `${featureName} requires Hivecode Pro. Upgrade at https://hivecode.vercel.app/pricing`,
+    `${featureName} requires Hivecode Pro. Upgrade at https://hivecode.vercel.app/#pricing`,
     'Enter License Key', 'Get Pro'
   ).then((choice) => {
     if (choice === 'Enter License Key') vscode.commands.executeCommand('hivecode.enterLicense')
-    if (choice === 'Get Pro') vscode.env.openExternal(vscode.Uri.parse('https://hivecode.vercel.app/pricing'))
+    if (choice === 'Get Pro') vscode.env.openExternal(vscode.Uri.parse('https://hivecode.vercel.app/#pricing'))
   })
   return false
 }
@@ -205,7 +205,7 @@ function activate(context) {
     vscode.commands.registerCommand('hivecode.enterLicense', async () => {
       const key = await vscode.window.showInputBox({
         prompt: 'Enter your Hivecode Pro license key',
-        placeHolder: 'HIVE-PRO-xxxxxxxxxxxx',
+        placeHolder: 'HC-PRO-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
         password: false,
       })
       if (key) {
@@ -219,7 +219,7 @@ function activate(context) {
       }
     }),
     vscode.commands.registerCommand('hivecode.upgradePro', () => {
-      vscode.env.openExternal(vscode.Uri.parse('https://hivecode.vercel.app/pricing'))
+      vscode.env.openExternal(vscode.Uri.parse('https://hivecode.vercel.app/#pricing'))
     })
   )
 
