@@ -15,6 +15,7 @@ import {
   clampSeats,
   monthlyTotal,
 } from '../../shared/license.js'
+import { SETUP_STEPS } from '../../shared/onboarding.js'
 
 interface RazorpayFailure {
   readonly error?: { readonly description?: string }
@@ -54,6 +55,7 @@ interface Dialog {
   open(title: string, body: string): void
   setBody(body: string): void
   showKey(key: string): void
+  showSteps(): void
 }
 
 function buildDialog(): Dialog {
@@ -70,6 +72,7 @@ function buildDialog(): Dialog {
         <code data-modal-key-text></code>
         <button type="button" class="btn btn--ghost btn--sm" data-modal-copy>Copy</button>
       </div>
+      <div class="modal__next" data-modal-steps hidden></div>
       <button type="button" class="btn btn--primary modal__close" data-modal-close>Done</button>
     </div>`
   document.body.appendChild(overlay)
@@ -78,6 +81,7 @@ function buildDialog(): Dialog {
   const bodyEl = overlay.querySelector<HTMLElement>('[data-modal-body]')!
   const keyWrap = overlay.querySelector<HTMLElement>('[data-modal-key]')!
   const keyText = overlay.querySelector<HTMLElement>('[data-modal-key-text]')!
+  const stepsWrap = overlay.querySelector<HTMLElement>('[data-modal-steps]')!
   const copyBtn = overlay.querySelector<HTMLButtonElement>('[data-modal-copy]')!
   const closeBtn = overlay.querySelector<HTMLButtonElement>('[data-modal-close]')!
 
@@ -112,6 +116,7 @@ function buildDialog(): Dialog {
       titleEl.textContent = title
       bodyEl.textContent = body
       keyWrap.hidden = true
+      stepsWrap.hidden = true
       overlay.hidden = false
       document.body.classList.add('is-locked')
       closeBtn.focus()
@@ -122,6 +127,46 @@ function buildDialog(): Dialog {
     showKey(key) {
       keyText.textContent = key
       keyWrap.hidden = false
+    },
+    // A compact form of the same four steps the page and the email carry, because this is
+    // the one moment we know the buyer is looking. Titles and literals only — the prose
+    // version is a scroll away, and a wall of text here would be skipped.
+    showSteps() {
+      if (!stepsWrap.childElementCount) {
+        const head = document.createElement('p')
+        head.className = 'modal__nextTitle'
+        head.textContent = 'Then, four steps to your first room'
+        stepsWrap.appendChild(head)
+
+        const list = document.createElement('ol')
+        list.className = 'setup setup--tight'
+        for (const step of SETUP_STEPS) {
+          const item = document.createElement('li')
+          item.className = 'setup__row'
+
+          const title = document.createElement('p')
+          title.className = 'setup__t'
+          title.textContent = step.title
+          item.appendChild(title)
+
+          if (step.literal) {
+            const lit = document.createElement('code')
+            lit.className = 'setup__lit'
+            lit.textContent = step.literal
+            item.appendChild(lit)
+          }
+          list.appendChild(item)
+        }
+        stepsWrap.appendChild(list)
+
+        const more = document.createElement('a')
+        more.className = 'modal__more'
+        more.href = '#setup'
+        more.textContent = 'See the full walkthrough →'
+        more.addEventListener('click', () => closeBtn.click())
+        stepsWrap.appendChild(more)
+      }
+      stepsWrap.hidden = false
     },
   }
 }
@@ -152,21 +197,24 @@ async function revealKey(dialog: Dialog, paymentId: string, seats: number): Prom
     const key = await fetchIssuedKey(paymentId)
     if (key) {
       dialog.setBody(
-        `Your Pro licence covers ${committers}. We have emailed this key to you as well — ` +
-          `paste it into the Hivecode extension, or set it as HIVE_LICENSE on a self-hosted relay.`,
+        `Your Pro licence covers ${committers}. Copy the key below — it is in your inbox too, ` +
+          `along with these steps.`,
       )
       dialog.showKey(key)
+      dialog.showSteps()
       return
     }
     await wait(POLL_INTERVAL_MS)
   }
 
   // Still nothing: the payment is safe and recorded, the key just has not been issued yet.
-  // Give them the payment id so support (or /api/license) can recover it.
+  // Give them the payment id so support (or /api/license) can recover it — and still show
+  // the steps, because step 1 needs no key and the key is arriving by email.
   dialog.setBody(
-    `Your payment went through and your licence for ${committers} is being issued. It will ` +
+    `Your payment went through and your licence for ${committers} is being issued — it will ` +
       `arrive by email shortly. If it does not, quote this payment reference: ${paymentId}`,
   )
+  dialog.showSteps()
 }
 
 export function mountCheckout(root: HTMLElement): void {

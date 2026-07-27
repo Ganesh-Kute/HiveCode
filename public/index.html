@@ -270,6 +270,30 @@ input[type=range]::-moz-range-thumb{width:19px;height:19px;border-radius:50%;bac
 .feats li{display:grid;grid-template-columns:auto 1fr;gap:10px;font-size:14px;color:var(--muted);align-items:start}
 .feats .y{color:var(--verified)} .feats .n{color:var(--dim)}
 .plan__foot{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:14px;text-align:center}
+.plan__after{display:block;font-size:13px;text-align:center;margin-top:13px;color:var(--verified)}
+
+/* ═══ SETUP — a real sequence, so it gets a spine and ordinals ═══ */
+.setup{list-style:none;padding:0;margin:36px 0 0;max-width:70ch}
+.setup__row{position:relative;padding:0 0 30px 58px}
+.setup__row::before{content:"";position:absolute;left:17px;top:42px;bottom:2px;width:1px;background:var(--line-soft)}
+.setup__row:last-child{padding-bottom:0}
+.setup__row:last-child::before{display:none}
+.setup__n{position:absolute;left:0;top:0;width:35px;height:35px;border-radius:50%;display:grid;place-items:center;background:var(--sunk);border:1px solid var(--line);font-family:var(--mono);font-size:13px;color:var(--verified)}
+.setup__t{font-size:17.5px;font-weight:600;letter-spacing:-.015em;padding-top:6px}
+.setup__b{font-size:14.5px;color:var(--muted);margin-top:8px}
+.setup__row .cmd{margin-top:13px}
+.setup__note{font-size:13px;color:var(--dim);margin-top:10px}
+.setup__note code{font-family:var(--mono);color:var(--muted)}
+.setup__lit{display:inline-block;margin-top:7px;font-family:var(--mono);font-size:12.5px;color:var(--verified);background:var(--sunk);border:1px solid var(--line-soft);border-radius:var(--r-sm);padding:5px 9px;word-break:break-all}
+.setup--tight{margin:0;padding-left:19px;list-style:decimal}
+.setup--tight::marker,.setup--tight li::marker{color:var(--verified);font-family:var(--mono);font-size:12px}
+.setup--tight .setup__row{padding:0 0 13px 3px}
+.setup--tight .setup__row::before{display:none}
+.setup--tight .setup__t{font-size:15px;padding-top:0}
+.aside{margin-top:34px;display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.aside h3{font-size:15px;font-weight:600}
+.aside p{font-size:13.5px;color:var(--muted);margin-top:8px}
+.aside p code,.setup__b code{font-family:var(--mono);font-size:12.5px;color:var(--verified);background:rgba(53,201,240,.1);padding:1px 6px;border-radius:4px}
 
 /* ═══ FAQ ═══ */
 .faq{margin-top:40px;border-top:1px solid var(--line-soft)}
@@ -301,6 +325,9 @@ details code{font-family:var(--mono);font-size:13px;color:var(--verified)}
 .modal__body{font-size:14.5px;color:var(--muted);margin-bottom:18px}
 .modal__key{display:flex;gap:10px;align-items:center;background:var(--sunk);border:1px solid var(--line-soft);border-radius:var(--r-md);padding:12px 14px;margin-bottom:20px;flex-wrap:wrap}
 .modal__key code{font-family:var(--mono);font-size:13.5px;color:var(--verified);word-break:break-all;flex:1;min-width:180px}
+.modal__next{border-top:1px solid var(--line-soft);padding-top:18px;margin-bottom:20px}
+.modal__nextTitle{font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px}
+.modal__more{display:inline-block;margin-top:14px;font-size:13px;color:var(--verified)}
 .modal__close{width:100%}
 
 @media(max-width:760px){
@@ -712,6 +739,7 @@ VERIFY → re-read after sync; lost? back off</code></pre>
         <button type="button" class="btn btn--primary btn--wide" data-checkout data-razorpay-key="rzp_test_mock_key">
           Upgrade to Pro
         </button>
+        <a class="plan__after" href="#setup">What happens after you pay →</a>
         <p class="plan__def">
           A <b>committer</b> is one agent or human writing to the room at the same time.
           Idle agents, reviewers and read-only clients don't count — you pay for concurrent
@@ -733,6 +761,84 @@ VERIFY → re-read after sync; lost? back off</code></pre>
         <a class="btn btn--ghost btn--wide" href="mailto:gkgk7024@gmail.com?subject=Hivecode%20Enterprise">Start a conversation</a>
         <p class="plan__foot">deployed on your infrastructure</p>
       </article>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ SETUP — the steps a buyer takes next, kept in sync with shared/onboarding.js ═══ -->
+<section class="section" id="setup">
+  <div class="wrap">
+    <div data-reveal>
+      <p class="eyebrow">after you pay</p>
+      <h2>Four steps, and the room is live</h2>
+      <p class="lede">
+        There is no server to provision, no account to create and no config file to write.
+        Your key arrives by email with these same four steps in it.
+      </p>
+    </div>
+
+    <ol class="setup" data-reveal>
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">1</span>
+        <p class="setup__t">Install the extension</p>
+        <p class="setup__b">One click, and nothing else to install — no relay to run, no account to create.</p>
+        <a class="btn btn--ghost btn--sm" style="margin-top:13px" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Hivecode for VS Code</a>
+      </li>
+
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">2</span>
+        <p class="setup__t">Paste your licence key</p>
+        <p class="setup__b">Open the Command Palette (Ctrl+Shift+P, or Cmd+Shift+P on a Mac), run this, and paste in your licence key.</p>
+        <span class="cmd">
+          <code><span class="sigil">&gt;</span> Hivecode: Enter License Key</code>
+          <button type="button" class="cmd__copy" data-copy="Hivecode: Enter License Key" aria-label="Copy command"></button>
+        </span>
+        <p class="setup__note">The key is stored in VS Code, per machine — you only do this once.</p>
+      </li>
+
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">3</span>
+        <p class="setup__t">Host a room</p>
+        <p class="setup__b">From the same Command Palette. Your project folder becomes the room, and you get one invite link back.</p>
+        <span class="cmd">
+          <code><span class="sigil">&gt;</span> Hivecode: Host a Secured Session</code>
+          <button type="button" class="cmd__copy" data-copy="Hivecode: Host a Secured Session" aria-label="Copy command"></button>
+        </span>
+        <p class="setup__note">A secured room only admits clients holding that link. Everything stays in your workspace.</p>
+      </li>
+
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">4</span>
+        <p class="setup__t">Hand the link to your agent</p>
+        <p class="setup__b">Register the Hivecode tools with your agent once per machine, then simply tell it to join and paste the link.</p>
+        <span class="cmd">
+          <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp</code>
+          <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp" aria-label="Copy command"></button>
+        </span>
+        <p class="setup__note">Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>. Claude Desktop and Cursor use a config file instead of this command.</p>
+      </li>
+    </ol>
+
+    <div class="aside" data-reveal>
+      <div>
+        <h3>Claude Desktop, Cursor, or any other MCP client</h3>
+        <p>They read a config file rather than a CLI, so register the server there instead of running step 4, then restart the client so it picks up the tools.</p>
+        <pre class="snip"><code>{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"hivecode"</span>: { <span class="s">"command"</span>: <span class="s">"npx"</span>, <span class="s">"args"</span>: [<span class="s">"-y"</span>, <span class="s">"hivecode-mcp"</span>] }
+  }
+}</code></pre>
+        <p style="margin-top:12px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Full agent setup guide →</a></p>
+      </div>
+      <div>
+        <h3>Running the relay yourself</h3>
+        <p>
+          On Enterprise, or any self-hosted deployment, the key lives in the environment
+          rather than the editor: set <code>HIVE_LICENSE</code> to your key and
+          <code>HIVE_REQUIRE_LICENSE=true</code> on the relay, and skip step 2.
+        </p>
+        <p style="margin-top:12px">Your code never leaves that host — the relay checks the key, not the contents.</p>
+      </div>
     </div>
   </div>
 </section>

@@ -212,7 +212,13 @@ function activate(context) {
         await vscode.workspace.getConfiguration('hivecode').update('licenseKey', key.trim(), vscode.ConfigurationTarget.Global)
         await validateLicense(context.globalState)
         if (proTier) {
-          vscode.window.showInformationMessage('✅ Hivecode Pro activated! All features unlocked.')
+          // Step 2 of the four-step setup ends here and step 3 is "host a room", so offer it
+          // directly rather than making them find the palette entry themselves.
+          const next = await vscode.window.showInformationMessage(
+            '✅ Hivecode Pro is active. Next: host a room, then hand the invite link to your agent.',
+            'Host a Secured Session'
+          )
+          if (next === 'Host a Secured Session') vscode.commands.executeCommand('hivecode.hostSecured')
         } else {
           vscode.window.showWarningMessage('Invalid or expired license key. Check your key and try again.')
         }

@@ -224,5 +224,41 @@ T('GET is rejected', res.statusCode === 405)
 
 supabase.server.close()
 
+// ───────────────────────────────────────────────────────────────────────────────────────
+section('the licence email is the instruction manual')
+// A buyer's only durable copy of the setup is this email. It previously told them to run
+// "Hivecode: Set Licence Key", which is not a command the extension contributes — following
+// it literally produced nothing and looked like a broken product. So the rendered bodies are
+// checked against the extension's own command contributions.
+
+const { _render } = await import('../api/_email.js')
+const { SETUP_STEPS, MCP_ADD_COMMAND, SELF_HOST_NOTE } = await import('../shared/onboarding.js')
+const contributedTitles = JSON.parse(
+  await (await import('fs/promises')).readFile(new URL('../extension/package.json', import.meta.url), 'utf8'),
+).contributes.commands.map((c) => c.title)
+
+const mailArgs = { licenseKey: 'HC-PRO-0123456789ABCDEF0123456789ABCDEF', committers: '3 committers' }
+const mailText = _render.textBody(mailArgs)
+const mailHtml = _render.htmlBody(mailArgs)
+
+for (const step of SETUP_STEPS) {
+  T(`text email carries step "${step.title}"`, mailText.includes(step.title))
+  T(`html email carries step "${step.title}"`, mailHtml.includes(step.title))
+  if (step.kind !== 'command') continue
+  T(
+    `"${step.literal}" is a command the extension really contributes`,
+    contributedTitles.includes(step.literal),
+  )
+  T(`text email quotes it exactly`, mailText.includes(step.literal))
+}
+T('both bodies carry the licence key', mailText.includes(mailArgs.licenseKey) && mailHtml.includes(mailArgs.licenseKey))
+T('both bodies carry the seat count', mailText.includes('3 committers') && mailHtml.includes('3 committers'))
+T('the MCP registration command survives rendering', mailText.includes(MCP_ADD_COMMAND) && mailHtml.includes(MCP_ADD_COMMAND))
+T('the self-hosting route is mentioned', mailText.includes(SELF_HOST_NOTE))
+// `<your link>` inside a note would be eaten as an unknown tag if it were not escaped.
+T('angle brackets in step notes are escaped for HTML', mailHtml.includes('&lt;your link&gt;'))
+T('no raw placeholder tag leaked into the HTML', !mailHtml.includes('<your link>'))
+T('the HTML body has a text alternative of similar substance', mailText.length > 600)
+
 console.log(`\n=== BILLING: ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

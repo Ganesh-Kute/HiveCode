@@ -65,6 +65,48 @@ anon and authenticated keys can read nothing — only `service_role` can.
 3. Subscribe it to: `payment.captured`, `subscription.activated`, `subscription.charged`,
    `subscription.cancelled`, `subscription.halted`, `refund.processed`.
 
+## After the payment: one set of instructions, three surfaces
+
+A buyer meets the setup steps three times — in the dialog that opens the moment the payment
+clears, in the licence email, and on the website. Those three used to be written
+independently, and the email told people to run **"Hivecode: Set Licence Key"**, which is not
+a command the extension contributes. Following it produced nothing, which to the person who
+just paid is indistinguishable from a broken product.
+
+The steps now live in [`shared/onboarding.js`](../shared/onboarding.js) as data, and every
+surface renders that array:
+
+| Surface | Renders | Form |
+|---|---|---|
+| `api/_email.js` | `setupStepsAsText()` + an HTML table | full prose, both MIME parts |
+| `web/src/checkout.ts` → post-payment dialog | `SETUP_STEPS` | titles + literals only, links to `/#setup` |
+| `public/index.html` → `#setup` | hand-written markup | full prose, with copy buttons |
+
+The page is deliberately static markup rather than JS-rendered, so it works without the
+bundle and is indexable — which means it *can* drift. Two guards catch that instead:
+
+- `tests/billing-test.mjs` asserts every rendered `kind: 'command'` literal is a title the
+  extension actually contributes in `extension/package.json`. A renamed command fails the
+  suite rather than reaching a customer.
+- The page checker asserts every step title, body and literal appears in `public/index.html`
+  verbatim.
+
+If you reword a step, change it in `shared/onboarding.js` and update the markup to match;
+the checks will tell you which surface you missed.
+
+## Known gap: the extension gates nothing
+
+`requirePro()` exists in `extension/extension.js` and is **never called**, and
+`FREE_MAX_AGENTS` / `FREE_MAX_DURATION_MS` are declared and never read. `proTier` only drives
+the Free/Pro badge in the panel. So every feature the pricing page attributes to Pro —
+private rooms, restore points, undo-by-agent, the provenance ledger — is currently available
+to everyone in the editor.
+
+The only real gate is the relay's committer limit, and that is inactive too while
+`HIVE_REQUIRE_LICENSE` is unset. Before charging anyone, decide deliberately which of the two
+you want enforcement to live in: the relay (harder to bypass, but only covers hosted rooms)
+or the extension (covers editor-side features, but a client-side check is advisory by nature).
+
 ## Known gap: billing is one-off, not recurring
 
 The page advertises **$29 per committer per month**, but the checkout creates a **one-time
