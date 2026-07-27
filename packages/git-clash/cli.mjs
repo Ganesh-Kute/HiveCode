@@ -270,7 +270,7 @@ function analyzeScenario(scenario) {
       text: icrResult.text,
     },
     // The critical finding: Git says clean, ICR says NOT clean
-    phantomDetected: !gitResult.conflict && !icrResult.clean,
+    phantomDetected: !gitResult.conflict && (!icrResult.clean || (icrResult.renames && icrResult.renames.length > 0)),
     // Or: Git has conflict but ICR resolves cleanly
     falseConflict: gitResult.conflict && icrResult.clean,
   }
