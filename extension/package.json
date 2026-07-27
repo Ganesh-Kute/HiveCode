@@ -33,14 +33,14 @@
     "color": "#0a0c10",
     "theme": "dark"
   },
-  "homepage": "https://github.com/GSK7024/livecode",
+  "homepage": "https://github.com/Ganesh-Kute/HiveCode",
   "bugs": {
-    "url": "https://github.com/GSK7024/livecode/issues"
+    "url": "https://github.com/Ganesh-Kute/HiveCode/issues"
   },
   "qna": false,
   "repository": {
     "type": "git",
-    "url": "https://github.com/GSK7024/livecode"
+    "url": "https://github.com/Ganesh-Kute/HiveCode"
   },
   "main": "./extension.js",
   "activationEvents": [

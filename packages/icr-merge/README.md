@@ -144,7 +144,7 @@ optional peers installed, nothing changes and the core stays acorn-only.
 - **Convergent** — the merge is symmetric and a fixed point: peers that re-merge an agreed text get it back byte-identical (this is what lets ICR run inside a live multi-peer CRDT sync).
 - **Never throws into your code** — any internal failure degrades to the line tier.
 
-Tested by: unit suites per language, directed adversarial cases (fake defs inside Python docstrings, decorators, Go raw strings and braces-in-comments, Rust CRLF, Java deep nesting, unicode names), seeded random 3-way fuzzers (including a metamorphic multilang fuzzer holding fixed-point, symmetry, parse-guarantee, no-loss, and honest-conflict invariants across Python/Java/Go/Ruby/YAML/TOML/JSON), and a convergence suite. Plus a real-world **gauntlet**: hundreds of parseable files from `node_modules` used as merge fodder with code edits located via the AST, run differentially against real `git merge-file` — **0 code-loss, 0 broken auto-merges, 0 convergence failures across 500+ cases, and ICR strictly beat git (auto-merged what git conflicted on) on files where edits were adjacent**. ICR also runs live inside [Hivecode](https://github.com/GSK7024), a governed real-time medium where multiple AI agents edit one project — which is where its assumptions got beaten on by real concurrent agents.
+Tested by: unit suites per language, directed adversarial cases (fake defs inside Python docstrings, decorators, Go raw strings and braces-in-comments, Rust CRLF, Java deep nesting, unicode names), seeded random 3-way fuzzers (including a metamorphic multilang fuzzer holding fixed-point, symmetry, parse-guarantee, no-loss, and honest-conflict invariants across Python/Java/Go/Ruby/YAML/TOML/JSON), and a convergence suite. Plus a real-world **gauntlet**: hundreds of parseable files from `node_modules` used as merge fodder with code edits located via the AST, run differentially against real `git merge-file` — **0 code-loss, 0 broken auto-merges, 0 convergence failures across 500+ cases, and ICR strictly beat git (auto-merged what git conflicted on) on files where edits were adjacent**. ICR also runs live inside [Hivecode](https://github.com/Ganesh-Kute), a governed real-time medium where multiple AI agents edit one project — which is where its assumptions got beaten on by real concurrent agents.
 
 ## Scope, honestly
 
@@ -155,4 +155,4 @@ Tested by: unit suites per language, directed adversarial cases (fake defs insid
 
 ## License
 
-MIT © [Ganesh Shivlal Kute](https://github.com/GSK7024)
+MIT © [Ganesh Shivlal Kute](https://github.com/Ganesh-Kute)

@@ -56,7 +56,7 @@ Works in **VS Code, Cursor, Windsurf, and Antigravity**.
 Agents join through the Hivecode MCP server (`hive-mcp.js` in the repo). Point your
 agent's MCP config at it, hand it the join link, and it appears in the room as an
 `ai` member — scoped to exactly the folders you invited it to. See
-[the repo](https://github.com/GSK7024/livecode) for MCP setup.
+[the repo](https://github.com/Ganesh-Kute/HiveCode) for MCP setup.
 
 ## Commands
 
@@ -81,4 +81,4 @@ never written to a file or handed to anyone.
 ---
 
 Free and open source (MIT). Source, issues, and the relay:
-**https://github.com/GSK7024/livecode**
+**https://github.com/Ganesh-Kute/HiveCode**

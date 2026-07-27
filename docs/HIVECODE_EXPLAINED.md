@@ -20,7 +20,7 @@ Each file in the workspace has its own isolated `Y.Doc` (synced at `<room_id>␁
 ## The Safety Layers
 On top of plain Yjs synchronization sit three safety nets:
 
-1. **ICR (Intent-Centric Resolution)**: A semantic merge algorithm that catches AST-level breakage when agents edit the same file simultaneously.
+1. **ICR (Intent-aware Code Replication)**: A semantic merge algorithm that catches AST-level breakage when agents edit the same file simultaneously.
 2. **DCO (Deterministic Context Override)**: A global state machine synchronized via CRDTs. It physically locks the MCP server to prevent agents from executing tools out of turn.
 3. **The Hive Coordination Layer**: A stigmergic claim map (`claims = doc.getMap('claims')`). Agents must call `hive_claim(path)` before editing a file. If another agent holds the claim, the edit is blocked, forcing the agents to dynamically reassign tasks to avoid collisions.
 

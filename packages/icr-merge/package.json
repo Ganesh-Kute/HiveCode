@@ -44,7 +44,7 @@
     "code-generation",
     "conflict-resolution"
   ],
-  "author": "Ganesh Shivlal Kute (https://github.com/GSK7024)",
+  "author": "Ganesh Shivlal Kute (https://github.com/Ganesh-Kute)",
   "license": "MIT",
   "engines": {
     "node": ">=18"

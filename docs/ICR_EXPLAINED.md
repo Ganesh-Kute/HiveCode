@@ -1,4 +1,4 @@
-# ICR (Intent-Centric Resolution)
+# ICR (Intent-aware Code Replication)
 
 ICR is Hivecode's safety net: a custom, semantic-aware 3-way merge algorithm built for multi-agent environments. 
 

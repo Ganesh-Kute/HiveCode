@@ -38,7 +38,7 @@ fingerprint of your key, the relay stores nothing). You can self-host the relay.
 It's open source (MIT) and early — I'd genuinely like feedback on whether the
 oversight model is the right shape, and where it breaks for you.
 
-Repo: https://github.com/GSK7024/HiveCode
+Repo: https://github.com/Ganesh-Kute/HiveCode
 Install (VS Code/Cursor/Windsurf): <Marketplace link>
 
 ---
@@ -67,7 +67,7 @@ Works with Claude Code / Cursor / Windsurf via MCP. Open source, free, self-host
 It's early and I want honest feedback — does this match how you'd want to supervise
 agents, or am I solving the wrong half of the problem?
 
-GitHub: https://github.com/GSK7024/HiveCode
+GitHub: https://github.com/Ganesh-Kute/HiveCode
 
 ---
 
@@ -92,7 +92,7 @@ Hivecode gives you control over agents on one live codebase:
 Agent-neutral — Claude Code, Cursor, Windsurf, or your own bot over MCP.
 Open source, free, self-hostable. No git push/pull; edits sync in ~1s.
 
-Early and looking for feedback 👉 https://github.com/GSK7024/HiveCode
+Early and looking for feedback 👉 https://github.com/Ganesh-Kute/HiveCode
 
 ---
 

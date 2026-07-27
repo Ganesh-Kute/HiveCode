@@ -51,7 +51,7 @@ It's agent-neutral — Claude Code, Cursor, Windsurf, or your own bot via MCP.
 Free and open source (MIT). Works in VS Code, Cursor, Windsurf, Antigravity.
 
 It's early and I'd love feedback, especially on the trust model and on whether the
-scoping is the right primitive. Repo: https://github.com/GSK7024/livecode
+scoping is the right primitive. Repo: https://github.com/Ganesh-Kute/HiveCode
 
 Happy to answer anything.
 ```
@@ -96,7 +96,7 @@ What it does:
 - Works with Claude Code, Cursor, Windsurf, or your own bot over MCP.
 
 It's free and open source. Here's a 90s demo: [video link]
-Repo: https://github.com/GSK7024/livecode
+Repo: https://github.com/Ganesh-Kute/HiveCode
 
 Would genuinely love feedback from people who run multiple agents — is folder
 scoping the right control, or do you want something finer?
@@ -158,7 +158,7 @@ and no shared secret — trust is anchored in the room id itself.
 ```
 Free and open source. Works in VS Code, Cursor, Windsurf, Antigravity.
 
-Install + repo: https://github.com/GSK7024/livecode
+Install + repo: https://github.com/Ganesh-Kute/HiveCode
 
 If you run more than one agent, I'd love your feedback. What would you scope?
 ```
