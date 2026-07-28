@@ -124,7 +124,10 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
   let rulesText = ''
   try { rulesText = fs.readFileSync(path.join(ROOT, 'HIVE_RULES.md'), 'utf8') } catch {}
   if (!rulesText) rulesText = 'Read HIVE_RULES.md in this folder. In short: read chat + board before editing; CLAIM a file with hive_claim before you edit it and hive_release when done; announce intent with hive_say; prefer small patches; act only on accepted tasks; resolve <<<<<<< conflict markers rather than blindly overwriting.'
-  return `${mode}\nroom: ${room}\nrelay: ${relay}\nfolder: ${ROOT}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${relay}|${room}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  // The invite link carries the token when there is one — without it a secured room rejects
+  // whoever you hand it to, and the Control Room says the link is missing its token.
+  const inviteLink = `${relay}|${room}${useToken ? `|${useToken}` : ''}`
+  return `${mode}\nroom: ${room}\nrelay: ${relay}\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }
@@ -263,7 +266,12 @@ function enforceDcoLock() {
   }
 }
 
-const server = new Server({ name: 'hivecode', version: '0.8.0' }, { capabilities: { tools: {} } })
+// Bumped from 0.8.0 when message delivery changed (see hive-mailbox.js). Two builds with the
+// same version number but different delivery behaviour is precisely the mixed-build room that
+// breaks rooms — and the standing rule "report your Hivecode version when you join" cannot work
+// if the builds are indistinguishable. So the version is reported on join and by hive_status.
+export const VERSION = '0.9.0'
+const server = new Server({ name: 'hivecode', version: VERSION }, { capabilities: { tools: {} } })
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args = {} } = req.params
@@ -405,7 +413,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return text(`✓ resolution LANDED in ${file} — validated by ICR (parses, no dangling refs), signed by you, synced to every peer.${dropped.length ? ` ⚠ Intent coverage: ${dropped.map((c) => `${c.name}'s changes (${c.missing.slice(0, 5).join(', ')}) did not survive`).join('; ')} — if that was not deliberate, submit a better reconciliation.` : ' Full intent coverage: every side\'s changes survived.'}`)
       }
       case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
-      case 'hive_status': { const s = requireSession(); return text({ room: s.room, relay: s.relay, dir: s.dir, name: s.name }) }
+      case 'hive_status': {
+        const s = requireSession()
+        return text({ room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, unread: mailbox().peek(chatArray()).unreadCount })
+      }
       case 'hive_leave': { requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
       default: return err(`unknown tool: ${name}`)
     }
