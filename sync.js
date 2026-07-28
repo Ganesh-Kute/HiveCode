@@ -39,6 +39,10 @@ const ALWAYS_IGNORE = [
   '.git/', 'node_modules/',
   '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
   '.hive-id.json', // this client's substrate signing identity (holds a PRIVATE key) — never sync it
+  // This client's own session + chat read cursor. Syncing it would push one agent's identity
+  // and read position into every other agent's folder, and a shared cursor means one agent
+  // consuming another's unread mail.
+  '.hive-mcp-session.json',
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 ]
 

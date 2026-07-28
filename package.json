@@ -63,7 +63,8 @@
     "test:substrate:enforce": "node substrate-enforce-test.js",
     "test:substrate:authority": "node substrate-authority-test.js",
     "test:substrate:all": "node substrate-test.js && node substrate-live-test.js && node substrate-enforce-test.js && node substrate-authority-test.js",
-    "test:recover": "node tests/recover-test.mjs"
+    "test:recover": "node tests/recover-test.mjs",
+    "test:mailbox": "node tests/mailbox-test.mjs && node tests/mcp-wait-test.mjs"
   },
   "engines": {
     "node": ">=18"
