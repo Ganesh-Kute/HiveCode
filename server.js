@@ -78,6 +78,31 @@ function isSyncWrite(data) {
 // Returns a reason string if this connection's write to its file should be blocked,
 // or null to allow. Fail-OPEN on anything unknown (availability > strictness — this
 // is coordination, not the access-control gate, which stays fail-closed at handshake).
+// Paths the relay refuses to let ANYONE write, and why. This is the half of the path
+// registry that a client cannot provide: the client-side gate in hive-mcp.js is only as
+// strong as the weakest client in the room, and on 2026-07-29 that stopped being
+// hypothetical — FIVE copies of hive-mcp.js were found on one machine, four of them six
+// weeks old with no gate in them at all. An old build, an `npx` install, or any client
+// that simply does not implement the check bypasses every flag. The relay is the only
+// participant no client controls, so it is the only place these can be guarantees.
+//
+// PERMANENT vs TEMPORARY is the important distinction and it decides queueing:
+//   a DCO lock or a claim is TEMPORARY — the write is legitimate and merely early, so
+//   queue-and-replay is correct and loses nothing.
+//   a restricted PATH is PERMANENT — the write must never land, so it must never be
+//   queued. Replaying it later would defeat the whole point.
+const PATH_BLOCK = {
+  DELETED_UNWRITABLE: 'path had a delete propagate — a write here vanishes or resurrects deleted content',
+  CORRUPT: 'path content is unusable in every folder that measured it — publish to a new path',
+  DIVERGED: 'peers hold different bytes for this path — no single truth to write on top of',
+  POISONED: 'path is marked poisoned (legacy flag)',
+  FROZEN: 'path is frozen by the state machine',
+  SUPERSEDED: 'path has been replaced — read it, do not write it',
+}
+
+// Returns { reason, permanent } if this connection's write to its file should be blocked,
+// or null to allow. Fail-OPEN on anything unknown (availability > strictness — this
+// is coordination, not the access-control gate, which stays fail-closed at handshake).
 function writeBlockReason(conn) {
   const h = conn._hive
   if (!h || !h.identity || !h.room) return null            // unknown identity -> can't enforce
@@ -90,10 +115,20 @@ function writeBlockReason(conn) {
   const who = h.identity.name
   try {
     const state = baseDoc.getMap('swarm_state')
-    if (state.get(`${who}_status`) === 'LOCKED' || state.get(`${who}_locked`) === 'true') return 'DCO-locked'
+    // PATH REGISTRY FIRST, and deliberately BEFORE the identity checks: this is a property
+    // of the FILE, not of the writer, so being unlocked or holding the claim must not buy
+    // anyone a write to a path the room has ruled unwritable.
+    const ps = state.get(`path:${filePath}`)
+    if (ps && ps !== 'LIVE' && ps !== 'OPEN') {
+      // Fail CLOSED on a value this build does not recognise. Somebody set it deliberately,
+      // and an incomplete safety registry is more dangerous than none because agents trust
+      // it. Guessing "probably fine" is the one answer that cannot be right here.
+      return { reason: PATH_BLOCK[ps] || `path is marked "${ps}", which this relay does not recognise`, permanent: true, path: ps }
+    }
+    if (state.get(`${who}_status`) === 'LOCKED' || state.get(`${who}_locked`) === 'true') return { reason: 'DCO-locked', permanent: false }
     const claim = baseDoc.getMap('claims').get(filePath)
     const live = claim && (!claim.ttl || (claim.at || 0) + claim.ttl > Date.now())
-    if (live && claim.by && claim.by !== who) return `held by ${claim.by}`
+    if (live && claim.by && claim.by !== who) return { reason: `held by ${claim.by}`, permanent: false }
   } catch { return null }
   return null
 }
@@ -113,11 +148,18 @@ function installWriteGate(conn) {
     conn._wgHandler = handler // kept so queued writes can be replayed later
     return realOn('message', (data, ...rest) => {
       if (isSyncWrite(data)) {
-        const reason = writeBlockReason(conn)
-        if (reason) {
-          audit('write-blocked', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason, mode: ENFORCE_CLAIMS })
+        const block = writeBlockReason(conn)
+        if (block) {
+          audit('write-blocked', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason, permanent: !!block.permanent, mode: ENFORCE_CLAIMS })
           if (ENFORCE_CLAIMS === 'block') return // drop the write
-          if (ENFORCE_CLAIMS === 'queue') { queueWrite(conn, data, rest); return } // hold + replay later
+          // A PERMANENT block is never queued. Queueing exists so a legitimate write that
+          // arrived early is not lost; a write to an unwritable path is not early, it is
+          // wrong, and replaying it when the queue flushes would land exactly the damage the
+          // flag exists to prevent. Drop it even in queue mode, and say so in the audit.
+          if (ENFORCE_CLAIMS === 'queue') {
+            if (block.permanent) { audit('write-dropped-permanent', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason }); return }
+            queueWrite(conn, data, rest); return // hold + replay later
+          }
           // 'warn' falls through (allowed, logged only)
         }
       }
