@@ -165,6 +165,29 @@ const waitOut = await A.call('hive_check', {})
 assert('hive_check still delivers the messages themselves', /parser is yours|build is broken/.test(waitOut))
 assert('and does NOT double-report via a banner', !/UNREAD MAIL:/.test(waitOut))
 
+console.log('\n# 7. the banner must not spam, and must retire itself — a context is append-only')
+await B.call('hive_say', { text: '@Alpha one more thing about the parser' })
+await sleep(900)
+const first = await A.call('hive_members', {})
+assert('a NEW message produces a notice', /UNREAD MAIL/.test(first))
+const n1 = Number((/MAIL NOTICE #(\d+)/.exec(first) || [])[1])
+assert('the notice is numbered so the newest is authoritative', Number.isFinite(n1))
+assert('and says it supersedes earlier notices', /supersedes every earlier MAIL NOTICE/.test(first))
+const repeat1 = await A.call('hive_members', {})
+const repeat2 = await A.call('hive_status', {})
+assert('the SAME pending mail is not re-announced on later calls', !/MAIL NOTICE/.test(repeat1) && !/MAIL NOTICE/.test(repeat2))
+// Read it, then check the next unrelated call retires the stale banner rather than leaving
+// "you have unread mail" as the newest thing in the transcript.
+await A.call('hive_check', {})
+await sleep(300)
+const cleared = await A.call('hive_members', {})
+assert('once read, ONE all-clear notice is emitted', /MAIL CLEARED/.test(cleared))
+assert('the all-clear explicitly marks earlier notices stale', /STALE/.test(cleared))
+const n2 = Number((/MAIL NOTICE #(\d+)/.exec(cleared) || [])[1])
+assert('the all-clear outranks the unread notice it cancels', n2 > n1)
+const quiet = await A.call('hive_members', {})
+assert('and the all-clear is not repeated either', !/MAIL NOTICE/.test(quiet))
+
 console.log(`\n=== ${failed ? `${failed} FAILED` : 'ALL PASSED'} ===`)
 for (const x of [A, B]) { try { x.proc.kill() } catch { } }
 try { relay.kill() } catch { }

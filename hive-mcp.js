@@ -568,15 +568,57 @@ async function dispatch(req) {
 // consumes nothing and advances no cursor, so hive_wait/hive_check remain the only things that hand
 // over a message and mark it read. Delivering here instead would make the full text arrive on a
 // random unrelated tool call and vanish from the inbox, which is worse than not delivering at all.
+// A CONTEXT IS APPEND-ONLY, AND THAT CHANGES THE DESIGN.
+//
+// The obvious implementation — append the banner whenever mail is pending — is wrong in two ways, and
+// both are the very drift SMP exists to prevent:
+//
+//   1. SPAM. Mail stays pending until the agent reads it, so 50 tool calls produce 50 identical
+//      banners, burning context to say one thing.
+//   2. STALE TRUTH. Nothing can REMOVE text from a transcript. Once a banner is in context it is there
+//      for the rest of the session, so after the agent reads its mail the old "URGENT MAIL" notices
+//      remain, contradicting the present. An agent scanning back acts on a message handled ten
+//      minutes ago.
+//
+// Since removal is impossible, the only correct approach is to make LATER TEXT AUTHORITATIVE and say
+// so explicitly:
+//
+//   - emit ONLY when the mail state actually changes, so one new message = one notice
+//   - NUMBER each notice, and state that it supersedes every earlier one
+//   - emit exactly ONE "cleared" notice when the inbox empties, which retires the stale banners
+//     instead of leaving them as the newest thing the agent can see
+//
+// Signature includes the session name so a rejoin re-announces rather than inheriting a stale state.
+let mailSig = ''
+let mailNotice = 0
+
 function mailBanner() {
   try {
     if (!session || !session.mailbox) return ''
     const m = session.mailbox.peek(chatArray())
-    if (!m.mentioned) return ''
+    const frame = (body) => `\n\n--- MAIL NOTICE #${mailNotice} (supersedes every earlier MAIL NOTICE above) ---\n${body}\n--- end notice #${mailNotice} ---`
+
+    if (!m.mentioned) {
+      // Emit the all-clear once, and only if we had previously announced something. Without this the
+      // last thing in context stays "you have 2 unread", forever, after they were read.
+      if (!mailSig) return ''
+      mailSig = ''
+      mailNotice += 1
+      return frame('MAIL CLEARED: nothing is addressed to you right now. Any unread-mail notice earlier in this conversation has been handled and is now STALE — ignore it.')
+    }
+
+    const last = m.mentions[m.mentions.length - 1] || {}
+    // Keyed on the NEWEST mention, not the count: a count alone would stay silent when one message is
+    // read and another arrives, and would re-fire on unrelated ambient chatter.
+    const sig = `${session.name}|${m.mentions.length}|${last.at || ''}|${last.by || ''}`
+    if (sig === mailSig) return '' // already announced — the notice is in context, do not repeat it
+    mailSig = sig
+    mailNotice += 1
+
     const who = [...new Set(m.mentions.map((x) => x && x.by).filter(Boolean))].join(', ')
     const urgent = m.priority === 'stop'
-    return `\n\n--- ${urgent ? '[!] URGENT MAIL' : 'UNREAD MAIL'}: ${m.mentions.length} message(s) addressed to you from ${who}. `
-      + `${urgent ? 'Handle before continuing. ' : ''}Call hive_wait or hive_check to read them — this notice consumed nothing. ---`
+    return frame(`${urgent ? '[!] URGENT MAIL' : 'UNREAD MAIL'}: ${m.mentions.length} message(s) addressed to you from ${who}. `
+      + `${urgent ? 'Handle before continuing. ' : ''}Call hive_wait or hive_check to read them — this notice consumed nothing.`)
   } catch { return '' }
 }
 
