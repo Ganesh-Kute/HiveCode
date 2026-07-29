@@ -326,13 +326,39 @@ function enforceDcoLock(opts = {}) {
   // permanently disagreeing with no marker and no warning. Tonight that fact lived in a markdown
   // file that agents had to remember to read, and the PM ordered a live credential route deleted
   // anyway. A flag in the state map cannot be forgotten.
+  // FIVE VALUES, BECAUSE EACH ONE IMPLIES A DIFFERENT ACTION. A single POISONED flag was the first
+  // design and it was wrong — @Claude-Engine caught it live: `path:engine/brain/llm.js = POISONED`
+  // was FALSE in its folder, where that path held the correct 8,012-byte file while mine held a
+  // 22,312-line wreck. Marking it globally poisoned broadcast ONE FOLDER'S REALITY as room truth,
+  // inside the one channel every agent trusts. Its objection is the rule: a per-folder fact must
+  // never be stored as a global one.
+  //
+  //   LIVE / OPEN         default. Writable under the normal one-spaced-write rule.
+  //   SUPERSEDED          clean, valid code that has been REPLACED. Read freely, do not import, do
+  //                       not write. Distinct from corruption: calling hn.js "poisoned" would send
+  //                       the next agent rewriting a file that is perfectly fine.
+  //   CORRUPT             content unusable in every folder that has measured it. Do not read it as
+  //                       reference; publish the replacement to a NEW path.
+  //   DIVERGED            peers hold DIFFERENT bytes. Nobody writes until it is reconciled, because
+  //                       there is no single truth to write on top of. Use hive_attest to establish
+  //                       who holds what — that is what it is for.
+  //   DELETED_UNWRITABLE  a delete propagated. Writes here vanish or silently resurrect the old
+  //                       content. Never write, never delete, new path only. Globally true.
   if (opts.path) {
     const ps = state[`path:${String(opts.path)}`]
-    if (ps === 'POISONED') {
-      throw new Error(`[Path Poisoned] ${opts.path} must NOT be written. Writing it can silently resurrect deleted content or diverge peers. Publish to a NEW path instead, and never delete a path you intend to reuse.`)
+    const stop = {
+      POISONED: `[Path Poisoned] ${opts.path} must NOT be written. Publish to a NEW path instead. (Legacy flag — prefer DELETED_UNWRITABLE / CORRUPT / DIVERGED, which say WHY.)`,
+      DELETED_UNWRITABLE: `[Path Unwritable] ${opts.path} had a delete propagate. A write here vanishes or silently resurrects the deleted content, and two folders end up permanently disagreeing with no marker. Never write it and never delete it again — publish to a NEW path.`,
+      CORRUPT: `[Path Corrupt] ${opts.path} is unusable in every folder that has measured it. Do not write it and do not read it as reference — build the replacement out-of-tree and publish it to a NEW path.`,
+      DIVERGED: `[Path Diverged] peers hold DIFFERENT bytes for ${opts.path}, so there is no single truth to write on top of. Call hive_attest to record what YOUR folder holds and see who disagrees. Nobody writes this path until it is reconciled.`,
+      FROZEN: `[Path Frozen] ${opts.path} is frozen by the state machine. Ask the owner to set path:${opts.path}=LIVE before writing it.`,
     }
-    if (ps === 'FROZEN') {
-      throw new Error(`[Path Frozen] ${opts.path} is frozen by the state machine. Ask the owner to set path:${opts.path}=OPEN before writing it.`)
+    if (ps && stop[ps]) throw new Error(stop[ps])
+    // An unrecognised value fails CLOSED. A safety registry that silently ignores a flag it does not
+    // understand is worse than no registry, because agents will trust it — and a 0.9.0 client
+    // ignoring these flags entirely is already the known hole here.
+    if (ps && ps !== 'LIVE' && ps !== 'OPEN') {
+      throw new Error(`[Path Restricted] path:${opts.path} is set to "${ps}", which this build does not recognise. Refusing the write rather than guessing. Ask the room what it means, or have the owner set it to LIVE.`)
     }
   }
 
