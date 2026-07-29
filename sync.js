@@ -221,6 +221,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const claims = doc.getMap('claims')
   const swarmState = doc.getMap('swarm_state')
   const swarmSchema = doc.getMap('swarm_schema')
+  // ATTESTATION LEDGER — path -> { <peerName>: { bytes, lines, at } }.
+  //
+  // The one thing a four-agent build could not do without a human relaying numbers by hand: tell
+  // whether two folders actually hold the same file. Measured on the JARVIS run (2026-07-29):
+  // engine/brain/llm.js was 178 lines and parsing in one folder and 22,312 lines with 73 conflict
+  // markers in two others, and the agent with the clean copy reported a green suite in good faith
+  // for hours. Nothing in the product could have told any of them.
+  //
+  // Why bytes per PEER rather than a single value: a CRDT map keyed by peer name MERGES instead of
+  // last-writer-wins, so two peers attesting different byte counts both survive and the
+  // DISAGREEMENT becomes the signal. One shared "size" field would have silently converged on
+  // whichever peer wrote last, which is precisely the failure it exists to catch.
+  const swarmAttest = doc.getMap('swarm_attest')
   const coordinator = makeCoordinator(claims, name, { ttl: 300000 }) // 5-min claim TTL
   // MY declared intent per region — recorded on every claim ATTEMPT, kept locally.
   // The provenance stamp reads this (not the shared claim map) so an agent always signs
@@ -1329,10 +1342,45 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   return {
     doc,
     provider,
+    // A STATE MACHINE, not a validated variable.
+    //
+    // `enum` alone makes this a notepad with spellcheck: it stops a typo and permits any value at any
+    // time, so APPROVED can slide back to LOCKED and a release gate can be opened by an agent that
+    // simply set the flag. Two additions turn it into a machine, and both exist because a live
+    // four-agent build (JARVIS, 2026-07-29) was governed entirely by rules written in prose that four
+    // capable agents read and then broke:
+    //
+    //   transitions: { FROM: [TO, ...] }   which moves are legal AT ALL
+    //   requires:    { TO: { key: val } }  what must already be true to arrive at TO
+    //
+    // `requires` is the important one. It makes a contract EXECUTABLE. "Nobody sends email until the
+    // suppression UI exists and the unsubscribe URL is real" held for nine hours only because a PM
+    // kept repeating it; expressed as
+    //   requires: { LIVE: { suppression_ui: 'APPROVED', unsubscribe_url: 'SET' } }
+    // it holds because the transition cannot be made. That is the whole point of this layer: the
+    // place where a rule stops being advice.
     setState: (key, val) => {
       const rules = swarmSchema.get(key)
+      const cur = swarmState.get(key)
       if (rules && rules.enum && !rules.enum.includes(val)) {
         throw new Error(`[Schema Error] Invalid state for [${key}]. Allowed values: ${rules.enum.join(', ')}`);
+      }
+      // Transitions are checked only when the key ALREADY has a value — the first write to a key is
+      // initialisation, not a move, and demanding a `from` entry for it would make every schema
+      // carry a synthetic start state.
+      if (rules && rules.transitions && cur !== undefined && cur !== val) {
+        const allowed = rules.transitions[cur]
+        if (!Array.isArray(allowed) || !allowed.includes(val)) {
+          throw new Error(`[Transition Error] [${key}] cannot go ${cur} -> ${val}. Legal from ${cur}: ${Array.isArray(allowed) && allowed.length ? allowed.join(', ') : '(nothing — terminal state)'}`)
+        }
+      }
+      if (rules && rules.requires && rules.requires[val]) {
+        const unmet = Object.entries(rules.requires[val])
+          .filter(([k, want]) => String(swarmState.get(k)) !== String(want))
+          .map(([k, want]) => `${k}=${want} (is ${swarmState.get(k) === undefined ? 'unset' : swarmState.get(k)})`)
+        if (unmet.length) {
+          throw new Error(`[Guard Error] [${key}] cannot become ${val} until: ${unmet.join('; ')}`)
+        }
       }
       swarmState.set(key, val)
       say(`STATE TRANSITION: [${key}] is now [${val}]`)
@@ -1345,6 +1393,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     setSchema: (key, rules) => {
       swarmSchema.set(key, rules)
       say(`SCHEMA UPDATED: [${key}] rules set to ${JSON.stringify(rules)}`)
+    },
+    // --- attestation: does another folder actually hold the same bytes? ---
+    // Records THIS peer's measurement of a path. Returns the merged picture including, crucially,
+    // whether the peers DISAGREE — see the swarm_attest declaration for why it is keyed per peer.
+    attest: (relPath, bytes, lines) => {
+      const p = String(relPath)
+      const prev = swarmAttest.get(p) || {}
+      const next = { ...prev, [name]: { bytes: Number(bytes), lines: Number(lines), at: new Date().toISOString() } }
+      swarmAttest.set(p, next)
+      const sizes = [...new Set(Object.values(next).map((v) => v && v.bytes))]
+      const split = sizes.length > 1
+      if (split) {
+        // Announce, do not throw. The measuring agent did nothing wrong and its report is valid; the
+        // ROOM is what is broken. Throwing here would punish whoever happened to measure second.
+        const detail = Object.entries(next).map(([who, v]) => `${who}:${v.bytes}b/${v.lines}L`).join('  ')
+        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT bytes: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+      }
+      return { path: p, peers: next, count: Object.keys(next).length, sizes, diverged: split }
+    },
+    verified: (relPath) => {
+      const p = String(relPath)
+      const rec = swarmAttest.get(p) || {}
+      const sizes = [...new Set(Object.values(rec).map((v) => v && v.bytes))]
+      return { path: p, peers: rec, count: Object.keys(rec).length, sizes, diverged: sizes.length > 1, quorum: Object.keys(rec).length >= 2 && sizes.length === 1 }
     },
     say,                 // post a coordination message
     assign,              // direct a task at a participant (needs approval if target AI has an owner)

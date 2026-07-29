@@ -117,7 +117,50 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
       // client might not support notifications, swallow error
     }
   })
-  
+
+  // MAIL WAKEUPS — the other half of the same channel, and it was missing.
+  //
+  // The observer above pushes a notification the instant swarm_state changes, so a state flip
+  // reaches an agent mid-task. Chat had no such channel: it is observed only INSIDE the
+  // hive_wait handler, which means an @mention reached a working agent only if it happened to
+  // already be blocked in that call. An agent heads-down in a task is exactly the one that
+  // cannot choose to look.
+  //
+  // Measured on a real four-agent build (JARVIS, 2026-07-28/29): 345 mentions in the room log,
+  // agents repeatedly reporting they never saw the one addressed to them, and a PM that ended up
+  // writing open work to disk files and a shell watcher because the coordination channel could
+  // not be relied on to deliver. Every one of those workarounds exists to replace these lines.
+  //
+  // This is a DOORBELL, NOT A DELIVERY. It uses mailbox.peek(), so nothing is consumed and
+  // hive_wait/hive_check still hand over the full message with their cursor bookkeeping intact.
+  // Reusing the mailbox also inherits its two hard-won behaviours for free: an agent is never
+  // woken by its own hive_say, and repeat runs are collapsed instead of flooding.
+  let lastMailSignal = 0
+  hive.doc.getArray('chat').observe(() => {
+    try {
+      const s = session
+      if (!s || !s.mailbox) return
+      const m = s.mailbox.peek(hive.doc.getArray('chat').toArray())
+      // Compare with !== rather than >: after hive_wait consumes the backlog the count drops to
+      // 0, and a later single mention must still ring. `>` would go permanently silent.
+      if (!m.mentioned || m.mentions.length === lastMailSignal) return
+      lastMailSignal = m.mentions.length
+      server.notification({
+        method: 'notifications/hive_mail',
+        params: {
+          mentioned: true,
+          priority: m.priority, // 'stop' when someone marked it urgent — handle before continuing
+          count: m.mentions.length,
+          from: [...new Set(m.mentions.map((x) => x && x.by).filter(Boolean))],
+          latest: formatMessage(m.mentions[m.mentions.length - 1] || {}),
+          hint: 'call hive_wait or hive_check to read it — this notification consumed nothing',
+        },
+      })
+    } catch (e) {
+      // client might not support notifications, swallow error
+    }
+  })
+
   // The sync engine writes HIVE_RULES.md into the folder on first sync — return it inline
   // so the agent gets the rules with its join. (Fixes a ReferenceError: `rules` was never
   // defined, which made every hive_join return "error: rules is not defined".)
@@ -255,14 +298,68 @@ const TOOLS = [
   { name: 'hive_leave', description: 'Leave the room and stop syncing.', inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_set_state', description: 'PM ONLY: Set a global project state flag (e.g. key="contract", val="READY"). This physically unblocks/blocks other agents. WARNING: ONLY use short enum values. Do NOT use this to store paragraphs of text or code, as it will bloat the context window. Use files for text.', inputSchema: { type: 'object', properties: { key: { type: 'string' }, val: { type: 'string' } }, required: ['key', 'val'] } },
   { name: 'hive_read_state', description: 'Read the global project state flags.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_set_schema', description: 'PM ONLY: Define strict JSON schema validation for a global state key to prevent agents from hallucinating values (e.g. key="contract", rules={"enum": ["PLANNING", "READY", "APPROVED"]}).', inputSchema: { type: 'object', properties: { key: { type: 'string' }, rules: { type: 'object' } }, required: ['key', 'rules'] } },
+  { name: 'hive_set_schema', description: 'PM ONLY: Define strict JSON schema validation for a global state key. Beyond `enum` you can make it a real state MACHINE: `transitions` ({"READY":["IN_PROGRESS"]}) says which moves are legal at all, and `requires` ({"LIVE":{"suppression_ui":"APPROVED"}}) says what must already be true to arrive at a value — which is how you make a release gate hold by construction instead of by everyone remembering it. Example: rules={"enum":["PLANNING","READY","APPROVED"],"transitions":{"PLANNING":["READY"],"READY":["APPROVED"],"APPROVED":[]},"requires":{"APPROVED":{"tests":"GREEN"}}}', inputSchema: { type: 'object', properties: { key: { type: 'string' }, rules: { type: 'object' } }, required: ['key', 'rules'] } },
+  { name: 'hive_attest', description: 'Record what YOUR folder actually holds for a file, so the room can tell whether peers agree. Measure it yourself (bytes and lines) and report. If another peer has attested a DIFFERENT size, everyone is warned immediately — that disagreement is the point. Use it after publishing a file, and when asked to confirm somebody else\'s publish. Two matching attestations from different peers is the only real proof a write landed; your own folder shows your own write whether or not it propagated.', inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'workspace-relative path' }, bytes: { type: 'number', description: 'exact byte count in YOUR folder' }, lines: { type: 'number', description: 'line count in YOUR folder' } }, required: ['file', 'bytes'] } },
+  { name: 'hive_verified', description: 'Has a file been independently confirmed? Returns every peer\'s attested size, whether they DISAGREE, and whether quorum is reached (2+ peers, same bytes). Check this before trusting that a publish landed, and before building on a file somebody else wrote.', inputSchema: { type: 'object', properties: { file: { type: 'string' } }, required: ['file'] } },
 ]
 
-function enforceDcoLock() {
-  const state = requireSession().hive.getState()
-  const name = requireSession().name
-  if (state[`${name}_status`] === 'LOCKED' || state[`${name}_locked`] === 'true') {
+// The state machine's enforcement point. Three separate gates, and each one exists because a rule
+// written in prose was read by four capable agents and then broken anyway (JARVIS, 2026-07-29).
+//
+//   1. LOCKED           the original gate — you may work, you may not publish
+//   2. PUBLISH:<n>      a LEASED grant: n writes, decremented by the server, auto-closes at zero
+//   3. path:<p>=POISONED a path nobody may write, ever, for as long as the flag stands
+//
+// `opts.consumes` marks a tool as spending a lease (the write tools). `opts.path` is the region it
+// would write, checked against the path gate.
+function enforceDcoLock(opts = {}) {
+  const s = requireSession()
+  const state = s.hive.getState()
+  const name = s.name
+  const status = state[`${name}_status`]
+
+  // --- gate 3: the path itself may be untouchable, regardless of who you are -------------------
+  // Attached to the RESOURCE, not the ACTOR, and that is the new idea here. Every other guard in
+  // this system asks "may this agent write?"; none could express "this file must never be written
+  // again by anyone." That question has a real answer: a path whose delete has propagated is
+  // poisoned — writing it silently resurrects the old content over the new, or leaves two folders
+  // permanently disagreeing with no marker and no warning. Tonight that fact lived in a markdown
+  // file that agents had to remember to read, and the PM ordered a live credential route deleted
+  // anyway. A flag in the state map cannot be forgotten.
+  if (opts.path) {
+    const ps = state[`path:${String(opts.path)}`]
+    if (ps === 'POISONED') {
+      throw new Error(`[Path Poisoned] ${opts.path} must NOT be written. Writing it can silently resurrect deleted content or diverge peers. Publish to a NEW path instead, and never delete a path you intend to reuse.`)
+    }
+    if (ps === 'FROZEN') {
+      throw new Error(`[Path Frozen] ${opts.path} is frozen by the state machine. Ask the owner to set path:${opts.path}=OPEN before writing it.`)
+    }
+  }
+
+  if (status === 'LOCKED' || state[`${name}_locked`] === 'true') {
     throw new Error(`[DCO Enforced] You are locked by the global state machine. Tool execution denied. Block on hive_wait until your status changes.`)
+  }
+
+  // --- gate 2: leased publication grants -------------------------------------------------------
+  // "One clean write per path" was the single most expensive lesson of the JARVIS build: a file
+  // written once landed byte-perfect in every folder (7 for 7), and a file written twice in quick
+  // succession was destroyed (333 -> 22,312 lines; 104 -> 70,881). Stated as a protocol it was
+  // violated within the hour by everyone including its author. A COUNTED lease makes the second
+  // write impossible rather than discouraged: the server spends it, and the window shuts itself.
+  const lease = /^PUBLISH(?::(\d+))?$/.exec(String(status || ''))
+  if (lease && opts.consumes) {
+    const left = lease[1] === undefined ? 1 : Number(lease[1])
+    if (left <= 0) {
+      throw new Error(`[Lease Spent] Your PUBLISH window is used up. Ask for a new one — and if this is a revision of what you just wrote, publish to a NEW path rather than rewriting it.`)
+    }
+    const next = left - 1
+    try {
+      s.hive.setState(`${name}_status`, next > 0 ? `PUBLISH:${next}` : 'LOCKED')
+    } catch (e) {
+      // A schema whose transitions forbid the auto-close must not strand the agent mid-write, and
+      // must not silently leave the window open either. Say it loudly and let the write proceed.
+      try { s.hive.say(`[!] lease for ${name} could not auto-close (${e.message}) — treat the window as SPENT and do not write again.`) } catch { }
+    }
   }
 }
 
@@ -270,10 +367,16 @@ function enforceDcoLock() {
 // same version number but different delivery behaviour is precisely the mixed-build room that
 // breaks rooms — and the standing rule "report your Hivecode version when you join" cannot work
 // if the builds are indistinguishable. So the version is reported on join and by hive_status.
-export const VERSION = '0.9.0'
+// 0.10.0 — mail now rides out on EVERY tool result (mailBanner), the DCO gate gained leased
+// PUBLISH:<n> grants and per-PATH poisoning, setState became a real state machine (transitions +
+// requires), and hive_attest/hive_verified were added. Delivery behaviour changed, so by the rule
+// stated directly above this line the version MUST move: a 0.9.0 room and a 0.10.0 room disagree
+// about how a message reaches a working agent, and that is exactly the mixed-build condition that
+// breaks rooms. Two builds that behave differently must never share a number.
+export const VERSION = '0.10.0'
 const server = new Server({ name: 'hivecode', version: VERSION }, { capabilities: { tools: {} } })
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+async function dispatch(req) {
   const { name, arguments: args = {} } = req.params
   try {
     // AUTO-RESUME: the MCP host may restart this server process at any time, which
@@ -376,12 +479,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'hive_set_state': { requireSession().hive.setState(String(args.key), String(args.val)); return text(`Set global state [${args.key}] to [${args.val}]`) }
       case 'hive_read_state': { return text(requireSession().hive.getState()) }
       case 'hive_set_schema': { requireSession().hive.setSchema(String(args.key), args.rules); return text(`Set schema validation for [${args.key}]`) }
+      case 'hive_attest': {
+        const f = String(args.file || ''); if (!f) return err('need a file path')
+        if (!Number.isFinite(Number(args.bytes))) return err('need bytes — measure your own folder, do not estimate')
+        const r = requireSession().hive.attest(f, Number(args.bytes), Number(args.lines || 0))
+        const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines`).join('\n  ')
+        if (r.diverged) {
+          return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.`)
+        }
+        return text(`attested ${f} at ${args.bytes} bytes.\n  ${who}\n${r.count >= 2 ? 'QUORUM: 2+ peers agree — this publish is confirmed.' : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'}`)
+      }
+      case 'hive_verified': {
+        const f = String(args.file || ''); if (!f) return err('need a file path')
+        const r = requireSession().hive.verified(f)
+        if (!r.count) return text(`${f}: NOT attested by anyone. Unverified — measure it and call hive_attest.`)
+        const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`).join('\n  ')
+        return text(`${f}\n  ${who}\n\n${r.diverged ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.' : r.quorum ? 'QUORUM: confirmed by 2+ peers at the same size.' : 'Attested by ONE peer only — not yet proof.'}`)
+      }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
       case 'hive_complete': { enforceDcoLock(); const r = requireSession().hive.complete(String(args.id), String(args.note || '')); return r.ok ? text(`completed ${args.id}`) : err(r.error) }
       case 'hive_claim': {
-        enforceDcoLock();
         const region = String(args.region || ''); if (!region) return err('need a region (file path)')
+        // Claiming does not spend a lease — it is not a write. But claiming a poisoned path is
+        // always a mistake, and refusing here is far cheaper than refusing after the agent has
+        // built the content it intended to write.
+        enforceDcoLock({ path: region });
         const got = requireSession().hive.claim(region, String(args.intent || 'edit'))
         if (got) return text(`claimed ${region} — it's yours. Edit it, then call hive_release.`)
         const c = requireSession().hive.senseClaim(region)
@@ -390,8 +513,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'hive_release': { const region = String(args.region || ''); if (!region) return err('need a region'); requireSession().hive.release(region); return text(`released ${region}`) }
       case 'hive_claims': { const b = requireSession().hive.claimsBoard(); return text(b.length ? b.map((c) => `${c.region} — ${c.by}${c.intent ? ` (${c.intent})` : ''}`).join('\n') : '(nothing claimed right now — all open)') }
       case 'hive_edit': {
-        enforceDcoLock()
-        const r = requireSession().hive.edit(String(args.file || ''), String(args.content ?? ''), String(args.intent || ''))
+        const editPath = String(args.file || '')
+        // Path gate + lease consumed BEFORE the write, not after: a spent lease that still wrote is
+        // indistinguishable from no lease at all.
+        enforceDcoLock({ consumes: true, path: editPath })
+        const r = requireSession().hive.edit(editPath, String(args.content ?? ''), String(args.intent || ''))
         if (r.error) return err(r.error)
         return text(r.conflicted
           ? `wrote ${r.file}, but it now carries <<<<<<< conflict markers (a concurrent edit collided). Read the file and resolve before continuing.`
@@ -405,8 +531,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return text(`ACTIVE FORK on ${file} — ${f.versions.length} agents changed the same region concurrently. Reconcile ALL intents into one version and submit it with hive_resolve.\n\n--- COMMON BASE (what everyone edited from) ---\n${f.base ?? '(unavailable)'}\n\n${vs}`)
       }
       case 'hive_resolve': {
-        enforceDcoLock()
         const file = String(args.file || ''); if (!file) return err('need a file path')
+        // A resolution IS a write, so it spends a lease and respects the path gate. Resolving a
+        // poisoned path is the exact move that produced two permanently disagreeing folders.
+        enforceDcoLock({ consumes: true, path: file })
         const r = requireSession().hive.resolveFork(file, String(args.code ?? ''))
         if (!r.ok) return err(`resolution NOT landed: ${r.reason}`)
         const dropped = (r.coverage || []).filter((c) => !c.covered)
@@ -421,6 +549,51 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       default: return err(`unknown tool: ${name}`)
     }
   } catch (e) { return err(`error: ${e.message}`) }
+}
+
+// MAIL PIGGYBACK — the delivery channel that cannot be ignored.
+//
+// Everything else that tries to reach a busy agent is best-effort. `notifications/hive_mail` and
+// `notifications/hive_state_changed` are CUSTOM MCP methods, and the spec requires a receiver to
+// IGNORE notification methods it does not recognise — so on most hosts they are a doorbell wired to
+// nothing. That is why a live four-agent build accumulated 345 mentions in the room log while agents
+// repeatedly reported never seeing the one addressed to them, and why the room resorted to disk files
+// and a shell watcher to do the job of a coordination tool.
+//
+// A TOOL RESULT, by contrast, lands in the model's context by definition. So mail rides out on every
+// single tool call. An agent that is heads-down still calls tools constantly — that is what being
+// heads-down IS — and now every one of those calls tells it who is waiting.
+//
+// PEEK, NOT TAKE, and the distinction is the whole design: this is a DOORBELL, not a delivery. It
+// consumes nothing and advances no cursor, so hive_wait/hive_check remain the only things that hand
+// over a message and mark it read. Delivering here instead would make the full text arrive on a
+// random unrelated tool call and vanish from the inbox, which is worse than not delivering at all.
+function mailBanner() {
+  try {
+    if (!session || !session.mailbox) return ''
+    const m = session.mailbox.peek(chatArray())
+    if (!m.mentioned) return ''
+    const who = [...new Set(m.mentions.map((x) => x && x.by).filter(Boolean))].join(', ')
+    const urgent = m.priority === 'stop'
+    return `\n\n--- ${urgent ? '[!] URGENT MAIL' : 'UNREAD MAIL'}: ${m.mentions.length} message(s) addressed to you from ${who}. `
+      + `${urgent ? 'Handle before continuing. ' : ''}Call hive_wait or hive_check to read them — this notice consumed nothing. ---`
+  } catch { return '' }
+}
+
+server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const res = await dispatch(req)
+  // Never let the banner break a tool: append only to a well-formed text result, and skip the two
+  // tools that already deliver mail themselves (appending would double-report the same messages).
+  const skip = req.params && (req.params.name === 'hive_wait' || req.params.name === 'hive_check')
+  if (skip) return res
+  const banner = mailBanner()
+  if (!banner) return res
+  try {
+    if (res && Array.isArray(res.content) && res.content[0] && typeof res.content[0].text === 'string') {
+      return { ...res, content: [{ ...res.content[0], text: res.content[0].text + banner }, ...res.content.slice(1)] }
+    }
+  } catch { /* fall through — a delivered result matters more than a banner */ }
+  return res
 })
 
 // Only claim stdio when this file IS the program. Importing it (a test, a tool) must not
