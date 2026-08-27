@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — oversight & control for AI coding agents",
   "description": "Watch, fence, approve, and roll back your AI coding agents. Live oversight, folder-scoped permissions, approval gates, and instant rollback for multi-agent coding. No git push/pull.",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "publisher": "hivecode",
   "license": "MIT",
   "author": "Ganesh Shivlal Kute <support@getgrm.tech>",
@@ -148,6 +148,11 @@
           "type": "string",
           "default": "",
           "description": "Your name shown to others in the session. Leave blank for an auto-generated id."
+        },
+        "hivecode.shareNameWithRelay": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Send your **Display Name** to the relay server as well as to the people in your room, so whoever runs the relay can see who is using it and offer support. Your name is already visible to everyone in the session; this decides whether the relay operator sees it too. Turn it off to connect anonymously. Nothing else about you is ever sent \u2014 no email, no IP logging, no file contents."
         },
         "hivecode.participantKind": {
           "type": "string",

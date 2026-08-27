@@ -73,7 +73,14 @@
       <p>
         The hosted relay writes a room's current state to disk so that a restart does not lose
         work in progress. That state is deleted when you end the room. Server logs record
-        connection events — room id, participant name, timestamps — and never file contents.
+        connection events: the room id, when a participant joined and left, how long they stayed, how many participants were in the room, and — if you chose to share it — the display name you set. Never file contents, never your IP address.
+      </p>
+      <p>
+        Sharing your display name with the relay is a separate choice from showing it to the
+        people in your room, and you can switch it off: <b>Settings &rarr; Hivecode &rarr; Share
+        Name With Relay</b>. With it off, the relay records your connection as anonymous. It is
+        self-declared either way &mdash; the relay has no account system and never verifies who
+        you say you are.
       </p>
       <p>
         If none of that is acceptable for your code, run the relay yourself. It is the same

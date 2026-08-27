@@ -1,6 +1,6 @@
 {
   "name": "hivecode-mcp",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
@@ -56,7 +56,7 @@
     "sync:engine": "node sync-engine.mjs",
     "check:engine": "node sync-engine.mjs --check",
     "pretest": "node scripts/sync-engine.mjs --check",
-    "test": "node tests/test.js",
+    "test": "node tests/test.js", "test:identity": "node tests/identity-audit-test.mjs",
     "test:billing": "node tests/billing-test.mjs",
     "test:license": "node tests/hive-license-test.js",
     "test:money": "node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs",

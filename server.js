@@ -64,6 +64,10 @@ function makeReadOnly(conn) {
 // the live swarm_state + claims maps from the project's BASE doc and gates writes to
 // per-file rooms only. Requires HIVE_AUTH_MODE=required (needs a known identity).
 // HIVE_ENFORCE_CLAIMS: off (default) | warn (log only) | block (drop the write).
+// NOTE: this is NOT actually gated on HIVE_AUTH_MODE anywhere -- installWriteGate is
+// wired to ENFORCE_CLAIMS alone. Enforcement can therefore run on an OPEN relay, where
+// identities are self-declared, which is why authorize() refuses to honour a declared
+// kind of 'human' (the value this function's exemption above keys on).
 const ENFORCE_CLAIMS = (process.env.HIVE_ENFORCE_CLAIMS || 'off').toLowerCase()
 
 function isSyncWrite(data) {
@@ -368,9 +372,28 @@ function scopeCheck(p, room) {
   return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner }, role, path: filePath }
 }
 
+// A SELF-DECLARED NAME IS NOT A CREDENTIAL, AND IS NEVER TREATED AS ONE.
+// On an open relay there is nothing to verify it against, so it is only ever used for
+// the audit line and the members list. Every authorization decision below ignores it.
+// It is optional at both ends: the extension sends it only if the person set one, so
+// the default remains a genuinely anonymous connection.
+const MAX_NAME = 48
+function cleanName(raw) {
+  if (!raw) return null
+  let s = ''
+  for (const ch of String(raw)) {
+    const c = ch.codePointAt(0)
+    if (c >= 32 && c !== 127) s += ch   // drop control chars: they would break the one-line JSON audit record
+    if (s.length >= MAX_NAME) break     // and cap it: this string is attacker-controlled and lands in a log
+  }
+  return s.trim() || null
+}
+
+
 // Decide whether a connection to `room` carrying `token` is allowed.
+// `declaredName` is unverified and affects logging only -- never access.
 // Returns { ok, identity?, role?, code?, reason? }.
-function authorize(room, token) {
+function authorize(room, token, declaredName, declaredKind) {
   // SELF-CERTIFYING SECURED ROOM (always enforced, even on an "open" relay): the
   // room id embeds a fingerprint of the owner's public key. The token carries that
   // public key (claim `pk`) and is signed by the matching private key. We trust it
@@ -390,7 +413,36 @@ function authorize(room, token) {
 
   // NON-SECURED ROOMS: the relay-wide policy (open by default; or a self-host
   // locked relay via HIVE_AUTH_MODE=required + a configured key).
-  if (AUTH_MODE !== 'required') return { ok: true, identity: { name: 'anon', kind: 'unknown' }, role: 'open' }
+  if (AUTH_MODE !== 'required') {
+    // Carry the self-declared name through instead of discarding it. Without this the
+    // operator has no way to know who any of their users are: the name exists, but it
+    // travels inside the Yjs document between peers and never reaches the relay, so
+    // every audit line read `anon`/`unknown` no matter who connected.
+    const nm = cleanName(declaredName)
+    // Only the two values the rest of the relay reasons about are accepted. Anything else
+    // becomes 'unknown' rather than being echoed into the log, because writeBlockReason()
+    // exempts kind === 'human' -- so a free-text kind would be a way to ask for that
+    // exemption by simply claiming it. On an open relay nothing is enforced anyway, but
+    // the field must not become a lever the moment HIVE_ENFORCE_CLAIMS is turned on.
+    // A CLIENT MAY NOT DECLARE ITSELF HUMAN. writeBlockReason() exempts
+    // identity.kind === 'human' from claim/DCO enforcement, and installWriteGate is
+    // wired to ENFORCE_CLAIMS alone -- the "requires HIVE_AUTH_MODE=required" note above
+    // it is a comment, not a check. So on an open relay with enforcement switched on,
+    // honouring a declared 'human' would let any client opt out of every write gate by
+    // saying so. Declaring 'ai' is safe because it only ever adds restrictions.
+    // The raw claim is still recorded for the operator, just not as the enforced kind.
+    const claimed = (declaredKind === 'ai' || declaredKind === 'human') ? declaredKind : null
+    return {
+      ok: true,
+      identity: {
+        name: nm || 'anon',
+        kind: claimed === 'ai' ? 'ai' : 'unknown',   // enforcement reads this
+        declaredKind: claimed,                        // audit/display only, never trusted
+        declared: !!(nm || claimed),
+      },
+      role: 'open',
+    }
+  }
   if (!JWT_SECRET && !JWT_PUBKEY) return { ok: false, code: 503, reason: 'auth required but relay has no keys configured' }
   if (!token) return { ok: false, code: 401, reason: 'no token' }
   const res = verify(token, { secret: JWT_SECRET || undefined, publicKey: JWT_PUBKEY || undefined, alg: JWT_ALG || undefined })
@@ -535,12 +587,15 @@ const wss = new WebSocketServer({ noServer: true })
 const roomAgents = new Map() // Tracks active committers: room -> Set(agent_id)
 
 server.on('upgrade', async (req, socket, head) => {
-  let room = 'default', token = '', license = ''
+  let room = 'default', token = '', license = '', declaredName = '', declaredKind = ''
   try {
     const u = new URL(req.url, 'http://localhost')
     room = decodeURIComponent(u.pathname.slice(1)) || 'default'
     token = u.searchParams.get('token') || ''
     license = u.searchParams.get('license') || ''
+    // Optional and unverified -- see cleanName(). Absent unless the person set a name.
+    declaredName = u.searchParams.get('name') || ''
+    declaredKind = u.searchParams.get('kind') || ''
   } catch { /* keep defaults */ }
 
   // SaaS Enforcer: entitlement comes from the licence RECORD, never from the key string.
@@ -571,7 +626,7 @@ server.on('upgrade', async (req, socket, head) => {
   // must reject the connection, never crash the relay process (which would take down
   // every room). authorize() is the only trust gate, so a throw = deny.
   let auth
-  try { auth = authorize(room, token) }
+  try { auth = authorize(room, token, declaredName, declaredKind) }
   catch (e) { auth = { ok: false, code: 401, reason: 'authorization error' }; console.error('[relay] authorize threw:', e && e.message) }
   if (!auth.ok) {
     audit('reject', { room, reason: auth.reason })
@@ -601,13 +656,35 @@ server.on('upgrade', async (req, socket, head) => {
     if (!roomAgents.has(room)) roomAgents.set(room, new Set())
     roomAgents.get(room).add(agentId)
 
-    // Remove agent when connection drops
+    // Remove agent when connection drops, and SAY SO. Without a disconnect event the
+    // audit log is connect-only, which makes three ordinary questions unanswerable:
+    // how many clients were in a room at the same time, how long a session lasted, and
+    // whether a burst of joins is several people or one client reconnecting. `held`
+    // separates those last two on its own -- a reconnect storm shows up as many
+    // short-lived connections, a real session as a long one.
+    const openedAt = Date.now()
     conn.on('close', () => {
       const active = roomAgents.get(room)
-      if (active) active.delete(agentId)
+      if (active) {
+        active.delete(agentId)
+        if (active.size === 0) roomAgents.delete(room)   // don't leak an empty Set per room
+      }
+      audit('disconnect', {
+        room,
+        identity: auth.identity,
+        heldMs: Date.now() - openedAt,
+        stillInRoom: (roomAgents.get(room) || new Set()).size,
+      })
     })
 
-    audit('connect', { room, identity: auth.identity, role: auth.role })
+    audit('connect', {
+      room,
+      identity: auth.identity,
+      role: auth.role,
+      // How many distinct clients hold this room right now, counted AFTER this one was
+      // added above. This is the number that answers "is more than one agent in here".
+      inRoom: (roomAgents.get(room) || new Set()).size,
+    })
     wss.emit('connection', conn, req)
   })
 })

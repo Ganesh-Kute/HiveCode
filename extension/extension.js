@@ -780,15 +780,30 @@ function start(root, room, relay, linkToken) {
   // token from the join link wins; else the hivecode.token setting (for people who
   // configure it once). A pasted secured link needs zero settings.
   const tokenCfg = (linkToken || vscode.workspace.getConfiguration('hivecode').get('token') || '').trim()
+  // OPT-IN ONLY. Send a name to the relay if -- and only if -- the person actually set
+  // one. The `user-1234` fallback below is deliberately NOT sent: it identifies nobody,
+  // so transmitting it would be all cost and no benefit, and it would turn "anonymous by
+  // default" into "always labelled". Without a configured displayName the connection
+  // stays exactly as anonymous as it was before this existed.
+  const cfg = vscode.workspace.getConfiguration('hivecode')
+  const declaredName = (cfg.get('displayName') || '').trim()
+  // displayName was asked for so ROOM PEERS could see who you are. Sending it to the relay
+  // shows it to a third party -- whoever runs that relay -- which is a different question
+  // than the one the person answered. So it gets its own switch rather than quietly
+  // widening the audience of a name they already gave for something else.
+  const shareName = cfg.get('shareNameWithRelay') !== false
+  const wsParams = {}
+  if (tokenCfg) wsParams.token = tokenCfg
+  if (declaredName && shareName) wsParams.name = declaredName.slice(0, 48)
+  if (shareName) wsParams.kind = cfg.get('participantKind') === 'ai' ? 'ai' : 'human'
   // disableBc: relay is the ONLY sync path (else same-machine peers would bypass
   // the relay's access control via BroadcastChannel).
-  const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: tokenCfg ? { token: tokenCfg } : undefined }
+  const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
   const provider = new WebsocketProvider(useRelay, room, doc, wsOpts)
   // Unique per window: doc.clientID is distinct even for two windows on one
   // machine (machineId was identical → both showed the same id). A configured
   // displayName wins so members read as "Jeevan"/"Friend" instead of an id.
-  const cfg = vscode.workspace.getConfiguration('hivecode')
-  const me = (cfg.get('displayName') || '').trim() || `user-${String(doc.clientID).slice(-4)}`
+  const me = declaredName || `user-${String(doc.clientID).slice(-4)}`
   const kind = cfg.get('participantKind') === 'ai' ? 'ai' : 'human'
   provider.awareness.setLocalStateField('user', { name: me, kind, v: PROTOCOL_VERSION })
   const known = new Set()

@@ -620,7 +620,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // disableBc: do NOT sync peer-to-peer over BroadcastChannel. The relay must be
   // the ONLY path between clients — otherwise two clients on the same machine would
   // sync directly and bypass the relay's access control (auth, path scope, read-only).
-  const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: token ? { token } : undefined }
+  // Tell the relay who is connecting. Unlike the editor, a name here is always explicit --
+  // the caller passed it on the command line or in the MCP config -- so there is nothing to
+  // opt into. `kind` is the valuable half: it is the only way the relay can distinguish an
+  // AI agent from a human, which is otherwise invisible to it and to the operator.
+  const wsParams = {}
+  if (token) wsParams.token = token
+  if (name) wsParams.name = String(name).slice(0, 48)
+  if (kind) wsParams.kind = kind
+  const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
   provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION }) // identity is implicit in the client
   if (kind === 'ai' && owner) owners.set(name, owner) // record who is allowed to approve my tasks
