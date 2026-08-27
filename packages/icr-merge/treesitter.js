@@ -33,9 +33,15 @@ import { registeredLanguages } from './icr.js'
 // overwhelming majority of merge fodder; a false reject only downgrades to the safe
 // line tier, never ships broken output). JS/JSON are excluded: they already have
 // real parsers (acorn / JSON.parse).
+// A value may be a LIST of grammars, in which case the source is accepted if ANY of them
+// parses it. The `c` provider claims .c/.h AND .cpp/.hpp/.cc, and those are different
+// languages: validating everything against the C++ grammar alone rejected 89% of real,
+// shipped C (measured on git/git, redis and Linux — only 44 of 393 maintainer-committed C
+// files passed). Trying C and then C++ removes that false-reject cliff while still catching
+// genuinely broken output, which fails BOTH grammars.
 const GRAMMAR = {
   ts: 'typescript', jsx: 'javascript', go: 'go', rust: 'rust', java: 'java',
-  c: 'cpp', csharp: 'c_sharp', swift: 'swift', kotlin: 'kotlin', scala: 'scala',
+  c: ['c', 'cpp'], csharp: 'c_sharp', swift: 'swift', kotlin: 'kotlin', scala: 'scala',
   php: 'php', dart: 'dart', python: 'python', ruby: 'ruby', yaml: 'yaml', toml: 'toml',
 }
 
@@ -59,22 +65,33 @@ export async function initTreeSitter(opts = {}) {
 
   const upgraded = []
   for (const prov of registeredLanguages()) {
-    const stem = GRAMMAR[prov.id]
-    if (!stem || prov._treesitter) continue
-    let parser
-    try {
-      const lang = await Language.load(path.join(dir, `tree-sitter-${stem}.wasm`))
-      parser = new Parser()
-      parser.setLanguage(lang)
-    } catch { continue } // grammar unavailable -> provider keeps its heuristic oracle
-    const heuristic = prov.parses.bind(prov)
-    const realParse = (src) => {
+    const stems = GRAMMAR[prov.id]
+    if (!stems || prov._treesitter) continue
+    const parsers = []
+    for (const stem of [].concat(stems)) {
       try {
-        const tree = parser.parse(String(src))
-        const err = typeof tree.rootNode.hasError === 'function' ? tree.rootNode.hasError() : tree.rootNode.hasError
-        if (tree.delete) tree.delete()
-        return !err
-      } catch { return true } // cannot validate -> defer to the heuristic verdict
+        const lang = await Language.load(path.join(dir, `tree-sitter-${stem}.wasm`))
+        const p = new Parser()
+        p.setLanguage(lang)
+        parsers.push(p)
+      } catch { /* this grammar unavailable — try the next */ }
+    }
+    if (!parsers.length) continue // no grammar at all -> provider keeps its heuristic oracle
+    const heuristic = prov.parses.bind(prov)
+    // ANY listed grammar accepting is enough. For a provider spanning dialects (C and C++
+    // share one provider) this is the difference between a usable gate and one that rejects
+    // most legitimate source; broken output still fails every grammar.
+    const realParse = (src) => {
+      const s = String(src)
+      for (const parser of parsers) {
+        try {
+          const tree = parser.parse(s)
+          const err = typeof tree.rootNode.hasError === 'function' ? tree.rootNode.hasError() : tree.rootNode.hasError
+          if (tree.delete) tree.delete()
+          if (!err) return true
+        } catch { return true } // cannot validate -> defer to the heuristic verdict
+      }
+      return false
     }
     prov.parses = (src) => heuristic(src) && realParse(src)
     prov._treesitter = true

@@ -865,7 +865,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       res = { text: disk, conflict: false }
     } else if (origin === 'local') {
       noteIfRewrite(relPath, fork, disk)
-      // THE FIX. Merge a local edit against the FORK POINT (what this author
+      // Check if this write is an intentional clean rewrite
+      const sc = summarizeChange(fork, disk)
+      const isCleanRewrite = sc.isRewrite && supports(relPath) && languageFor(relPath).parses(disk)
+
+      // Merge a local edit against the FORK POINT (what this author
       // last saw), not the latest doc. If the doc gained lines since the fork
       // that this write does NOT contain, the author was working from a stale
       // copy — merging against the fork re-adds those lines (disjoint) or raises
@@ -873,8 +877,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const theirsNew = changedRange(fork.split('\n'), docText.split('\n')).newLines.filter((l) => l.length)
       const mineLines = new Set(disk.split('\n'))
       const integrated = theirsNew.every((l) => mineLines.has(l)) // this write already contains the remote change
-      if (integrated) {
-        res = { text: disk, conflict: false } // author built on the latest — trust it
+      if (integrated || (isCleanRewrite && !hasConflictMarkers(docText))) {
+        res = { text: disk, conflict: false } // author built on the latest or cleanly rewrote — trust it
       } else {
         res = icrMerge3(fork, disk, docText, relPath)
         reAdded = !res.conflict && res.text !== disk // we restored remote lines a stale write had dropped
@@ -1362,16 +1366,25 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     setState: (key, val) => {
       const rules = swarmSchema.get(key)
       const cur = swarmState.get(key)
-      if (rules && rules.enum && !rules.enum.includes(val)) {
-        throw new Error(`[Schema Error] Invalid state for [${key}]. Allowed values: ${rules.enum.join(', ')}`);
+      // PARAMETERISED VALUES. `PUBLISH:2` must satisfy an enum containing `PUBLISH` — otherwise the
+      // two features collide: a leased grant is a PUBLISH carrying a count, and schema-ing the status
+      // key would make every lease illegal. So a value of the form BASE:arg validates on BASE.
+      // Found by trying to use both at once on a live room, which is the only way this surfaces.
+      const base = String(val).includes(':') ? String(val).slice(0, String(val).indexOf(':')) : val
+      if (rules && rules.enum && !rules.enum.includes(val) && !rules.enum.includes(base)) {
+        throw new Error(`[Schema Error] Invalid state for [${key}]. Allowed values: ${rules.enum.join(', ')}${base !== val ? ` (parameterised values like ${base}:<n> are allowed when ${base} is listed)` : ''}`);
       }
       // Transitions are checked only when the key ALREADY has a value — the first write to a key is
       // initialisation, not a move, and demanding a `from` entry for it would make every schema
       // carry a synthetic start state.
-      if (rules && rules.transitions && cur !== undefined && cur !== val) {
-        const allowed = rules.transitions[cur]
-        if (!Array.isArray(allowed) || !allowed.includes(val)) {
-          throw new Error(`[Transition Error] [${key}] cannot go ${cur} -> ${val}. Legal from ${cur}: ${Array.isArray(allowed) && allowed.length ? allowed.join(', ') : '(nothing — terminal state)'}`)
+      // Transitions compare on the BASE too, for the same reason as the enum above: a lease counting
+      // down PUBLISH:2 -> PUBLISH:1 is one state decrementing its own parameter, not a move between
+      // states, and demanding a transition entry per count would be absurd.
+      const curBase = cur !== undefined && String(cur).includes(':') ? String(cur).slice(0, String(cur).indexOf(':')) : cur
+      if (rules && rules.transitions && cur !== undefined && curBase !== base) {
+        const allowed = rules.transitions[curBase] || rules.transitions[cur]
+        if (!Array.isArray(allowed) || !(allowed.includes(val) || allowed.includes(base))) {
+          throw new Error(`[Transition Error] [${key}] cannot go ${cur} -> ${val}. Legal from ${curBase}: ${Array.isArray(allowed) && allowed.length ? allowed.join(', ') : '(nothing — terminal state)'}`)
         }
       }
       if (rules && rules.requires && rules.requires[val]) {

@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode — oversight & control for AI coding agents",
   "description": "Watch, fence, approve, and roll back your AI coding agents. Live oversight, folder-scoped permissions, approval gates, and instant rollback for multi-agent coding. No git push/pull.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "hivecode",
   "license": "MIT",
   "icon": "resources/icon.png",

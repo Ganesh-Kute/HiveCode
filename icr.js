@@ -546,17 +546,24 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
     out += baseText.slice(cursor, to)
   }
 
+  const seenKeys = new Set()
   for (const k of order) {
+    if (seenKeys.has(k)) continue
+    seenKeys.add(k)
     if (baseKeySet.has(k)) {
       const u = baseByKey.get(k)
       if (u.start >= pos) {
         emitGap(pos, u.start)
         pos = u.end
       }
-      out += textByKey.get(k)
+      const val = textByKey.get(k)
+      if (val != null) out += val
     } else {
       // New unit: insert it exactly where the merge order dictated
-      out += (out.endsWith('\n') ? '' : '\n') + textByKey.get(k) + '\n'
+      const val = textByKey.get(k)
+      if (val != null) {
+        out += (out.endsWith('\n') ? '' : '\n') + val + '\n'
+      }
     }
   }
   if (pos < baseText.length) {
@@ -686,6 +693,24 @@ export function structuralMerge(base, a, b, opts = {}) {
     if (renames.length && lang.parses(rewritten)) { merged = rewritten; mergedNames = lang.declaredNames(merged) }
   }
 
+  // ASYNC/AWAIT SYNCHRONIZATION (intent):
+  // When a declaration was synchronous in base and became ASYNC in the merged result,
+  // upgrade call sites inside async callers with `await` so the contract holds.
+  const asyncUpgrades = []
+  if (lang.isAsyncDecl && lang.upgradeCallSitesToAwait) {
+    for (const name of mergedNames) {
+      const wasAsyncInBase = baseNames.has(name) ? lang.isAsyncDecl(base, name) : false
+      const isAsyncInMerged = lang.isAsyncDecl(merged, name)
+      if (!wasAsyncInBase && isAsyncInMerged) {
+        const upgraded = lang.upgradeCallSitesToAwait(merged, name)
+        if (upgraded !== merged && lang.parses(upgraded)) {
+          merged = upgraded
+          asyncUpgrades.push(name)
+        }
+      }
+    }
+  }
+
   // DANGLING REFERENCE (intent): a declaration removed (and NOT explained by a rename)
   // but still referenced is a semantic conflict even though the code parses cleanly.
   // Uses the SCOPE-AWARE reference set when the language provides one (so a local binding
@@ -705,6 +730,7 @@ export function structuralMerge(base, a, b, opts = {}) {
   return {
     status: 'auto', text: merged, conflicts: [],
     renames: renames.map(([o, n]) => o + '->' + n),
+    asyncUpgrades,
     provenance: attribute(provenance),
   }
 }

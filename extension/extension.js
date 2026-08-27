@@ -932,6 +932,23 @@ function start(root, room, relay, linkToken) {
     if (mine === theirs) return { text: mine, conflict: false }
     if (base === theirs) return { text: mine, conflict: false }
     if (base === mine) return { text: theirs, conflict: false }
+
+    // DE-NEST STALE CONFLICT BLOCKS BEFORE MERGING, OR THE FILE GROWS EXPONENTIALLY.
+    // Once a conflict block is written into the shared document the markers ARE content,
+    // so the next merge treats the corruption as text and wraps it again. Each round
+    // roughly doubles the file: measured on a live two-agent session, one file went from
+    // 104 lines to 70,881 in three minutes (~nine doublings) with every function repeated
+    // ~7x. Collapsing an already-conflicted side back to one version first makes the merge
+    // idempotent, so a conflict can be re-merged without compounding.
+    const cleanBase = hasConflictMarkers(base) ? stripConflictMarkers(base, 'local') : (base || '')
+    const cleanMine = hasConflictMarkers(mine) ? stripConflictMarkers(mine, 'local') : (mine || '')
+    const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, 'theirs') : (theirs || '')
+
+    if (cleanMine === cleanTheirs) return { text: cleanMine, conflict: false }
+    if (cleanBase === cleanTheirs) return { text: cleanMine, conflict: false }
+    if (cleanBase === cleanMine) return { text: cleanTheirs, conflict: false }
+
+    base = cleanBase; mine = cleanMine; theirs = cleanTheirs
     const b = base.split('\n')
     const mr = changedRange(b, mine.split('\n'))
     const tr = changedRange(b, theirs.split('\n'))
@@ -973,7 +990,25 @@ function start(root, room, relay, linkToken) {
   }
   // Line-anchored detection of REAL conflict markers — NOT a substring scan, so
   // a file that merely documents the markers (e.g. a README) isn't flagged.
-  function hasConflictMarkers(text) { return /^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text) }
+  function hasConflictMarkers(text) { return /^<<<<<<< /m.test(text || '') && /^>>>>>>> /m.test(text || '') }
+  // Collapse conflict blocks back to ONE side. Used by merge3 to de-nest before merging so
+  // conflict blocks can never wrap each other (see the comment there). `prefer` picks which
+  // half survives: a side's own copy keeps 'local', the incoming copy keeps 'theirs', which
+  // is what makes the collapse agree with what each side already believes it wrote.
+  function stripConflictMarkers(text, prefer = 'local') {
+    if (!text || !hasConflictMarkers(text)) return text || ''
+    const lines = text.split('\n')
+    const out = []
+    let inConflict = false, inTheirs = false
+    const localBlock = [], theirsBlock = []
+    for (const line of lines) {
+      if (/^<<<<<<< /.test(line)) { inConflict = true; inTheirs = false; localBlock.length = 0; theirsBlock.length = 0; continue }
+      if (/^=======$/.test(line) && inConflict) { inTheirs = true; continue }
+      if (/^>>>>>>> /.test(line) && inConflict) { inConflict = false; out.push(...(prefer === 'theirs' ? theirsBlock : localBlock)); continue }
+      if (inConflict) { (inTheirs ? theirsBlock : localBlock).push(line) } else { out.push(line) }
+    }
+    return out.join('\n')
+  }
   // Bring one file's disk copy and shared-doc copy into agreement via 3-way
   // merge against its last agreed base. Safe from either direction.
   const conflicted = new Set()

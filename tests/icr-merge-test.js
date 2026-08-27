@@ -5,7 +5,7 @@
 //
 //   node icr-merge-test.js
 
-import { icrMerge3 } from './icr-merge.js'
+import { icrMerge3 } from '../icr-merge.js'
 import { merge3 } from '../core.js'
 import { parses } from '../icr.js'
 

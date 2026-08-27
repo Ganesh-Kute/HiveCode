@@ -89,18 +89,77 @@ export function mergeEdit(base, mine, current) {
   return { conflict: true } // same lines changed two ways -> re-reason on `current`
 }
 
+// Detect REAL git-style conflict markers in a file. Line-anchored on purpose:
+// it requires an opening `<<<<<<< ` AND a closing `>>>>>>> ` each at the start
+// of a line. This is what merge3 emits. A naive `text.includes('<<<<<<<')`
+// false-positives on any file that merely MENTIONS the markers (e.g. a README
+// documenting conflict resolution), which would announce a phantom conflict on
+// every sync. (Found by a live two-agent test, 2026-06-19.)
+export function hasConflictMarkers(text) {
+  return /^<<<<<<< /m.test(text || '') && /^>>>>>>> /m.test(text || '')
+}
+
+// Strip and de-nest conflict markers to prevent exponential 2^N code ballooning
+export function stripConflictMarkers(text, prefer = 'local') {
+  if (!text || !hasConflictMarkers(text)) return text || ''
+  const lines = text.split('\n')
+  const out = []
+  let inConflict = false
+  let inTheirs = false
+  const localBlock = []
+  const theirsBlock = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^<<<<<<< /.test(line)) {
+      inConflict = true
+      inTheirs = false
+      localBlock.length = 0
+      theirsBlock.length = 0
+      continue
+    }
+    if (/^=======$/.test(line) && inConflict) {
+      inTheirs = true
+      continue
+    }
+    if (/^>>>>>>> /.test(line) && inConflict) {
+      inConflict = false
+      out.push(...(prefer === 'theirs' ? theirsBlock : localBlock))
+      continue
+    }
+    if (inConflict) {
+      if (inTheirs) theirsBlock.push(line)
+      else localBlock.push(line)
+    } else {
+      out.push(line)
+    }
+  }
+  return out.join('\n')
+}
+
 // --- 3-way merge for the SYNC layer (disk <-> shared doc) ---
 // Same idea as mergeEdit, but instead of bailing with { conflict } it always
 // returns text: disjoint edits merge cleanly; overlapping edits are wrapped in
 // git-style conflict markers so BOTH versions survive and a human/AI resolves.
+// De-nests existing conflict blocks to prevent exponential duplication.
 //   merge3(base, mine, theirs) -> { text, conflict }
 export function merge3(base, mine, theirs) {
   if (mine === theirs) return { text: mine, conflict: false }
   if (base === theirs) return { text: mine, conflict: false }  // only I changed
   if (base === mine) return { text: theirs, conflict: false }  // only they changed
-  const b = base.split('\n')
-  const mr = changedRange(b, mine.split('\n'))
-  const tr = changedRange(b, theirs.split('\n'))
+
+  // De-nest stale conflict markers so conflict blocks never wrap exponentially
+  const cleanBase = hasConflictMarkers(base) ? stripConflictMarkers(base, 'local') : (base || '')
+  const cleanMine = hasConflictMarkers(mine) ? stripConflictMarkers(mine, 'local') : (mine || '')
+  const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, 'theirs') : (theirs || '')
+
+  if (cleanMine === cleanTheirs) return { text: cleanMine, conflict: false }
+  if (cleanBase === cleanTheirs) return { text: cleanMine, conflict: false }
+  if (cleanBase === cleanMine) return { text: cleanTheirs, conflict: false }
+
+  const b = cleanBase.split('\n')
+  const mr = changedRange(b, cleanMine.split('\n'))
+  const tr = changedRange(b, cleanTheirs.split('\n'))
   if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
     const out = b.slice()
     for (const e of [mr, tr].sort((x, y) => y.startBase - x.startBase)) {
@@ -123,16 +182,6 @@ export function merge3(base, mine, theirs) {
     ...b.slice(end),
   ]
   return { text: out.join('\n'), conflict: true }
-}
-
-// Detect REAL git-style conflict markers in a file. Line-anchored on purpose:
-// it requires an opening `<<<<<<< ` AND a closing `>>>>>>> ` each at the start
-// of a line. This is what merge3 emits. A naive `text.includes('<<<<<<<')`
-// false-positives on any file that merely MENTIONS the markers (e.g. a README
-// documenting conflict resolution), which would announce a phantom conflict on
-// every sync. (Found by a live two-agent test, 2026-06-19.)
-export function hasConflictMarkers(text) {
-  return /^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text)
 }
 
 // --- Rewrite detection for the auto-board ---

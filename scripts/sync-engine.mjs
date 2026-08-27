@@ -15,7 +15,11 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url))
+// ROOT is the REPO root, not this script's directory. Written when this file sat at the
+// repo root; once it moved into scripts/ it looked for scripts/packages/icr-merge/ and
+// reported all eight engine files "MISSING" — so the guard against root/package drift has
+// been reporting nothing for weeks while four of those files actually diverged.
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PKG = path.join(ROOT, 'packages', 'icr-merge')
 // The files that exist verbatim in both places. (merge3.js is package-only — root uses
 // core.js's merge3; index.js/bin are package-only. Only these four are shared copies.)
@@ -43,7 +47,15 @@ for (const f of FILES) {
 }
 
 if (check) {
-  if (drift) { console.error(`\n=== ENGINE DRIFT: ${drift} file(s) out of sync. Run \`node sync-engine.mjs\` to fix. ===`); process.exit(1) }
+  // DO NOT tell the reader to just run the sync. It copies package -> root unconditionally,
+  // so when the ROOT copy is the newer one it DELETES that work silently. Drift has been
+  // bidirectional since the guard broke; the direction has to be checked per file first.
+  if (drift) {
+    console.error(`\n=== ENGINE DRIFT: ${drift} file(s) out of sync. ===`)
+    console.error(`Check WHICH SIDE IS NEWER before syncing — \`node scripts/sync-engine.mjs\``)
+    console.error(`copies packages/icr-merge -> root and will discard newer root work.`)
+    process.exit(1)
+  }
   console.log(`=== ENGINE IN SYNC: ${FILES.length} files identical (root <-> packages/icr-merge) ===`)
 } else {
   console.log(synced ? `=== SYNCED ${synced} file(s) ===` : '=== already in sync ===')
