@@ -104,6 +104,13 @@ The extension source is in [`extension/`](extension/).
 
 ---
 
+## Support
+
+- **Issues** — https://github.com/Ganesh-Kute/HiveCode/issues
+- **Email** — support@getgrm.tech
+
+---
+
 ## License
 
 MIT.

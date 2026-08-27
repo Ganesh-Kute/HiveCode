@@ -80,5 +80,17 @@ never written to a file or handed to anyone.
 
 ---
 
+## Support
+
+Something broken, or a question? Two ways to reach a human:
+
+- **Issues** — https://github.com/Ganesh-Kute/HiveCode/issues
+- **Email** — support@getgrm.tech
+
+If you hit a bad merge, include the file and roughly what both sides were
+editing; that is usually enough to reproduce it.
+
+---
+
 Free and open source (MIT). Source, issues, and the relay:
 **https://github.com/Ganesh-Kute/HiveCode**

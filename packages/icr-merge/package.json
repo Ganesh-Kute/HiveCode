@@ -44,7 +44,9 @@
     "code-generation",
     "conflict-resolution"
   ],
-  "author": "Ganesh Shivlal Kute (https://github.com/Ganesh-Kute)",
+  "author": "Ganesh Shivlal Kute <support@getgrm.tech>",
+  "homepage": "https://github.com/Ganesh-Kute/HiveCode",
+  "bugs": { "url": "https://github.com/Ganesh-Kute/HiveCode/issues" },
   "license": "MIT",
   "engines": {
     "node": ">=18"
