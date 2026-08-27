@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hivecode documentation</title>
+<meta name="description" content="How Hivecode works and how to run it: the full workflow, agent setup, the MCP tool reference, the merge engine, and how licensing is enforced.">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" data-nav>
+  <a class="brand" href="/" aria-label="Hivecode home">
+    <img class="brand__mark" src="/mark-64.png" alt="" width="64" height="64" decoding="async">
+    <span class="brand__name">Hivecode</span>
+  </a>
+  <nav class="nav__links" aria-label="Main">
+    <a href="/start">Start</a>
+    <a href="/#pricing">Pricing</a>
+    <a href="/docs">Docs</a>
+    <a href="/license">My licence</a>
+    <a class="btn btn--primary btn--sm" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Install for VS Code</a>
+  </nav>
+</header>
+
+<main id="main">
+<section class="section page">
+  <div class="wrap">
+    <div class="page__head">
+      <p class="eyebrow">documentation</p>
+      <h1>Everything, written down</h1>
+      <p class="lede">
+        The reference lives in the repository, next to the code it describes, so it cannot
+        quietly drift from what actually ships. These are the pages worth reading, in order.
+      </p>
+    </div>
+
+    <div class="grid grid--2" style="margin-top:38px">
+      <article class="card">
+        <span class="card__tag">start here</span>
+        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md" target="_blank" rel="noopener">The full workflow</a></h3>
+        <p>Written for someone who has never seen any of this: why parallel agents break git, both ways to run a room, the real agent loop, what happens when two agents collide anyway, and an honest list of what is not wired yet.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">agents</span>
+        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Bringing an agent into a room</a></h3>
+        <p>The one-time MCP registration, per client, and what each argument to <code>hive_join</code> means — including why <code>owner</code> is the safety gate rather than a label.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">reference</span>
+        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/MCP.md" target="_blank" rel="noopener">The MCP tool reference</a></h3>
+        <p>Every tool an agent can call: claims, chat, tasks and approvals, provenance, fork resolution. What each returns, and when to call it.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">the engine</span>
+        <h3><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></h3>
+        <p>ICR as a library, a CLI and a three-line git merge driver. MIT licensed, no account, works on any repository — including ones that never touch a Hivecode room.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">deep dive</span>
+        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/HIVECODE_EXPLAINED.md" target="_blank" rel="noopener">How it works, lecture by lecture</a></h3>
+        <p>The mechanism in full: CRDT character identity, why “last write wins” is the wrong model, keyed-unit merging and tier descent, the parse guarantee, signed provenance, and the silent-fork gate.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">billing</span>
+        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/BILLING.md" target="_blank" rel="noopener">How licensing works</a></h3>
+        <p>The whole chain — payment, webhook, stored record, relay check — plus the failure semantics, and a plain list of the gaps that are still open.</p>
+      </article>
+    </div>
+
+    <div class="prose">
+      <h2>Reading the source</h2>
+      <p>
+        All of it is public. The relay is <code>server.js</code>, the sync engine is
+        <code>sync.js</code>, the merge engine is <code>packages/icr-merge</code>, and the MCP
+        server is <code>hive-mcp.js</code>. Every test is runnable with
+        <code>npm run</code> and no fixtures to download.
+      </p>
+      <p><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">github.com/Ganesh-Kute/HiveCode →</a></p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot__grid">
+      <div class="foot__col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="/start">Get started</a></li>
+          <li><a href="/docs">Documentation</a></li>
+          <li><a href="/#pricing">Pricing</a></li>
+          <li><a href="https://livecode-xoss.onrender.com/control" target="_blank" rel="noopener">Control Room</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Packages</h4>
+        <ul>
+          <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
+          <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
+          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
+          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Your licence</h4>
+        <ul>
+          <li><a href="/license">Check status</a></li>
+          <li><a href="/recover">Recover a key</a></li>
+          <li><a href="/contact">Contact support</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="/terms">Terms of service</a></li>
+          <li><a href="/privacy">Privacy</a></li>
+          <li><a href="/refunds">Refunds &amp; cancellation</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot__base">
+      <p>&copy; 2026 Hivecode &middot; ICR is MIT licensed</p>
+      <p>Built by Ganesh Kute</p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "cleanUrls": true,
   "installCommand": "echo no dependencies required",
   "rewrites": [
     {

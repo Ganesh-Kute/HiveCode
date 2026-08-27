@@ -48,8 +48,23 @@ public/Hivecode___ICR.mp4
 
 !package.json
 !vercel.json
+
+# EVERY PAGE THE SITE LINKS TO MUST BE RE-INCLUDED HERE. The `*.html` rule above is a
+# blanket exclude, so a page that is not listed below is simply absent from the deploy and
+# answers 404 -- silently, because nothing checks. The homepage footer linked to /contact,
+# /privacy, /terms, /refunds, /docs, /license and /start, and every one of those was a 404
+# in production; so was /recover, the page someone reaches precisely when they have lost
+# their licence key. Adding a page to public/ is not enough. Add it here too.
 !public/index.html
 !public/control.html
+!public/contact.html
+!public/privacy.html
+!public/terms.html
+!public/refunds.html
+!public/recover.html
+!public/docs.html
+!public/license.html
+!public/start.html
 !public/favicon.ico
 !public/favicon-32.png
 !public/apple-touch-icon.png

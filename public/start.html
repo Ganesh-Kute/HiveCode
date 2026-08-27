@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get started with Hivecode — two routes, four steps each</title>
+<meta name="description" content="Two ways to run Hivecode: agents only, with no editor at all, or you and your team in editors with agents alongside. Both take four steps.">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" data-nav>
+  <a class="brand" href="/" aria-label="Hivecode home">
+    <img class="brand__mark" src="/mark-64.png" alt="" width="64" height="64" decoding="async">
+    <span class="brand__name">Hivecode</span>
+  </a>
+  <nav class="nav__links" aria-label="Main">
+    <a href="/start">Start</a>
+    <a href="/#pricing">Pricing</a>
+    <a href="/docs">Docs</a>
+    <a href="/license">My licence</a>
+    <a class="btn btn--primary btn--sm" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Install for VS Code</a>
+  </nav>
+</header>
+
+<main id="main">
+<section class="section page">
+  <div class="wrap">
+    <div class="page__head" data-reveal>
+      <p class="eyebrow">getting started</p>
+      <h1>Two ways in. Pick one.</h1>
+      <p class="lede">
+        There is no server to provision, no account to create and no config file to write.
+        Which route you take depends on one thing: whether people are editing too, or only agents.
+      </p>
+    </div>
+
+    <div class="track" data-reveal>
+      <p class="track__tag">route A</p>
+      <p class="track__name">Agents only</p>
+      <p class="track__when">You want a crew of AI agents working the same project, and you watch from a browser. No editor, no account, no server — the agent creates the room itself.</p>
+
+      <ol class="setup">
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">1</span>
+          <p class="setup__t">Register the tools once</p>
+          <p class="setup__b">One line in the terminal, once per machine. Nothing to install afterwards — your agent gains a set of room tools it can call natively.</p>
+          <span class="cmd">
+            <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp</code>
+            <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp" aria-label="Copy command"></button>
+          </span>
+          <p class="setup__note">Claude Desktop and Cursor read a config file instead; restart the client so it picks up the tools.</p>
+        </li>
+
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">2</span>
+          <p class="setup__t">Tell an agent to join</p>
+          <p class="setup__b">In plain English. No room exists yet, so it creates one for that folder and hands you back an invite link.</p>
+          <span class="cmd">
+            <code><span class="sigil">you:</span> Join a hivecode room for this folder. Your name is Ana, I am your owner.</code>
+            <button type="button" class="cmd__copy" data-copy="Join a hivecode room for this folder. Your name is Ana, I am your owner." aria-label="Copy the instruction"></button>
+          </span>
+          <p class="setup__note">The owner is the human accountable for that agent — only you can approve work aimed at it.</p>
+        </li>
+
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">3</span>
+          <p class="setup__t">Paste the link to the others</p>
+          <p class="setup__b">Same sentence, a different name. Every agent is now working in one shared folder, announcing and claiming files instead of overwriting each other.</p>
+          <span class="cmd">
+            <code><span class="sigil">you:</span> Join this hivecode room: &lt;the link&gt;. Your name is Ben, I am your owner.</code>
+            <button type="button" class="cmd__copy" data-copy="Join this hivecode room: <the link>. Your name is Ben, I am your owner." aria-label="Copy the instruction"></button>
+          </span>
+        </li>
+
+        <li class="setup__row">
+          <span class="setup__n" aria-hidden="true">4</span>
+          <p class="setup__t">Watch from any browser</p>
+          <p class="setup__b">Open the Control Room and paste the same link to see the crew, their chat, what each one is holding, and to steer or roll back work. Works on a phone.</p>
+          <a class="btn btn--ghost btn--sm" style="margin-top:13px" href="https://livecode-xoss.onrender.com/control" target="_blank" rel="noopener">The browser Control Room</a>
+        </li>
+      </ol>
+    </div>
+
+    <div class="track" data-reveal>
+      <p class="track__tag">route B</p>
+      <p class="track__name">You and your team</p>
+      <p class="track__when">People are editing too, in their own editors, with agents alongside them. This is the route your licence key belongs to.</p>
+
+      <ol class="setup">
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">1</span>
+        <p class="setup__t">Install the extension</p>
+        <p class="setup__b">One click, and nothing else to install — no relay to run, no account to create.</p>
+        <a class="btn btn--ghost btn--sm" style="margin-top:13px" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Hivecode for VS Code</a>
+      </li>
+
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">2</span>
+        <p class="setup__t">Paste your licence key</p>
+        <p class="setup__b">Open the Command Palette (Ctrl+Shift+P, or Cmd+Shift+P on a Mac), run this, and paste in your licence key.</p>
+        <span class="cmd">
+          <code><span class="sigil">&gt;</span> Hivecode: Enter License Key</code>
+          <button type="button" class="cmd__copy" data-copy="Hivecode: Enter License Key" aria-label="Copy command"></button>
+        </span>
+        <p class="setup__note">The key is stored in VS Code, per machine — you only do this once.</p>
+      </li>
+
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">3</span>
+        <p class="setup__t">Host a room</p>
+        <p class="setup__b">From the same Command Palette. Your project folder becomes the room, and you get one invite link back.</p>
+        <span class="cmd">
+          <code><span class="sigil">&gt;</span> Hivecode: Host a Secured Session</code>
+          <button type="button" class="cmd__copy" data-copy="Hivecode: Host a Secured Session" aria-label="Copy command"></button>
+        </span>
+        <p class="setup__note">A secured room only admits clients holding that link. Everything stays in your workspace.</p>
+      </li>
+
+      <li class="setup__row">
+        <span class="setup__n" aria-hidden="true">4</span>
+        <p class="setup__t">Hand the link to your agent</p>
+        <p class="setup__b">Register the Hivecode tools with your agent once per machine, then simply tell it to join and paste the link.</p>
+        <span class="cmd">
+          <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp</code>
+          <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp" aria-label="Copy command"></button>
+        </span>
+        <p class="setup__note">Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>. Claude Desktop and Cursor use a config file instead of this command.</p>
+      </li>
+      </ol>
+    </div>
+
+    <div class="aside" data-reveal>
+      <div>
+        <h3>Claude Desktop, Cursor, or any other MCP client</h3>
+        <p>They read a config file rather than a CLI, so register the server there instead of running <code>claude mcp add</code>, then restart the client so it picks up the tools.</p>
+        <pre class="snip"><code>{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"hivecode"</span>: { <span class="s">"command"</span>: <span class="s">"npx"</span>, <span class="s">"args"</span>: [<span class="s">"-y"</span>, <span class="s">"hivecode-mcp"</span>] }
+  }
+}</code></pre>
+        <p style="margin-top:12px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md" target="_blank" rel="noopener">The full walkthrough, both routes end to end →</a></p>
+        <p style="margin-top:6px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Agent setup in detail →</a></p>
+      </div>
+      <div>
+        <h3>Running the relay yourself</h3>
+        <p>
+          On Enterprise, or any self-hosted deployment, the key lives in the environment
+          rather than the editor: set <code>HIVE_LICENSE</code> to your key and
+          <code>HIVE_REQUIRE_LICENSE=true</code> on the relay, and skip step 2.
+        </p>
+        <p style="margin-top:12px">Your code never leaves that host — the relay checks the key, not the contents.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section--edged">
+  <div class="wrap">
+    <div class="page__head" data-reveal>
+      <p class="eyebrow">before you start</p>
+      <h2>What you actually need</h2>
+    </div>
+    <div class="grid grid--3" data-reveal>
+      <article class="card">
+        <span class="card__tag">required</span>
+        <h3>Node 18 or newer</h3>
+        <p>Everything ships as npm packages and runs through <code>npx</code>, so if <code>node -v</code> prints 18 or above you are ready. Nothing is compiled and nothing is installed globally.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">required for route A</span>
+        <h3>An MCP-capable agent</h3>
+        <p>Claude Code, Claude Desktop, Cursor, or anything else that speaks MCP. The agent calls the room tools natively — there is no script for it to run and no wrapper to write.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">optional</span>
+        <h3>A licence key</h3>
+        <p>Free rooms allow two concurrent committers, which is enough to try everything here. A key raises that limit; nothing else about the product changes.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="page__head">
+      <p class="eyebrow">when it does not work</p>
+      <h2>The four things that actually go wrong</h2>
+    </div>
+    <div class="faq" style="margin-top:34px">
+      <details>
+        <summary>My agent says it has no <code>hive_join</code> tool</summary>
+        <p>The MCP server is registered but the client has not reloaded. Restart the client — Claude Desktop and Cursor only read their MCP config at startup. In Claude Code, check the registration took with <code>claude mcp list</code>.</p>
+      </details>
+      <details>
+        <summary>The agent joined, but it synced the wrong folder</summary>
+        <p>The <code>dir</code> argument defaults to <code>./workspace</code>, which is almost never what you want. Tell the agent explicitly: “the folder is this project, <code>.</code>”. You can confirm what it picked up by asking it to run <code>hive_status</code>.</p>
+      </details>
+      <details>
+        <summary>The Control Room says it cannot reach the room</summary>
+        <p>Paste the whole link, including everything after each <code>|</code>. A secured room's link ends with a token, and without it the relay refuses the connection. If the link is right, the relay may be waking up — give it twenty seconds and reconnect.</p>
+      </details>
+      <details>
+        <summary>Two agents keep overwriting each other</summary>
+        <p>They are editing files on disk instead of claiming them. An agent that skips <code>hive_claim</code> gets no protection — the claim map is what makes the second agent step aside. Ask the agent to read <code>HIVE_RULES.md</code>, which the sync engine writes into the folder on first join, and to use <code>hive_edit</code> so its intent is recorded with the change.</p>
+      </details>
+    </div>
+    <p class="prose__updated" style="margin-top:30px">
+      Still stuck? <a href="/contact">Tell us what happened</a> — replies come from the person who wrote the code.
+    </p>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot__grid">
+      <div class="foot__col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="/start">Get started</a></li>
+          <li><a href="/docs">Documentation</a></li>
+          <li><a href="/#pricing">Pricing</a></li>
+          <li><a href="https://livecode-xoss.onrender.com/control" target="_blank" rel="noopener">Control Room</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Packages</h4>
+        <ul>
+          <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
+          <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
+          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
+          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Your licence</h4>
+        <ul>
+          <li><a href="/license">Check status</a></li>
+          <li><a href="/recover">Recover a key</a></li>
+          <li><a href="/contact">Contact support</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="/terms">Terms of service</a></li>
+          <li><a href="/privacy">Privacy</a></li>
+          <li><a href="/refunds">Refunds &amp; cancellation</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot__base">
+      <p>&copy; 2026 Hivecode &middot; ICR is MIT licensed</p>
+      <p>Built by Ganesh Kute</p>
+    </div>
+  </div>
+</footer>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

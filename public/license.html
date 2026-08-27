@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Check your Hivecode licence</title>
+<meta name="description" content="Paste your Hivecode Pro key to see its plan, committer allowance and current status.">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" data-nav>
+  <a class="brand" href="/" aria-label="Hivecode home">
+    <img class="brand__mark" src="/mark-64.png" alt="" width="64" height="64" decoding="async">
+    <span class="brand__name">Hivecode</span>
+  </a>
+  <nav class="nav__links" aria-label="Main">
+    <a href="/start">Start</a>
+    <a href="/#pricing">Pricing</a>
+    <a href="/docs">Docs</a>
+    <a href="/license">My licence</a>
+    <a class="btn btn--primary btn--sm" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Install for VS Code</a>
+  </nav>
+</header>
+
+<main id="main">
+<section class="section page">
+  <div class="wrap" style="max-width:680px">
+    <div class="page__head">
+      <p class="eyebrow">your licence</p>
+      <h1>Check a key</h1>
+      <p class="lede">
+        Paste a licence key to see what it covers and whether it is currently active. This is the
+        same check the relay makes before admitting a connection, so what you see here is exactly
+        what your rooms will do.
+      </p>
+    </div>
+
+    <form class="field" id="form" novalidate>
+      <label for="key">Licence key</label>
+      <div class="row">
+        <input class="input" id="key" name="key" type="text" autocomplete="off" spellcheck="false"
+               placeholder="HC-PRO-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" aria-describedby="hint">
+        <button class="btn" type="submit" id="go">Check it</button>
+      </div>
+      <p class="hint" id="hint">
+        Thirty-two characters after <code>HC-PRO-</code>. Nothing is stored and nothing is
+        logged — the key is sent to the validator and the answer is shown to you.
+      </p>
+    </form>
+
+    <div class="out" id="out" role="status" aria-live="polite"></div>
+
+    <div class="prose">
+      <h2>Lost the key itself?</h2>
+      <p>
+        Your licence is stored the moment payment clears, so it is never gone.
+        <a href="/recover">Recover it with the Payment Id</a> from your Razorpay receipt.
+      </p>
+      <h2>Need to change your seat count?</h2>
+      <p>
+        Seats live on the record rather than in the key, so they can be adjusted without
+        reissuing anything. <a href="/contact">Tell us the number you need</a> and we will
+        change it — for now this is a manual step, deliberately, while volumes are small enough
+        that a human should look at every change.
+      </p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot__grid">
+      <div class="foot__col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="/start">Get started</a></li>
+          <li><a href="/docs">Documentation</a></li>
+          <li><a href="/#pricing">Pricing</a></li>
+          <li><a href="https://livecode-xoss.onrender.com/control" target="_blank" rel="noopener">Control Room</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Packages</h4>
+        <ul>
+          <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
+          <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
+          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
+          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Your licence</h4>
+        <ul>
+          <li><a href="/license">Check status</a></li>
+          <li><a href="/recover">Recover a key</a></li>
+          <li><a href="/contact">Contact support</a></li>
+        </ul>
+      </div>
+      <div class="foot__col">
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="/terms">Terms of service</a></li>
+          <li><a href="/privacy">Privacy</a></li>
+          <li><a href="/refunds">Refunds &amp; cancellation</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot__base">
+      <p>&copy; 2026 Hivecode &middot; ICR is MIT licensed</p>
+      <p>Built by Ganesh Kute</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict'
+  // Shape check only; the server is the authority. Mirrors shared/license.js KEY_PATTERN.
+  var SHAPE = /^HC-[A-Z]+-[0-9A-F]{32}$/
+  // The relay serves this page too and has no /api/validate, so call Vercel from any other
+  // host. CORS is open on /api/* for exactly this.
+  var API = location.hostname === 'hivecode.vercel.app' ? '' : 'https://hivecode.vercel.app'
+
+  var form = document.getElementById('form')
+  var input = document.getElementById('key')
+  var button = document.getElementById('go')
+  var out = document.getElementById('out')
+
+  function esc(v) {
+    return String(v).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    })
+  }
+  function card(kind, title, body, extra) {
+    out.innerHTML = '<div class="card' + (kind ? ' card--' + kind : '') + '"><h2>' + esc(title) +
+      '</h2><p>' + body + '</p>' + (extra || '') + '</div>'
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault()
+    var key = input.value.trim().toUpperCase()
+    if (!key) { card('warn', 'Paste a key first', 'It starts with <code>HC-PRO-</code>.'); return input.focus() }
+    if (!SHAPE.test(key)) {
+      card('warn', 'That is not a licence key',
+        'A key is <code>HC-PRO-</code> followed by 32 characters. If you pasted a payment ' +
+        'reference, you want <a href="/recover">the recovery page</a> instead.')
+      return input.focus()
+    }
+
+    button.disabled = true
+    card('', 'Checking…', 'One moment.')
+
+    fetch(API + '/api/validate?key=' + encodeURIComponent(key))
+      .then(function (res) { return res.json().then(function (d) { return { status: res.status, data: d } }) })
+      .then(function (r) {
+        var d = r.data || {}
+        if (r.status === 503) {
+          return card('bad', 'We cannot check right now',
+            'This is our problem, not yours — your licence is unchanged. Rooms already running ' +
+            'keep working, because the relay keeps a valid answer for 24 hours. Try again shortly.')
+        }
+        if (r.status !== 200) {
+          return card('bad', 'The validator refused that request',
+            'Check the key and try again, or <a href="/contact">tell us</a> and we will look.')
+        }
+
+        var seats = Number(d.seats) || 0
+        var meta = '<div class="meta">' +
+          '<span>plan <b>' + esc(String(d.plan || '—')) + '</b></span>' +
+          '<span>committers <b>' + (seats || '—') + '</b></span>' +
+          '<span>status <b>' + esc(String(d.status || 'unknown')) + '</b></span>' +
+          '</div>'
+
+        if (d.valid === true) {
+          return card('ok', 'Active',
+            'This licence is active and admits ' + (seats === 1 ? '1 concurrent committer' : seats + ' concurrent committers') + '.',
+            meta + '<p class="next">Nothing else to do — paste it into VS Code with ' +
+            '<b>Hivecode: Enter License Key</b>, or set <code>HIVE_LICENSE</code> on a ' +
+            'self-hosted relay. <a href="/start">See both routes →</a></p>')
+        }
+        if (d.reason === 'malformed' || d.reason === 'unknown key') {
+          return card('warn', 'No licence matches that key',
+            'Check for a missing character, or use <a href="/recover">the recovery page</a> to ' +
+            'fetch the real key from your payment reference. If you have just paid, give the ' +
+            'licence a minute to be issued.')
+        }
+        return card('warn', 'Found, but not active',
+          'This key exists, but its status is <b>' + esc(String(d.status || 'unknown')) +
+          '</b> rather than active, so it will not admit committers until the subscription is ' +
+          'restored. <a href="/contact">Get in touch</a> and we will sort it out.', meta)
+      })
+      .catch(function () {
+        card('bad', 'Could not reach the validator',
+          'Check your connection and try again. Your licence is unaffected — nothing about it ' +
+          'depends on this page.')
+      })
+      .then(function () { button.disabled = false })
+  })
+})()
+</script>
+</body>
+</html>
