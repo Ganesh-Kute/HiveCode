@@ -2,3 +2,6 @@
 **/*.map
 **/.gitignore
 node_modules/.bin/**
+*.vsix
+**/*.bak*
+**/*.pre-*

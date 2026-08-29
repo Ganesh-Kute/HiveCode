@@ -399,7 +399,14 @@ function enforceDcoLock(opts = {}) {
 // stated directly above this line the version MUST move: a 0.9.0 room and a 0.10.0 room disagree
 // about how a message reaches a working agent, and that is exactly the mixed-build condition that
 // breaks rooms. Two builds that behave differently must never share a number.
-export const VERSION = '0.10.0'
+// 0.11.1 -- what this client SENDS to the relay changed: sync.js now passes `name` and `kind`
+// as connection params so the relay can record who is in a room and how many at once (it
+// previously stamped every connection `anon`/`unknown` and could not tell an agent from a
+// person). By the rule above that is a delivery-behaviour change, and it is the kind that
+// matters most here: an 0.10.0 client in a room with an 0.11.1 one is invisible in the audit
+// log while its roommate is named, so the room's own membership record disagrees with itself.
+// Also carries the ICR fix that stopped a whole-file rewrite duplicating every declaration.
+export const VERSION = '0.11.1'
 const server = new Server({ name: 'hivecode', version: VERSION }, { capabilities: { tools: {} } })
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 async function dispatch(req) {
@@ -473,6 +480,18 @@ async function dispatch(req) {
         const r = await waitForWork(ms, { wakeOn: args.wakeOn })
         const globalState = requireSession().hive.getState()
         const stateStr = Object.keys(globalState).length ? `\n[GLOBAL PROJECT STATE]\n${JSON.stringify(globalState, null, 2)}\n` : ''
+        // Connection state, reported ONLY when it is bad. An agent that cannot tell a
+        // quiet room from a dead socket reaches for hive_join -- which calls stop() and
+        // tears the session down, turning a blip that would have healed itself into a
+        // real detach, and running the rejoin path that can overwrite local edits. The
+        // provider reconnects on its own with backoff, so the correct action is to do
+        // nothing; the agent just has to be told that, in the one place it is looking.
+        const conn = (() => {
+          try { return requireSession().hive.status() } catch { return null }
+        })()
+        const connStr = (conn && !conn.connected)
+          ? `\n[CONNECTION] ${conn.connecting ? 'reconnecting' : 'offline'} — this heals itself, the client retries automatically. Do NOT call hive_join; that tears down the session and can overwrite your local edits. Keep calling hive_wait.\n`
+          : ''
         
         const me = requireSession().name
         // Direct address is separated from ambient traffic on every path. It used to be that
@@ -494,13 +513,13 @@ async function dispatch(req) {
           }
           return text(`⏸ You are PAUSED by mission control. Stop new work and wait. You will be woken if someone @mentions you or assigns you a task; otherwise just call hive_wait again.${stateStr}`)
         }
-        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${stateStr}`)
+        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${connStr}${stateStr}`)
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${stateStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+        return text(`${connStr}${stateStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
       }
       case 'hive_set_state': { requireSession().hive.setState(String(args.key), String(args.val)); return text(`Set global state [${args.key}] to [${args.val}]`) }
       case 'hive_read_state': { return text(requireSession().hive.getState()) }
@@ -569,7 +588,17 @@ async function dispatch(req) {
       case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
       case 'hive_status': {
         const s = requireSession()
-        return text({ room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, unread: mailbox().peek(chatArray()).unreadCount })
+        // Connection state belongs here too, not only in hive_wait: this is the tool an
+        // agent reaches for when it suspects something is wrong, and the answer it needs
+        // is almost always "you are still connected, do nothing".
+        let conn = null
+        try { conn = s.hive.status() } catch { }
+        return text({
+          room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION,
+          unread: mailbox().peek(chatArray()).unreadCount,
+          connected: conn ? conn.connected : null,
+          filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
+        })
       }
       case 'hive_leave': { requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
       default: return err(`unknown tool: ${name}`)

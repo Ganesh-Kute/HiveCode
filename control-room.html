@@ -68,6 +68,14 @@
 
   /* ── Main grid ───────────────────────────────────────── */
   .grid{display:grid; grid-template-columns:1.55fr 1fr; gap:16px; align-items:start}
+  .feedback-bar{display:block; text-decoration:none; margin:0 0 16px; padding:14px 18px;
+    background:linear-gradient(90deg,rgba(255,176,46,.16),rgba(255,176,46,.05));
+    border:1px solid var(--honey); border-left-width:4px; border-radius:12px; color:var(--text)}
+  .feedback-bar:hover{background:linear-gradient(90deg,rgba(255,176,46,.24),rgba(255,176,46,.08))}
+  .fb-dot{color:var(--honey); margin-right:8px; font-size:11px; vertical-align:middle}
+  .fb-main{font-size:15px; font-weight:700; letter-spacing:-.01em}
+  .fb-main b{color:var(--honey)}
+  .fb-sub{display:block; margin-top:5px; font-size:12.5px; color:var(--muted); line-height:1.5; max-width:78ch}
   .card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:16px}
   .card h2{
     font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted);
@@ -195,6 +203,16 @@
     <span class="pill" id="clock">--:--:--</span>
     <span class="pill"><span class="live blink">●</span> <b>LIVE</b></span>
   </header>
+
+  <!-- FEEDBACK BAR. Deliberately the first thing under the header and deliberately loud:
+       every person in a room passes this screen, and what this project needs from them
+       right now is not money, it is a sentence about what broke. Asking for feedback in
+       the footer is the same as not asking. -->
+  <a class="feedback-bar" href="mailto:support@getgrm.tech?subject=Hivecode%20feedback">
+    <span class="fb-dot">&#9679;</span>
+    <span class="fb-main">Tell us what is wrong with this &mdash; <b>support@getgrm.tech</b></span>
+    <span class="fb-sub">Hivecode is free and we are not selling you anything. We want to know what broke, what confused you, and what you wish it did. It reaches the person who built it.</span>
+  </a>
 
   <section class="metrics">
     <div class="metric"><div class="k">Agents</div><div class="v" id="m-agents">5</div><span class="spark" style="background:var(--working)"></span></div>

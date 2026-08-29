@@ -586,6 +586,49 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true })
 const roomAgents = new Map() // Tracks active committers: room -> Set(agent_id)
 
+// WORKSPACE occupancy, which is NOT the same number as room occupancy and was the
+// reason a log full of `inRoom:1` looked like "nobody ever has company". Every file
+// is its own room, so `roomAgents` answers "who has THIS FILE open" -- almost always
+// one person, even in a busy workspace. Keyed on the BASE room, this answers the
+// question anyone actually asks of the log: how many distinct clients, and how many
+// of them are agents, are in this project right now.
+//
+// Counted per identity, not per socket: one client holds hundreds of sockets (one per
+// file), so a set of connection ids would report a single user as hundreds. The refcount
+// is what lets an identity leave only when its LAST socket in the workspace closes.
+const workspacePeers = new Map() // baseRoom -> Map(name -> { kind, declaredKind, socks })
+
+function joinWorkspace(baseRoom, identity) {
+  let m = workspacePeers.get(baseRoom)
+  if (!m) { m = new Map(); workspacePeers.set(baseRoom, m) }
+  const cur = m.get(identity.name)
+  if (cur) { cur.socks++; return }
+  m.set(identity.name, { kind: identity.kind, declaredKind: identity.declaredKind, socks: 1 })
+}
+
+function leaveWorkspace(baseRoom, name) {
+  const m = workspacePeers.get(baseRoom)
+  if (!m) return
+  const cur = m.get(name)
+  if (!cur) return
+  if (--cur.socks <= 0) m.delete(name)
+  if (m.size === 0) workspacePeers.delete(baseRoom)
+}
+
+// `kind` is the TOKEN's claim and is trusted; `declaredKind` is what the client said
+// about itself and is not. Both are reported, separately and labelled, so a reader of
+// the log can tell an attested agent from one that merely says it is a person.
+function census(baseRoom) {
+  const m = workspacePeers.get(baseRoom) || new Map()
+  let ai = 0, human = 0, unattested = 0
+  for (const v of m.values()) {
+    if (v.kind === 'ai') ai++
+    else if (v.kind === 'human') human++
+    else unattested++
+  }
+  return { peers: m.size, ai, human, unattested, names: [...m.keys()] }
+}
+
 server.on('upgrade', async (req, socket, head) => {
   let room = 'default', token = '', license = '', declaredName = '', declaredKind = ''
   try {
@@ -655,6 +698,8 @@ server.on('upgrade', async (req, socket, head) => {
     // Add agent to active committers list
     if (!roomAgents.has(room)) roomAgents.set(room, new Set())
     roomAgents.get(room).add(agentId)
+    const baseRoom = baseRoomOf(room)
+    joinWorkspace(baseRoom, auth.identity)
 
     // Remove agent when connection drops, and SAY SO. Without a disconnect event the
     // audit log is connect-only, which makes three ordinary questions unanswerable:
@@ -669,21 +714,35 @@ server.on('upgrade', async (req, socket, head) => {
         active.delete(agentId)
         if (active.size === 0) roomAgents.delete(room)   // don't leak an empty Set per room
       }
+      leaveWorkspace(baseRoom, agentId)
+      const c = census(baseRoom)
       audit('disconnect', {
         room,
+        baseRoom,
+        file: pathOf(room),
         identity: auth.identity,
         heldMs: Date.now() - openedAt,
         stillInRoom: (roomAgents.get(room) || new Set()).size,
+        stillInWorkspace: c.peers,
+        workspace: c,
       })
     })
 
+    const c = census(baseRoom)
     audit('connect', {
       room,
+      // Split out so the log is greppable without anyone having to know that the room
+      // name is two values joined by a control character.
+      baseRoom,
+      file: pathOf(room),
       identity: auth.identity,
       role: auth.role,
-      // How many distinct clients hold this room right now, counted AFTER this one was
-      // added above. This is the number that answers "is more than one agent in here".
+      // How many distinct clients hold this FILE right now, counted AFTER this one was
+      // added above. Near-always 1, and that is correct -- see inWorkspace for the
+      // number that answers "is more than one agent in here".
       inRoom: (roomAgents.get(room) || new Set()).size,
+      inWorkspace: c.peers,
+      workspace: c,
     })
     wss.emit('connection', conn, req)
   })
@@ -691,7 +750,16 @@ server.on('upgrade', async (req, socket, head) => {
 
 wss.on('connection', (conn, req) => {
   const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'
-  console.log(`[relay] a client joined room "${room}"${conn._hive ? ` as ${conn._hive.identity.name} (${conn._hive.role})` : ''}`)
+  // One line per file is unavoidable (a room IS a file), but it should at least say
+  // what is being opened and by how many people -- the previous version printed the
+  // raw joined room name, control character and all, and no occupancy at all.
+  if (conn._hive) {
+    const c = census(baseRoomOf(room))
+    const f = pathOf(room)
+    console.log(`[relay] ${conn._hive.identity.name} (${conn._hive.role}) opened ${f ? `"${f}"` : 'the workspace'} in ${baseRoomOf(room)} -- ${c.peers} in workspace [${c.human}h/${c.ai}ai/${c.unattested}?]`)
+  } else {
+    console.log(`[relay] a client joined room "${room}"`)
+  }
   if (conn._hive && conn._hive.role === 'reader') makeReadOnly(conn) // enforce read-only BEFORE y-websocket wires its handler
   else if (ENFORCE_CLAIMS !== 'off') installWriteGate(conn) // dynamic claim/DCO write-gate (opt-in)
   setupWSConnection(conn, req, { docName: room })
