@@ -665,6 +665,19 @@ const server = http.createServer((req, res) => {
       authMode: AUTH_MODE,
       licenseRequired: process.env.HIVE_REQUIRE_LICENSE === 'true',
       persistence: !!PERSIST_DIR,
+      // The two settings that decide whether this relay does the thing the product claims,
+      // reported so an operator can read them from outside instead of inferring them from a
+      // failed test. Both are env-gated and both default to the useless value, and on
+      // 2026-09-05 a deploy went out with neither set: /health said "ok", the startup log
+      // was the only place that knew, and the way it was actually discovered was a 12-agent
+      // run quietly seating 8. A health endpoint that omits the settings most likely to be
+      // wrong is answering the easy half of the question.
+      enforceClaims: ENFORCE_CLAIMS,
+      seats: Math.max(0, parseInt(process.env.HIVE_SEATS || '0', 10) || 0) || null,
+      connsPerRoom: (() => {
+        const s = Math.max(0, parseInt(process.env.HIVE_SEATS || '0', 10) || 0)
+        return s > 0 ? Math.min(TIERS.pro.connsPerSeat * s, TIERS.pro.maxConnsCeiling) : TIERS.free.maxConnsPerRoom
+      })(),
       limits: s.limits,
       tiers: TIERS,
       metering: meter.snapshot(),
