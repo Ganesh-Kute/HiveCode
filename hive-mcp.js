@@ -34,7 +34,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { createMailbox, formatMessage, mentionsName, priorityOf } from './hive-mailbox.js'
+import { createMailbox, formatMessage, mentionsName, mentionedNames, priorityOf, ambientDigest } from './hive-mailbox.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
 let session = null // { hive, room, relay, dir, name, mailbox }
@@ -88,7 +88,26 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
   // persist the token too, so a re-join from .hive.json keeps the grant (the
   // invitee pastes the link once; subsequent joins just read the folder config).
   fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}) }, null, 2))
-  const hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: useToken, log: () => {} })
+  // The ACCOUNT licence is passed through but NOT persisted to .hive.json above, and that
+  // asymmetry is deliberate. `.hive.json` sits in the project folder, so it gets committed
+  // and it gets shared -- fine for a room invite, which is what it is for, and wrong for a
+  // billing credential. startSync resolves the licence from $HIVE_LICENSE (this server's env
+  // block) or ~/.hivecode/config.json instead, both of which are per-machine.
+  // A refused folder lock must reach the AGENT as a readable instruction, not as a stack
+  // trace. An agent that gets an opaque failure retries, and two of them retrying on one
+  // folder is precisely the situation the lock exists to prevent.
+  let hive
+  try {
+    hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: useToken, log: () => {} })
+  } catch (e) {
+    if (e && e.code === 'EHIVELOCKED') {
+      return text(
+        `${e.message}\n\n` +
+        `Do NOT retry this folder. Either join with a different \`dir\`, or stop process ${e.pid} first.`,
+      )
+    }
+    throw e
+  }
   session = { hive, room, relay, dir, name, owner, mailbox: null }
   persistSession({ dir, name, owner }) // survive MCP host restarts (see tryResumeSession)
   // wait for the first sync so members/board/rules are ready
@@ -406,7 +425,20 @@ function enforceDcoLock(opts = {}) {
 // matters most here: an 0.10.0 client in a room with an 0.11.1 one is invisible in the audit
 // log while its roommate is named, so the room's own membership record disagrees with itself.
 // Also carries the ICR fix that stopped a whole-file rewrite duplicating every declaration.
-export const VERSION = '0.11.1'
+// VERSION is load-bearing, not cosmetic: the join message (see buildJoinReply) instructs every
+// arriving agent to announce it in chat, because a MIXED BUILD in one room causes data loss and
+// this is the only way anyone finds out. Hardcoding it meant that the moment package.json was
+// bumped the two disagreed silently -- so the one mechanism for detecting a mixed build was
+// itself reporting the wrong build. Read the truth instead; package.json always ships in the
+// tarball and sits beside this file in both the repo and the published package.
+// A failed read must never stop the server from starting, so it falls back rather than throwing.
+export const VERSION = (() => {
+  try {
+    const v = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
+    if (typeof v === 'string' && v) return v
+  } catch { /* fall through */ }
+  return '0.0.0-unknown'
+})()
 const server = new Server({ name: 'hivecode', version: VERSION }, { capabilities: { tools: {} } })
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 async function dispatch(req) {
@@ -425,7 +457,18 @@ async function dispatch(req) {
         // a human reading the log, not just to the recipient's tool output.
         const body = args.urgent && !/^\s*\[!\]/.test(raw) ? `[!] ${raw}` : raw
         requireSession().hive.say(body)
-        return text(`sent: ${body}`)
+        // ADDRESSING IS THE PROTOCOL, and a rule an agent merely read is a rule it forgets once
+        // its context fills. So the tool itself answers back: a message that named nobody is
+        // reported as landing in everyone's ambient digest, where it is meant to be skipped.
+        // Immediate, per-call feedback, at the moment the mistake is made.
+        const named = mentionedNames(body)
+        if (!named.length) {
+          return text(`sent: ${body}\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
+            `activity", where they are told to skip it — so assume no one acts on it. Name the ` +
+            `agents you actually need with @Name (hive_members lists who is here). Use an ` +
+            `unaddressed message only for a genuine announcement to the whole room.`)
+        }
+        return text(`sent to ${named.map((n) => '@' + n).join(', ')}: ${body}`)
       }
       case 'hive_read_chat': {
         const me = requireSession().name
@@ -456,14 +499,35 @@ async function dispatch(req) {
         if (!got.unreadCount && !tasks.length) return text('✓ nothing waiting — nobody is calling you and you have no approved work. Carry on.')
         const parts = []
         if (got.priority === 'stop') {
+          // HANDLING URGENT MAIL COUNTS AS LIVENESS.
+          //
+          // Claims evaporate after 5 minutes so a crashed agent never deadlocks the room.
+          // But an agent that is preempted -- told to stop and deal with something else --
+          // is not crashed, it is obeying. Without this refresh it loses the file it was
+          // halfway through editing WHILE DOING WHAT IT WAS ASKED, another agent takes the
+          // claim, and it resumes writing into a region it no longer owns. The agent gets
+          // punished for complying, and the resulting clobber looks like a merge bug.
+          //
+          // Re-claiming a region you already hold is safe: acquire() only defers when a
+          // DIFFERENT owner holds it, so this refreshes `at` and never steals.
+          //
+          // One refresh buys another full TTL. A long interruption stays safe because the
+          // rules have the agent calling hive_check between steps of the urgent work too.
+          try {
+            for (const c of s.hive.claimsBoard()) {
+              if (c.by === s.name) s.hive.claim(c.region, c.intent || 'edit')
+            }
+          } catch { /* delivering the urgent message matters more than the refresh */ }
           parts.push('🛑 URGENT — someone needs you to STOP what you are doing and handle this FIRST:')
+          parts.push('(your claims were just refreshed — the files you hold stay yours while you deal with this)')
           parts.push(got.mentions.filter((m) => priorityOf(m.text) === 'stop').map(formatMessage).join('\n'))
         } else if (got.mentioned) {
           parts.push(`📣 ${got.mentions.length} message(s) addressed to YOU — answer at your next safe stopping point:`)
           parts.push(got.mentions.map(formatMessage).join('\n'))
         }
         const ambient = got.messages.filter((m) => !mentionsName(m.text, s.name))
-        if (ambient.length) parts.push(`room activity (${ambient.length}):\n` + ambient.map(formatMessage).join('\n'))
+        const dig = ambientDigest(ambient)
+        if (dig) parts.push(dig)
         if (tasks.length) parts.push(`approved work queued for you:\n${tasks.map(fmtTask).join('\n')}`)
         return text(parts.join('\n\n'))
       }
@@ -500,10 +564,10 @@ async function dispatch(req) {
         const mentionBlock = (r) => (r.mentions && r.mentions.length)
           ? `${r.priority === 'stop' ? '🛑 STOP — handle this BEFORE anything else' : '📣 ADDRESSED TO YOU'}:\n${r.mentions.map(formatMessage).join('\n')}`
           : ''
-        const ambientBlock = (r) => {
-          const rest = (r.messages || []).filter((m) => !mentionsName(m.text, me))
-          return rest.length ? `room activity:\n${rest.map(formatMessage).join('\n')}` : ''
-        }
+        // Both delivery paths go through the SAME digest. They used to format ambient traffic
+        // separately, which is how two copies of a rule drift apart -- the exact hazard that
+        // already bit the duplicated reconcile() and the two HIVE_RULES copies.
+        const ambientBlock = (r) => ambientDigest((r.messages || []).filter((m) => !mentionsName(m.text, me)))
 
         if (r && r.paused) {
           const parts = [mentionBlock(r), ambientBlock(r)].filter(Boolean)

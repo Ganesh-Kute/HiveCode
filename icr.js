@@ -546,6 +546,11 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
     out += baseText.slice(cursor, to)
   }
 
+  // A KEY REPEATED IN `order` USED TO EMIT ITS UNIT AGAIN. `order` is assembled from both
+  // sides' unit lists, so any key present in both can appear twice, and each appearance
+  // wrote the declaration out. On a whole-file rewrite that is every declaration in the
+  // file, which is how a merge silently doubled a source file instead of merging it.
+  // Emit each unit exactly once, at its first ordered position.
   const seenKeys = new Set()
   for (const k of order) {
     if (seenKeys.has(k)) continue
@@ -556,6 +561,7 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
         emitGap(pos, u.start)
         pos = u.end
       }
+      // A missing key used to concatenate the string "undefined" into the source.
       const val = textByKey.get(k)
       if (val != null) out += val
     } else {

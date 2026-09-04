@@ -24,6 +24,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import { createRequire } from 'module'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence, getYDoc } from 'y-websocket/bin/utils'
+import {
+  LIMITS, TIERS, limitsFor, admitConnection, noteConnectionOpened, noteConnectionClosed,
+  attachRateLimit, noteDocBytes, docOverCap, setDocBytes, forgetDoc, stats as limitStats,
+  recordUsage, usageFor,
+} from './limits.js'
+import * as meter from './usage-meter.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
 // library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
@@ -38,6 +44,89 @@ import * as decoding from 'lib0/decoding'
 
 // Enforce a read-only connection: drop the client's inbound SYNC writes (sync
 // step2 + update) so they can never mutate shared state, while still letting it
+// --- USAGE LIMITS (always on) -----------------------------------------------
+// Installed FIRST, before every other gate, and for one reason: the read-only filter, the
+// claim gate and the provenance guard all do real work per message (decode, map lookups,
+// signature checks). If a flood reaches them, the limits have already failed. This wrapper
+// runs before y-websocket's handler is registered, so a refused frame costs a length check.
+//
+// A refusal is ANNOUNCED to the offending client over the room chat and never silently
+// dropped -- an agent whose writes vanish retries forever and reads as a broken product,
+// whereas one told `Q432 over the message rate` can back off. Reads are never throttled.
+// A doc past its size cap keeps serving reads and refuses writes: closing the socket would
+// take the client's unsaved work with it.
+function installUsageLimits(conn) {
+  const room = (conn._hive && conn._hive.room) || 'default'
+  const who = (conn._hive && conn._hive.identity && conn._hive.identity.name) || 'a client'
+  // The tier is decided at the handshake from the licence RECORD and carried on the
+  // connection. A free room and a 20-seat Pro room get genuinely different ceilings; before
+  // this they got identical ones, which gave the free tier away and made the paying customer
+  // the first to notice a shared limit.
+  const tier = (conn._hive && conn._hive.tier) || null
+  const account = (conn._hive && conn._hive.account) || null
+  const limiter = attachRateLimit(conn, tier)
+  let told = 0
+  const tell = (reason) => {
+    // Announce at most twice per connection. A tight loop trips the limit hundreds of times
+    // and a message per refusal would make the relay the flooder.
+    if (told >= 2) return
+    told++
+    try { console.warn(`[relay] ${who} in ${baseRoomOf(room)}: ${reason}`) } catch { }
+    try { audit('rate-limit', { room, identity: who, reason }) } catch { }
+  }
+  const realOn = conn.on.bind(conn)
+  conn.on = (event, handler) => {
+    if (event !== 'message') return realOn(event, handler)
+    return realOn('message', (data, ...rest) => {
+      const len = data && (data.byteLength ?? data.length) || 0
+      const bad = limiter.check(len)
+      if (bad) { tell(bad.reason); return }
+      // Only WRITES are refused past the doc cap; step1/awareness must keep flowing or the
+      // client cannot even see the state it is being told it may not grow.
+      if (len > 0) {
+        let isWrite = false
+        try {
+          const dec = decoding.createDecoder(new Uint8Array(data))
+          if (decoding.readVarUint(dec) === 0) {
+            const t = decoding.readVarUint(dec)
+            isWrite = (t === 1 || t === 2)
+          }
+        } catch { /* unparseable -> treat as non-write; the gates below still see it */ }
+        if (isWrite) {
+          if (docOverCap(room, tier)) {
+            const cap = (tier && tier.maxDocBytes) || LIMITS.maxDocBytes
+            tell(`Q435 ${pathOf(room) || 'this room'} has reached the ${Math.round(cap / 1048576)} MB size limit${tier ? ` for the ${tier.tier} tier` : ''}; writes refused, reads still served`)
+            return
+          }
+          // THE AUTO-LOCK. A free account past its monthly allowance stops being able to
+          // write and keeps being able to read, which is the difference between "upgrade to
+          // continue" and "we deleted your workspace". Paid accounts are never checked here
+          // -- their ceiling is the tier's, above -- and an unreachable meter never locks
+          // anyone (usage-meter.js, decision 1).
+          if (tier && tier.tier === 'free' && meter.isOverQuota(account)) {
+            tell(`Q436 this workspace has used its free monthly allowance (${Math.round(meter.FREE_PERIOD.writeBytes / 1048576)} MB of writes). Reads still work. Upgrade at hivecode.vercel.app/pricing to keep writing.`)
+            return
+          }
+          noteDocBytes(room, len)
+          limiter.noteWrite(len) // separates "wrote" from "read" in the per-agent usage
+          meter.note(account, { writes: 1, writeBytes: len, msgs: 1, bytes: len })
+          // Warn BEFORE the wall, once per account per month. A limit that arrives with no
+          // notice reads as a fault, and the customer's first conclusion is "it broke".
+          if (tier && tier.tier === 'free') {
+            const warn = meter.warningFor(account)
+            if (warn) {
+              try { console.warn(`[relay] ${warn}`) } catch { }
+              try { audit('usage-warning', { room: baseRoomOf(room), account, message: warn }) } catch { }
+              try { postNoticeText(baseRoomOf(room), warn) } catch { }
+            }
+          }
+        }
+      }
+      return handler(data, ...rest)
+    })
+  }
+}
+
 // receive state (sync step1) and presence (awareness). We wrap conn.on so that
 // the message handler y-websocket registers next is filtered.
 function makeReadOnly(conn) {
@@ -212,6 +301,58 @@ function flushQueue(conn) {
 // Content with no backing verified receipt is reported (best-effort, debounced) but
 // NOT rolled back — that would fight the CRDT; detection is surfaced to the Control
 // Room instead. HIVE_PROVENANCE: off (default) | audit | strict.
+// ── service notice ────────────────────────────────────────────────────────────────────
+// One message into the base room's chat when somebody joins. This is the only place that
+// reaches every client at once: the browser control room, the VS Code extension and the
+// MCP agents all read the same `chat` array, so a notice posted here lands wherever the
+// user actually is instead of in one client nobody has open.
+//
+// The text lives in HIVE_NOTICE so it can be set, changed or cleared on the host without
+// a redeploy. Unset means nothing is posted, which is the correct default -- a relay that
+// announces something on every connection is a relay people mute.
+const NOTICE = (process.env.HIVE_NOTICE || '').trim()
+const noticedRooms = new Set()
+
+function postNotice(room) {
+  if (!NOTICE) return
+  const base = baseRoomOf(room)
+  if (noticedRooms.has(base)) return          // once per room per process, not once per socket
+  noticedRooms.add(base)
+  try {
+    const bd = getYDoc(base)
+    if (!bd) return
+    const chat = bd.getArray('chat')
+    // Never repeat a notice the room already carries. The relay restarts (a free host
+    // sleeps and wakes), and without this a user who reconnects after each restart
+    // collects the same message over and over -- which reads as a broken product.
+    const recent = chat.toArray().slice(-50)
+    if (recent.some((m) => m && m.by === 'relay' && m.text === NOTICE)) return
+    chat.push([{ by: 'relay', kind: 'system', at: new Date().toTimeString().slice(0, 8), text: NOTICE }])
+    audit('notice-posted', { room: base })
+  } catch { /* base doc unavailable -- a notice is never worth failing a connection over */ }
+}
+
+/**
+ * Post one arbitrary system line into a room's chat, deduplicated against what is already
+ * there. Separate from postNotice() above, which serves a single configured NOTICE string
+ * and short-circuits when none is set.
+ *
+ * The dedup is the important part, and it is the same lesson postNotice already carries: a
+ * free host sleeps and wakes, and without this a customer who reconnects collects the same
+ * message again and again -- which reads as a broken product rather than a helpful warning.
+ */
+function postNoticeText(baseRoom, textLine) {
+  if (!textLine) return
+  try {
+    const bd = getYDoc(baseRoom)
+    if (!bd) return
+    const chat = bd.getArray('chat')
+    const recent = chat.toArray().slice(-50)
+    if (recent.some((m) => m && m.by === 'relay' && m.text === textLine)) return
+    chat.push([{ by: 'relay', kind: 'system', at: new Date().toTimeString().slice(0, 8), text: textLine }])
+  } catch { /* a notice is never worth failing a write over */ }
+}
+
 const PROVENANCE = (process.env.HIVE_PROVENANCE || 'off').toLowerCase()
 
 function installProvenanceGuard(room) {
@@ -490,7 +631,14 @@ if (PERSIST_DIR) {
   const flush = (docName, ydoc) => { try { fs.writeFileSync(fileFor(docName), Buffer.from(Y.encodeStateAsUpdate(ydoc))) } catch (e) { console.error('[relay] persist write failed', e.message) } }
   setPersistence({
     bindState: async (docName, ydoc) => {
-      try { const buf = fs.readFileSync(fileFor(docName)); Y.applyUpdate(ydoc, new Uint8Array(buf)) } catch { /* no prior state */ }
+      try {
+        const buf = fs.readFileSync(fileFor(docName))
+        Y.applyUpdate(ydoc, new Uint8Array(buf))
+        // Seed the size counter from what we just loaded. Without this a restart resets
+        // every doc to "0 bytes used", so a room already at the cap would be allowed to
+        // grow again -- the limit would only ever hold until the next deploy.
+        setDocBytes(docName, buf.length)
+      } catch { /* no prior state */ }
       let pending = null
       ydoc.on('update', () => { if (pending) return; pending = setTimeout(() => { pending = null; flush(docName, ydoc) }, 1000) })
     },
@@ -500,6 +648,59 @@ if (PERSIST_DIR) {
 }
 
 const server = http.createServer((req, res) => {
+  // Health and capacity. A paid relay needs an answer to "is it up, and how close to its
+  // limits" that does not require reading the logs -- it is what an uptime check polls and
+  // what you look at first when someone says the room is slow. No identities, no room
+  // names, no document contents: it is unauthenticated on purpose, so it must leak nothing.
+  if (req.url === '/health' || req.url === '/healthz') {
+    const s = limitStats()
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end(JSON.stringify({
+      ok: true,
+      uptimeSec: Math.round(process.uptime()),
+      connections: s.connections,
+      rooms: s.rooms,
+      docsTracked: s.docsTracked,
+      largestDocBytes: s.largestDocBytes,
+      authMode: AUTH_MODE,
+      licenseRequired: process.env.HIVE_REQUIRE_LICENSE === 'true',
+      persistence: !!PERSIST_DIR,
+      limits: s.limits,
+      tiers: TIERS,
+      metering: meter.snapshot(),
+    }))
+  }
+
+  // PER-AGENT ACTIVITY. Answers "which agent is writing, how much, to how many files" —
+  // the question a customer running five agents actually asks when a room feels wrong.
+  //
+  // NOT token spend, and it must never be presented as such: an agent's LLM calls go
+  // straight to its provider and never pass through this relay, so a token figure here
+  // would be fabricated. This is what the relay genuinely observed.
+  //
+  // Unlike /health, this carries room and agent names, so it is NOT public: it requires the
+  // same admin secret as revocation. Leaking who is working on which file is a real
+  // disclosure for a customer with private repositories.
+  if (req.url === '/usage' || (req.url || '').startsWith('/usage?')) {
+    const want = process.env.HIVE_ADMIN_SECRET || ''
+    const got = req.headers['x-hive-admin'] || ''
+    if (!want || got !== want) {
+      res.writeHead(403, { 'content-type': 'application/json' })
+      return res.end(JSON.stringify({
+        error: want ? 'Q441 bad or missing X-Hive-Admin header' : 'Q442 /usage is disabled: set HIVE_ADMIN_SECRET to enable it',
+      }))
+    }
+    let room = null
+    try { room = new URL(req.url, 'http://x').searchParams.get('room') } catch { }
+    const rows = usageFor(room)
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end(JSON.stringify({
+      note: 'relay-observed activity. NOT LLM token spend — agent model calls do not pass through this relay.',
+      agents: rows.length,
+      usage: rows,
+    }))
+  }
+
   if (req.url === '/__hive/revoke') {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
     if (req.method === 'POST') return void handleRevoke(req, res)
@@ -586,6 +787,40 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true })
 const roomAgents = new Map() // Tracks active committers: room -> Set(agent_id)
 
+// WHO PAYS FOR A ROOM: baseRoom -> {account, tier}
+//
+// The account used to be decided by the CONNECTING client's key, and that broke the team
+// case in a way a customer could never diagnose. Three people share one workspace; one has
+// the key in their MCP config and two do not. The first billed to `lic:…` on paid ceilings,
+// the other two billed to `room:…` on FREE ceilings -- so two of them eventually could not
+// write in a workspace their colleague was paying for, while nothing anywhere explained why.
+//
+// A workspace has ONE payer. The first licensed client to join claims it, and everyone else
+// in that base room inherits that account and its ceilings. This is how Figma and Notion
+// work: the credential proves you may join, the WORKSPACE decides who is billed.
+//
+// Why inheriting is safe: a room id is 72 bits of randomness, and production runs
+// HIVE_AUTH_MODE=required so joining needs a scoped token as well. Access control is the
+// invite; this map only answers "whose meter does this write land on".
+//
+// In memory only, deliberately. It is a cache of a fact the licence record already holds, so
+// a restart costs one re-claim by the next licensed client rather than a stale wrong answer.
+const roomAccount = new Map()
+
+function claimRoomAccount(baseRoom, license, tier) {
+  if (!license) return null
+  const account = meter.accountFor(license, baseRoom)
+  // Refresh on every licensed connect so a plan change (or a seat increase) propagates to
+  // the whole room, rather than the room being stuck on whatever the first joiner had.
+  roomAccount.set(baseRoom, { account, tier })
+  return account
+}
+
+/** The account and tier an unlicensed connection inherits, or null to fall back to free. */
+function inheritedRoomAccount(baseRoom) {
+  return roomAccount.get(baseRoom) || null
+}
+
 // WORKSPACE occupancy, which is NOT the same number as room occupancy and was the
 // reason a log full of `inRoom:1` looked like "nobody ever has company". Every file
 // is its own room, so `roomAgents` answers "who has THIS FILE open" -- almost always
@@ -645,11 +880,33 @@ server.on('upgrade', async (req, socket, head) => {
   // The previous version admitted anything prefixed "HC-PRO-" and read the seat count out
   // of the key, so HC-PRO-9999-anything bought nothing and granted 9,999 committers.
   let committerLimit = Infinity
+  // The usage tier this connection gets. Computed from the licence verdict, not from the
+  // key, and defaulted to free so a relay with licensing DISABLED still applies the free
+  // ceilings rather than no ceilings at all — "we are not checking payment" must not mean
+  // "we are not bounding cost".
+  let tier = limitsFor(null)
+
+  // SELF-HOSTED / ENTERPRISE. An operator running their own relay IS the licensee: there is
+  // nobody to bill and no /api/validate to ask, yet the free ceiling (8 connections per room)
+  // is far too small for a real team — a room of 8 agents plus one human is already 9.
+  // HIVE_SEATS grants the pro tier directly, with the same per-seat arithmetic a paying
+  // customer gets.
+  //
+  // This cannot be used to dodge payment: `server.js` is the SERVICE and is deliberately
+  // absent from the npm package's files[], so the only person who can set this is whoever is
+  // already paying to run the relay. A real licence still wins — the block below overwrites
+  // this whenever HIVE_REQUIRE_LICENSE is on.
+  const selfHostSeats = Math.max(0, parseInt(process.env.HIVE_SEATS || '0', 10) || 0)
+  if (selfHostSeats > 0) {
+    tier = limitsFor({ valid: true, plan: 'pro', seats: selfHostSeats })
+    committerLimit = selfHostSeats
+  }
+
   if (process.env.HIVE_REQUIRE_LICENSE === 'true') {
     let verdict
     try { verdict = await verifyLicense(license) }
     catch (e) {
-      verdict = { valid: false, seats: 0, source: 'unavailable', reason: 'verification threw' }
+      verdict = { valid: false, seats: 0, plan: null, source: 'unavailable', reason: 'verification threw' }
       console.error('[relay] verifyLicense threw:', e && e.message)
     }
     if (!verdict.valid) {
@@ -663,6 +920,7 @@ server.on('upgrade', async (req, socket, head) => {
       return
     }
     committerLimit = verdict.seats > 0 ? verdict.seats : 1
+    tier = limitsFor(verdict)
   }
 
   // Fail CLOSED on any unexpected error in authorization — a thrown exception here
@@ -692,13 +950,47 @@ server.on('upgrade', async (req, socket, head) => {
     }
   }
 
+  // CAPACITY, checked last among the gates and before the handshake completes. Last because
+  // a client that is unauthorized or unpaid should be told that, not "we are full"; before
+  // the handshake because a rejected connection should cost one socket and no doc state.
+  // This is separate from the committer/seat limit above: seats are entitlement, this is
+  // survival -- one client reconnecting in a loop is not a licensing question.
+  const full = admitConnection(room, tier)
+  if (full) {
+    audit('reject-capacity', { room, identity: agentId, reason: full.reason })
+    socket.write(`HTTP/1.1 ${full.code} ${full.reason}\r\nConnection: close\r\n\r\n`)
+    socket.destroy()
+    return
+  }
+
   wss.handleUpgrade(req, socket, head, (conn) => {
-    conn._hive = { room, identity: auth.identity, role: auth.role }
+    // `account` is what usage meters against: the licence key when there is one, else the
+    // base room. Computed here so a licensed client accumulates across every room it opens
+    // and across relay restarts, which is exactly what the per-file seat counter could not do.
+    // Declared HERE, before anything reads it. It used to be introduced further down, so
+    // the account logic below referenced it in its temporal dead zone -- a ReferenceError on
+    // every single connection, which `node --check` cannot see because it is a runtime rule,
+    // not a syntax one.
+    const baseRoom = baseRoomOf(room)
+    // A licensed client claims the workspace for its account; an unlicensed one INHERITS
+    // whatever the workspace was claimed for. That is what makes a team on one plan actually
+    // work -- see roomAccount above for the failure this replaces.
+    let account = claimRoomAccount(baseRoom, license, tier)
+    if (!account) {
+      const inherited = inheritedRoomAccount(baseRoom)
+      if (inherited) {
+        account = inherited.account
+        tier = inherited.tier   // and the ceilings, or they would still hit the free wall
+      } else {
+        account = meter.accountFor('', baseRoom)  // genuinely unclaimed: an anonymous workspace
+      }
+    }
+    conn._hive = { room, identity: auth.identity, role: auth.role, tier, account }
+    noteConnectionOpened(room)
     
     // Add agent to active committers list
     if (!roomAgents.has(room)) roomAgents.set(room, new Set())
     roomAgents.get(room).add(agentId)
-    const baseRoom = baseRoomOf(room)
     joinWorkspace(baseRoom, auth.identity)
 
     // Remove agent when connection drops, and SAY SO. Without a disconnect event the
@@ -709,6 +1001,14 @@ server.on('upgrade', async (req, socket, head) => {
     // short-lived connections, a real session as a long one.
     const openedAt = Date.now()
     conn.on('close', () => {
+      noteConnectionClosed(room)
+      // Fold this connection's counters into the per-agent totals. Done on close because a
+      // client holds one connection per FILE: accumulating on the base room with the file
+      // name recorded is what makes "which agent wrote most, and to how many files"
+      // answerable, which a per-socket view cannot do.
+      try {
+        if (conn._hiveLimit) recordUsage(baseRoom, agentId, conn._hiveLimit.usage(), pathOf(room) || null)
+      } catch { /* telemetry must never break a disconnect */ }
       const active = roomAgents.get(room)
       if (active) {
         active.delete(agentId)
@@ -760,9 +1060,11 @@ wss.on('connection', (conn, req) => {
   } else {
     console.log(`[relay] a client joined room "${room}"`)
   }
+  installUsageLimits(conn) // FIRST: every gate below costs work per message, so bound it here
   if (conn._hive && conn._hive.role === 'reader') makeReadOnly(conn) // enforce read-only BEFORE y-websocket wires its handler
   else if (ENFORCE_CLAIMS !== 'off') installWriteGate(conn) // dynamic claim/DCO write-gate (opt-in)
   setupWSConnection(conn, req, { docName: room })
+  postNotice(room)                       // service notice, if one is set
   if (PROVENANCE !== 'off') installProvenanceGuard(room) // substrate: verify/enforce the file's provenance ledger (opt-in)
 })
 
@@ -772,7 +1074,25 @@ server.listen(PORT, () => {
   console.log(`[relay] auth mode: ${AUTH_MODE}${AUTH_MODE === 'required' ? ` (keys: ${JWT_SECRET ? 'HS256 ' : ''}${JWT_PUBKEY ? 'RS256' : ''})` : ''}`)
   if (ENFORCE_CLAIMS !== 'off') console.log(`[relay] claim/DCO write-enforcement: ${ENFORCE_CLAIMS}`)
   if (PROVENANCE !== 'off') console.log(`[relay] substrate provenance enforcement: ${PROVENANCE}`)
+  // Metering is off unless HIVE_USAGE_SECRET is set, and it says which it is out loud. A
+  // relay silently not metering is how you discover at the end of a month that the free tier
+  // was unlimited the whole time.
+  if (meter.start()) {
+    const s = meter.snapshot()
+    console.log(`[relay] usage metering ON -> free allowance ${Math.round(s.freeAllowance.writeBytes / 1048576)} MB writes/month, flush every ${Math.round(s.flushMs / 1000)}s`)
+  } else {
+    console.log('[relay] usage metering OFF (set HIVE_USAGE_SECRET to enable the free-tier auto-lock)')
+  }
 })
+
+// Flush on the way out so the last minute of a shut-down relay is not lost. Best-effort and
+// time-boxed: a slow meter must never hold a deploy open.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    meter.stop()
+    Promise.race([meter.flush(), new Promise((r) => setTimeout(r, 2500))]).finally(() => process.exit(0))
+  })
+}
 
 // --- optional keep-warm (free-tier hosts sleep after ~15 min idle) ---
 const KEEP_URL = process.env.RENDER_EXTERNAL_URL || process.env.KEEPALIVE_URL

@@ -141,3 +141,33 @@ export function formatMessage(m) {
   const times = m.repeated > 1 ? `  (×${m.repeated})` : ''
   return `${m.at || ''} ${m.by}(${m.kind || 'ai'}): ${m.text}${times}`
 }
+
+/**
+ * AMBIENT DIGEST -- what to do with room chatter nobody addressed to you.
+ *
+ * Un-addressed messages were handed to every agent in full, on every wake. In a room of N
+ * agents that means each one pays for the other N-1's conversation every single turn: O(N^2)
+ * context, so TOKEN COST -- not the relay -- becomes the real ceiling on room size. Measured:
+ * the relay holds 8 clients per room, converging in 1.0s on 45 MB. What actually stops a big
+ * room is this block of text.
+ *
+ * The COUNT stays exact and the newest messages still arrive in full. Only the older bodies
+ * are withheld, and the agent is told the number and how to read them, so nothing is hidden --
+ * it just stops being paid for unasked. An agent that wants the whole log calls hive_read_chat.
+ *
+ * Returns '' when there is nothing, so a caller can drop it with a falsy check.
+ */
+export function ambientDigest(messages, { keep = 4 } = {}) {
+  const list = Array.isArray(messages) ? messages : []
+  if (!list.length) return ''
+  const shown = keep > 0 ? list.slice(-keep) : []
+  const hidden = list.length - shown.length
+  const head = 'room activity (' + list.length +
+    (hidden ? ', newest ' + shown.length + ' shown' : '') + '):'
+  const tail = hidden
+    ? '\n... ' + hidden + ' earlier message(s) withheld to keep your context small'
+      + ' -- hive_read_chat for the full log'
+    : ''
+  if (!shown.length) return head + tail
+  return head + '\n' + shown.map(formatMessage).join('\n') + tail
+}

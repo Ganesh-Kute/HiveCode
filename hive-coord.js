@@ -31,8 +31,19 @@
 
 export function makeCoordinator(shared, self, opts = {}) {
   const ttl = opts.ttl != null ? opts.ttl : 5000
+  // A holder may RENEW its own claim, because a long edit should not lose the file mid-write.
+  // But renewal cannot be unbounded, or the lease stops being a lease. MEASURED on a 12-agent
+  // run: one agent re-claimed site/pricing.md eight times and legal/terms.md seven times and
+  // released twice, and since `claim` reset `at` on every call the 60s TTL never once elapsed.
+  // Six other agents sensed a live owner for the whole run; sixteen messages asked it to let go.
+  // `since` records the FIRST acquisition and survives renewal, so what caps a claim is total
+  // hold time rather than time since the holder last touched it.
+  const maxHold = opts.maxHold != null ? opts.maxHold : ttl * 3
   const now = opts.now || (() => Date.now())
-  const expired = (c) => !c || (now() - c.at) >= c.ttl
+  const held = (c) => now() - (c.since != null ? c.since : c.at) // total, across renewals
+  const cap = (c) => (c.maxHold != null ? c.maxHold : maxHold)
+  const overheld = (c) => !!c && held(c) >= cap(c)
+  const expired = (c) => !c || (now() - c.at) >= c.ttl || overheld(c)
 
   // SENSE: the live, non-expired claim on a region (or null if open).
   const sense = (region) => { const c = shared.get(region); return expired(c) ? null : c }
@@ -40,7 +51,16 @@ export function makeCoordinator(shared, self, opts = {}) {
   // Is this region open to ME? (free, expired, or already mine)
   const free = (region) => { const c = shared.get(region); return expired(c) || c.by === self }
 
-  const claim = (region, intent) => { shared.set(region, { by: self, intent, at: now(), ttl }) }
+  // A renewal keeps the original `since`; a fresh acquisition starts a new one. Claims written
+  // before `since` existed fall back to `at`, so an older room stays readable.
+  const claim = (region, intent) => {
+    const prev = shared.get(region)
+    const renewing = !!prev && prev.by === self && !expired(prev)
+    shared.set(region, {
+      by: self, intent, at: now(), ttl, maxHold,
+      since: renewing ? (prev.since != null ? prev.since : prev.at) : now(),
+    })
+  }
   const release = (region) => { const c = shared.get(region); if (c && c.by === self) shared.delete(region) }
 
   // ACQUIRE one region: sense → claim → verify. Returns true iff I now hold it.
@@ -49,6 +69,13 @@ export function makeCoordinator(shared, self, opts = {}) {
   const acquire = (region, intent) => {
     const c = shared.get(region)
     if (c && !expired(c) && c.by !== self) return false // sensed an owner → defer
+    // Once total hold is exhausted the region is open to everyone — INCLUDING the outgoing
+    // holder, which could then win the re-claim race indefinitely and starve the waiters that
+    // maxHold exists to admit. So the overrunning holder stands down for a full maxHold, which
+    // is a window every waiter is guaranteed to poll inside. A single-ttl cooldown was tried
+    // first and is NOT enough: the holder just waits it out and opens a fresh `since`.
+    // The bar lapses on its own, so a file nobody else wants returns to its owner.
+    if (c && c.by === self && overheld(c) && held(c) < 2 * cap(c)) return false
     claim(region, intent)
     const after = shared.get(region)
     return !(after && after.by !== self) // verify: did my claim survive?

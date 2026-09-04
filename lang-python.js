@@ -264,6 +264,224 @@ function isRefToken(src, t) {
   return !(p >= 0 && src[p] === '.')
 }
 
+// --- scope-aware reference analysis ---------------------------------------------
+//
+// WHY THIS IS EXACT AND NOT ANOTHER HEURISTIC. Python binds by assignment: a name
+// assigned anywhere in a function body is local to that function for the WHOLE body, and
+// reading it before the assignment is an UnboundLocalError rather than a global read. So
+// a function that assigns `helper` cannot also be referring to a module-level `helper` —
+// the language forbids the mixed case. That is what makes subtracting local bindings safe
+// here, where a plain "does this name appear anywhere" check has to stay over-cautious.
+//
+// WHAT IT FIXES. usedIdentifiers reports every name it sees, so deleting a top-level
+// `helper` while some unrelated function happens to have a local named `helper` was
+// reported as ref:helper — a merge refused that was perfectly safe, falling back to line
+// merge with conflict markers. Common names (config, data, result, helper) trip this
+// constantly. Reproduced in test/scope-repro.mjs before this existed.
+//
+// THE DIRECTION THAT MATTERS. Missing a REAL reference would let ICR delete something
+// still in use — the one failure this library promises never to have — so every rule
+// below fails towards "still referenced":
+//   • module scope subtracts nothing, so top-level rebinding never hides a reference;
+//   • a nested def is its own scope, never folded into its parent's bindings;
+//   • a class body contributes no bindings at all (its names are attributes, invisible
+//     to methods), so they stay free;
+//   • `global`/`nonlocal` remove a name from the local set;
+//   • subscript and attribute targets (`a[i] = `, `a.b = `) bind nothing — `a` must
+//     already exist, so it stays a reference;
+//   • anything unrecognised is left free.
+const PY_KW = new Set(['False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await',
+  'break', 'class', 'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for',
+  'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal', 'not', 'or', 'pass',
+  'raise', 'return', 'try', 'while', 'with', 'yield'])
+
+const isName = (k) => /^[A-Za-z_]\w*$/.test(k) && !PY_KW.has(k)
+const OPEN = new Set(['(', '[', '{'])
+const CLOSE = new Set([')', ']', '}'])
+
+// A target position binds only a bare name. `a[i] = x` and `a.b = x` require `a` to exist
+// already, so they are reads, not bindings.
+function bareTargets(toks, from, to, out) {
+  for (let i = from; i < to; i++) {
+    const t = toks[i]
+    if (!isName(t.k)) continue
+    const prev = toks[i - 1] && toks[i - 1].k
+    const next = toks[i + 1] && toks[i + 1].k
+    if (prev === '.' || next === '.' || next === '[' || next === '(') continue
+    out.add(t.k)
+  }
+}
+
+// Names this statement binds in its own scope, and names it explicitly disowns.
+function stmtBindings(text) {
+  const bind = new Set(), disown = new Set()
+  const toks = lexTokens(text).filter((t) => t.k.trim() !== '')
+  const kw = toks.length ? toks[0].k : ''
+
+  if (kw === 'global' || kw === 'nonlocal') {
+    for (const t of toks.slice(1)) if (isName(t.k)) disown.add(t.k)
+    return { bind, disown }
+  }
+
+  if (kw === 'import' || kw === 'from') {
+    // `import a.b as c` binds c; `import a.b` binds a; `from m import x, y as z`.
+    const start = kw === 'from' ? toks.findIndex((t) => t.k === 'import') : 0
+    if (start >= 0) {
+      for (let i = start + 1; i < toks.length; i++) {
+        if (toks[i].k === 'as' && isName((toks[i + 1] || {}).k)) { bind.add(toks[i + 1].k); i++; continue }
+        // first segment of a dotted path, and only when not renamed by a later `as`
+        if (isName(toks[i].k) && (toks[i - 1] || {}).k !== '.' &&
+            (toks[i + 1] || {}).k !== '.' && (toks[i + 1] || {}).k !== 'as') bind.add(toks[i].k)
+        else if (isName(toks[i].k) && (toks[i + 1] || {}).k === '.' && kw === 'import') bind.add(toks[i].k)
+      }
+    }
+    return { bind, disown }
+  }
+
+  let depth = 0
+  for (let i = 0; i < toks.length; i++) {
+    const k = toks[i].k
+    if (OPEN.has(k)) { depth++; continue }
+    if (CLOSE.has(k)) { depth--; continue }
+
+    // `for <targets> in` — at any depth, so comprehensions bind too.
+    if (k === 'for') {
+      let j = i + 1
+      while (j < toks.length && toks[j].k !== 'in') j++
+      bareTargets(toks, i + 1, j, bind)
+      i = j
+      continue
+    }
+    // `with x as name`, `except E as name`
+    if (k === 'as' && isName((toks[i + 1] || {}).k)) { bind.add(toks[i + 1].k); i++; continue }
+
+    if (k !== '=') continue
+    const prev = (toks[i - 1] || {}).k
+    const next = (toks[i + 1] || {}).k
+    if (next === '=') { i++; continue }                       // ==
+    if (prev === '=' || prev === '!' || prev === '<' || prev === '>') continue
+    if (depth > 0) {
+      // Inside brackets `=` is a keyword argument, except for the walrus `:=`.
+      if (prev === ':' && isName((toks[i - 2] || {}).k)) bind.add(toks[i - 2].k)
+      continue
+    }
+    // Statement-level assignment: simple, augmented (`+=`, prev is an operator), or
+    // annotated (`x: int = 1`). Everything left of it is the target list.
+    bareTargets(toks, 0, i, bind)
+    break
+  }
+  return { bind, disown }
+}
+
+function refsIn(text, emit) {
+  for (const t of lexTokens(text)) if (isName(t.k) && isRefToken(text, t)) emit(t.k)
+}
+
+// Parameter names of a def header — used as bindings of the CHILD scope, and excluded
+// from the header's own references so a parameter is never mistaken for a free name.
+function defParams(header) {
+  const toks = lexTokens(header).filter((t) => t.k.trim() !== '')
+  const open = toks.findIndex((t) => t.k === '(')
+  if (open < 0) return new Set()
+  const params = new Set()
+  let depth = 0
+  for (let i = open; i < toks.length; i++) {
+    const k = toks[i].k
+    if (OPEN.has(k)) { depth++; continue }
+    if (CLOSE.has(k)) { depth--; if (depth === 0) break; continue }
+    if (depth !== 1 || !isName(k)) continue
+    const prev = (toks[i - 1] || {}).k
+    if (prev === '(' || prev === ',' || prev === '*' || prev === '**') params.add(k)
+  }
+  return params
+}
+
+// Split a def/class unit into the part evaluated in the ENCLOSING scope (decorators and
+// the header line — where default values and base classes live) and the body, which is
+// its own scope.
+function splitDeclUnit(text) {
+  const L = lines(text)
+  let h = 0
+  while (h < L.length && (L[h].blank || /^\s*@/.test(L[h].text))) h++
+  if (h >= L.length) return null
+  const head = L[h]
+  const isDef = HEAD.test(head.text), isCls = CLS.test(head.text)
+  if (!isDef && !isCls) return null
+  // A signature can span lines while its brackets are open.
+  let e = h
+  let depth = 0
+  do {
+    for (const ch of L[e].text) { if (OPEN.has(ch)) depth++; else if (CLOSE.has(ch)) depth-- }
+    e++
+  } while (e < L.length && depth > 0)
+  const header = text.slice(0, L[e - 1].end)
+  let b = e
+  while (b < L.length && L[b].blank) b++
+  const body = b < L.length ? text.slice(L[b].start) : ''
+  return { isDef, header, body, bodyIndent: b < L.length ? L[b].indent : 0 }
+}
+
+// Walk one scope's statements, descending through compound bodies (same scope) but
+// stopping at def/class (new scope).
+function scopeParts(code, base, onStmt, onDecl) {
+  for (const u of blocks(code, base)) {
+    const text = code.slice(u.start, u.end)
+    if (splitDeclUnit(text)) { onDecl(text); continue }
+    const L = lines(text)
+    let b = 1
+    while (b < L.length && L[b].blank) b++
+    if (b < L.length && L[b].indent > base) {
+      onStmt(text.slice(0, L[b].start))                    // the `if ...:` / `for ...:` head
+      scopeParts(text.slice(L[b].start), L[b].indent, onStmt, onDecl)
+    } else onStmt(text)
+  }
+}
+
+// `subtract` is false at module scope: a module-level rebinding must never hide a
+// reference to the declaration being deleted.
+function scopeFree(code, base, enclosing, free, subtract) {
+  const stmts = [], decls = []
+  scopeParts(code, base, (t) => stmts.push(t), (t) => decls.push(t))
+
+  const local = new Set(), disowned = new Set()
+  for (const t of stmts) {
+    const { bind, disown } = stmtBindings(t)
+    for (const n of bind) local.add(n)
+    for (const n of disown) disowned.add(n)
+  }
+  for (const t of decls) {
+    const s = splitDeclUnit(t)
+    const m = s && (s.header.match(HEAD) || s.header.match(CLS))
+    if (m) local.add(m[1])
+  }
+  for (const n of disowned) local.delete(n)
+
+  const bound = subtract ? new Set([...enclosing, ...local]) : new Set(enclosing)
+  for (const t of stmts) refsIn(t, (n) => { if (!bound.has(n)) free.add(n) })
+
+  for (const t of decls) {
+    const s = splitDeclUnit(t)
+    if (!s) continue
+    const params = s.isDef ? defParams(s.header) : new Set()
+    const declName = (s.header.match(HEAD) || s.header.match(CLS) || [])[1]
+    // Decorators, annotations and default values run in THIS scope.
+    refsIn(s.header, (n) => {
+      if (n === declName || params.has(n) || bound.has(n)) return
+      free.add(n)
+    })
+    if (!s.body) continue
+    // A class body contributes no bindings to anything nested inside it, so its methods
+    // are analysed against the enclosing scope only. `subtract: s.isDef` is the whole of
+    // that rule and it is load-bearing: with subtraction left on for a class, `helper = 9`
+    // at class level became a binding the methods inherited, and a real `helper()` call
+    // inside a method stopped being reported — a merge shipped with a dangling reference,
+    // caught by the safety case in test/scope-repro.mjs. Class attributes are reached as
+    // `self.helper` or `C.helper`, never as a bare name, so they must never shadow.
+    scopeFree(s.body, s.bodyIndent,
+              s.isDef ? new Set([...bound, ...params]) : bound, free, s.isDef)
+  }
+}
+
 // PER-STATEMENT bracket nesting — the soundness backstop the whole-file `balanced()`
 // (global) and `indentsOk()` (indentation) both miss. A token merge can splice a result
 // that is GLOBALLY balanced yet LOCALLY mis-nested: side A reformats `f(x)` to span lines
@@ -307,6 +525,16 @@ export const python = {
     const used = new Set()
     for (const t of lexTokens(src)) if (isRefToken(src, t)) used.add(t.k)
     return used
+  },
+  // Scope-aware upgrade of the above — the engine prefers this for the dangling-reference
+  // check (icr.js). Names that resolve to a LOCAL binding are not reported, so a deleted
+  // top-level `helper` is no longer held hostage by an unrelated local of the same name.
+  // Kept alongside usedIdentifiers rather than replacing it: the approximate version is
+  // still the honest answer for anything this cannot resolve.
+  referencedFreeNames: (src) => {
+    const free = new Set()
+    scopeFree(String(src), 0, new Set(), free, false)
+    return free
   },
   // The def/class text with its own name excluded, so renamed twins compare equal.
   // trimEnd(): a unit owns its trailing blank lines, and splicing can change how many

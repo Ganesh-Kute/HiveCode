@@ -82,6 +82,34 @@ function mergeArray(base, a, b) {
   return out
 }
 
+// SYMMETRY. The merged object is re-serialized with JSON.stringify, which emits keys in
+// INSERTION order — so the order we walk the key union IS the output byte order. The
+// obvious union, `[...keys(base), ...keys(a), ...keys(b)]`, is side-ordered: ours's new
+// keys always precede theirs's, so merge(base,a,b) and merge(base,b,a) produce clean
+// 'auto' results that differ byte-for-byte. Measured at 43/167 auto merges (26%) by
+// test/icr-data-torture-test.js. Semantically identical, but P2 SYMMETRY is asserted
+// byte-wise for every other language (icr-torture-test.js), and byte-inequality is
+// precisely what a CRDT peer and a git blob hash react to — the two consumers the README
+// names. So the union order must not depend on which side is called `a`:
+//   • keys present in base keep BASE's order (unchanged behaviour, minimal diffs);
+//   • keys added by either side follow, ordered by where their own author put them
+//     (min index across the sides that have it), ties broken by key name.
+// Both rules are symmetric in a/b, so swapping the sides cannot change the output.
+function unionKeys(base, a, b) {
+  const rank = new Map()
+  for (const obj of [a, b]) {
+    const ks = Object.keys(obj)
+    for (let i = 0; i < ks.length; i++) {
+      const k = ks[i]
+      if (k in base) continue
+      const prev = rank.get(k)
+      if (prev === undefined || i < prev) rank.set(k, i)
+    }
+  }
+  const added = [...rank.keys()].sort((x, y) => (rank.get(x) - rank.get(y)) || (x < y ? -1 : x > y ? 1 : 0))
+  return [...Object.keys(base), ...added]
+}
+
 // Value-wise 3-way merge. Fills `conflicts` (path strings) and `resolvable`
 // ({key, base, ours, theirs} with pretty-printed values) on same-path clashes;
 // the merged value keeps BASE at conflicted paths (the engine refuses the whole
@@ -92,8 +120,7 @@ function mergeVal(base, a, b, path, conflicts, resolvable) {
   if (eq(b, base)) return a
   if (isObj(base) && isObj(a) && isObj(b)) {
     const out = {}
-    const keys = [...new Set([...Object.keys(base), ...Object.keys(a), ...Object.keys(b)])]
-    for (const k of keys) {
+    for (const k of unionKeys(base, a, b)) {
       const p = path ? path + '.' + k : k
       const inB = k in base, inA = k in a, inBb = k in b
       if (inB && !inA && !inBb) continue                                     // deleted on both sides
