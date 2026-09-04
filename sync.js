@@ -892,8 +892,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (code === 401) return 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
     if (code === 402) return `this room is over its plan limit. Contact ${SUPPORT} and we will sort it out.`
     if (code === 403) return 'the relay refused this room or path for your token. You are outside the folders you were given.'
-    if (code === 429) return `the relay is rate-limiting this client. Wait a minute; if it persists, contact ${SUPPORT}.`
-    if (code === 503) return `the relay is up but not serving. It may be restarting -- if this lasts, contact ${SUPPORT}.`
+    // 429 at the UPGRADE is always Q431 "room at capacity" -- never rate limiting. The rate
+    // limiter works on frames after the socket is up and announces itself over the room chat,
+    // so it cannot produce this. Saying "rate-limited, wait a minute" here was wrong twice
+    // over: it named the wrong cause and it told the user to wait for something that never
+    // clears. This one is worth getting right -- a silently-refused connection is invisible
+    // (y-websocket retries forever with no error), and on 2026-09-05 that cost an hour and
+    // put a wrong root cause into public/control.html: five of thirteen clients never joined
+    // a room, and the missing messages were read as a relay bug that does not exist.
+    if (code === 429) return `this room is FULL, so you were not let in (Q431). A relay admits a limited ` +
+      `number of connections per room -- 8 on the free tier -- and this room is at that ceiling. Note it ` +
+      `counts CONNECTIONS, not people: one agent holding several files holds several. If you run the relay, ` +
+      `raise it with HIVE_SEATS; otherwise ask whoever does, or contact ${SUPPORT}.`
+    if (code === 503) return `the relay is not serving this connection. Either the whole relay is at capacity ` +
+      `(Q430) or it could not check your licence and is failing closed rather than guessing. It may also be ` +
+      `restarting -- if this lasts, contact ${SUPPORT}.`
     if (code) return `the relay answered ${code} instead of accepting the connection. Contact ${SUPPORT}.`
     return `the relay at ${relay} cannot be reached. It may be down, asleep, or blocked by a network. ` +
            `Your edits are still saved on disk but are NOT being shared. Contact ${SUPPORT} if this continues.`

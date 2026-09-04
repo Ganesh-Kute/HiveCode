@@ -1072,8 +1072,21 @@ server.listen(PORT, () => {
   console.log(`[relay] listening on :${PORT}`)
   console.log(`[relay] room URL pattern: ws://localhost:${PORT}/<room-name>`)
   console.log(`[relay] auth mode: ${AUTH_MODE}${AUTH_MODE === 'required' ? ` (keys: ${JWT_SECRET ? 'HS256 ' : ''}${JWT_PUBKEY ? 'RS256' : ''})` : ''}`)
-  if (ENFORCE_CLAIMS !== 'off') console.log(`[relay] claim/DCO write-enforcement: ${ENFORCE_CLAIMS}`)
-  if (PROVENANCE !== 'off') console.log(`[relay] substrate provenance enforcement: ${PROVENANCE}`)
+  // ALWAYS PRINTED, INCLUDING WHEN OFF -- and that is the whole point. These lines used to be
+  // wrapped in `if (X !== 'off')`, so a relay running with no write-enforcement said NOTHING
+  // about it, and silence had to be read as "off" by someone who already suspected it. The
+  // hosted relay ran that way for weeks: every agent that ever pointed at the default relay
+  // had no write gate, the deploy logs looked completely normal, and "the relay refuses what
+  // isn't allowed" was false in production the entire time. An operator must be able to read
+  // what their relay is actually enforcing off the first screen of its own log.
+  const seatsEnv = Math.max(0, parseInt(process.env.HIVE_SEATS || '0', 10) || 0)
+  const roomCap = seatsEnv > 0
+    ? Math.min(TIERS.pro.connsPerSeat * seatsEnv, TIERS.pro.maxConnsCeiling) + ` (pro, ${seatsEnv} seats)`
+    : TIERS.free.maxConnsPerRoom + ' (FREE tier -- a 12-agent room will not fit; set HIVE_SEATS)'
+  console.log(`[relay] claim/DCO write-enforcement: ${ENFORCE_CLAIMS}` +
+    (ENFORCE_CLAIMS === 'off' ? '   <-- OFF: nothing refuses a write to a claimed file' : ''))
+  console.log(`[relay] substrate provenance enforcement: ${PROVENANCE}`)
+  console.log(`[relay] connections per room: ${roomCap}`)
   // Metering is off unless HIVE_USAGE_SECRET is set, and it says which it is out loud. A
   // relay silently not metering is how you discover at the end of a month that the free tier
   // was unlimited the whole time.

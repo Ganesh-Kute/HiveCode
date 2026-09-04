@@ -362,7 +362,20 @@ async function connect(raw){
   window._h={chat:doc.getArray('chat'),tasks:doc.getMap('tasks'),controls:doc.getMap('controls'),history:doc.getMap('history'),provider,doc}
   window._conn={relay:p.relay,room:p.room,token:p.token} // kept so we can open a file's own doc to restore it
   const ok=()=>{$('dot').classList.add('on');$('connState').textContent='connected';if(timer){clearTimeout(timer);timer=null}}
-  provider.on('status',(e)=>{if(e.status==='connected')ok();else{$('dot').classList.remove('on');$('connState').textContent=e.status}})
+  // A refused upgrade is INVISIBLE in a browser. The relay answers 429 (Q431 room at capacity)
+  // and the browser hands JavaScript a bare close event with no status, so y-websocket just
+  // retries forever and the panel sits there saying "connecting" while the room carries on
+  // without it. That silence is what got read as a relay bug once already. We cannot see the
+  // code, but repeated failures with no sync is a shape worth naming: capacity is the only
+  // thing that refuses an upgrade this consistently, and it is the one the operator can fix.
+  const tries=()=>(provider&&provider.wsUnsuccessfulReconnects)||0
+  provider.on('status',(e)=>{
+    if(e.status==='connected'){ok();return}
+    $('dot').classList.remove('on')
+    $('connState').textContent=tries()>=3?'refused — room may be full':e.status
+    $('connState').title=tries()>=3
+      ?'The relay keeps refusing this connection. The likeliest cause is the room being at its connection ceiling (8 on the free tier — it counts connections, not people). Whoever runs the relay raises it with HIVE_SEATS.':''
+  })
   provider.on('sync',(s)=>{if(s)ok()})
   provider.awareness.on('change',render);doc.on('update',render)
   $('gate').style.display='none';$('app').classList.add('on')
@@ -487,20 +500,38 @@ function sendChat(){
   i.value=''
   resyncAfterWrite()
 }
-// MEASURED, NOT THEORISED: after this page posts its first message it stops receiving other
-// participants' updates. 12 node clients posted 96 messages; with the human silent the page
-// held 108 of 108, and with the human sending one line it held 13 and never grew. Throughout,
-// provider.wsconnected and provider.synced stayed true, wsUnsuccessfulReconnects stayed 0 and
-// the doc clientID never changed -- so the socket is healthy and Yjs believes it is in sync
-// while the relay has stopped sending. It is not the render (that runs on a 1s interval and
-// reads this same array), not provenance (reproduces with it off) and not the connection cap
-// (admitConnection is per-room; 13 of 32 used).
+// THE ORIGINAL DIAGNOSIS HERE WAS WRONG, and it is worth saying why because the mistake is an
+// easy one to repeat. It read: "after this page posts its first message it stops receiving
+// other participants' updates... not the connection cap (admitConnection is per-room; 13 of 32
+// used)" -- and concluded the relay had a per-connection bookkeeping bug.
 //
-// This is a MITIGATION, not the root cause. A fresh connection re-enters the relay's broadcast
-// set and Yjs's sync step1 pulls back everything missed, so nothing is lost -- but the real bug
-// is still in the relay's per-connection bookkeeping and this only papers over it. Leaving the
-// evidence here because whoever fixes it properly will need exactly these facts.
-// A human watching a busy room otherwise goes blind the moment they speak.
+// 32 IS THE PRO-TIER CEILING. It needs HIVE_SEATS set on the relay's host, and the hosted relay
+// never had it, so the real ceiling was the free tier's 8. The cap was ruled out against a
+// number the relay was not running.
+//
+// Reproduced from scratch on 2026-09-05 with demo/deaf-repro.mjs -- one panel plus N agents on
+// this same base room, every client with disableBc so nothing bypasses the relay:
+//
+//   12 agents, free cap (8):   8 of 13 clients ever connected. The panel "received 25 of 40"
+//                              -- BEFORE it spoke as well as after. The five clients that never
+//                              joined never sent anything; the deficit was theirs.
+//   12 agents, cap raised:     13 of 13 connected, 40 of 40 received before AND after speaking,
+//                              panel and a witness agent agreeing at 81 messages each.
+//
+// So the panel does not go deaf when a human speaks. The room was full, the refusal was
+// invisible (admitConnection answers 429 Q431 at the upgrade and y-websocket retries forever
+// with no error a browser can see), and the missing messages were never sent at all. The
+// disconnect/reconnect-at-cap theory was tested too and is also dead -- the slot frees before
+// the reconnect lands.
+//
+// resyncAfterWrite is KEPT anyway, deliberately. The reproduction covers base-room chat from
+// node clients; it does not cover a browser, and it does not cover a room also carrying file
+// traffic. Insurance this cheap stays until someone reproduces the original signature under
+// those conditions -- but it is insurance now, not a fix for a known bug.
+//
+// The real lesson is the invisible refusal. Fixed on the node side in sync.js (429 now reads
+// as "this room is FULL"); a browser cannot see the status at all, which is why the panel says
+// so from the symptom instead, below.
 function resyncAfterWrite(){
   if(!window._h||!window._h.provider)return
   clearTimeout(window._resyncT)

@@ -113,6 +113,12 @@ function startRelay() {
       // replays it when the claim clears. A gate that discards work has only moved the data
       // loss, so queue is the mode a customer should run and therefore the one to test.
       HIVE_ENFORCE_CLAIMS: ENFORCE,
+      // WITHOUT THIS, --peers 12 QUIETLY TESTS NOTHING. An unlicensed relay caps a room at 8
+      // connections (limits.js, free tier) and refuses the rest at the upgrade with a 429 the
+      // client cannot see -- y-websocket retries forever, no error. A 12-peer run then has 8
+      // peers in the room and 4 dangling, which does not look like a failure, it looks like a
+      // quieter room. Sized to the cast so the cap is never what this harness measures.
+      HIVE_SEATS: String(Math.max(4, Math.ceil(PEERS / 2))),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
