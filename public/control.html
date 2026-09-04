@@ -518,16 +518,27 @@ function sendChat(){
 //   12 agents, cap raised:     13 of 13 connected, 40 of 40 received before AND after speaking,
 //                              panel and a witness agent agreeing at 81 messages each.
 //
-// So the panel does not go deaf when a human speaks. The room was full, the refusal was
-// invisible (admitConnection answers 429 Q431 at the upgrade and y-websocket retries forever
-// with no error a browser can see), and the missing messages were never sent at all. The
-// disconnect/reconnect-at-cap theory was tested too and is also dead -- the slot frees before
-// the reconnect lands.
+// WHAT THAT DOES AND DOES NOT SETTLE -- and the distinction matters, because over-reading it
+// is how the first wrong diagnosis got written.
 //
-// resyncAfterWrite is KEPT anyway, deliberately. The reproduction covers base-room chat from
-// node clients; it does not cover a browser, and it does not cover a room also carrying file
-// traffic. Insurance this cheap stays until someone reproduces the original signature under
-// those conditions -- but it is insurance now, not a fix for a known bug.
+// It settles that the cap was a real confound and was wrongly excluded: a 12-agent room on the
+// free tier silently runs 8, and the resulting deficit looks like deafness while being nothing
+// of the kind. It also kills the reconnect-at-cap theory (the slot frees before the reconnect).
+//
+// It does NOT settle the original bug, and the original numbers say so. There the panel held 13
+// while THE AGENTS HELD 109 -- the two diverged. A connection cap cannot do that: a refused
+// client is missing from everyone's count equally, which is exactly what the reproduction shows
+// (panel and witness agreeing at 81 each). So a real divergence happened on that take and this
+// reproduction does not cover it.
+//
+// The untested variable is the one that differs: the real panel is a BROWSER client and every
+// client in the reproduction is node. This page also does not pass disableBc, and it runs
+// alongside file-room traffic that the reproduction has none of. That is where to look next --
+// demo/deaf-repro.mjs takes --agents/--burst/--cap/--enforce/--auth and needs a browser panel
+// added to it before anyone can call this closed.
+//
+// resyncAfterWrite therefore STAYS, as a mitigation for a bug that is still open, not as
+// leftovers from a solved one.
 //
 // The real lesson is the invisible refusal. Fixed on the node side in sync.js (429 now reads
 // as "this room is FULL"); a browser cannot see the status at all, which is why the panel says
