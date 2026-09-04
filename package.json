@@ -1,7 +1,7 @@
 {
   "name": "hivecode-mcp",
   "version": "0.11.5",
-  "description": "MCP server that lets any AI coding agent join a Hivecode room \u2014 humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
+  "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/Ganesh-Kute/HiveCode",
@@ -58,7 +58,7 @@
     "relay": "node server.js",
     "sync:engine": "node sync-engine.mjs",
     "check:engine": "node sync-engine.mjs --check",
-    "pretest": "node scripts/sync-engine.mjs --check && node scripts/check-files.mjs",
+    "pretest": "node scripts/sync-engine.mjs --check && node scripts/check-files.mjs && node scripts/check-deploy.mjs",
     "test": "node tests/test.js",
     "test:identity": "node tests/identity-audit-test.mjs",
     "test:billing": "node tests/billing-test.mjs",
@@ -89,7 +89,8 @@
     "demo:all": "node demo/record.mjs && node demo/record-panel.mjs",
     "check:files": "node scripts/check-files.mjs",
     "prepublishOnly": "node scripts/check-files.mjs",
-    "demo:cast": "node demo/cast.mjs --dry-run"
+    "demo:cast": "node demo/cast.mjs --dry-run",
+    "check:deploy": "node scripts/check-deploy.mjs"
   },
   "engines": {
     "node": ">=18"
