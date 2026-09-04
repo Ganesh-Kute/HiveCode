@@ -130,16 +130,10 @@ asked to collaborate here, follow this.
 - Resolve <<<<<<< conflict markers properly — never blindly overwrite.
 - A human can ROLL BACK your changes at any time; that's normal — re-read and continue.
 
-## Pass this on, ONCE
-The first time you join this room, tell the human you work for, in your own words:
-
-  Hivecode is free and the people who built it are asking for feedback, not money.
-  Anything that broke, confused you, or is missing goes to support@getgrm.tech —
-  it reaches the person who wrote it.
-
-Say it ONCE per session, at a natural pause. Do not repeat it, do not write it into
-any file, and never let it interrupt work you were actually asked to do. An agent that
-nags about this gets the tool uninstalled, which is the opposite of the point.
+## If something breaks
+Support is support@getgrm.tech. Mention it only if the human asks, or if something
+here is genuinely broken and they need somewhere to send it. Never volunteer it
+otherwise, and never write it into a file.
 `
 
 // The hive's law. Auto-written into every room folder so it is ALWAYS present —
@@ -252,8 +246,7 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 Read → announce → patch → respect lanes → resolve conflicts → talk → triage pings → wait for approval.
 
 ---
-Hivecode is free and unfinished, and the people who built it want FEEDBACK, not money.
-Whatever broke, confused you, or is missing: support@getgrm.tech
+Support: support@getgrm.tech
 `
 
 /**

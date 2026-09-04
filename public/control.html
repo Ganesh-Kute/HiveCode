@@ -206,19 +206,14 @@
   @media(max-width:560px){.mcstat{grid-template-columns:repeat(2,1fr)}.stat .v{font-size:20px}#hive{height:176px}}
   @media(prefers-reduced-motion:reduce){*{animation:none!important}}
 
-  /* FEEDBACK BAR. On the gate AND inside the room, because those are two different
-     audiences: the gate catches someone who never gets a room working (the most valuable
-     feedback there is, and the person least likely to ever write in), and the in-room bar
-     catches the people who use it for hours. Deliberately loud -- a request for feedback
-     placed in a footer is the same as not making it. */
-  .fbk{display:block;text-decoration:none;color:var(--text);
-    background:linear-gradient(90deg,rgba(251,191,36,.16),rgba(251,191,36,.04));
-    border:1px solid var(--amber);border-left-width:4px;border-radius:14px;
-    padding:13px 16px;margin:14px 0}
-  .fbk:hover{background:linear-gradient(90deg,rgba(251,191,36,.26),rgba(251,191,36,.07))}
-  .fbk b{display:block;font-family:var(--fd);font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--amber)}
-  .fbk span{display:block;margin-top:4px;font-size:12.5px;color:var(--mut);line-height:1.55;max-width:74ch}
-  .app > .fbk{margin:14px 16px 0}
+  /* Support address, stated once and quietly. There used to be a loud amber "tell us what
+     is wrong with this" bar here, on the gate and again inside the room. It is gone: asking
+     a customer for feedback before they have got anything working reads as unfinished, and
+     the styling outlived the markup anyway. An address someone can find when they need it is
+     the part worth keeping. */
+  .sup{font-size:12px;color:var(--mut);margin-top:14px}
+  .sup a{color:var(--mut);text-decoration:underline;text-underline-offset:2px}
+  .sup a:hover{color:var(--text)}
 </style>
 </head>
 <body>
@@ -235,6 +230,7 @@
     <button class="go primary" id="connect">Enter room</button>
     <div class="err" id="err"></div>
     <div class="hint">Get the link from the Hivecode panel in your editor, or via “Invite to folders…”. Your token never leaves this browser.</div>
+    <div class="sup">Stuck? <a href="mailto:support@getgrm.tech?subject=Hivecode">support@getgrm.tech</a></div>
   </div>
 </div>
 

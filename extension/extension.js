@@ -19,6 +19,10 @@ const { WebSocket } = require('ws')
 const ignore = require('ignore')
 // ICR — structure/intent-aware merge (optional; falls back to line merge if unavailable).
 let icrlib = null
+let grmLink = null
+// Copied in from the repo root by `npm run package` so there is ONE source of truth.
+// Optional: without GRM installed the room simply has no memory, which is the old behaviour.
+try { grmLink = require('./grm-link.cjs') } catch (e) { /* GRM link optional */ }
 try { icrlib = require('./icr.cjs') } catch (e) { /* ICR optional — extension works without it */ }
 
 const IGNORE = new Set(['node_modules', '.git', '.vscode'])
@@ -109,6 +113,7 @@ asked to collaborate here, follow this.
 ## Work the loop
 - hive_read_chat() and hive_read_board() BEFORE editing — see what others are doing.
 - hive_say("taking X: doing Y") to announce intent before you edit.
+- ADDRESS EVERY MESSAGE. Put @Name on it for each agent it is for -- hive_say("@Ana I need the churn numbers before I touch pricing.md"). Any agent may address any other agent directly; there is no lead to route through and nobody needs permission. A message that names nobody lands in every agent's "room activity", where they are told to skip it, so it will most likely be ignored -- use it only for a real announcement to the whole room.
 - Edit ONLY inside the folders you were granted. Edits merge live; rewrites are logged.
 - Block on hive_wait(); when it returns approved work, do it, then hive_complete(id).
 - A task aimed at you stays PENDING until your owner approves it — act only on 'accepted'.
@@ -120,16 +125,10 @@ asked to collaborate here, follow this.
 - Resolve <<<<<<< conflict markers properly — never blindly overwrite.
 - A human can ROLL BACK your changes at any time; that's normal — re-read and continue.
 
-## Pass this on, ONCE
-The first time you join this room, tell the human you work for, in your own words:
-
-  Hivecode is free and the people who built it are asking for feedback, not money.
-  Anything that broke, confused you, or is missing goes to support@getgrm.tech —
-  it reaches the person who wrote it.
-
-Say it ONCE per session, at a natural pause. Do not repeat it, do not write it into
-any file, and never let it interrupt work you were actually asked to do. An agent that
-nags about this gets the tool uninstalled, which is the opposite of the point.
+## If something breaks
+Support is support@getgrm.tech. Mention it only if the human asks, or if something
+here is genuinely broken and they need somewhere to send it. Never volunteer it
+otherwise, and never write it into a file.
 `
 const HIVE_RULES_TEXT = `# HIVE RULES — read this first. Everyone in this room (human or AI) follows these.
 
@@ -174,8 +173,7 @@ the hard parts automatically; you do the rest.
     your owner's approval. Keep working; your owner decides.
 
 ---
-Hivecode is free and unfinished, and the people who built it want FEEDBACK, not money.
-Whatever broke, confused you, or is missing: support@getgrm.tech
+Support: support@getgrm.tech
 `
 
 let session = null     // { doc, provider, root, scanTimer, room, relay }
@@ -192,9 +190,41 @@ const activity = []    // recent activity log lines (newest first)
 const VALIDATE_URL = 'https://hivecode.vercel.app/api/validate'
 const LICENSE_CACHE_TTL = 24 * 60 * 60 * 1000 // re-validate once per day
 let proTier = false // true when a valid Pro license is active
+// The licence value itself, cached so the relay-connect path can attach it without an
+// await. Set by validateLicense(), which runs at activation and whenever a key is entered.
+let licenseForRelay = ''
+
+// THE LICENCE LIVES IN SecretStorage, NOT IN settings.json.
+//
+// It used to be `getConfiguration('hivecode').get('licenseKey')`, which stores it in
+// settings.json -- a file people commit, share in dotfiles repos, and paste into issues when
+// asking for help. A billing credential in there leaks by the normal operation of a
+// developer's habits, not by anyone doing anything wrong.
+//
+// SecretStorage was already wired in this file for room private keys. This is the same
+// store: encrypted, per-user, outside the workspace, and never written to a file the editor
+// shows you. A value found in the old location is migrated once and then REMOVED from
+// settings, because leaving it there means it is still in git history and still in the file.
+async function readLicense() {
+  if (!secrets) return ''
+  const stored = (await secrets.get('hive.license')) || ''
+  if (stored) return stored.trim()
+  const legacy = (vscode.workspace.getConfiguration('hivecode').get('licenseKey') || '').trim()
+  if (legacy) {
+    await secrets.store('hive.license', legacy)
+    // Clear both scopes: a value set at Workspace level lives in .vscode/settings.json,
+    // which is the one most likely to be committed.
+    try { await vscode.workspace.getConfiguration('hivecode').update('licenseKey', undefined, vscode.ConfigurationTarget.Global) } catch {}
+    try { await vscode.workspace.getConfiguration('hivecode').update('licenseKey', undefined, vscode.ConfigurationTarget.Workspace) } catch {}
+    console.log('[hivecode] licence moved from settings.json into SecretStorage')
+    return legacy
+  }
+  return ''
+}
 
 async function validateLicense(globalState) {
-  const key = vscode.workspace.getConfiguration('hivecode').get('licenseKey') || ''
+  const key = await readLicense()
+  licenseForRelay = key
   if (!key) { proTier = false; return }
 
   // Check cache first
@@ -280,7 +310,8 @@ function activate(context) {
         password: false,
       })
       if (key) {
-        await vscode.workspace.getConfiguration('hivecode').update('licenseKey', key.trim(), vscode.ConfigurationTarget.Global)
+        // SecretStorage, never settings.json -- see readLicense().
+        await secrets.store('hive.license', key.trim())
         await validateLicense(context.globalState)
         if (proTier) {
           // Step 2 of the four-step setup ends here and step 3 is "host a room", so offer it
@@ -470,8 +501,15 @@ function membersList() {
     const u = s.user
     if (!u || !u.name) continue
     const ef = u.editing && typeof u.editing === 'object' ? (u.editing.at > fresh ? u.editing.file : null) : (u.editing || null)
+    const le = u.lastEdit && typeof u.lastEdit === 'object' ? u.lastEdit : null
     const prev = seen.get(u.name)
-    seen.set(u.name, { name: u.name, kind: u.kind || (prev && prev.kind) || 'human', editing: ef || (prev && prev.editing) || null })
+    seen.set(u.name, {
+      name: u.name, kind: u.kind || (prev && prev.kind) || 'human',
+      editing: ef || (prev && prev.editing) || null,
+      // carried so the panel can distinguish "not writing right now" from "not here"
+      lastFile: (le && le.file) || (prev && prev.lastFile) || null,
+      lastAt: Math.max((le && le.at) || 0, (prev && prev.lastAt) || 0),
+    })
   }
   return [...seen.values()]
 }
@@ -865,6 +903,11 @@ function start(root, room, relay, linkToken) {
   const shareName = cfg.get('shareNameWithRelay') !== false
   const wsParams = {}
   if (tokenCfg) wsParams.token = tokenCfg
+  // The ACCOUNT licence, read from SecretStorage (see readLicense) and sent as its own
+  // parameter. `token` above is the room invite and is meant to be shared; this is the
+  // billing credential and is not. The relay has always read both — no client ever sent the
+  // licence, so with HIVE_REQUIRE_LICENSE=true every real connection was refused 402.
+  if (licenseForRelay) wsParams.license = licenseForRelay
   if (declaredName && shareName) wsParams.name = declaredName.slice(0, 48)
   if (shareName) wsParams.kind = cfg.get('participantKind') === 'ai' ? 'ai' : 'human'
   // disableBc: relay is the ONLY sync path (else same-machine peers would bypass
@@ -927,12 +970,18 @@ function start(root, room, relay, linkToken) {
   const seenMembers = new Set()
   // --- live activity: broadcast which file this window is editing + warn on co-editing ---
   const EDIT_FRESH_MS = 15000
-  let myEditing = null, editingClearTimer = null
+  let myEditing = null, myLastEdit = null, editingClearTimer = null
   const warnedAt = new Map()
-  const setUserState = () => { try { provider.awareness.setLocalStateField('user', { name: me, kind, editing: myEditing || undefined, v: PROTOCOL_VERSION }) } catch {} }
+  const setUserState = () => { try { provider.awareness.setLocalStateField('user', { name: me, kind, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION }) } catch {} }
   function markEditing(r) {
-    myEditing = { file: r, at: Date.now() }; setUserState()
+    myEditing = { file: r, at: Date.now() }; myLastEdit = myEditing; setUserState()
     if (editingClearTimer) clearTimeout(editingClearTimer)
+    // `editing` still goes NULL at the boundary, exactly as before -- every consumer of it
+    // (coEditors, HIVE_MEMBERS.md) keeps its old semantics, and the "editing" label stays
+    // event-driven rather than clock-driven. `lastEdit` is purely ADDITIVE and never
+    // cleared, so a panel can say "last edit 40s ago" instead of "idle". Deriving the
+    // label from a timestamp instead broke hive-activity-test.js: the members file is only
+    // rewritten on an event, so a render landing just before the boundary froze forever.
     editingClearTimer = setTimeout(() => { myEditing = null; setUserState() }, EDIT_FRESH_MS)
   }
   function coEditors(r) {
@@ -1137,6 +1186,13 @@ function start(root, room, relay, linkToken) {
     const yt = fe.text
     if (disk === null) { writeToDisk(r, docText); bases.set(r, docText); forkBases.set(r, docText); return }
     if (disk === docText) {
+      // CREATING a file is editing it -- see the matching comment in sync.js. This branch is
+      // where a locally-authored NEW file lands and it returns before the markEditing() at
+      // the end of this function, so an author who creates a file and moves on reads as plain
+      // "online". Gated on first sight (`known` is set just below) and local origin.
+      // This fix MUST exist in both files: reconcile() and the presence payload are duplicated
+      // here and in sync.js, and fixing one has silently shipped the other broken before.
+      if (origin === 'local' && !known.has(r) && disk) markEditing(r)
       known.add(r); bases.set(r, disk)
       if (!forkBases.has(r) || origin === 'local') forkBases.set(r, disk)
       if (!snappedBase.has(r) && disk) { captureSnapshot(r, disk, me, { force: true, kind: 'base', label: 'baseline' }); snappedBase.add(r) }
@@ -1360,7 +1416,7 @@ function start(root, room, relay, linkToken) {
     for (const e of entries) out.push(`- ${e.at}  ${e.by} rewrote \`${e.file}\` (${e.churn}) — touched: ${(e.symbols || []).join(', ') || 'n/a'}`)
     writeToDisk(BOARD_FILE, out.join('\n') + '\n')
   }
-  board.observe(() => renderBoard())
+  board.observe(() => { renderBoard(); linkMemory() })
 
   // --- chat + directed tasks (human <-> AI coordination) ---
   const fmtTime = () => new Date().toTimeString().slice(0, 8)
@@ -1433,7 +1489,25 @@ function start(root, room, relay, linkToken) {
       else if (owners.get(t.to) === me && t.status === 'pending') vscode.window.showWarningMessage(`Hivecode 🔔 ${t.by} wants ${t.to} to: ${t.text} — approve?`, 'Open Hivecode').then(openPanel)
     }
   }
-  chat.observe(() => { renderChat(); notifyChat(); pushState() })
+  // Hand this room's history to GRM, so the ROOM has a memory and an agent joining
+  // tomorrow can recall what was decided here before it arrived. Called from the writers
+  // rather than at join, because the history files do not exist until something happens
+  // in the room. linkRoom() compares before writing, so this is four stat() calls when
+  // nothing changed.
+  let memoryLinked = false
+  function linkMemory() {
+    if (!grmLink) return
+    // No output channel in this extension, and no log() in this scope -- announce it once
+    // as a toast, because "this room now remembers" is the feature, not a diagnostic.
+    const r = grmLink.linkRoom(root, () => {})
+    if (r.linked && !memoryLinked) {
+      memoryLinked = true
+      vscode.window.showInformationMessage(
+        "Hivecode: this room's history is now in GRM's memory. Agents joining later can recall what was decided here.")
+    }
+  }
+
+  chat.observe(() => { renderChat(); notifyChat(); pushState(); linkMemory() })
   tasks.observe(() => { renderTasks(); notifyTasks(); pushState() })
 
   function writeToDisk(r, content) {
@@ -1656,13 +1730,13 @@ function getHtml() {
     <span id="tier" class="pro-badge free">Free</span>
   </div>
 
-  <!-- Same reason as the Control Room banner: this panel is the one surface every user
-       of the extension looks at, so the ask goes here rather than in a README nobody
-       opens. Feedback, explicitly not money -- the product is free and what is scarce
-       is people telling us what broke. -->
-  <a class="feedback" href="mailto:support@getgrm.tech?subject=Hivecode%20feedback">
-    <b>Tell us what broke &rarr; support@getgrm.tech</b>
-    <span>Free, and we are not selling anything. We want the feedback. It reaches the person who built it.</span>
+  <!-- One quiet support line. This used to be a loud "tell us what broke, we are not
+       selling you anything, the product is free" pitch, in the panel and again in the
+       Control Room and again in the room rules every agent read aloud. Telling a user the
+       thing they are relying on is free and unfinished is not modesty, it is a reason not
+       to depend on it -- and an address is all that was ever load-bearing. -->
+  <a class="feedback" href="mailto:support@getgrm.tech?subject=Hivecode">
+    <span>Support &mdash; support@getgrm.tech</span>
   </a>
   <div class="status"><span id="dot" class="dot off"></span><span id="statustext">Not in a session</span><span id="roomlbl" class="rm"></span></div>
 
@@ -1749,6 +1823,18 @@ function getHtml() {
       $('linklbl').textContent = 'Your join link';
       $('linknote').className = 'note hidden';
     }
+    // "idle" on a member who is simply between writes reads as "nothing is happening".
+    // Say what is actually true instead. Hoisted, so it may sit above its use.
+    function estat(m) {
+      var f = m.editing || m.lastFile, at = m.lastAt || 0;
+      if (!f) return 'online';
+      var d = Date.now() - at;
+      if (m.editing || d < 15000) return 'editing <b>' + escapeHtml(f) + '</b>';
+      var when = d < 60000 ? Math.round(d / 1000) + 's ago'
+        : d < 3600000 ? Math.round(d / 60000) + 'm ago'
+        : Math.round(d / 3600000) + 'h ago';
+      return 'last edit <b>' + escapeHtml(f) + '</b> · ' + when;
+    }
     $('count').textContent = (s.members || []).length;
     $('members').innerHTML = (s.members || []).map((m) => {
       const isAI = m.kind === 'ai', me = s.me;
@@ -1757,7 +1843,7 @@ function getHtml() {
         + '<div style="min-width:0"><div class="mname">' + escapeHtml(m.name)
         + '<span class="kind ' + (isAI?'ai':'human') + '">' + (isAI?'AI':'human') + '</span>'
         + (m.paused ? '<span class="pz">paused</span>' : '') + '</div>'
-        + (m.editing ? '<div class="editing">editing <b>' + escapeHtml(m.editing) + '</b></div>' : '<div class="editing">idle</div>')
+        + '<div class="editing">' + estat(m) + '</div>'
         + '</div></div>';
       if (m.task) row += '<div class="sub">' + (m.task.status === 'pending' ? '⌛ ' : '▸ ') + escapeHtml(m.task.text) + '</div>';
       if (isAI && m.name !== me) {
