@@ -1,680 +1,712 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hivecode — merge AI agents' code by meaning, not by lines</title>
-<meta name="description" content="When two AI agents edit one repo, git merges by lines and ships silent breaks. Hivecode's ICR engine merges by structure and intent — and never emits code that doesn't parse. Measured on Stanford's CooperBench.">
-<link rel="icon" href="/favicon.ico" sizes="any">
-<link rel="icon" href="/favicon-32.png" type="image/png">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<meta property="og:title" content="Hivecode — merge AI agents' code by meaning, not by lines">
-<meta property="og:description" content="Git merged it clean. Your build broke anyway. Hivecode merges by structure and intent, with a hard guarantee it never ships unparseable code.">
-<meta property="og:image" content="/hivecode-logo.png">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hivecode — infrastructure for multiplayer AI</title>
+<meta name="description" content="Infrastructure for multiplayer AI. Several agents and you in one live shared workspace at the same time — write scopes enforced at the relay, claim leases, structural merge, approval gates and state machines. 25 tools over MCP. Any agent, any vendor.">
+<meta name="author" content="NKT Studios">
+<meta property="og:site_name" content="Hivecode by NKT Studios">
+<meta property="og:title" content="Hivecode — infrastructure for multiplayer AI">
+<meta property="og:description" content="Several agents and you in one live shared workspace at the same time. Write scopes enforced at the relay, not asked of the agent. Any agent, any vendor.">
+<meta property="og:url" content="https://hivecode.getgrm.tech/">
 <meta property="og:type" content="website">
+<meta property="og:image" content="https://hivecode.getgrm.tech/demo-room-poster.jpg">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/site.css">
+<link rel="icon" href="favicon.ico">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+<style>
+/* ═══ STRUCTURE ════════════════════════════════════════════════════════════════════════════
+ *
+ * The section order is the conventional one, deliberately, because the previous version of this
+ * page got it wrong: it opened with a narrated walkthrough of one recording (t=0, t=25s, t=198s)
+ * and buried what the product DOES at position six. That is the shape of a case study, not a
+ * homepage. Checked against how infrastructure companies actually build these -- Tailscale runs
+ * category -> adoption -> capabilities -> proof -> "infrastructure agnostic" -> CTA, and Supabase
+ * makes a grid of NAMED PRIMITIVES the primary section (Database, Auth, Storage, Realtime...)
+ * -- and neither tells a story before saying what the thing is. So:
+ *
+ *   hero -> primitives -> works with -> proof (the run) -> mechanism -> install
+ *
+ * The layout device from the previous version is kept and given a proper job. The page is a
+ * four-track grid with an unbroken rule down the left:
+ *
+ *   [ index ][ rule ][ ---- content ---- ][ margin ]
+ *      96px    1px         max 680px         260px
+ *
+ * The left column is a section index (01, 02, 03) everywhere -- and inside the proof section it
+ * becomes the run's REAL timestamps, which are in take6.log. Same column, same rule, and it only
+ * reads as a timeline where the content genuinely is one. The right margin carries the measured
+ * figures beside the claim each one supports, which is how a technical paper cites rather than
+ * decorates.
+ *
+ * Tokens and the background field are getgrm.tech's, unchanged: this is a subdomain of that brand.
+ */
+:root {
+    --bg:          #0b0b0d;
+    --bg-panel:    #101014;
+    --bg-inset:    #0c0c0f;
+    --line:        #212127;
+    --line-soft:   #17171c;
+    --fg:          #f2f2f4;
+    --fg-mid:      #a4a4ae;
+    --fg-dim:      #6a6a76;
+    --fg-faint:    #47474f;
+    --accent:      #7aa2f7;
+    --accent-deep: #2b3a5c;
+    --good:        #7fcf9a;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --idx: 96px;
+    --main: 680px;
+    --marg: 260px;
+    --gut: clamp(22px, 3.4vw, 52px);
+}
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background-color: #08080a;
+    background-image:
+        radial-gradient(ellipse 80% 50% at 50% -15%, rgba(122, 162, 247, 0.14), transparent 70%),
+        linear-gradient(to right, rgba(255, 255, 255, 0.024) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.024) 1px, transparent 1px);
+    background-size: 100% 100%, 36px 36px, 36px 36px;
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+}
+#kinetic-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 0; }
+header, main, footer, .row { position: relative; z-index: 1; }
+a { color: inherit; text-decoration: none; }
+h1, h2, h3 { line-height: 1.15; letter-spacing: -0.022em; margin: 0; font-weight: 650; }
+
+/* ---- the grid ----------------------------------------------------------------------------- */
+.row {
+    display: grid;
+    grid-template-columns: var(--idx) 1px minmax(0, var(--main)) minmax(0, var(--marg));
+    column-gap: var(--gut);
+    max-width: calc(var(--idx) + 1px + var(--main) + var(--marg) + var(--gut) * 3 + 80px);
+    margin: 0 auto;
+    padding: 0 clamp(18px, 3vw, 40px);
+    align-items: start;
+}
+.t { grid-column: 1; } .rule { grid-column: 2; } .c { grid-column: 3; } .m { grid-column: 4; }
+.wide { grid-column: 3 / -1; }
+
+/* `--line`, not `--line-soft`: at #17171c on this ground the rule was invisible, and a spine you
+   cannot see is just an indent. */
+.rule { background: var(--line); width: 1px; justify-self: center; align-self: stretch; }
+
+/* SPACING GOES ON THE CELLS, NOT THE ROW. A grid container's padding sits OUTSIDE its tracks, so
+   `padding-bottom` on `.row` left a band no item occupied and the stretched rule stopped short --
+   it rendered as a column of disconnected dashes, which argues against the one thing the page
+   claims. On the cells, the track is as tall as the block and the rule reaches the next one. */
+.row { padding-bottom: 0; }
+.row > .c, .row > .m, .row > .wide { padding-bottom: clamp(40px, 5.4vw, 72px); }
+.row.tight > .c, .row.tight > .m, .row.tight > .wide { padding-bottom: clamp(18px, 2.2vw, 28px); }
+
+.t {
+    font: 600 11px/1.5 var(--mono); letter-spacing: 0.06em;
+    color: var(--fg-faint); text-align: right; position: sticky; top: 84px; padding-top: 4px;
+}
+.t b { display: block; color: var(--accent); font-weight: 600; }
+.t i { display: block; font-style: normal; color: var(--fg-dim); margin-top: 5px;
+       text-transform: uppercase; letter-spacing: 0.1em; font-size: 9.5px; }
+
+/* ---- type ---------------------------------------------------------------------------------- */
+.c h2 { font-size: clamp(21px, 2.5vw, 28px); }
+.c h3 { font-size: 16px; }
+.c p { margin: 12px 0 0; color: var(--fg-mid); font-size: 16px; }
+.c p:first-child { margin-top: 0; }
+.c p b, .wide p b { color: var(--fg); font-weight: 600; }
+.c .lead { font-size: clamp(16px, 1.55vw, 18.5px); }
+.kicker { font: 600 10.5px/1 var(--mono); letter-spacing: .13em; text-transform: uppercase;
+          color: var(--fg-dim); margin-bottom: 14px; }
+code { font: 13px/1.5 var(--mono); color: var(--accent); background: var(--bg-inset);
+       padding: 2px 6px; border-radius: 4px; }
+
+/* ---- masthead ------------------------------------------------------------------------------ */
+header { border-bottom: 1px solid var(--line-soft); background: rgba(8,8,10,.74);
+         backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 20; }
+header .row { padding-bottom: 0; align-items: center; }
+header .bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 13px; height: 58px; }
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: -0.01em; }
+.brand svg { width: 22px; height: 22px; display: block; }
+.tag { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase;
+       color: var(--accent); border: 1px solid var(--accent-deep); padding: 5px 7px;
+       border-radius: 4px; white-space: nowrap; }
+header nav { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 14px; color: var(--fg-mid); }
+header nav a { white-space: nowrap; }
+header nav a:hover { color: var(--fg); }
+header nav a.go { color: var(--fg); border: 1px solid var(--line); padding: 7px 13px; border-radius: 6px; }
+header nav a.go:hover { border-color: var(--fg-faint); background: var(--bg-panel); }
+
+/* ---- hero ---------------------------------------------------------------------------------- */
+.hero { padding-top: clamp(50px, 7.5vw, 100px); }
+.hero h1 { font-size: clamp(31px, 4.9vw, 54px); letter-spacing: -0.03em; }
+.hero .lead { margin-top: 19px; }
+.cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+.btn { display: inline-flex; align-items: center; padding: 10px 17px; border-radius: 7px;
+       font-size: 14px; font-weight: 600; border: 1px solid var(--line);
+       background: var(--bg-panel); color: var(--fg); transition: border-color .16s, background .16s; }
+.btn:hover { border-color: var(--fg-faint); background: #16161b; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #08080a; }
+.btn.primary:hover { background: #93b4f9; border-color: #93b4f9; }
+
+/* the credibility strip: four facts, not a sentence about them */
+.strip { display: flex; flex-wrap: wrap; gap: 0; margin-top: 34px; border-top: 1px solid var(--line-soft); }
+.strip div { padding: 15px 26px 0 0; margin-right: 26px; }
+.strip b { display: block; font-size: 19px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.strip span { display: block; font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
+
+/* ---- primitives: the "what is it" grid ---------------------------------------------------- */
+/* Explicit column counts, not auto-fit. There are exactly EIGHT primitives, and auto-fit gave
+   three columns here — nine cells for eight cards, so the grid ended on a visibly empty box.
+   8 divides by 4, 2 and 1, so every one of these leaves no hole at any width. */
+.prims { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+         gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft);
+         border-radius: 9px; overflow: hidden; margin-top: 26px; }
+.prim { background: var(--bg-panel); padding: 20px 21px 19px; }
+.prim h3 { font-size: 15px; }
+.prim p { margin: 8px 0 0; font-size: 13.5px; color: var(--fg-mid); line-height: 1.55; }
+.prim .tools { margin-top: 11px; display: flex; flex-wrap: wrap; gap: 4px; }
+.prim .tools i { font: 10.5px/1 var(--mono); font-style: normal; color: var(--fg-faint);
+                 border: 1px solid var(--line); border-radius: 3px; padding: 4px 5px; }
+
+/* ---- works with ---------------------------------------------------------------------------- */
+.with { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+.with span { font-size: 13.5px; color: var(--fg-mid); border: 1px solid var(--line);
+             border-radius: 6px; padding: 9px 13px; background: var(--bg-panel); }
+.with span.any { color: var(--accent); border-color: var(--accent-deep); }
+
+/* ---- marginalia ---------------------------------------------------------------------------- */
+.fig { padding-top: 3px; }
+.fig + .fig { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.fig b { display: block; font-size: 26px; font-weight: 650; letter-spacing: -0.03em;
+         font-variant-numeric: tabular-nums; line-height: 1.1; }
+.fig b .to { color: var(--fg-faint); font-weight: 400; margin: 0 3px; }
+.fig b .ok { color: var(--good); }
+/* Direct child only. As `.fig span` this matched the `.to`/`.ok` spans INSIDE <b> and made them
+   blocks, so "4 → 0" rendered as three stacked lines. Twice now -- hence the child combinator. */
+.fig > span { display: block; margin-top: 6px; font-size: 12.5px; color: var(--fg-dim); line-height: 1.5; }
+.fig.note b { font: 600 11px/1.5 var(--mono); letter-spacing: .09em; text-transform: uppercase; color: var(--fg-faint); }
+.crew { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 9px; }
+.crew i { font: 11px/1 var(--mono); font-style: normal; color: var(--fg-dim);
+          border: 1px solid var(--line); border-radius: 3px; padding: 4px 5px; }
+.crew i.you { color: var(--accent); border-color: var(--accent-deep); }
+
+/* ---- video ---------------------------------------------------------------------------------- */
+figure { margin: 0; }
+.vid video { display: block; width: 100%; height: auto; border: 1px solid var(--line);
+             border-radius: 9px; background: var(--bg-inset); }
+.vid figcaption { margin-top: 10px; font-size: 13px; color: var(--fg-dim);
+                  display: flex; flex-wrap: wrap; gap: 5px 13px; align-items: baseline; }
+.vid figcaption .live { color: var(--good); font: 600 10.5px/1.6 var(--mono);
+                        letter-spacing: .09em; text-transform: uppercase; }
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 22px; }
+.pair video { display: block; width: 100%; height: auto; border: 1px solid var(--line);
+              border-radius: 9px; background: var(--bg-inset); }
+.pair figcaption { margin-top: 9px; font-size: 12.5px; color: var(--fg-dim); }
+.pair figcaption b { color: var(--fg); font-weight: 600; font-size: 13.5px; }
+.pair figcaption .dur { font: 10.5px/1 var(--mono); color: var(--fg-faint); letter-spacing: .05em; margin-left: 6px; }
+.pair figcaption span { display: block; margin-top: 5px; }
+
+/* ---- mechanism ------------------------------------------------------------------------------ */
+.mech { border-top: 1px solid var(--line-soft); padding-top: 17px; margin-top: 20px; }
+.mech:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+.mech h3 { display: flex; align-items: baseline; gap: 10px; }
+.mech h3 em { font: 600 11px/1 var(--mono); font-style: normal; color: var(--fg-faint); letter-spacing: .08em; }
+.aside { margin-top: 26px; padding-left: 14px; border-left: 1px solid var(--line); font-size: 14px; color: var(--fg-dim); }
+.aside .opt { font: 600 9.5px/1 var(--mono); letter-spacing: .11em; text-transform: uppercase;
+              color: var(--fg-faint); border: 1px solid var(--line); border-radius: 3px;
+              padding: 4px 6px; margin-right: 8px; white-space: nowrap; }
+.aside a { color: var(--fg-mid); border-bottom: 1px solid var(--accent-deep); }
+.aside a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ---- install ------------------------------------------------------------------------------- */
+pre.cmd { margin: 14px 0 0; padding: 12px 14px; overflow-x: auto; background: var(--bg-inset);
+          border: 1px solid var(--line); border-radius: 7px; font: 13px/1.5 var(--mono); color: var(--fg); }
+pre.cmd .p { color: var(--fg-faint); user-select: none; }
+.links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.links a { font-size: 13px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--line); color: var(--fg-mid); }
+.links a:hover { border-color: var(--fg-faint); color: var(--fg); }
+
+/* ---- footer --------------------------------------------------------------------------------- */
+footer { border-top: 1px solid var(--line-soft); margin-top: 18px; }
+footer .row { padding: 32px clamp(18px, 3vw, 40px) 52px; }
+footer .bar { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px 24px;
+              align-items: center; font-size: 13px; color: var(--fg-dim); }
+footer .bar .sep { margin-left: auto; }
+footer a:hover { color: var(--fg-mid); }
+
+/* ---- collapse -------------------------------------------------------------------------------
+ * Below 1180 the marginalia has nowhere to sit, so it folds under the content it annotates.
+ * Below 760 the spine folds too: the index moves above its block as an inline stamp and the rule
+ * is dropped, because 96px of furniture plus a rule on a 360px screen is a quarter of the width
+ * spent on structure. */
+@media (max-width: 1180px) {
+    .row { grid-template-columns: var(--idx) 1px minmax(0, 1fr); }
+    .m, .wide { grid-column: 3; }
+    .m { margin-top: 24px; }
+    .fig + .fig { margin-top: 0; padding-top: 0; border-top: 0; }
+    .m .fig { display: inline-block; vertical-align: top; width: min(240px, 46%); margin: 0 22px 18px 0; }
+}
+@media (max-width: 1180px) { .prims { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 900px) { header nav a.hide-sm { display: none; } }
+@media (max-width: 620px) { .prims { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) {
+    .row { grid-template-columns: minmax(0, 1fr); column-gap: 0; }
+    .rule { display: none; }
+    .t, .c, .m, .wide { grid-column: 1; }
+    .t { position: static; text-align: left; padding: 0 0 11px; display: flex; gap: 9px; align-items: baseline; }
+    .t b, .t i { display: inline; margin: 0; }
+    .tag { display: none; }
+    .m .fig { width: 100%; margin-right: 0; }
+    .strip div { padding-right: 18px; margin-right: 18px; }
+}
+</style>
 </head>
 <body>
-<a class="skip" href="#main">Skip to content</a>
 
-<!-- ═══ NAV ═══ -->
-<header class="nav" data-nav>
-  <a class="brand" href="/" aria-label="Hivecode home">
-    <img class="brand__mark" src="/mark-64.png" alt="" width="64" height="64" decoding="async">
-    <span class="brand__name">Hivecode</span>
-  </a>
-  <nav class="nav__links" aria-label="Main">
-    <a href="#failure">Why git misses it</a>
-    <a href="#proof">Benchmarks</a>
-    <a href="/start">Start</a>
-    <a href="/#pricing">Pricing</a>
-    <a href="/docs">Docs</a>
-    <a href="/license">My licence</a>
-    <a class="btn btn--primary btn--sm" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Install for VS Code</a>
-  </nav>
+<canvas id="kinetic-canvas" aria-hidden="true"></canvas>
+
+<header>
+    <div class="row">
+        <div class="bar">
+            <a href="/" class="brand">
+                <svg viewBox="0 0 100 100" fill="none" aria-hidden="true">
+                    <defs><linearGradient id="spark" x1="8" y1="8" x2="92" y2="92" gradientUnits="userSpaceOnUse">
+                        <stop offset="0" stop-color="#4285F4"/><stop offset=".5" stop-color="#9B72CB"/><stop offset="1" stop-color="#D96570"/>
+                    </linearGradient></defs>
+                    <g stroke="url(#spark)" stroke-width="5.2" stroke-linecap="round">
+                        <g><path d="M50 7 C 72 9 86 27 71 43"/><circle cx="50" cy="7" r="3.4" fill="url(#spark)" stroke="none"/></g>
+                        <g transform="rotate(120 50 50)"><path d="M50 7 C 72 9 86 27 71 43"/><circle cx="50" cy="7" r="3.4" fill="url(#spark)" stroke="none"/></g>
+                        <g transform="rotate(240 50 50)"><path d="M50 7 C 72 9 86 27 71 43"/><circle cx="50" cy="7" r="3.4" fill="url(#spark)" stroke="none"/></g>
+                    </g>
+                    <polygon points="69,50 59.5,66.5 40.5,66.5 31,50 40.5,33.5 59.5,33.5" fill="url(#spark)"/>
+                </svg>Hivecode</a>
+            <span class="tag">Early access</span>
+            <nav>
+                <a href="#primitives">Product</a>
+                <a href="#proof" class="hide-sm">Demo</a>
+                <a href="/docs" class="hide-sm">Docs</a>
+                <a href="#install" class="go">Install</a>
+            </nav>
+        </div>
+    </div>
 </header>
 
-<main id="main">
+<main>
 
-<!-- ═══ HERO ═══ -->
-<section class="hero">
-  <div class="hero__glow" aria-hidden="true"></div>
-  <div class="wrap hero__inner">
-    <p class="eyebrow">ICR · intent-aware code replication</p>
-    <h1>The merge was clean.<br>The code was <span class="grad">broken</span>.</h1>
-    <p class="lede">
-      Two AI agents edit one repo. One renames a function; the other adds a call to the old
-      name. Git compares <em>lines</em>, finds no overlap, and reports success — then your
-      build dies at runtime. Hivecode merges by <strong>structure and intent</strong>: it
-      recognises the rename, rewrites the stale call site, and refuses to emit code that
-      doesn't parse.
-    </p>
-    <div class="hero__actions">
-      <span class="cmd">
-        <code><span class="sigil">$</span> npx git-clash</code>
-        <button type="button" class="cmd__copy" data-copy="npx git-clash" aria-label="Copy command"></button>
-      </span>
-      <a class="btn btn--ghost" href="#proof">See the benchmarks</a>
-    </div>
-    <p class="hero__meta">Audits your real merge history for silent breaks. Runs locally, nothing uploaded.</p>
-
-    <!-- the thesis, as a demo rather than a claim -->
-    <div class="demo" data-demo>
-      <div class="demo__bar">
-        <div class="demo__tabs" data-demo-tabs role="group" aria-label="Merge walkthrough steps"></div>
-        <span class="demo__hint">auto-plays · click any step</span>
-      </div>
-      <div class="demo__rail" data-demo-rail aria-hidden="true"></div>
-      <div class="demo__stage" data-demo-stage aria-live="polite"></div>
-      <p class="demo__caption" data-demo-caption></p>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ STATS ═══ -->
-<section class="stats" aria-label="Measured results">
-  <div class="stat">
-    <div class="stat__v stat__v--am">76.5%</div>
-    <p class="stat__l">of independent feature pairs conflict when merged with git — on <em>professionally written</em> patches, not agent output</p>
-    <p class="stat__src">CooperBench · 505 of 652 pairs</p>
-  </div>
-  <div class="stat">
-    <div class="stat__v stat__v--cy">3.7×</div>
-    <p class="stat__l">more of those conflicts integrated cleanly by ICR than by mergiraf, the best free structural merger</p>
-    <p class="stat__src">40.8% vs 11.1%</p>
-  </div>
-  <div class="stat">
-    <div class="stat__v stat__v--cy">96.2%</div>
-    <p class="stat__l">of ICR's integrations pass <em>both</em> features' own test suites — verified, not asserted</p>
-    <p class="stat__src">50 of 52 scoreable pairs</p>
-  </div>
-  <div class="stat">
-    <div class="stat__v stat__v--vi">0</div>
-    <p class="stat__l">unparseable merges across 6,430 real Python conflicts, checked with CPython's own parser</p>
-    <p class="stat__src">ConGra · 0 crashes</p>
-  </div>
-</section>
-
-<!-- ═══ FAILURE MODES ═══ -->
-<section class="section" id="failure">
-  <div class="wrap">
-    <div data-reveal>
-      <p class="eyebrow">the failure class</p>
-      <h2>Three ways a “clean” merge ships broken code</h2>
-      <p class="lede">
-        None of these produce a conflict marker. None fail a linter. All three are what
-        happens when a tool that only understands lines is handed code that only makes
-        sense as structure.
-      </p>
-    </div>
-    <div class="grid grid--3" data-reveal>
-
-      <article class="card card--broken">
-        <span class="card__tag">01 · dangling reference</span>
-        <h3>Deleted, but still called</h3>
-        <p>Agent A removes a helper it believes is dead. Agent B, at the same time, writes a new caller for it. The edits touch different lines, so git merges happily.</p>
-        <pre class="snip"><code><span class="c">// agent A removes it</span>
-<span class="b">- function formatCents(n) { … }</span>
-
-<span class="c">// agent B adds a caller</span>
-<span class="s">+ total = formatCents(sum)</span></code></pre>
-        <p class="verdict-line verdict-line--good"><span aria-hidden="true">→</span> ICR resolves references after merging and reports <code>ref:formatCents</code> — <code>clean: false</code>, so nothing ships silently.</p>
-      </article>
-
-      <article class="card card--broken">
-        <span class="card__tag">02 · character fusion</span>
-        <h3>Code nobody wrote</h3>
-        <p>In a live CRDT editor two agents change the same value at once. Both inserts survive with distinct identities, in deterministic order. Every peer converges — on a number neither author chose.</p>
-        <pre class="snip"><code><span class="c">base</span>   return 1
-<span class="c">A</span>      return 2
-<span class="c">B</span>      return 3
-<span class="c">merged</span> <span class="w">return 23</span>  <span class="c">← valid, convergent, unauthored</span></code></pre>
-        <p class="verdict-line verdict-line--good"><span aria-hidden="true">→</span> Signed provenance keeps both real versions, so the fused text — which nothing attests — is detected and surfaced as a genuine conflict.</p>
-      </article>
-
-      <article class="card card--broken">
-        <span class="card__tag">03 · divergent intent</span>
-        <h3>Two right answers</h3>
-        <p>Both agents rewrite the same function — one adds rate limiting, one converts it to async. Any merge that silently picks a winner throws away work somebody asked for.</p>
-        <pre class="snip"><code>{ key: <span class="s">'fn:login'</span>,
-  base, ours, theirs,
-  oursIntent:   <span class="s">'add rate limiting'</span>,
-  theirsIntent: <span class="s">'make login async'</span> }</code></pre>
-        <p class="verdict-line verdict-line--good"><span aria-hidden="true">→</span> The conflict is emitted as a machine-resolvable object carrying both intents — an agent can reconcile it, and the engine re-validates the result before it lands.</p>
-      </article>
-
-    </div>
-  </div>
-</section>
-
-<!-- ═══ HOW ═══ -->
-<section class="section section--edged" id="how">
-  <div class="wrap">
-    <div data-reveal>
-      <p class="eyebrow">how it works</p>
-      <h2>Four layers, each with a job git doesn't have</h2>
-      <p class="lede">
-        The engine is open source and runs anywhere — as a library, as a git merge driver,
-        or live inside a shared workspace.
-      </p>
-    </div>
-    <div class="grid grid--2" data-reveal>
-
-      <article class="card">
-        <span class="card__tag">layer 1 · identity</span>
-        <h3>Merge declarations, not lines</h3>
-        <p>Each version is parsed and split into keyed units — <code>fn:login</code>, <code>class:Auth</code>, <code>import:./db</code>. The key is identity, so “the same function in all three versions” is a fact, not a guess. Changed on one side wins; changed on both descends a tier: statements, then lines, then tokens.</p>
-        <pre class="snip"><code><span class="k">import</span> { merge } <span class="k">from</span> <span class="s">'icr-merge'</span>
-
-<span class="k">const</span> r = merge(base, ours, theirs, { filename: <span class="s">'auth.js'</span> })
-<span class="c">// r.method → 'structural' | 'rename' | 'lines'</span></code></pre>
-      </article>
-
-      <article class="card">
-        <span class="card__tag">layer 2 · the guarantee</span>
-        <h3>Never emit code more broken than the input</h3>
-        <p>Every merged unit and every final result is re-parsed before it is allowed out. If it doesn't parse, the engine refuses and falls back to a line merge — so the floor is exactly git, never worse. Held across thousands of fuzzed merges per run and 6,430 real conflicts.</p>
-        <pre class="snip"><code><span class="c">// all three inputs parse but the result doesn't?</span>
-{ clean: <span class="b">false</span>,
-  warning: <span class="s">'line-merged text does not parse'</span> }</code></pre>
-      </article>
-
-      <article class="card">
-        <span class="card__tag">layer 3 · prevention</span>
-        <h3>Claim before you write</h3>
-        <p>Agents sense a shared claim map, take a lease, verify after sync, and back off if they lost the race — Ethernet's collision detection with ant-colony expiry. There is no coordinator, and a crashed agent's claim evaporates on its own TTL instead of deadlocking the room.</p>
-        <pre class="snip"><code>SENSE  → is this file taken?
-FLOW   → if so, move to an open one
-CLAIM  → { by, intent, at, ttl }
-VERIFY → re-read after sync; lost? back off</code></pre>
-      </article>
-
-      <article class="card">
-        <span class="card__tag">layer 4 · provenance</span>
-        <h3>Every byte signed, with its reason</h3>
-        <p>Each edit is an Ed25519-signed receipt over author, the exact state it was made from, the result, and the <em>intent</em>. Author identity is the key's own fingerprint, so there is no account database. Unattributable bytes stand out precisely because nobody signed them.</p>
-        <pre class="snip"><code>{ author:  fingerprint(pubKey),
-  parent:  sha256(stateEditedFrom),
-  content: sha256(result),
-  intent:  <span class="s">'add rate limiting to login'</span> }</code></pre>
-      </article>
-
-    </div>
-  </div>
-</section>
-
-<!-- ═══ PROOF ═══ -->
-<section class="section" id="proof">
-  <div class="wrap">
-    <div data-reveal>
-      <p class="eyebrow">receipts, not adjectives</p>
-      <h2>Measured on someone else's benchmark</h2>
-      <p class="lede">
-        CooperBench (Stanford, 2026) gives two agents independent features on one repo and
-        scores the result by running <em>both</em> features' test suites. Its 652 gold pairs
-        are professional human patches — the cleanest possible input. 505 of them still
-        conflict under git. Here is how much of that loss each merge layer recovers.
-      </p>
-    </div>
-
-    <div class="tablewrap" data-reveal>
-      <table>
-        <caption>Of the 505 git-conflicted pairs — integrated cleanly, then test-verified.</caption>
-        <thead>
-          <tr><th scope="col">Merge layer</th><th scope="col">Pairs integrated</th><th scope="col">Share</th><th scope="col">Passes both test suites</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="tool">git merge<small>line-based, the baseline</small></td>
-            <td class="num">0</td>
-            <td class="num">0%<div class="bar"><span style="width:0"></span></div></td>
-            <td class="num">—</td>
-          </tr>
-          <tr>
-            <td class="tool">mergiraf 0.18<small>tree-sitter structural</small></td>
-            <td class="num">56</td>
-            <td class="num">11.1%<div class="bar"><span style="width:11%"></span></div></td>
-            <td class="num">—</td>
-          </tr>
-          <tr class="is-ours">
-            <td class="tool">ICR — safe default<small>structure + intent</small></td>
-            <td class="num">112</td>
-            <td class="num">22.2%<div class="bar"><span style="width:22%"></span></div></td>
-            <td class="num">100% <small>27 / 27</small></td>
-          </tr>
-          <tr class="is-ours">
-            <td class="tool">ICR — union mode<small>the multi-agent policy</small></td>
-            <td class="num">206</td>
-            <td class="num">40.8%<div class="bar"><span style="width:41%"></span></div></td>
-            <td class="num">96.2% <small>50 / 52</small></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div class="grid grid--3" data-reveal>
-      <article class="card">
-        <span class="card__tag">ground truth</span>
-        <h3>279 conflicts humans already resolved</h3>
-        <p>Replay real OSS conflicts and compare each tool's output against what the maintainer actually committed. ICR matched <strong>87</strong>; mergiraf <strong>64</strong>. Zero broken outputs, and ICR led on all five repositories.</p>
-      </article>
-      <article class="card">
-        <span class="card__tag">public benchmark</span>
-        <h3>ConGra — 6,430 Python conflicts</h3>
-        <p>Verified with CPython's own <code>ast.parse</code>. ICR resolves 32.1% to mergiraf's 31.8%, with <strong>zero crashes and zero parse-guarantee violations</strong>. Running it found and fixed 17 real engine bugs first.</p>
-      </article>
-      <article class="card">
-        <span class="card__tag">properties</span>
-        <h3>Tested as maths, not examples</h3>
-        <p>Symmetry (<code>M(b,x,y) = M(b,y,x)</code>), fixed-point, no-loss and the parse guarantee, under seeded fuzz across 20+ languages — 13,000+ assertions, green. Convergence isn't a nicety: without it, live peers diverge.</p>
-      </article>
-    </div>
-
-    <div class="hero__actions" data-reveal style="margin-top:34px">
-      <span class="cmd">
-        <code><span class="sigil">$</span> node scripts/cooper-merge-bench.mjs</code>
-        <button type="button" class="cmd__copy" data-copy="node scripts/cooper-merge-bench.mjs" aria-label="Copy command"></button>
-      </span>
-      <span style="font-size:14px;color:var(--muted)">Every harness and raw receipt is in the repo — reproduce it, don't trust it.</span>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ THE MEDIUM ═══ -->
-<section class="section section--edged">
-  <div class="wrap medium">
-    <div data-reveal>
-      <p class="eyebrow">upstream of the merge</p>
-      <h2>Or don't collide in the first place</h2>
-      <p class="lede">
-        A merge engine is a safety net. The stronger move is a shared medium: agents and
-        humans on one live workspace, seeing each other's edits in about a second, with no
-        push, no pull, and no branch to reconcile later.
-      </p>
-      <ol class="steps">
-        <li><span class="n">1</span><span><b>Agents join over MCP.</b> One line of config; they call <code>hive_join</code> and live in a <code>hive_wait</code> loop — no scripts, no polling.</span></li>
-        <li><span class="n">2</span><span><b>Every edit syncs in ~1s.</b> A room is a CRDT document, one sub-document per file, mirrored to each participant's real files on disk.</span></li>
-        <li><span class="n">3</span><span><b>You keep control.</b> Watch every edit live, fence an agent to a folder it cannot see past, gate risky work behind approval, and undo any agent instantly.</span></li>
-        <li><span class="n">4</span><span><b>Overlaps fall to ICR.</b> What prevention misses, the engine merges by meaning — or names precisely, with both intents attached.</span></li>
-      </ol>
-      <div class="hero__actions">
-        <a class="btn btn--primary" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Install for VS Code</a>
-        <a class="btn btn--ghost" href="https://github.com/Ganesh-Kute/HiveCode#readme" target="_blank" rel="noopener">Self-host the relay</a>
-      </div>
-    </div>
-    <div data-reveal>
-      <div class="medium__art">
-        <img src="/mark.jpg" alt="The Hivecode mark: many streams of concurrent code converging into a single codebase" width="1024" height="820" loading="lazy">
-      </div>
-      <p class="hero__meta" style="text-align:center">Many agents. One codebase. No branch to reconcile.</p>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ INSTALL ═══ -->
-<section class="section" id="install">
-  <div class="wrap">
-    <div data-reveal>
-      <p class="eyebrow">three ways in</p>
-      <h2>Start with the audit. It costs nothing.</h2>
-      <p class="lede">Each of these is published and installable right now.</p>
-    </div>
-    <div class="grid grid--3" data-reveal>
-      <article class="card">
-        <span class="card__tag">diagnose</span>
-        <h3>git-clash</h3>
-        <p>Run it bare to see three real collision scenarios analysed end to end, or point it at two of your own branches with <code>--scan --base=main --head=yours</code> to check a merge before you make it. Read-only, entirely local.</p>
-        <span class="cmd" style="margin-top:16px">
-          <code><span class="sigil">$</span> npx git-clash</code>
-          <button type="button" class="cmd__copy" data-copy="npx git-clash" aria-label="Copy command"></button>
-        </span>
-      </article>
-      <article class="card">
-        <span class="card__tag">fix · MIT licensed</span>
-        <h3>icr-merge</h3>
-        <p>The engine as a library, a CLI, and a three-line git merge driver — so every <code>git merge</code> and rebase in your repo starts merging by structure instead of by line.</p>
-        <span class="cmd" style="margin-top:16px">
-          <code><span class="sigil">$</span> npm i icr-merge</code>
-          <button type="button" class="cmd__copy" data-copy="npm i icr-merge" aria-label="Copy command"></button>
-        </span>
-      </article>
-      <article class="card">
-        <span class="card__tag">prevent</span>
-        <h3>hivecode-mcp</h3>
-        <p>The live medium for agents: claims, chat, task approval, presence and provenance, exposed as MCP tools any capable agent can call natively.</p>
-        <span class="cmd" style="margin-top:16px">
-          <code><span class="sigil">$</span> npx hivecode-mcp</code>
-          <button type="button" class="cmd__copy" data-copy="npx hivecode-mcp" aria-label="Copy command"></button>
-        </span>
-      </article>
-    </div>
-    <figure class="vid" data-reveal>
-      <video class="vid__player" src="/hivecode-icr-demo.mp4" controls preload="none"
-             poster="/mark-wide.jpg" width="1280" height="720"></video>
-      <figcaption class="vid__cap">Full ICR walkthrough · 9 min</figcaption>
-    </figure>
-  </div>
-</section>
-
-<!-- ═══ PRICING ═══ -->
-<section class="section section--edged" id="pricing" data-pricing>
-  <div class="wrap">
-    <div data-reveal>
-      <p class="eyebrow">pricing</p>
-      <h2>The engine is free forever. The medium is the product.</h2>
-      <p class="lede">
-        ICR is MIT-licensed and always will be — merge safety shouldn't be a paywall. Pro is
-        for teams running agent fleets on a shared workspace, where enforcement, isolation
-        and audit are what actually matter.
-      </p>
-    </div>
-
-    <div class="plans" data-reveal>
-      <article class="plan">
-        <p class="plan__name">Free</p>
-        <div class="plan__price"><span class="plan__amt">$0</span><span class="plan__per">/ forever</span></div>
-        <p class="plan__note">Everything an individual developer needs.</p>
-        <ul class="feats">
-          <li><span class="y" aria-hidden="true">✓</span><span>The full ICR engine — structure, intent, renames, the parse guarantee</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Git merge driver + CLI, 20+ languages</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Unlimited <code>git-clash</code> audits</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Live rooms, up to 2 committers</span></li>
-          <li><span class="n" aria-hidden="true">·</span><span>Relay-enforced write leases</span></li>
-          <li><span class="n" aria-hidden="true">·</span><span>Private folder-scoped rooms</span></li>
-          <li><span class="n" aria-hidden="true">·</span><span>Signed provenance ledger</span></li>
-        </ul>
-        <a class="btn btn--ghost btn--wide" href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">Get the engine</a>
-        <p class="plan__foot">no account, no telemetry</p>
-      </article>
-
-      <article class="plan plan--pro">
-        <p class="plan__name">Pro</p>
-        <div class="plan__price"><span class="plan__amt">$29</span><span class="plan__per">/ committer / month</span></div>
-        <p class="plan__note">For teams running AI agents on a shared codebase.</p>
-
-        <div class="seats">
-          <div class="seats__row">
-            <label for="seats">Active committers</label>
-            <strong data-seats-value>1</strong>
-          </div>
-          <input id="seats" type="range" min="1" max="100" value="1" step="1"
-                 data-seats-input aria-label="Number of active committers">
-          <p class="seats__total">Total <b>$<span data-seats-total>29</span></b> / month</p>
+<!-- ═══ 01 hero: what it is ═══ -->
+<div class="row hero">
+    <div class="t"><b>01</b><i>overview</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <h1>Infrastructure for multiplayer&nbsp;AI.</h1>
+        <p class="lead">Hivecode is a coordination layer for AI agents. Several agents and you open
+           <b>the same files at the same time</b> — no branch each, no merge at the end — and the
+           boundaries you set are enforced by the server rather than requested of the agent. Any
+           agent, any vendor, coding or not.</p>
+        <div class="cta">
+            <a class="btn primary" href="#install">Install</a>
+            <a class="btn" href="#proof">Watch twelve agents fix a bug</a>
         </div>
-
-        <ul class="feats">
-          <li><span class="y" aria-hidden="true">✓</span><span data-seats-feature>1 active committer</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Relay-enforced write leases — block or queue, not just warn</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Private rooms with per-folder scoping and read-only roles</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Signed provenance ledger + silent-fork detection</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Restore points and undo-by-agent</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Priority relay, or self-host it yourself</span></li>
-        </ul>
-        <button type="button" class="btn btn--primary btn--wide" data-checkout data-razorpay-key="rzp_test_mock_key">
-          Upgrade to Pro
-        </button>
-        <a class="plan__after" href="#setup">What happens after you pay →</a>
-        <p class="plan__def">
-          A <b>committer</b> is one agent or human writing to the room at the same time.
-          Idle agents, reviewers and read-only clients don't count — you pay for concurrent
-          writers, not for how many agents you have configured.
-        </p>
-      </article>
-
-      <article class="plan">
-        <p class="plan__name">Enterprise</p>
-        <div class="plan__price"><span class="plan__amt" style="font-size:30px">Talk to us</span></div>
-        <p class="plan__note">For teams whose code cannot leave their own infrastructure.</p>
-        <ul class="feats">
-          <li><span class="y" aria-hidden="true">✓</span><span>Everything in Pro, unlimited committers</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Self-hosted relay — your network, your keys, no code leaves it</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>SSO, per-team folder scoping, read-only roles</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Exportable provenance audit log — who changed what, and why</span></li>
-          <li><span class="y" aria-hidden="true">✓</span><span>Support direct from the engineer who built it</span></li>
-        </ul>
-        <a class="btn btn--ghost btn--wide" href="mailto:support@getgrm.tech?subject=Hivecode%20Enterprise">Start a conversation</a>
-        <p class="plan__foot">deployed on your infrastructure</p>
-      </article>
+        <div class="strip">
+            <div><b>25</b><span>tools over MCP</span></div>
+            <div><b>Relay</b><span>enforces write scopes</span></div>
+            <div><b>Any&nbsp;agent</b><span>Claude Code, Cursor, VS Code</span></div>
+            <div><b>0.11.2</b><span>on npm, early access</span></div>
+        </div>
     </div>
-  </div>
-</section>
+    <div class="m"></div>
+</div>
 
-<!-- ═══ SETUP — the steps a buyer takes next, kept in sync with shared/onboarding.js ═══ -->
-<section class="section" id="setup">
-  <div class="wrap">
-    <div data-reveal>
-      <p class="eyebrow">getting started</p>
-      <h2>Two ways in. Pick one.</h2>
-      <p class="lede">
-        There is no server to provision, no account to create and no config file to write.
-        Which route you take depends on one thing: whether people are editing too, or only agents.
-      </p>
+<!-- ═══ 02 primitives: what you actually get ═══ -->
+<div class="row" id="primitives">
+    <div class="t"><b>02</b><i>primitives</i></div>
+    <div class="rule"></div>
+    <div class="wide">
+        <p class="kicker">The product</p>
+        <h2 style="font-size:clamp(21px,2.5vw,28px)">Eight primitives, twenty-five tools.</h2>
+        <p style="margin:12px 0 0;color:var(--fg-mid);max-width:68ch">Every one is a tool your agent
+           calls and the relay enforces. Nothing here is a convention in a prompt.</p>
+        <div class="prims">
+            <div class="prim">
+                <h3>Shared live workspace</h3>
+                <p>One folder, many participants. Every change is visible to everyone as it happens.</p>
+                <div class="tools"><i>hive_join</i><i>hive_leave</i><i>hive_edit</i><i>hive_members</i><i>hive_status</i></div>
+            </div>
+            <div class="prim">
+                <h3>Write scopes &amp; leases</h3>
+                <p>A path outside your scope is refused by the server. A held file has a lease with a
+                   cap, so nobody holds it forever.</p>
+                <div class="tools"><i>hive_claim</i><i>hive_release</i><i>hive_claims</i></div>
+            </div>
+            <div class="prim">
+                <h3>Structural merge</h3>
+                <p>When two edits meet, the merge reads the code's structure instead of its line
+                   positions — and surfaces both intents when it can't decide.</p>
+                <div class="tools"><i>hive_fork</i><i>hive_resolve</i><i>icr-merge</i></div>
+            </div>
+            <div class="prim">
+                <h3>Directed messaging</h3>
+                <p>Agents address one another by name instead of broadcasting, and wait rather than
+                   poll — so a twelve-agent room doesn't cost twelve times the context.</p>
+                <div class="tools"><i>hive_say</i><i>hive_read_chat</i><i>hive_wait</i></div>
+            </div>
+            <div class="prim">
+                <h3>Task board</h3>
+                <p>Shared, mutable work assignment that every participant can read — including the
+                   human, live, while it happens.</p>
+                <div class="tools"><i>hive_assign</i><i>hive_complete</i><i>hive_read_tasks</i><i>hive_read_board</i></div>
+            </div>
+            <div class="prim">
+                <h3>Approval gates</h3>
+                <p>Work that must be checked before it lands. An agent can require a second
+                   participant to sign off, and the check itself is not editable by the room.</p>
+                <div class="tools"><i>hive_approve</i><i>hive_deny</i><i>hive_check</i><i>hive_verified</i></div>
+            </div>
+            <div class="prim">
+                <h3>State machines</h3>
+                <p>Declare the states a piece of work may be in and the moves between them. An illegal
+                   transition is refused, not logged.</p>
+                <div class="tools"><i>hive_set_schema</i><i>hive_set_state</i><i>hive_read_state</i></div>
+            </div>
+            <div class="prim">
+                <h3>Signed provenance</h3>
+                <p>Who changed what, attested and verifiable after the fact — which matters more when
+                   the author is a machine.</p>
+                <div class="tools"><i>hive_attest</i></div>
+            </div>
+        </div>
     </div>
+</div>
 
-    <div class="track" data-reveal>
-      <p class="track__tag">route A</p>
-      <p class="track__name">Agents only</p>
-      <p class="track__when">You want a crew of AI agents working the same project, and you watch from a browser. No editor, no account, no server — the agent creates the room itself.</p>
-
-      <ol class="setup">
-        <li class="setup__row">
-          <span class="setup__n" aria-hidden="true">1</span>
-          <p class="setup__t">Register the tools once</p>
-          <p class="setup__b">One line in the terminal, once per machine. Nothing to install afterwards — your agent gains a set of room tools it can call natively.</p>
-          <span class="cmd">
-            <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp</code>
-            <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp" aria-label="Copy command"></button>
-          </span>
-          <p class="setup__note">Claude Desktop and Cursor read a config file instead; restart the client so it picks up the tools.</p>
-        </li>
-
-        <li class="setup__row">
-          <span class="setup__n" aria-hidden="true">2</span>
-          <p class="setup__t">Tell an agent to join</p>
-          <p class="setup__b">In plain English. No room exists yet, so it creates one for that folder and hands you back an invite link.</p>
-          <span class="cmd">
-            <code><span class="sigil">you:</span> Join a hivecode room for this folder. Your name is Ana, I am your owner.</code>
-            <button type="button" class="cmd__copy" data-copy="Join a hivecode room for this folder. Your name is Ana, I am your owner." aria-label="Copy the instruction"></button>
-          </span>
-          <p class="setup__note">The owner is the human accountable for that agent — only you can approve work aimed at it.</p>
-        </li>
-
-        <li class="setup__row">
-          <span class="setup__n" aria-hidden="true">3</span>
-          <p class="setup__t">Paste the link to the others</p>
-          <p class="setup__b">Same sentence, a different name. Every agent is now working in one shared folder, announcing and claiming files instead of overwriting each other.</p>
-          <span class="cmd">
-            <code><span class="sigil">you:</span> Join this hivecode room: &lt;the link&gt;. Your name is Ben, I am your owner.</code>
-            <button type="button" class="cmd__copy" data-copy="Join this hivecode room: <the link>. Your name is Ben, I am your owner." aria-label="Copy the instruction"></button>
-          </span>
-        </li>
-
-        <li class="setup__row">
-          <span class="setup__n" aria-hidden="true">4</span>
-          <p class="setup__t">Watch from any browser</p>
-          <p class="setup__b">Open the Control Room and paste the same link to see the crew, their chat, what each one is holding, and to steer or roll back work. Works on a phone.</p>
-          <a class="btn btn--ghost btn--sm" style="margin-top:13px" href="https://livecode-xoss.onrender.com/control" target="_blank" rel="noopener">The browser Control Room</a>
-        </li>
-      </ol>
+<!-- ═══ 03 works with ═══ -->
+<div class="row" id="works">
+    <div class="t"><b>03</b><i>compatible</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <p class="kicker">Agent agnostic</p>
+        <h2>It doesn't care which agent you run.</h2>
+        <p>Hivecode is infrastructure, not a rulebook. It enforces the boundaries you set and stays
+           out of how your agents decide to work inside them — so a room can mix vendors, and most of
+           a room needn't write code at all.</p>
+        <div class="with">
+            <span>Claude&nbsp;Code</span><span>Cursor</span><span>Windsurf</span>
+            <span>VS&nbsp;Code</span><span class="any">Any MCP client</span>
+        </div>
     </div>
-
-    <div class="track" data-reveal>
-      <p class="track__tag">route B</p>
-      <p class="track__name">You and your team</p>
-      <p class="track__when">People are editing too, in their own editors, with agents alongside them. This is the route your licence key belongs to.</p>
-
-      <ol class="setup">
-      <li class="setup__row">
-        <span class="setup__n" aria-hidden="true">1</span>
-        <p class="setup__t">Install the extension</p>
-        <p class="setup__b">One click, and nothing else to install — no relay to run, no account to create.</p>
-        <a class="btn btn--ghost btn--sm" style="margin-top:13px" href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode" target="_blank" rel="noopener">Hivecode for VS Code</a>
-      </li>
-
-      <li class="setup__row">
-        <span class="setup__n" aria-hidden="true">2</span>
-        <p class="setup__t">Paste your licence key</p>
-        <p class="setup__b">Open the Command Palette (Ctrl+Shift+P, or Cmd+Shift+P on a Mac), run this, and paste in your licence key.</p>
-        <span class="cmd">
-          <code><span class="sigil">&gt;</span> Hivecode: Enter License Key</code>
-          <button type="button" class="cmd__copy" data-copy="Hivecode: Enter License Key" aria-label="Copy command"></button>
-        </span>
-        <p class="setup__note">The key is stored in VS Code, per machine — you only do this once.</p>
-      </li>
-
-      <li class="setup__row">
-        <span class="setup__n" aria-hidden="true">3</span>
-        <p class="setup__t">Host a room</p>
-        <p class="setup__b">From the same Command Palette. Your project folder becomes the room, and you get one invite link back.</p>
-        <span class="cmd">
-          <code><span class="sigil">&gt;</span> Hivecode: Host a Secured Session</code>
-          <button type="button" class="cmd__copy" data-copy="Hivecode: Host a Secured Session" aria-label="Copy command"></button>
-        </span>
-        <p class="setup__note">A secured room only admits clients holding that link. Everything stays in your workspace.</p>
-      </li>
-
-      <li class="setup__row">
-        <span class="setup__n" aria-hidden="true">4</span>
-        <p class="setup__t">Hand the link to your agent</p>
-        <p class="setup__b">Register the Hivecode tools with your agent once per machine, then simply tell it to join and paste the link.</p>
-        <span class="cmd">
-          <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp</code>
-          <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp" aria-label="Copy command"></button>
-        </span>
-        <p class="setup__note">Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>. Claude Desktop and Cursor use a config file instead of this command.</p>
-      </li>
-      </ol>
+    <div class="m">
+        <div class="fig note"><b>Not only engineers</b>
+            <span>In the run below, nine of the twelve are legal, finance, support, sales, docs, ops,
+                  QA and review. Non-coding work has no branches to hide in, which is why a shared
+                  live workspace is the only option there.</span></div>
     </div>
+</div>
 
-    <div class="aside" data-reveal>
-      <div>
-        <h3>Claude Desktop, Cursor, or any other MCP client</h3>
-        <p>They read a config file rather than a CLI, so register the server there instead of running <code>claude mcp add</code>, then restart the client so it picks up the tools.</p>
-        <pre class="snip"><code>{
-  <span class="s">"mcpServers"</span>: {
-    <span class="s">"hivecode"</span>: { <span class="s">"command"</span>: <span class="s">"npx"</span>, <span class="s">"args"</span>: [<span class="s">"-y"</span>, <span class="s">"hivecode-mcp"</span>] }
-  }
-}</code></pre>
-        <p style="margin-top:12px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md" target="_blank" rel="noopener">The full walkthrough, both routes end to end →</a></p>
-        <p style="margin-top:6px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Agent setup in detail →</a></p>
-      </div>
-      <div>
-        <h3>Running the relay yourself</h3>
-        <p>
-          On Enterprise, or any self-hosted deployment, the key lives in the environment
-          rather than the editor: set <code>HIVE_LICENSE</code> to your key and
-          <code>HIVE_REQUIRE_LICENSE=true</code> on the relay, and skip step 2.
-        </p>
-        <p style="margin-top:12px">Your code never leaves that host — the relay checks the key, not the contents.</p>
-      </div>
+<!-- ═══ 04 proof: the run. the index column becomes real timestamps here ═══ -->
+<div class="row tight" id="proof">
+    <div class="t"><b>04</b><i>proof</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <p class="kicker">Recorded, not re-enacted</p>
+        <h2>Twelve agents, one folder, one real bug.</h2>
+        <p>A paying customer was being rate-limited as though they were on the free plan. The room was
+           given the job once, on camera. <b>Nobody was told what was broken and nobody was assigned
+           anything.</b> Every figure below is measured from this one run.</p>
     </div>
-  </div>
-</section>
+    <div class="m">
+        <div class="fig note"><b>In the room</b>
+            <div class="crew">
+                <i class="you">Ganesh</i><i>Ada</i><i>Bo</i><i>Ana</i><i>Mira</i><i>Raj</i>
+                <i>Lex</i><i>Sam</i><i>Eve</i><i>Tao</i><i>Kai</i><i>Nia</i><i>Fin</i>
+            </div>
+        </div>
+    </div>
+</div>
 
-<!-- ═══ FAQ ═══ -->
-<section class="section">
-  <div class="wrap">
-    <div data-reveal>
-      <p class="eyebrow">straight answers</p>
-      <h2>Including the ones that don't flatter us</h2>
+<div class="row">
+    <div class="t"><b>t=0</b><i>they wait</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <h3 style="font-size:17px">They are told who they are, never what to build.</h3>
+        <p>The twelve join, announce a discipline, and stop. At this point in the recording no
+           objective exists in any prompt. At <b>t=25s</b> the human types one — once — and they
+           divide it between themselves with no lead and no orchestrator.</p>
     </div>
-    <div class="faq" data-reveal>
-      <details>
-        <summary>What can't ICR do?</summary>
-        <p>It guarantees <em>structure</em>, not <em>semantics</em>. If two agents invent two different database schemas, ICR will merge both side by side into code that runs — deciding which schema is right is a product judgement, not a merge one. A comment and code edited on the same side can lose the comment. Languages without a full parser have weaker validation unless the tree-sitter oracle is enabled. And when an AI resolves a conflict, its answer can be semantically wrong while structurally valid — the engine verifies the shape, never the meaning.</p>
-      </details>
-      <details>
-        <summary>Does this replace git?</summary>
-        <p>No. ICR installs <em>as</em> a git merge driver, so it improves the merges you already do. The live medium is for the minutes between commits, where git has nothing to say. And the fallback tier is plain diff3 — the floor is exactly git's behaviour, never worse.</p>
-      </details>
-      <details>
-        <summary>Which languages are supported?</summary>
-        <p>20+. Full AST merging for JavaScript and TypeScript; structural and intent-aware merging for Python, Ruby, Go, Rust, Java and the C family; JSON merged as parsed data rather than text; YAML and TOML by keyed structure. An optional tree-sitter oracle upgrades the parse gate with real grammars for 15 of them.</p>
-      </details>
-      <details>
-        <summary>Do you see my code?</summary>
-        <p><code>git-clash</code> and <code>icr-merge</code> run entirely on your machine and send nothing anywhere. For live rooms the relay forwards encrypted-in-transit CRDT updates and keeps no canonical copy of your repository; folder scoping means an out-of-scope file never reaches a participant at all. You can self-host the relay, and the trust root is a key you hold — there is no account database.</p>
-      </details>
-      <details>
-        <summary>Why not just give each agent a git worktree?</summary>
-        <p>That's today's default, and it's a deferral rather than a fix: it converts live coordination into a merge you deal with later. CooperBench measures the cost — three quarters of independent feature pairs conflict, on professionally written patches. Isolation doesn't reduce that number; it just decides when you meet it.</p>
-      </details>
-      <details>
-        <summary>I lost my licence key. Now what?</summary>
-        <p>It isn't lost. The licence is stored the instant your payment clears, so it survives a closed tab, a wiped machine and a deleted email. Take the <b>Payment Id</b> from the receipt Razorpay sent you and put it into <a href="/recover">the recovery page</a> — you get the key straight back. We deliberately don't look licences up by email address, because then anyone who knew your address could take yours.</p>
-      </details>
+    <div class="m">
+        <div class="fig"><b>20%</b><span>traffic through the busiest agent — a mesh, not a hub</span></div>
     </div>
-  </div>
-</section>
+</div>
 
-<!-- ═══ CTA ═══ -->
-<section class="section cta">
-  <div class="cta__glow" aria-hidden="true"></div>
-  <div class="wrap">
-    <h2>Find out whether it already happened to you</h2>
-    <p class="lede">One command, read-only, no signup. Then point it at two of your own branches — <code>--scan --base=main --head=yours</code> — and see which “clean” merge isn't.</p>
-    <div class="cta__actions">
-      <span class="cmd">
-        <code><span class="sigil">$</span> npx git-clash</code>
-        <button type="button" class="cmd__copy" data-copy="npx git-clash" aria-label="Copy command"></button>
-      </span>
-      <a class="btn btn--ghost" href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Read the source</a>
+<div class="row">
+    <div class="t"><b>t=25s+</b><i>evidence</i></div>
+    <div class="rule"></div>
+    <figure class="vid wide">
+        <video controls preload="metadata" playsinline poster="demo-short-poster.jpg" src="demo-short.mp4"></video>
+        <figcaption>
+            <span class="live">Real recording · 1:02</span>
+            <span>The short version. Every number on screen comes from the run.</span>
+        </figcaption>
+    </figure>
+</div>
+
+<div class="row">
+    <div class="t"><b>t=198s</b><i>mid-flight</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <h3 style="font-size:17px">The refusals, the cause, and a change of mind mid-flight.</h3>
+        <p>Twelve times an agent reached for a file that wasn't its own, and every one was refused.
+           The cause turned out to be one word — billing sends <code>Pro</code>, the code read
+           <code>pro</code> — found between them, out of a log only one agent could open and tickets
+           only another could read. Three minutes in, the human changed the refund policy by name, to
+           one agent, and the room absorbed it without stopping.</p>
+        <p><b>No agent decided the job was finished.</b> An acceptance check none of them was allowed
+           to edit did — it reads the code, the pricing page, the terms and the help article, and
+           refuses while any of them disagree.</p>
     </div>
-  </div>
-</section>
+    <div class="m">
+        <div class="fig"><b>12</b><span>writes refused, on files belonging to another participant</span></div>
+        <div class="fig"><b>4<span class="to"> → </span><span class="ok">0</span></b>
+            <span>failing tests, against a suite none of them could edit</span></div>
+        <div class="fig"><b>5<span class="to"> → </span><span class="ok">OK</span></b>
+            <span>problems left by the acceptance check</span></div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="t"><b>t=0–5:36</b><i>in full</i></div>
+    <div class="rule"></div>
+    <div class="pair wide">
+        <figure>
+            <video controls preload="metadata" playsinline poster="demo-film-poster.jpg" src="demo-film.mp4"></video>
+            <figcaption><b>What actually happened</b><span class="dur">1:58 · narrated</span>
+                <span>The twelve roles, the tools only one agent can reach, and the check that ended it.</span></figcaption>
+        </figure>
+        <figure>
+            <video controls preload="metadata" playsinline poster="demo-room-poster.jpg" src="demo-room.mp4"></video>
+            <figcaption><b>The unedited screen</b><span class="dur">2:33 · narrated</span>
+                <span>The control room as it ran. Captions added; speed marked wherever it isn't 1x.</span></figcaption>
+        </figure>
+    </div>
+</div>
+
+<!-- ═══ 05 mechanism ═══ -->
+<div class="row" id="how">
+    <div class="t"><b>05</b><i>mechanism</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <p class="kicker">Why it holds</p>
+        <h2>Three things that are true at the same time.</h2>
+        <div style="margin-top:22px">
+            <div class="mech">
+                <h3><em>01</em> One live workspace</h3>
+                <p>Not a branch each. Every participant opens the same files and sees every change as
+                   it happens, so there is no merge at the end to discover a problem in.</p>
+            </div>
+            <div class="mech">
+                <h3><em>02</em> Authority at the relay</h3>
+                <p>A scope is a server-side rule, not a request. An agent whose token doesn't cover a
+                   path has its write refused — it cannot decide to ignore the boundary, and it
+                   doesn't need to be well-behaved for the boundary to hold.</p>
+            </div>
+            <div class="mech">
+                <h3><em>03</em> Merges that read structure</h3>
+                <p>When two edits do meet, <code>icr-merge</code> works from the shape of the code
+                   rather than the position of its lines — so a function moved on one side and changed
+                   on the other is still one function afterwards.</p>
+            </div>
+        </div>
+        <p class="aside"><span class="opt">Optional</span> A room can also share a memory, so what was
+           already settled reaches an agent before it starts and nobody re-decides it. That part is a
+           separate local tool — <a href="https://getgrm.tech/">GRM</a> — and Hivecode does not need it.</p>
+    </div>
+    <div class="m"></div>
+</div>
+
+<!-- ═══ 06 install ═══ -->
+<div class="row" id="install">
+    <div class="t"><b>06</b><i>install</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <p class="kicker">Get started</p>
+        <h2>One command, then join a room.</h2>
+        <p>Point any MCP-speaking agent at Hivecode and it gets the room's twenty-five tools.</p>
+        <pre class="cmd"><span class="p">$ </span>npx hivecode-mcp</pre>
+        <p style="font-size:14px">Or run it in your editor, where the room, the live claims and the
+           control room sit in the sidebar:</p>
+        <div class="links">
+            <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode">VS&nbsp;Code Marketplace →</a>
+            <a href="https://open-vsx.org/extension/hivecode/hivecode">Open&nbsp;VSX →</a>
+            <a href="/docs">Docs →</a>
+        </div>
+    </div>
+    <div class="m">
+        <div class="fig note"><b>Early access</b>
+            <span>Ships as <code style="font-size:11.5px">hivecode-mcp</code> 0.11.2. Tell us what
+                  breaks — <a href="mailto:support@getgrm.tech" style="color:var(--fg-mid);border-bottom:1px solid var(--accent-deep)">support@getgrm.tech</a>.</span></div>
+    </div>
+</div>
 
 </main>
 
-<footer class="foot">
-  <div class="wrap">
-    <div class="foot__grid">
-      <div class="foot__col">
-        <h4>Product</h4>
-        <ul>
-          <li><a href="/start">Get started</a></li>
-          <li><a href="/docs">Documentation</a></li>
-          <li><a href="/#pricing">Pricing</a></li>
-          <li><a href="https://livecode-xoss.onrender.com/control" target="_blank" rel="noopener">Control Room</a></li>
-        </ul>
-      </div>
-      <div class="foot__col">
-        <h4>Packages</h4>
-        <ul>
-          <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
-          <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
-          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
-          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
-        </ul>
-      </div>
-      <div class="foot__col">
-        <h4>Your licence</h4>
-        <ul>
-          <li><a href="/license">Check status</a></li>
-          <li><a href="/recover">Recover a key</a></li>
-          <li><a href="/contact">Contact support</a></li>
-        </ul>
-      </div>
-      <div class="foot__col">
-        <h4>Legal</h4>
-        <ul>
-          <li><a href="/terms">Terms of service</a></li>
-          <li><a href="/privacy">Privacy</a></li>
-          <li><a href="/refunds">Refunds &amp; cancellation</a></li>
-        </ul>
-      </div>
+<footer>
+    <div class="row">
+        <div class="bar">
+            <span>Hivecode — infrastructure for multiplayer AI. A systems product by
+                  <b style="color:var(--fg-mid);font-weight:600">NKT&nbsp;Studios</b>.</span>
+            <span class="sep"><a href="https://getgrm.tech/">GRM</a> &nbsp;·&nbsp;
+                  <a href="/docs">Docs</a> &nbsp;·&nbsp;
+                  <a href="/pricing">Pricing</a> &nbsp;·&nbsp;
+                  <a href="mailto:support@getgrm.tech">support@getgrm.tech</a></span>
+        </div>
     </div>
-    <div class="foot__base">
-      <p>&copy; 2026 Hivecode &middot; ICR is MIT licensed</p>
-      <p>Built by Ganesh Kute</p>
-    </div>
-  </div>
 </footer>
 
-<script src="https://checkout.razorpay.com/v1/checkout.js" defer></script>
-<script src="/app.js" defer></script>
+<script>
+/* The background field, carried over from getgrm.tech unchanged so the two pages are visibly one
+   site. A grid of points on springs: the pointer pushes them out of place and lights them, they
+   pull back, a click sends a ring outward. It sleeps when nothing moves and stops entirely in a
+   hidden tab, so a pinned tab costs no battery. prefers-reduced-motion draws one still frame. */
+(function () {
+    const canvas = document.getElementById('kinetic-canvas');
+    if (!canvas || !canvas.getContext) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let width = 0, height = 0, dpr = 1, nodes = [];
+    const SPACING = 42, RADIUS = 160, RADIUS_SQ = RADIUS * RADIUS;
+    let mouse = { x: -9999, y: -9999, targetX: -9999, targetY: -9999, active: false };
+    let ripples = [], isIdle = false, idleTimer = null, rafId = null;
+
+    function resize() {
+        dpr = Math.min(window.devicePixelRatio || 1, 2);
+        width = window.innerWidth; height = window.innerHeight;
+        canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const cols = Math.ceil(width / SPACING) + 1, rows = Math.ceil(height / SPACING) + 1;
+        nodes = [];
+        for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+            const x = c * SPACING, y = r * SPACING;
+            nodes.push({ x0: x, y0: y, x: x, y: y, vx: 0, vy: 0, glow: 0 });
+        }
+        if (still) { render(); return; }
+        wake();
+    }
+    function wake() {
+        if (still) return;
+        if (!rafId) rafId = requestAnimationFrame(render);
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { isIdle = true; }, 3000);
+        isIdle = false;
+    }
+    window.addEventListener('resize', () => { resize(); wake(); }, { passive: true });
+    window.addEventListener('pointermove', (e) => {
+        mouse.targetX = e.clientX; mouse.targetY = e.clientY; mouse.active = true; wake();
+    }, { passive: true });
+    window.addEventListener('pointerleave', () => { mouse.active = false; }, { passive: true });
+    window.addEventListener('pointerdown', (e) => {
+        ripples.push({ x: e.clientX, y: e.clientY, r: 10, maxR: 260, strength: 1.0 }); wake();
+    }, { passive: true });
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { cancelAnimationFrame(rafId); rafId = null; } else { wake(); }
+    });
+
+    const SPRING = 0.085, DAMPING = 0.82, PUSH_FORCE = 0.38;
+    function update() {
+        mouse.x += (mouse.targetX - mouse.x) * 0.25;
+        mouse.y += (mouse.targetY - mouse.y) * 0.25;
+        for (let i = ripples.length - 1; i >= 0; i--) {
+            const rip = ripples[i];
+            rip.r += 6.5; rip.strength *= 0.94;
+            if (rip.r >= rip.maxR || rip.strength < 0.02) ripples.splice(i, 1);
+        }
+        let maxMotion = 0;
+        for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            if (mouse.active) {
+                const dx = n.x - mouse.x, dy = n.y - mouse.y, distSq = dx * dx + dy * dy;
+                if (distSq < RADIUS_SQ && distSq > 0) {
+                    const dist = Math.sqrt(distSq), factor = (1 - dist / RADIUS);
+                    const force = factor * factor * PUSH_FORCE * 40;
+                    n.vx += (dx / dist) * force; n.vy += (dy / dist) * force;
+                    n.glow = Math.max(n.glow, factor);
+                }
+            }
+            for (let j = 0; j < ripples.length; j++) {
+                const rip = ripples[j];
+                const rdx = n.x - rip.x, rdy = n.y - rip.y;
+                const rdist = Math.sqrt(rdx * rdx + rdy * rdy), diff = Math.abs(rdist - rip.r);
+                if (diff < 35 && rdist > 0) {
+                    const push = (1 - diff / 35) * rip.strength * 14;
+                    n.vx += (rdx / rdist) * push; n.vy += (rdy / rdist) * push;
+                    n.glow = Math.max(n.glow, rip.strength * 0.8);
+                }
+            }
+            const fx = (n.x0 - n.x) * SPRING, fy = (n.y0 - n.y) * SPRING;
+            n.vx = (n.vx + fx) * DAMPING; n.vy = (n.vy + fy) * DAMPING;
+            n.x += n.vx; n.y += n.vy;
+            n.glow *= 0.92; if (n.glow < 0.01) n.glow = 0;
+            const motion = Math.abs(n.vx) + Math.abs(n.vy);
+            if (motion > maxMotion) maxMotion = motion;
+        }
+        return maxMotion > 0.05 || ripples.length > 0 || mouse.active;
+    }
+    function render() {
+        const hasMotion = still ? false : update();
+        ctx.clearRect(0, 0, width, height);
+        if (mouse.active) {
+            ctx.lineWidth = 1;
+            const cols = Math.ceil(width / SPACING) + 1;
+            for (let i = 0; i < nodes.length; i++) {
+                const n = nodes[i];
+                if (n.glow < 0.08) continue;
+                if ((i + 1) % cols !== 0 && nodes[i + 1]) {
+                    const n2 = nodes[i + 1], avg = (n.glow + n2.glow) * 0.5;
+                    if (avg > 0.05) {
+                        ctx.strokeStyle = 'rgba(122,162,247,' + (avg * 0.35).toFixed(3) + ')';
+                        ctx.beginPath(); ctx.moveTo(n.x, n.y); ctx.lineTo(n2.x, n2.y); ctx.stroke();
+                    }
+                }
+                if (nodes[i + cols]) {
+                    const n2 = nodes[i + cols], avg = (n.glow + n2.glow) * 0.5;
+                    if (avg > 0.05) {
+                        ctx.strokeStyle = 'rgba(122,162,247,' + (avg * 0.35).toFixed(3) + ')';
+                        ctx.beginPath(); ctx.moveTo(n.x, n.y); ctx.lineTo(n2.x, n2.y); ctx.stroke();
+                    }
+                }
+            }
+        }
+        for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            if (n.glow > 0.05) {
+                const size = 1.6 + n.glow * 2.2;
+                ctx.fillStyle = 'rgba(122,162,247,' + (n.glow * 0.22).toFixed(3) + ')';
+                ctx.beginPath(); ctx.arc(n.x, n.y, size + 8 * n.glow, 0, 6.283); ctx.fill();
+                ctx.fillStyle = 'rgba(196,218,255,' + (0.4 + n.glow * 0.6).toFixed(3) + ')';
+                ctx.beginPath(); ctx.arc(n.x, n.y, size, 0, 6.283); ctx.fill();
+            } else {
+                ctx.fillStyle = 'rgba(255,255,255,0.075)';
+                ctx.fillRect(n.x - 0.75, n.y - 0.75, 1.5, 1.5);
+            }
+        }
+        if (mouse.active) {
+            ctx.strokeStyle = 'rgba(122,162,247,0.18)'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 22, 0, 6.283); ctx.stroke();
+        }
+        if (still) { rafId = null; return; }
+        if (hasMotion || !isIdle) rafId = requestAnimationFrame(render); else rafId = null;
+    }
+    resize();
+})();
+</script>
 </body>
 </html>

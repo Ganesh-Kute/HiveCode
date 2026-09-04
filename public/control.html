@@ -89,7 +89,7 @@
   @keyframes rad{0%{transform:scale(.55);opacity:.5}100%{transform:scale(2.3);opacity:0}}
   .iconbtn{padding:9px 12px;background:transparent;box-shadow:inset 0 0 0 1px var(--line2)}
 
-  main{display:grid;grid-template-columns:308px 1fr 336px;gap:14px;flex:1;min-height:0}
+  main{display:grid;grid-template-columns:236px 1fr 260px;gap:14px;flex:1;min-height:0}
   .col{background:color-mix(in srgb,var(--panel) 40%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border:1px solid var(--line);border-radius:var(--rc);box-shadow:var(--sh1);display:flex;flex-direction:column;min-height:0;overflow:hidden}
   .colhead{display:flex;align-items:center;gap:10px;padding:18px 20px 12px;flex:0 0 auto}
   .colhead h2{font-family:var(--fd);font-weight:500;font-size:16px;margin:0}
@@ -98,7 +98,12 @@
   .empty{color:var(--dim);font-size:13px;text-align:center;padding:36px 18px;line-height:1.6}
 
   /* crew */
-  .mcard{background:color-mix(in srgb,var(--panel2) 34%,transparent);border-radius:var(--ri);padding:14px;margin:7px 4px}
+  /* Density is a correctness property here, not taste. At 14px padding with the control row
+     always in flow a card is 72px, so a 558px list showed 4 of 13 members -- a room of twelve
+     agents rendered as a room of four, with the rest below a fold no viewer can scroll. The
+     controls now expand on hover or keyboard focus, which is when they are actually wanted,
+     and every member stays on screen the rest of the time. */
+  .mcard{background:color-mix(in srgb,var(--panel2) 34%,transparent);border-radius:var(--ri);padding:9px 11px;margin:4px 4px}
   .mtop{display:flex;align-items:center;gap:12px}
   .av{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;font-family:var(--fd);font-weight:500;font-size:14px;color:#fff;flex:0 0 auto;position:relative}
   .av.online{animation:breathe 3.6s ease-in-out infinite}
@@ -111,10 +116,13 @@
   .tag.human{background:color-mix(in srgb,var(--teal) 18%,transparent);color:#86e6c2}
   .tag.pz{background:color-mix(in srgb,var(--amber) 22%,transparent);color:#f4d27a}
   .estat{font-size:12.5px;color:var(--dim);margin-top:3px}.estat b{color:var(--edit);font-weight:400;font-family:var(--fm);font-size:11.5px}
-  .mctl{display:flex;gap:8px;margin-top:13px}.mctl button{flex:1;display:flex;justify-content:center;padding:7px;font-size:12.5px}
+  .mctl{display:flex;gap:8px;margin-top:0;max-height:0;overflow:hidden;opacity:0;transition:max-height .16s ease,opacity .16s ease,margin-top .16s ease}
+  .mcard:hover>.mctl,.mcard:focus-within>.mctl{max-height:40px;opacity:1;margin-top:9px}
+  .mctl button{flex:1;display:flex;justify-content:center;padding:6px;font-size:12.5px}
+  @media(prefers-reduced-motion:reduce){.mctl{transition:none}}
 
   /* chat */
-  .chat .scroll{padding:8px 18px}
+  .chat .scroll{padding:10px 20px;font-size:14.5px;line-height:1.62}
   .cmsg{display:flex;gap:12px;padding:10px 0}
   .cmsg .av{width:34px;height:34px;font-size:12px;animation:none;box-shadow:none}
   .cbody{min-width:0}
@@ -168,7 +176,7 @@
   .ptag{font-family:var(--fm);font-size:9.5px;font-weight:500;padding:2px 8px;border-radius:6px;background:color-mix(in srgb,var(--blue) 20%,transparent);color:#9cc1fb;flex:0 0 auto}
 
   /* ── Mission Control band (live metrics + hive map) ── */
-  .mc{display:grid;grid-template-columns:1fr 1.15fr;gap:14px;flex:0 0 auto}
+  .mc{display:none}  /* metrics + architecture map: the chat is the product, this was noise */
   .panel-c{background:color-mix(in srgb,var(--panel) 40%,transparent);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border:1px solid var(--line);border-radius:var(--rc);box-shadow:var(--sh1);padding:14px 16px}
   .mcstat{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
   .stat{background:color-mix(in srgb,var(--panel2) 34%,transparent);border-radius:var(--ri);padding:11px 12px}
@@ -227,10 +235,6 @@
     <button class="go primary" id="connect">Enter room</button>
     <div class="err" id="err"></div>
     <div class="hint">Get the link from the Hivecode panel in your editor, or via “Invite to folders…”. Your token never leaves this browser.</div>
-    <a class="fbk" href="mailto:support@getgrm.tech?subject=Hivecode%20feedback">
-      <b>Stuck, or something broke? Write to support@getgrm.tech</b>
-      <span>Hivecode is free and we are not selling you anything &mdash; we want the feedback. Tell us what broke, what confused you, or what you wish it did. It goes straight to the person who built it.</span>
-    </a>
   </div>
 </div>
 
@@ -245,10 +249,6 @@
     <button class="iconbtn" id="theme" title="Light / dark">🌙</button>
     <button class="ghost" id="leave">Leave</button>
   </header>
-  <a class="fbk" href="mailto:support@getgrm.tech?subject=Hivecode%20feedback">
-    <b>Tell us what is wrong with this &mdash; support@getgrm.tech</b>
-    <span>Free, and we are not asking for money. What we need is your feedback: what broke, what confused you, what is missing. It reaches the person who wrote it.</span>
-  </a>
   <section class="mc">
     <div class="panel-c">
       <div class="mchead">◆ Live Metrics</div>
@@ -308,6 +308,27 @@ const initials=(s)=>String(s||'?').replace(/[^a-zA-Z0-9]/g,'').slice(0,2).toUppe
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
 const ago=(t)=>{if(!t)return'';const d=Math.max(0,Date.now()-t),m=Math.floor(d/60000);if(m<1)return'now';if(m<60)return m+'m';const h=Math.floor(m/60);return h<24?h+'h':Math.floor(h/24)+'d'}
 const efile=(e)=>e?(typeof e==='object'?e.file:e):null
+// A member between writes is not "idle" -- that word makes a working room look dead, which
+// is the one thing this panel must not do on camera. Report what is true: editing now, or
+// when they last wrote, or simply online.
+const eat=(e)=>e&&typeof e==='object'&&e.at?e.at:0
+const estat=(m)=>{const cur=efile(m.editing)
+  if(cur)return 'editing <b>'+esc(cur)+'</b>'
+  const lf=efile(m.lastEdit),la=eat(m.lastEdit)
+  if(!lf||!la)return 'online'
+  const d=Date.now()-la
+  // NOT ago(): that collapses the whole first minute to "now", so a member who last wrote
+  // 40s ago read as writing right now -- the exact ambiguity this label exists to remove.
+  // Rounded to the same 5s grid as ebucket so the text can never disagree with the repaint.
+  const w=d<60000?Math.max(5,Math.round(d/5000)*5)+'s ago'
+    :d<3600000?Math.round(d/60000)+'m ago':Math.round(d/3600000)+'h ago'
+  return 'last edit <b>'+esc(lf)+'</b> · '+w}
+// The label moves with the CLOCK, not with the doc, so the repaint signature has to move too
+// or it freezes at whatever it said when the last edit landed. 5s buckets: live enough to
+// read as live, coarse enough not to repaint every second and eat a text selection.
+const ebucket=(m)=>{if(efile(m.editing))return 'f'
+  const la=eat(m.lastEdit);if(!la)return 'x'
+  return 'a'+Math.floor((Date.now()-la)/5000)}
 const err=(m)=>{$('err').textContent=m||''}
 const genId=()=>'t'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36)
 const tstr=()=>new Date().toTimeString().slice(0,8) // "HH:MM:SS" — matches the editor/MCP clients
@@ -338,7 +359,7 @@ async function connect(raw){
   const opts={connect:true};if(p.token)opts.params={token:p.token}
   try{provider=new WS(p.relay,p.room,doc,opts)}catch(e){err('Could not connect: '+e.message);return}
   provider.awareness.setLocalStateField('user',{name:me,kind:meKind,v:2})
-  window._h={chat:doc.getArray('chat'),tasks:doc.getMap('tasks'),controls:doc.getMap('controls'),history:doc.getMap('history')}
+  window._h={chat:doc.getArray('chat'),tasks:doc.getMap('tasks'),controls:doc.getMap('controls'),history:doc.getMap('history'),provider,doc}
   window._conn={relay:p.relay,room:p.room,token:p.token} // kept so we can open a file's own doc to restore it
   const ok=()=>{$('dot').classList.add('on');$('connState').textContent='connected';if(timer){clearTimeout(timer);timer=null}}
   provider.on('status',(e)=>{if(e.status==='connected')ok();else{$('dot').classList.remove('on');$('connState').textContent=e.status}})
@@ -368,7 +389,7 @@ function render(){
   const chatArr=window._h.chat.toArray(),tasksObj=window._h.tasks.toJSON(),boardObj=doc.getMap('board').toJSON(),histObj=window._h.history.toJSON()
   // board signature uses each file's last-change stamp (ts numeric, or at string) so
   // re-editing the SAME file is detected — not just when the file COUNT changes.
-  const sig=JSON.stringify([mem.map(m=>[m.name,m.kind,m.paused,efile(m.editing)]),chatArr.length,(chatArr[chatArr.length-1]||{}).at,Object.values(tasksObj).map(t=>[t.id,t.status]),Object.entries(boardObj).map(([f,v])=>[f,v.ts||v.at]),Object.keys(histObj).length])
+  const sig=JSON.stringify([mem.map(m=>[m.name,m.kind,m.paused,efile(m.editing),ebucket(m)]),chatArr.length,(chatArr[chatArr.length-1]||{}).at,Object.values(tasksObj).map(t=>[t.id,t.status]),Object.entries(boardObj).map(([f,v])=>[f,v.ts||v.at]),Object.keys(histObj).length])
   if(sig===_rsig)return; _rsig=sig
   try{paintMC(mem,boardObj,tasksObj,chatArr)}catch(_){}
   $('memCount').textContent=mem.length;$('mc').textContent=mem.length
@@ -376,7 +397,7 @@ function render(){
     const st=m.paused?'paused':ef?'editing':'online'
     return `<div class="mcard"><div class="mtop"><div class="av ${st}" style="background:${colorFor(m.name)}">${initials(m.name)}</div>
       <div style="min-width:0"><div class="mname">${esc(m.name)}<span class="tag ${ai?'ai':'human'}">${ai?'AI':'HUMAN'}</span>${m.paused?'<span class="tag pz">PAUSED</span>':''}</div>
-      <div class="estat">${ef?'editing <b>'+esc(ef)+'</b>':'idle'}</div></div></div>
+      <div class="estat">${estat(m)}</div></div></div>
       ${ai&&m.name!==me?`<div class="mctl">${m.paused?`<button class="ok" data-act="resume" data-name="${esc(m.name)}">Resume</button>`:`<button data-act="pause" data-name="${esc(m.name)}">Pause</button>`}<button data-act="reassign" data-name="${esc(m.name)}">Reassign</button><button class="bad" data-act="revert" data-name="${esc(m.name)}" title="Roll back everything this agent changed">Revert</button></div>`:''}
     </div>`}).join(''):'<div class="empty">No one here yet.<br>Share your room link to bring the crew in.</div>'
 
@@ -464,6 +485,29 @@ function sendChat(){
     window._h.chat.push([{by:me,kind:meKind,at,text:v}])
   }
   i.value=''
+  resyncAfterWrite()
+}
+// MEASURED, NOT THEORISED: after this page posts its first message it stops receiving other
+// participants' updates. 12 node clients posted 96 messages; with the human silent the page
+// held 108 of 108, and with the human sending one line it held 13 and never grew. Throughout,
+// provider.wsconnected and provider.synced stayed true, wsUnsuccessfulReconnects stayed 0 and
+// the doc clientID never changed -- so the socket is healthy and Yjs believes it is in sync
+// while the relay has stopped sending. It is not the render (that runs on a 1s interval and
+// reads this same array), not provenance (reproduces with it off) and not the connection cap
+// (admitConnection is per-room; 13 of 32 used).
+//
+// This is a MITIGATION, not the root cause. A fresh connection re-enters the relay's broadcast
+// set and Yjs's sync step1 pulls back everything missed, so nothing is lost -- but the real bug
+// is still in the relay's per-connection bookkeeping and this only papers over it. Leaving the
+// evidence here because whoever fixes it properly will need exactly these facts.
+// A human watching a busy room otherwise goes blind the moment they speak.
+function resyncAfterWrite(){
+  if(!window._h||!window._h.provider)return
+  clearTimeout(window._resyncT)
+  // Debounced: someone typing several lines in a row must not thrash the socket.
+  window._resyncT=setTimeout(()=>{
+    try{window._h.provider.disconnect();setTimeout(()=>{try{window._h.provider.connect()}catch{}},250)}catch{}
+  },700)
 }
 // --- rollback from the browser ---------------------------------------------
 // To restore a file we open ITS OWN doc (where its restore points live), write the

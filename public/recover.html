@@ -228,7 +228,15 @@ input[type=text]:focus{border-color:var(--line-hot);outline:none;box-shadow:0 0 
     button.disabled = true
     show(card('', 'Looking it up…', 'One moment.'))
 
-    fetch(API + '/api/license?payment_id=' + encodeURIComponent(value))
+    // A Razorpay reference is either a payment id (pay_…) or a subscription id (sub_…), and
+    // for a recurring customer the SUBSCRIPTION id is often the only one that works: the
+    // licence row is created by subscription.activated, which carries no payment at all, so
+    // the row's payment_id is null until a charge event lands. Sending the value as both
+    // means the customer never has to know which kind of reference they are holding.
+    var q = /^sub_/i.test(value)
+      ? 'subscription_id=' + encodeURIComponent(value)
+      : 'payment_id=' + encodeURIComponent(value) + '&subscription_id=' + encodeURIComponent(value)
+    fetch(API + '/api/license?' + q)
       .then(function (res) {
         return res.json().then(function (data) { return { status: res.status, data: data } })
       })
@@ -240,7 +248,8 @@ input[type=text]:focus{border-color:var(--line-hot);outline:none;box-shadow:0 0 
           return show(card('warn', 'Nothing issued against that reference yet',
             'If you paid in the last minute or two, the licence may still be on its way — wait a ' +
             'moment and try again. Otherwise check the reference: it should be the <b>Payment Id</b> ' +
-            'from your Razorpay receipt, not the order id.'))
+            '(<code>pay_…</code>) or <b>Subscription Id</b> (<code>sub_…</code>) from your Razorpay ' +
+            'receipt or subscription email, not the order id.'))
         }
         if (result.status === 400) {
           return show(card('warn', 'That reference is malformed',
@@ -263,7 +272,8 @@ input[type=text]:focus{border-color:var(--line-hot);outline:none;box-shadow:0 0 
   // Deep link: /recover?payment_id=pay_… fills and submits, so the receipt link can go
   // straight here.
   try {
-    var pre = new URLSearchParams(location.search).get('payment_id')
+    var sp = new URLSearchParams(location.search)
+    var pre = sp.get('payment_id') || sp.get('subscription_id')
     if (pre) { input.value = pre; form.dispatchEvent(new Event('submit', { cancelable: true })) }
   } catch (e) { /* older browser: the form still works by hand */ }
 })()

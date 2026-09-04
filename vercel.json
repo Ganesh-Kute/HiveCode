@@ -9,7 +9,7 @@
     },
     {
       "source": "/pricing",
-      "destination": "/index.html"
+      "destination": "/pricing.html"
     },
     {
       "source": "/recover",
@@ -37,6 +37,13 @@
           "value": "Content-Type, Authorization"
         }
       ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/next",
+      "destination": "/",
+      "permanent": false
     }
   ]
 }
