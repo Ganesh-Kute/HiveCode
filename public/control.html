@@ -332,7 +332,12 @@ const tstr=()=>new Date().toTimeString().slice(0,8) // "HH:MM:SS" — matches th
 let Y=null,WS=null,provider=null,doc=null,timer=null,me='Control',meKind='human'
 function b64urlDecode(s){s=String(s).replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';return atob(s)}
 function decodeJwt(t){const p=String(t||'').split('.')[1];if(!p)return null;try{return JSON.parse(decodeURIComponent(escape(b64urlDecode(p))))}catch{try{return JSON.parse(b64urlDecode(p))}catch{return null}}}
-async function ensureLib(){if(Y)return true;err('loading…');try{const[y,yw]=await Promise.all([import('https://esm.sh/yjs@13.6.18'),import('https://esm.sh/y-websocket@2.0.4')]);Y=y;WS=yw.WebsocketProvider;err('');return true}catch(e){err('Could not load the realtime library — this page needs to reach esm.sh once. '+e.message);return false}}
+// ONE import, so ONE Yjs. This used to be two independent esm.sh imports, which resolved to
+// two different yjs builds and left the panel deaf with a perfectly healthy socket -- the
+// whole story is in web/crdt.js. Bundled from node_modules, so the version can no longer be
+// decided by a CDN resolving a semver range at run time, and the page no longer needs the
+// network to reach anything but this relay.
+async function ensureLib(){if(Y)return true;err('loading…');try{const m=await import('./hive-crdt.js');Y=m.Y;WS=m.WebsocketProvider;err('');return true}catch(e){err('Could not load the realtime library (hive-crdt.js is served next to this page). '+e.message);return false}}
 function sanitize(raw){let s=String(raw||'').trim();const i=s.search(/wss?:\/\//);return i>0?s.slice(i):s}
 function parseLink(link){if(link&&link.includes('|')){const[r,m,t]=link.split('|');return{relay:r.trim(),room:(m||'').trim(),token:(t||'').trim()}}return{relay:'',room:'',token:''}}
 const isSecured=(r)=>/^hs_[A-Za-z0-9_-]{22}_/.test(r||'')
@@ -383,8 +388,9 @@ async function connect(raw){
   // Belt-and-suspenders: besides the live CRDT observers above, sweep every second
   // so the panel can never go stale (covers any missed update / late sync). render()
   // is signature-gated, so an unchanged second touches no DOM (no flicker).
+  window._dead=0
   if(window._tick)clearInterval(window._tick)
-  window._tick=setInterval(render,1000)
+  window._tick=setInterval(()=>{reviveIfDead();render()},1000)
 }
 
 function members(){const ctrls=doc.getMap('controls').toJSON(),byName=new Map();for(const s of provider.awareness.getStates().values()){const u=s&&s.user;if(!u||!u.name)continue;byName.set(u.name,{...(byName.get(u.name)||{}),...u,paused:(ctrls[u.name]||{}).state==='paused'})}return[...byName.values()]}
@@ -494,58 +500,69 @@ function sendChat(){
     window._h.chat.push([{by:me,kind:meKind,at,text:v}])
   }
   i.value=''
-  resyncAfterWrite()
 }
-// THE ORIGINAL DIAGNOSIS HERE WAS WRONG, and it is worth saying why because the mistake is an
-// easy one to repeat. It read: "after this page posts its first message it stops receiving
-// other participants' updates... not the connection cap (admitConnection is per-room; 13 of 32
-// used)" -- and concluded the relay had a per-connection bookkeeping bug.
+// THE POST-WRITE RECONNECT WAS ITSELF THE BUG. Three diagnoses now, and the first two are kept
+// because the mistake in each is an easy one to repeat.
 //
-// 32 IS THE PRO-TIER CEILING. It needs HIVE_SEATS set on the relay's host, and the hosted relay
-// never had it, so the real ceiling was the free tier's 8. The cap was ruled out against a
-// number the relay was not running.
+// FIRST READ: "after this page posts its first message it stops receiving other participants'
+// updates... not the connection cap (admitConnection is per-room; 13 of 32 used)" -- concluding
+// the relay had a per-connection bookkeeping bug. 32 IS THE PRO-TIER CEILING. It needs
+// HIVE_SEATS set on the relay's host and the hosted relay never had it, so the ceiling actually
+// in force was the free tier's 8. The cap was ruled out against a number the relay was not
+// running.
 //
-// Reproduced from scratch on 2026-09-05 with demo/deaf-repro.mjs -- one panel plus N agents on
-// this same base room, every client with disableBc so nothing bypasses the relay:
+// SECOND READ (demo/deaf-repro.mjs, 2026-09-05) reproduced that confound with node clients: 12
+// agents on the free cap admitted 8 of 13, and the panel's apparent deficit was just the five
+// clients that never joined and so never spoke. With the cap raised, 40 of 40 arrived before AND
+// after the panel spoke. That settled the confound but not the original divergence (panel 13,
+// agents 109), so resyncAfterWrite was left in as a mitigation for a bug believed still open.
 //
-//   12 agents, free cap (8):   8 of 13 clients ever connected. The panel "received 25 of 40"
-//                              -- BEFORE it spoke as well as after. The five clients that never
-//                              joined never sent anything; the deficit was theirs.
-//   12 agents, cap raised:     13 of 13 connected, 40 of 40 received before AND after speaking,
-//                              panel and a witness agent agreeing at 81 messages each.
+// THIRD READ, and the one that matches the report -- "when a human sends a message from the
+// control panel the connection drops and I have to reload the window": it DID drop, on purpose,
+// 700ms after every message this panel sent. Read against y-websocket 2.0.4's own source,
+// provider.disconnect() runs closeWebsocketConnection(), which:
 //
-// WHAT THAT DOES AND DOES NOT SETTLE -- and the distinction matters, because over-reading it
-// is how the first wrong diagnosis got written.
+//     ws = null;  synced = false;  emit status 'disconnected'
+//     removeAwarenessStates(EVERY remote client)
 //
-// It settles that the cap was a real confound and was wrongly excluded: a 12-agent room on the
-// free tier silently runs 8, and the resulting deficit looks like deafness while being nothing
-// of the kind. It also kills the reconnect-at-cap theory (the slot frees before the reconnect).
+// That last line is why it read as death rather than as a blink: members() is built from
+// provider.awareness.getStates(), so the entire crew list emptied and the connected dot went out
+// on every single message, for a minimum of ~950ms, before a fresh upgrade was attempted against
+// a relay that counts CONNECTIONS, not people. A browser cannot see a 429. y-websocket does keep
+// retrying (backoff capped at maxBackoffTime = 2500ms), so a transient refusal recovers -- but if
+// that upgrade is refused because the room is at its ceiling, including while the relay still
+// counts the socket we had just thrown away, the panel stays dark and only a reload -- which
+// makes the close unambiguous -- clears it by hand. Either way the mitigation manufactured a
+// certain outage in place of a suspected intermittent one.
 //
-// It does NOT settle the original bug, and the original numbers say so. There the panel held 13
-// while THE AGENTS HELD 109 -- the two diverged. A connection cap cannot do that: a refused
-// client is missing from everyone's count equally, which is exactly what the reproduction shows
-// (panel and witness agreeing at 81 each). So a real divergence happened on that take and this
-// reproduction does not cover it.
+// AND THERE WAS NOTHING LEFT TO MITIGATE, by two independent arguments.
 //
-// The untested variable is the one that differs: the real panel is a BROWSER client and every
-// client in the reproduction is node. This page also does not pass disableBc, and it runs
-// alongside file-room traffic that the reproduction has none of. That is where to look next --
-// demo/deaf-repro.mjs takes --agents/--burst/--cap/--enforce/--auth and needs a browser panel
-// added to it before anyone can call this closed.
+// One: the relay never silently drops a write. Every refusal -- Q432 rate, Q435 doc size, Q436
+// quota -- is announced into room chat by installUsageLimits, so a dropped write arrives at this
+// panel AS A MESSAGE. The only genuinely invisible refusal in the system is the connection
+// upgrade, and reconnecting on purpose makes that more likely, not less.
 //
-// resyncAfterWrite therefore STAYS, as a mitigation for a bug that is still open, not as
-// leftovers from a solved one.
+// Two: sendChat was the ONLY one of this panel's four write paths that ever called it. Pausing an
+// agent, approving a task, restoring a file and reverting an agent all push to the same chat array
+// and never resynced -- and not one of them was ever reported deaf.
 //
-// The real lesson is the invisible refusal. Fixed on the node side in sync.js (429 now reads
-// as "this room is FULL"); a browser cannot see the status at all, which is why the panel says
-// so from the symptom instead, below.
-function resyncAfterWrite(){
-  if(!window._h||!window._h.provider)return
-  clearTimeout(window._resyncT)
-  // Debounced: someone typing several lines in a row must not thrash the socket.
-  window._resyncT=setTimeout(()=>{
-    try{window._h.provider.disconnect();setTimeout(()=>{try{window._h.provider.connect()}catch{}},250)}catch{}
-  },700)
+// What replaces it: reconnect only when the socket is genuinely dead, never while it is healthy.
+function reviveIfDead(){
+  const p=window._h&&window._h.provider
+  if(!p||!p.shouldConnect)return                    // 'leave' was pressed -- stay gone
+  if(p.wsconnected&&p.synced){window._dead=0;return}
+  // y-websocket retries on its own and normally lands well inside a second. Give it a clear run
+  // before intervening, so a blip is never answered with a second socket.
+  if((window._dead=(window._dead||0)+1)<8)return
+  window._dead=0
+  try{
+    // Clear the backoff FIRST. wsUnsuccessfulReconnects is only ever reset in onopen, so after a
+    // run of refusals the provider sleeps the full 2.5s between attempts -- the state a reload
+    // was curing by hand.
+    p.wsUnsuccessfulReconnects=0
+    if(p.ws)p.ws.close()   // half-open: let y-websocket's own onclose reschedule setupWS
+    else p.connect()       // fully closed: reopen now
+  }catch{}
 }
 // --- rollback from the browser ---------------------------------------------
 // To restore a file we open ITS OWN doc (where its restore points live), write the

@@ -104,7 +104,11 @@ function installUsageLimits(conn) {
           // -- their ceiling is the tier's, above -- and an unreachable meter never locks
           // anyone (usage-meter.js, decision 1).
           if (tier && tier.tier === 'free' && meter.isOverQuota(account)) {
-            tell(`Q436 this workspace has used its free monthly allowance (${Math.round(meter.FREE_PERIOD.writeBytes / 1048576)} MB of writes). Reads still work. Upgrade at hivecode.vercel.app/pricing to keep writing.`)
+            // Points at an ADDRESS, not a page. It named hivecode.vercel.app/pricing, which was
+            // both the wrong domain (the site is hivecode.getgrm.tech) and a page that has since
+            // been retired -- so the one message a blocked customer reads sent them to a 404.
+            // An email address cannot go stale the way a route can.
+            tell(`Q436 this workspace has used its free monthly allowance (${Math.round(meter.FREE_PERIOD.writeBytes / 1048576)} MB of writes). Reads still work. Email support@getgrm.tech to lift the limit.`)
             return
           }
           noteDocBytes(room, len)
@@ -766,6 +770,9 @@ const server = http.createServer((req, res) => {
       // exactly this), so it works served from here even though this host has no such route.
       '/recover': 'recover.html', '/recover.html': 'recover.html',
       '/app.js': 'app.js',
+      // The control room's CRDT bundle. Without this entry /control loads and then cannot
+      // sync at all on this host, while working fine on Vercel.
+      '/hive-crdt.js': 'hive-crdt.js',
       '/favicon.ico': 'favicon.ico',
       '/favicon-32.png': 'favicon-32.png',
       '/apple-touch-icon.png': 'apple-touch-icon.png',
@@ -957,7 +964,7 @@ server.on('upgrade', async (req, socket, head) => {
     const active = roomAgents.get(room) || new Set()
     if (!active.has(agentId) && active.size >= committerLimit) {
       audit('reject-limit', { room, identity: agentId, limit: committerLimit })
-      socket.write(`HTTP/1.1 402 Payment Required: License Limit Reached. Upgrade at hivecode.vercel.app\r\nConnection: close\r\n\r\n`)
+      socket.write(`HTTP/1.1 402 Payment Required: License Limit Reached. Email support@getgrm.tech\r\nConnection: close\r\n\r\n`)
       socket.destroy()
       return
     }

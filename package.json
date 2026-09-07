@@ -23,11 +23,16 @@
     "yjs"
   ],
   "bin": {
-    "hivecode-mcp": "hive-mcp.js"
+    "hivecode-mcp": "hive-mcp.js",
+    "hivecode-hook": "hive-hook-install.js"
   },
   "files": [
     "hive-mcp.js",
     "hive-mailbox.js",
+    "hive-instructions.js",
+    "hive-busy.js",
+    "hive-stop-hook.js",
+    "hive-hook-install.js",
     "sync.js",
     "core.js",
     "limits.js",
@@ -66,6 +71,7 @@
     "test:money": "node tests/payment-e2e-test.mjs && node tests/subscribe-test.mjs && node tests/lifecycle-test.mjs && node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs",
     "check:web": "tsc --noEmit",
     "build:web": "esbuild web/src/main.ts --bundle --minify --format=iife --target=es2019 --outfile=public/app.js",
+    "build:crdt": "esbuild web/crdt.js --bundle --minify --format=esm --target=es2019 --outfile=public/hive-crdt.js",
     "test:substrate": "node substrate-test.js",
     "test:substrate:live": "node substrate-live-test.js",
     "test:substrate:enforce": "node substrate-enforce-test.js",
@@ -73,9 +79,10 @@
     "test:substrate:all": "node substrate-test.js && node substrate-live-test.js && node substrate-enforce-test.js && node substrate-authority-test.js",
     "test:recover": "node tests/recover-test.mjs",
     "test:mailbox": "node tests/mailbox-test.mjs && node tests/mcp-wait-test.mjs",
+    "test:stophook": "node tests/stop-hook-test.mjs",
     "test:limits": "node tests/limits-test.mjs",
     "test:rejoin": "node tests/rejoin-clobber-test.mjs",
-    "test:prod": "node tests/test.js && node tests/firstrun-test.mjs && node tests/credential-split-test.mjs && node tests/limits-test.mjs && node tests/usage-meter-test.mjs && node tests/rejoin-clobber-test.mjs && node tests/durability-test.mjs && node tests/payment-e2e-test.mjs && node tests/subscribe-test.mjs && node tests/lifecycle-test.mjs && node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs && node demo/wrap-test.mjs",
+    "test:prod": "node tests/test.js && node tests/firstrun-test.mjs && node tests/credential-split-test.mjs && node tests/limits-test.mjs && node tests/usage-meter-test.mjs && node tests/rejoin-clobber-test.mjs && node tests/stop-hook-test.mjs && node tests/coordination-test.mjs && node tests/control-panel-test.mjs && node tests/durability-test.mjs && node tests/payment-e2e-test.mjs && node tests/subscribe-test.mjs && node tests/lifecycle-test.mjs && node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs && node demo/wrap-test.mjs",
     "test:meter": "node tests/usage-meter-test.mjs",
     "test:subscribe": "node tests/subscribe-test.mjs",
     "test:cred": "node tests/credential-split-test.mjs",
@@ -90,7 +97,9 @@
     "check:files": "node scripts/check-files.mjs",
     "prepublishOnly": "node scripts/check-files.mjs",
     "demo:cast": "node demo/cast.mjs --dry-run",
-    "check:deploy": "node scripts/check-deploy.mjs"
+    "check:deploy": "node scripts/check-deploy.mjs",
+    "test:coordination": "node tests/coordination-test.mjs",
+    "test:panel": "node tests/control-panel-test.mjs"
   },
   "engines": {
     "node": ">=18"
