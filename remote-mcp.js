@@ -188,15 +188,19 @@ async function ensureJoined(port, defaultRoom = 'personal-agi') {
   if (hasJoinedRoom) return;
   console.log(`[mcp-cloud] Auto-joining room "${defaultRoom}" on local relay...`);
   try {
+    const tempDir = path.join(os.tmpdir(), 'gemini-spark-workspace');
     const res = await callToolInternal(port, 'hive_join', {
       link: `ws://127.0.0.1:${port}|${defaultRoom}`,
+      dir: tempDir,
       name: 'gemini-spark',
+      owner: 'Ganesh',
     });
-    if (!res.error) {
+    const replyText = res.result?.content?.[0]?.text || '';
+    if (!res.error && !replyText.includes('EHIVELOCKED')) {
       hasJoinedRoom = true;
       console.log(`[mcp-cloud] Successfully auto-joined room "${defaultRoom}"`);
     } else {
-      console.warn(`[mcp-cloud] Auto-join warning:`, res.error);
+      console.warn(`[mcp-cloud] Auto-join warning:`, res.error || replyText);
     }
   } catch (err) {
     console.error(`[mcp-cloud] Auto-join error:`, err);
