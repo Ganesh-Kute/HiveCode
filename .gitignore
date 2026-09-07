@@ -63,6 +63,66 @@ Thumbs.db
 # Guardian's synced copy of the project
 guardian-workspace/
 .hive-mcp-session.json
+# Per-client record of what THIS engine last wrote to each file — the cross-restart merge
+# ancestor. Committing it would hand every clone a false ancestor for files it never wrote.
+.hive-shadow.json
+# Names a PID on this machine. Committed, it would tell every clone their folder is locked
+# by a process that does not exist for them.
+.hive-lock.json
+# The Stop gate's watermark: how far through the room chat THIS machine's agent has been shown.
+# Committed, a clone would inherit a position it never reached and go quiet about real mail.
+.hive-stop-hook.json
 
 .vercel
 .env*
+
+# ─── PRE-PUBLIC HYGIENE (2 Sep 2026) ─────────────────────────────────────────────────────
+# Found by scanning the tree before considering a public repo. The git HISTORY is clean --
+# 181 commits, zero real credentials -- so nothing here is a rewrite. These are all
+# untracked files that a `git add -A` would publish.
+
+# A LIVE API KEY is hardcoded in this file, twice. It has never been committed and must not
+# be. The key itself should be rotated regardless: it has sat in plaintext on disk.
+test_fireworks.py
+
+# An entire third-party project, ~7,800 files, cloned into this repo. Publishing it would
+# bury the ~50 files that are actually the product, and its own docs carry credential
+# PLACEHOLDERS that read as leaks to every scanner.
+hermes-agent/
+
+# Scratch and benchmark output from development runs.
+.gt-scratch/
+.race-test/
+.smp-test/
+.vega-before/
+enterprise-test/
+real-test/
+real-test-scenario/
+gt-*.json
+census-*.json
+
+# Editor and agent-tool local state.
+.claude/
+.vexp/
+.vscode/mcp.json
+
+# Backups of files that have since changed. Keeping them public invites someone to read the
+# old version and report a bug that was fixed months ago.
+*.pre_memory
+*.pre-notice
+*.pre_layout
+*.pre_layout.*
+
+# Packed tarballs. One inside the repo gets published by accident.
+*.tgz
+
+# Working notes, not product documentation.
+deep_research8.md
+architcure_plam.md
+revisd_plan.md
+HIVECODE_BOOK.tex
+demo/.apikey
+demo/cast-frames/
+demo/panel-frames/
+demo/frames/
+demo/.elevenkey

@@ -28,14 +28,76 @@
  */
 export function mentionsName(text, me) {
   if (!text || !me) return false
+  if (mentionsAll(text)) return true // @all reaches everyone by definition
   const escaped = String(me).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   // Trailing boundary: end of string, or anything that cannot continue a name.
   return new RegExp(`@${escaped}(?![\\w-])`, 'i').test(String(text))
 }
 
+/**
+ * `@all` — the deliberate broadcast.
+ *
+ * Before this there was no way to reach the whole room on purpose. An unaddressed message goes
+ * into every agent's ambient digest, where the rules tell them to skip it -- correct for
+ * chatter, useless for "everyone stop, the suite is red". So the only two options were name
+ * eight agents by hand or be ignored.
+ *
+ * It wakes everyone. It deliberately does NOT create a reply debt (see unansweredFor): one
+ * broadcast obliging eight replies is how a coordination channel becomes a spam channel, and
+ * that is the exact failure this room already had once.
+ */
+export function mentionsAll(text) {
+  return /@all(?![\w-])/i.test(String(text || ''))
+}
+
 /** Everyone addressed in a message, so a broadcast can be told from a direct call. */
 export function mentionedNames(text) {
   return [...new Set([...String(text || '').matchAll(/@([\w-]+)/g)].map((m) => m[1]))]
+}
+
+/**
+ * Who has directly addressed `me` and not been answered since?
+ *
+ * "Answered" is deliberately cheap to satisfy: any later message from me that names them. It is
+ * not trying to judge whether the reply was any good -- only that the room never goes silent on
+ * someone who asked a direct question, which is the failure that makes agents give up on the
+ * channel and start tailing files instead.
+ *
+ * Derived from the chat log rather than stored, so it cannot drift out of sync with what was
+ * actually said, and needs no new state to persist or migrate.
+ *
+ * THREE THINGS DO NOT COUNT AS A DEBT, all for the same reason -- an obligation that fires on
+ * traffic nobody chose to send is noise wearing a rule's clothes:
+ *   - `@all` broadcasts (see mentionsAll)
+ *   - system messages, and the client's own auto-posted conflict/adopt notices
+ *   - my own messages, however many times I say my own name
+ *
+ * @param {Array<{by?: string, kind?: string, text?: string, at?: string}>} messages
+ * @param {string} me
+ * @returns {Array<{from: string, at: string, text: string}>} oldest first
+ */
+export function unansweredFor(messages, me) {
+  const list = Array.isArray(messages) ? messages : []
+  if (!me) return []
+  const low = (s) => String(s || '').toLowerCase()
+  const mine = low(me)
+  const AUTO = /^(⚠ MERGE CONFLICT|✓ conflict|↓ )/ // posted by the sync client, not by a person
+
+  const owed = new Map()   // sender (lowercased) -> the message I owe a reply to
+  for (const m of list) {
+    if (!m || m.kind === 'system' || AUTO.test(String(m.text || ''))) continue
+    if (low(m.by) === mine) {
+      // Anything I name is discharged. A broadcast from me discharges everything: I have
+      // spoken to the room, and holding a debt open after that is pedantry, not coordination.
+      if (mentionsAll(m.text)) { owed.clear(); continue }
+      for (const n of mentionedNames(m.text)) owed.delete(low(n))
+      continue
+    }
+    // Directly addressed, not merely broadcast to.
+    if (mentionsAll(m.text)) continue
+    if (mentionsName(m.text, me)) owed.set(low(m.by), { from: m.by, at: m.at || '', text: m.text || '' })
+  }
+  return [...owed.values()]
 }
 
 /**

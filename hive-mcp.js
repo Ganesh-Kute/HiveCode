@@ -34,7 +34,9 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { createMailbox, formatMessage, mentionsName, mentionedNames, priorityOf, ambientDigest } from './hive-mailbox.js'
+import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest } from './hive-mailbox.js'
+import { INSTRUCTIONS } from './hive-instructions.js'
+import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
 let session = null // { hive, room, relay, dir, name, mailbox }
@@ -200,6 +202,13 @@ function mailbox() {
   return s.mailbox
 }
 function chatArray() { return requireSession().hive.doc.getArray('chat').toArray() }
+// Names are matched case-insensitively everywhere else (mentionsName is /i), so a busy lookup
+// keyed on the exact string would silently miss whenever a sender typed @sam for Sam.
+function findBusy(map, name) {
+  const want = String(name || '').toLowerCase()
+  for (const [k, v] of map.entries()) if (String(k).toLowerCase() === want) return v
+  return null
+}
 function boardMap() { const b = requireSession().hive.doc.getMap('board'); return [...b.entries()].map(([file, e]) => ({ file, ...e })) }
 function taskList() { return [...requireSession().hive.doc.getMap('tasks').values()] }
 const fmtTask = (t) => `${t.id} [${t.status}] ${t.by} -> ${t.to}: ${t.text}${t.decidedBy ? ` (by ${t.decidedBy})` : ''}`
@@ -296,6 +305,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id'] } },
   { name: 'hive_say', description: 'Post a coordination message to the room chat. Use this to announce what you are about to work on BEFORE editing (e.g. "taking auth.js: adding login"). Address someone directly with @Name — that is what makes it land as mail rather than ambient chatter. Set urgent:true when you need them to stop what they are doing.',
     inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = prefix [!] so the recipient treats it as "handle before continuing", not "read at your next boundary"' } }, required: ['text'] } },
+  { name: 'hive_busy', description: 'Tell the room you are mid-task, so anyone who @mentions you is told to expect a delay AT THE MOMENT THEY SEND, instead of waiting on a reply that is not coming yet. This posts no message and silences nothing — you still receive mail and must still call hive_check between edits. It expires by itself, so a crash cannot leave you permanently "busy". Clear it when you finish.',
+    inputSchema: { type: 'object', properties: { what: { type: 'string', description: 'what you are working on, in a few words — the sender reads this' }, minutes: { type: 'number', description: 'how long to hold it (default 10). It expires on its own either way.' }, clear: { type: 'boolean', description: 'true = I am free again' } } } },
   { name: 'hive_read_chat', description: 'Read the room conversation. Read this to see what humans and other agents are doing before and while you work. Use mentioningMe to recover only what was addressed to you.',
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many recent messages (default 30)' }, mentioningMe: { type: 'boolean', description: 'true = only messages that @mention you, across the whole room history — use this to recover your own backlog' }, unreadOnly: { type: 'boolean', description: 'true = only what you have not been handed yet (does not mark it read)' } } } },
   { name: 'hive_read_board', description: 'Read recent whole-file rewrites (who rewrote what, which symbols). Read this before editing a file — if it was just rewritten, re-read the file first.',
@@ -439,7 +450,15 @@ export const VERSION = (() => {
   } catch { /* fall through */ }
   return '0.0.0-unknown'
 })()
-const server = new Server({ name: 'hivecode', version: VERSION }, { capabilities: { tools: {} } })
+// `instructions` is placed in the agent's SYSTEM PROMPT by the client at connect time, which
+// makes it the only channel that reaches an agent before its first tool call. Everything else we
+// have -- tool descriptions, the HIVE_RULES returned by hive_join -- is read too late or scrolls
+// away, and the rule that matters most (hive_wait is your idle state; ending your turn makes you
+// unreachable) is exactly the one an agent needs up front. See hive-instructions.js.
+const server = new Server(
+  { name: 'hivecode', version: VERSION },
+  { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
+)
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
 async function dispatch(req) {
   const { name, arguments: args = {} } = req.params
@@ -468,7 +487,33 @@ async function dispatch(req) {
             `agents you actually need with @Name (hive_members lists who is here). Use an ` +
             `unaddressed message only for a genuine announcement to the whole room.`)
         }
-        return text(`sent to ${named.map((n) => '@' + n).join(', ')}: ${body}`)
+        // WHO IS ACTUALLY GOING TO READ THIS. The sender is the only participant who can act on
+        // "they left" or "they are mid-task", and it is worth strictly more here than in a
+        // reply: it arrives before the sender starts waiting, and it costs the room no message.
+        // This is the whole reason busy is state rather than an auto-reply (see hive-busy.js).
+        const s = requireSession()
+        const present = new Set(s.hive.members().map((m) => String(m.name).toLowerCase()))
+        const busyMap = s.hive.doc.getMap('busy')
+        const notes = named
+          .filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+          .map((n) => describeRecipient(n, findBusy(busyMap, n), present.has(n.toLowerCase())))
+          .filter(Boolean)
+        const to = mentionsAll(body) ? 'the whole room (@all)' : named.map((n) => '@' + n).join(', ')
+        return text(`sent to ${to}: ${body}` + (notes.length ? '\n\n' + notes.join('\n') : ''))
+      }
+      case 'hive_busy': {
+        const s = requireSession()
+        const busyMap = s.hive.doc.getMap('busy')
+        if (args.clear) { busyMap.delete(s.name); return text('busy cleared — the room will expect normal replies from you again') }
+        const e = makeBusy(args.what, { ttl: args.minutes ? args.minutes * 60000 : undefined })
+        busyMap.set(s.name, e)
+        // Say what it does NOT do, because an agent that believes this silences its mail will
+        // stop calling hive_check and go deaf on purpose.
+        return text(`marked busy: ${e.what}\n\nThis posts no message and silences nothing — you still ` +
+          `receive mail and must still call hive_check between edits. It only tells anyone who ` +
+          `@mentions you, at the moment they send, that you are mid-task. It expires by itself in ` +
+          `${Math.round(e.ttl / 60000)} minutes, so a crash cannot leave the room believing you are ` +
+          `permanently busy. Call hive_busy with clear:true when you finish.`)
       }
       case 'hive_read_chat': {
         const me = requireSession().name
@@ -496,7 +541,22 @@ async function dispatch(req) {
         const got = args.peek ? box.peek(all) : box.take(all)
         if (!args.peek) persistCursor()
         const tasks = [...s.hive.doc.getMap('tasks').values()].filter((t) => t.to === s.name && t.status === 'accepted')
-        if (!got.unreadCount && !tasks.length) return text('✓ nothing waiting — nobody is calling you and you have no approved work. Carry on.')
+        // WHO IS STILL WAITING ON YOU. Read mail is not answered mail: the cursor advances the
+        // moment a message is handed over, so an agent can absorb a direct question, get busy,
+        // and never notice it left someone hanging -- which is the failure that made a previous
+        // room's PM give up on this channel and tail the chat file with a shell script instead.
+        // Derived from the log, so it needs no state and cannot drift.
+        const owed = unansweredFor(all, s.name)
+        const owedLine = owed.length
+          ? `\n\n⏳ STILL WAITING ON A REPLY FROM YOU: ${owed.map((o) => '@' + o.from).join(', ')}. ` +
+            `Answer with hive_say (name them), even if the answer is "not yet, I am on X" — ` +
+            `silence is the one thing they cannot act on.`
+          : ''
+        if (!got.unreadCount && !tasks.length) {
+          return text(owed.length
+            ? `✓ no new mail and no approved work.${owedLine}`
+            : '✓ nothing waiting — nobody is calling you and you have no approved work. Carry on.')
+        }
         const parts = []
         if (got.priority === 'stop') {
           // HANDLING URGENT MAIL COUNTS AS LIVENESS.
@@ -529,7 +589,7 @@ async function dispatch(req) {
         const dig = ambientDigest(ambient)
         if (dig) parts.push(dig)
         if (tasks.length) parts.push(`approved work queued for you:\n${tasks.map(fmtTask).join('\n')}`)
-        return text(parts.join('\n\n'))
+        return text(parts.join('\n\n') + owedLine)
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
       case 'hive_assign': { enforceDcoLock(); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
