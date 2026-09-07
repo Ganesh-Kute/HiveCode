@@ -19,6 +19,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { verifyLicense } from './license-check.js'
+import { isMcpRequest, handleMcpRequest } from './remote-mcp.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import { createRequire } from 'module'
@@ -652,6 +653,15 @@ if (PERSIST_DIR) {
 }
 
 const server = http.createServer((req, res) => {
+  // Remote Model Context Protocol (MCP) Streamable HTTP & SSE endpoint for cloud AI agents
+  try {
+    if (isMcpRequest(req)) {
+      return handleMcpRequest(req, res, { port: PORT })
+    }
+  } catch (mcpErr) {
+    console.error('[relay] MCP handler threw:', mcpErr)
+  }
+
   // Health and capacity. A paid relay needs an answer to "is it up, and how close to its
   // limits" that does not require reading the logs -- it is what an uptime check polls and
   // what you look at first when someone says the room is slow. No identities, no room
@@ -1091,6 +1101,7 @@ wss.on('connection', (conn, req) => {
 server.listen(PORT, () => {
   console.log(`[relay] listening on :${PORT}`)
   console.log(`[relay] room URL pattern: ws://localhost:${PORT}/<room-name>`)
+  console.log(`[relay] remote MCP endpoint: http://localhost:${PORT}/mcp (Streamable HTTP / SSE)`)
   console.log(`[relay] auth mode: ${AUTH_MODE}${AUTH_MODE === 'required' ? ` (keys: ${JWT_SECRET ? 'HS256 ' : ''}${JWT_PUBKEY ? 'RS256' : ''})` : ''}`)
   // ALWAYS PRINTED, INCLUDING WHEN OFF -- and that is the whole point. These lines used to be
   // wrapped in `if (X !== 'off')`, so a relay running with no write-enforcement said NOTHING
