@@ -242,6 +242,32 @@ const mailArgs = { licenseKey: 'HC-PRO-0123456789ABCDEF0123456789ABCDEF', commit
 const mailText = _render.textBody(mailArgs)
 const mailHtml = _render.htmlBody(mailArgs)
 
+// THE MCP CONFIG MUST CARRY THE LICENCE.
+//
+// It used to be `{"command":"npx","args":["-y","hivecode-mcp"]}` with no `env` block. So a
+// customer paid, received a key, followed this email exactly, and the key never reached the
+// relay: the seats they bought did nothing and nothing anywhere said so. The relay reads
+// `?license=`, the client sends it from `$HIVE_LICENSE`, and the MCP env block is the only
+// place it can come from on that route.
+// The HTML body escapes quotes, so the same JSON reads as &quot;env&quot; there. Checking the
+// raw form in both would assert a bug into existence: escaping that block is correct.
+T('the MCP config carries an env block',
+  mailText.includes('"env"') && /(&quot;|")env(&quot;|")/.test(mailHtml))
+T('...naming HIVE_LICENSE', mailText.includes('HIVE_LICENSE') && mailHtml.includes('HIVE_LICENSE'))
+T('...with the buyer’s REAL key, not a placeholder to substitute by hand',
+  mailText.includes(`"HIVE_LICENSE": "${mailArgs.licenseKey}"`))
+T('...in the HTML body too', mailHtml.includes(mailArgs.licenseKey))
+T('no placeholder survives into a real customer email',
+  !mailText.includes('YOUR-LICENCE-KEY') && !mailHtml.includes('YOUR-LICENCE-KEY'))
+
+// The non-MCP route needs somewhere to put it too, and it must NOT be a project file.
+T('the CLI route is documented', mailText.includes('~/.hivecode/config.json'))
+T('...and the shell form', mailText.includes('HIVE_LICENSE=' + mailArgs.licenseKey))
+T('the email never tells anyone to put the licence in .hive.json (it gets committed)',
+  !/\.hive\.json/.test(mailText) && !/\.hive\.json/.test(mailHtml))
+T('...nor into the join link (it gets shared)',
+  !/relay\|room\|/.test(mailText))
+
 T('both routes are offered, not just the editor one', TRACKS.length === 2)
 for (const step of ALL_STEPS) {
   T(`text email carries step "${step.title}"`, mailText.includes(step.title))
@@ -274,7 +300,16 @@ let recover = ''
 try { recover = await fsp.readFile(recoverPath, 'utf8') } catch { /* reported below */ }
 
 T('public/recover.html exists', recover.length > 0)
-T('it queries the licence endpoint by payment id', recover.includes('/api/license?payment_id='))
+// This used to assert the literal string '/api/license?payment_id='. The page now builds the
+// query, because a payment id is often the WRONG reference for a subscription customer: the
+// licence row is created by subscription.activated, which carries no payment, so payment_id
+// is null until a charge event lands. What matters is the behaviour, not the literal.
+T('it queries the licence endpoint', recover.includes('/api/license?'))
+T('it sends a payment id', recover.includes('payment_id='))
+T('...and a subscription id, which is the only reference that works right after purchase',
+  recover.includes('subscription_id='))
+T('a sub_ reference is recognised as a subscription', /\/\^sub_\/i/.test(recover))
+T('a deep link accepts either kind', recover.includes("get('subscription_id')"))
 T('the input shape matches what api/license.js accepts', recover.includes('/^[A-Za-z0-9_]{6,64}$/'))
 // The one thing this page must never do. api/license.js refuses email lookup on purpose;
 // a form field here asking for an email would imply otherwise.

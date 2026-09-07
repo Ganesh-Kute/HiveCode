@@ -16,7 +16,8 @@
 import {
   AGENT_STEPS,
   EDITOR_STEPS,
-  MCP_CONFIG_JSON,
+  mcpConfigJson,
+  cliConfigNote,
   RECOVER_URL,
   SELF_HOST_NOTE,
   SITE_URL,
@@ -64,7 +65,12 @@ function textBody({ licenseKey, committers }) {
     'For Claude Desktop or Cursor, add this to the MCP config instead of running the',
     '`claude mcp add` command:',
     '',
-    MCP_CONFIG_JSON.split('\n').map((line) => `    ${line}`).join('\n'),
+    // The real key, inlined. The email is the one surface that KNOWS it, and making the
+    // customer hand-substitute a placeholder into JSON is exactly where they paste it into
+    // the wrong file -- most often .hive.json, which then gets committed.
+    mcpConfigJson(licenseKey).split('\n').map((line) => `    ${line}`).join('\n'),
+    '',
+    cliConfigNote(licenseKey),
     '',
     `The full walkthrough, both routes end to end: ${WORKFLOW_GUIDE_URL}`,
     '',
@@ -155,7 +161,7 @@ function htmlBody({ licenseKey, committers }) {
       <p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:#63748A">
         Using Claude Desktop or Cursor? They read a config file rather than a CLI, so add this instead of running <code style="font-family:ui-monospace,Menlo,Consolas,monospace">claude mcp add</code>:
       </p>
-      <pre style="margin:0;background:#F1F4F8;border:1px solid #DCE3EC;border-radius:8px;padding:13px 15px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;color:#10202E;overflow-x:auto">${escapeHtml(MCP_CONFIG_JSON)}</pre>
+      <pre style="margin:0;background:#F1F4F8;border:1px solid #DCE3EC;border-radius:8px;padding:13px 15px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;color:#10202E;overflow-x:auto">${escapeHtml(mcpConfigJson(licenseKey))}</pre>
       <p style="margin:10px 0 0;font-size:13px;line-height:1.6;color:#63748A">
         <a href="${escapeHtml(WORKFLOW_GUIDE_URL)}" style="color:#0F7FA8">The full walkthrough, both routes end to end →</a>
       </p>

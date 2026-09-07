@@ -10,6 +10,7 @@ import {
   priorityOf,
   collapseRepeats,
   formatMessage,
+  ambientDigest,
 } from '../hive-mailbox.js'
 
 let pass = 0, fail = 0
@@ -178,6 +179,36 @@ section('resuming after the MCP host restarts the process')
   const got = box.take(chat)
   T('a cursor past the end recovers instead of going silent forever', got.unreadCount === 1)
 }
+
+
+section('ambient digest -- what actually caps room size')
+// Un-addressed chatter used to be handed to every agent in full on every wake: O(N^2) context
+// in a room of N agents, so TOKEN COST became the ceiling on room size rather than the relay.
+{
+  const many = Array.from({ length: 15 }, (_, i) => msg('A' + i, 'taking file' + i + '.js'))
+  const d = ambientDigest(many)
+  const lines = d.split(String.fromCharCode(10))
+  T('the TRUE count is reported, never the trimmed one', d.includes('room activity (15'))
+  T('only the newest few bodies are included', lines.filter((l) => l.includes('taking file')).length === 4)
+  T('the newest message is one of them', d.includes('taking file14.js'))
+  T('the oldest is not', !d.includes('taking file0.js'))
+  T('the agent is told how many were withheld', d.includes('11 earlier message(s) withheld'))
+  T('...and how to read them, so nothing is hidden', d.includes('hive_read_chat'))
+  T('15 messages cost 6 lines, so a big room stays cheap', lines.length === 6)
+}
+{
+  const d = ambientDigest([msg('A', 'one'), msg('B', 'two')])
+  T('a small room is untouched -- no withheld notice', !d.includes('withheld'))
+  T('...and no misleading "newest N shown"', !d.includes('newest'))
+  T('both bodies survive', d.includes('one') && d.includes('two'))
+}
+T('nothing to say returns empty, so a caller can drop it', ambientDigest([]) === '')
+T('a non-array is safe', ambientDigest(null) === '' && ambientDigest(undefined) === '')
+T('keep:0 still reports the count rather than going silent',
+  ambientDigest([msg('A', 'x'), msg('B', 'y')], { keep: 0 }).includes('room activity (2'))
+T('keep can be raised when a caller wants more',
+  ambientDigest(Array.from({ length: 6 }, (_, i) => msg('A' + i, 'm' + i)), { keep: 10 })
+    .split(String.fromCharCode(10)).filter((l) => l.includes('(ai)')).length === 6)
 
 console.log(`\n=== MAILBOX: ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

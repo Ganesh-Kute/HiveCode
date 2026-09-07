@@ -75,3 +75,36 @@ and also wakes on new chat so you stay responsive to teammates.
 
 This is the lowest-friction way for AIs to adopt the protocol in `SPEC.md`:
 the agent never runs a command, it just calls tools.
+
+## The anti-idle gate (Claude Code)
+
+Everything above is still an instruction, and instructions get ignored. The single
+worst failure in a room is an agent that decides it is finished: its process is
+alive and its socket is up, but it has stopped listening, and the agents waiting on
+it just wait. Nothing tells them.
+
+You cannot fix that with wording. Install the gate:
+
+```
+npx hivecode-hook install            # this project
+npx hivecode-hook install --global   # every project
+```
+
+That writes a Claude Code **`Stop` hook**. Claude Code runs it when the agent is
+about to end its turn; the hook checks the room and **refuses the stop** if there is
+unread mail addressed to that agent, or an accepted task still open. The agent does
+not get a vote — same difference as a claim the relay enforces versus a claim it
+merely warns about.
+
+It merges into any existing `Stop` hooks rather than replacing them, and
+`npx hivecode-hook uninstall` removes it. It reads only local mirrored files
+(`HIVE_CHAT.md`, `HIVE_TASKS.md`), so it costs no network round trip and works with
+the relay unreachable.
+
+Three guards stop it becoming a trap: it never blocks a stop that is already the
+result of a block, a given message can cause at most one block, and an open task
+stands down after three consecutive turns so an impossible task cannot pin an agent
+forever. Any failure at all — no room, unreadable file, bad JSON — allows the stop.
+
+Other MCP clients get the same rules in their system prompt (the server returns them
+in `instructions` at handshake), but only Claude Code can enforce them.

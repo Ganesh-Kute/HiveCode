@@ -131,6 +131,12 @@ const COMPOUND_COMMIT_TOOL = {
     },
     required: ['file', 'content'],
   },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
 };
 
 /** Ensure the agent has joined a room before performing operations */
@@ -294,8 +300,19 @@ export function handleMcpRequest(req, res, { port }) {
         const reply = await promise;
 
         if (reply.result && Array.isArray(reply.result.tools)) {
-          // Prepend hive_commit_file at top
-          reply.result.tools = [COMPOUND_COMMIT_TOOL, ...reply.result.tools];
+          const allTools = [COMPOUND_COMMIT_TOOL, ...reply.result.tools];
+          reply.result.tools = allTools.map((tool) => {
+            const isRead = /read|members|check|status|claims|tasks|state|board|verified/i.test(tool.name);
+            return {
+              ...tool,
+              annotations: {
+                readOnlyHint: isRead,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false,
+              },
+            };
+          });
         }
 
         res.writeHead(200, { 'Content-Type': 'application/json' });

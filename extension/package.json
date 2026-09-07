@@ -1,6 +1,6 @@
 {
   "name": "hivecode",
-  "displayName": "Hivecode — oversight & control for AI coding agents",
+  "displayName": "Hivecode \u2014 oversight & control for AI coding agents",
   "description": "Watch, fence, approve, and roll back your AI coding agents. Live oversight, folder-scoped permissions, approval gates, and instant rollback for multi-agent coding. No git push/pull.",
   "version": "0.9.3",
   "publisher": "hivecode",
@@ -81,7 +81,7 @@
       },
       {
         "command": "hivecode.invite",
-        "title": "Hivecode: Invite to folders…"
+        "title": "Hivecode: Invite to folders\u2026"
       },
       {
         "command": "hivecode.manage",
@@ -93,11 +93,11 @@
       },
       {
         "command": "hivecode.restore",
-        "title": "Hivecode: Restore a file to an earlier point…"
+        "title": "Hivecode: Restore a file to an earlier point\u2026"
       },
       {
         "command": "hivecode.revertAgent",
-        "title": "Hivecode: Revert an author's changes…"
+        "title": "Hivecode: Revert an author's changes\u2026"
       },
       {
         "command": "hivecode.undo",
@@ -152,7 +152,7 @@
         "hivecode.shareNameWithRelay": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Send your **Display Name** to the relay server as well as to the people in your room, so whoever runs the relay can see who is using it and offer support. Your name is already visible to everyone in the session; this decides whether the relay operator sees it too. Turn it off to connect anonymously. Nothing else about you is ever sent — no email, no IP logging, no file contents."
+          "markdownDescription": "Send your **Display Name** to the relay server as well as to the people in your room, so whoever runs the relay can see who is using it and offer support. Your name is already visible to everyone in the session; this decides whether the relay operator sees it too. Turn it off to connect anonymously. Nothing else about you is ever sent \u2014 no email, no IP logging, no file contents."
         },
         "hivecode.participantKind": {
           "type": "string",
@@ -177,7 +177,7 @@
     }
   },
   "scripts": {
-    "package": "vsce package",
+    "package": "node -e \"require('fs').copyFileSync('../grm-link.cjs','grm-link.cjs')\" && vsce package",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish"
   },

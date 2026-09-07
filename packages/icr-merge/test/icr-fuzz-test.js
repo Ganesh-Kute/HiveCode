@@ -12,7 +12,17 @@ import { structuralMerge, parses } from '../icr.js'
 const ITER = 4000
 let failed = 0, autos = 0, conflicts = 0, fallbacks = 0
 
-const rand = (n) => Math.floor(Math.random() * n)
+// SEED: reproducibility. This fuzzer used bare Math.random(), so no two runs saw the same
+// inputs: across five runs of IDENTICAL code its counts drifted auto 2377..2437,
+// semantic-conflict 1188..1234, fallback 128..156. That range is larger than most fixes,
+// so a before/after pair of runs could not tell a real change from noise. Same convention
+// as icr-torture-test.js -- pass a seed to replay a run exactly:  node icr-fuzz-test.js 12345
+// Default stays RANDOM (a frozen fuzzer stops discovering) but is now PRINTED, so every
+// run is replayable after the fact.
+const SEED = (Number(process.argv[2] || (Math.random() * 0x7fffffff | 0)) | 0) >>> 0
+function mulberry32(a) { return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 } }
+const rnd = mulberry32(SEED)
+const rand = (n) => Math.floor(rnd() * n)
 const choice = (a) => a[rand(a.length)]
 const names = ['foo', 'bar', 'baz', 'qux', 'helper', 'run', 'calc', 'util', 'init', 'load']
 const cap = (s) => s[0].toUpperCase() + s.slice(1)
@@ -89,6 +99,6 @@ for (let t = 0; t < ITER; t++) {
   }
 }
 
-console.log(`\nran ${ITER} merges â†’ auto ${autos}, semantic-conflict ${conflicts}, fallback ${fallbacks}`)
+console.log(`\nran ${ITER} merges (seed ${SEED}) â†’ auto ${autos}, semantic-conflict ${conflicts}, fallback ${fallbacks}`)
 console.log(`=== ${failed === 0 ? 'GUARANTEE HELD ACROSS ALL CASES' : failed + ' VIOLATIONS'} ===`)
 process.exit(failed === 0 ? 0 : 1)

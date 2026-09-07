@@ -18,8 +18,8 @@
 // Output: console report + census-findings.json (machine-readable receipts).
 import fs from 'fs'; import path from 'path'
 import { execFileSync } from 'child_process'
-import { merge3 } from './packages/icr-merge/merge3.js'
-import { structuralMerge, supports, languageFor } from './packages/icr-merge/icr.js'
+import { merge3 } from '../packages/icr-merge/merge3.js'
+import { structuralMerge, supports, languageFor } from '../packages/icr-merge/icr.js'
 
 // Dangling-reference judge run on a TEXT (not on ICR's own merge): names declared
 // in `base` that are gone from `text` yet still free-referenced in `text`.

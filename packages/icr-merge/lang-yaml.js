@@ -39,13 +39,44 @@ function lines(src) {
   return out
 }
 
-const KEY = /^([^:#\s][^:#]*?):(\s|$)/     // `key:` or `key: value`
+// KEY SHAPES. A YAML key may be QUOTED, and a quoted key legally contains ':' and '#';
+// a plain key may contain '#' too ('#' only opens a comment at line start or after a
+// space). The original class excluded both characters from the key body, so any such key
+// failed KEY and fell through to `'stmt:' + <whole head line>` — a unit key that contains
+// the VALUE. Two sides editing that ONE key then produced two DIFFERENT unit keys, so the
+// engine saw unrelated add/deletes, unioned them, and emitted the key TWICE while
+// reporting the merge 'auto' and clean. Duplicate mapping keys are invalid YAML and every
+// loader keeps the last, so one side's edit was silently discarded — no-silent-loss
+// failing exactly as it did for type-first method signatures in lang-brace.js.
+// Measured before the fix (both top level and nested): "a:b", 'a:b', foo#bar, "a#b" all
+// auto-merged into a duplicated key; plain keys conflicted correctly.
+const QKEY = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')\s*:(\s|$)/  // "quoted key": / 'quoted key':
+const KEY = /^([^:#\s][^:]*?):(\s|$)/     // `key:` or `key: value` (body may contain '#')
 const DASH = /^-(\s|$)/                    // list item
 
+// Cut a trailing ` #comment` that is not inside quotes, so it never lands in a key.
+function stripComment(line) {
+  const at = scannerAt(line)
+  let i = 0
+  while (i < line.length) {
+    if (line[i] === '#' && i > 0 && /\s/.test(line[i - 1])) return line.slice(0, i)
+    const j = at(i)
+    if (j > i && line[i] !== '#') { i = j; continue }
+    i++
+  }
+  return line
+}
+
+// `"a"` and `a` name the SAME key in YAML, so they must key the same — otherwise the
+// pair is the very ambiguity this function exists to remove.
+const unquote = (k) => (/^"(?:[^"\\]|\\.)*"$/.test(k) || /^'(?:[^']|'')*'$/.test(k)) ? k.slice(1, -1) : k
+
 function keyOf(text) {
-  const t = text.trim()
-  const m = t.match(KEY)
-  if (m) return 'key:' + m[1].trim()
+  const t = stripComment(text.trim()).trim()
+  let m = t.match(QKEY)
+  if (m) return 'key:' + unquote(m[1])
+  m = t.match(KEY)
+  if (m) return 'key:' + unquote(m[1].trim())
   if (t === '---' || t === '...') return 'doc:' + t
   return 'stmt:' + t.replace(/\s+/g, ' ')
 }
@@ -79,10 +110,11 @@ function keyed(raw, src) {
     const text = src.slice(u.start, u.end)
     // key by the HEAD line (skipping attached leading comments)
     const head = text.split('\n').find((l) => l.trim() && !l.trim().startsWith('#')) || text
-    let k = keyOf(head)
+    const baseKey = keyOf(head)
+    let k = baseKey
     const c = (seen.get(k) || 0) + 1; seen.set(k, c)
     if (c > 1) k += '#' + c
-    out.push({ key: k, text, start: u.start, end: u.end })
+    out.push({ key: k, baseKey, text, start: u.start, end: u.end })
   }
   return out
 }

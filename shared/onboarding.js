@@ -31,11 +31,62 @@ export const RECOVER_URL = `${SITE_URL}/recover`
 export const MCP_ADD_COMMAND = 'claude mcp add hivecode -- npx -y hivecode-mcp'
 
 /** The same registration for clients without a CLI (Claude Desktop, Cursor). */
-export const MCP_CONFIG_JSON = `{
+/** The placeholder a customer sees when we do not know their key (the site's setup section). */
+export const LICENSE_PLACEHOLDER = 'YOUR-LICENCE-KEY'
+
+/**
+ * The MCP server block a customer pastes, WITH the licence in an `env` entry.
+ *
+ * The env block is the whole point and it was missing. The config used to be just
+ * `{"command":"npx","args":["-y","hivecode-mcp"]}`, so a customer paid, received a key,
+ * followed these instructions exactly, and the key never reached the relay -- the seats they
+ * bought did nothing, and nothing anywhere would have told them. The relay reads `?license=`
+ * and the client sends it from `$HIVE_LICENSE`, so this is the one place it can come from on
+ * the MCP route.
+ *
+ * It goes in `env`, not in the room's `.hive.json` and not in the join link. `.hive.json`
+ * sits in the project folder and gets committed; the join link is pasted into chat and
+ * written into HIVE_FOR_AGENTS.md, which is synced to every participant. A billing credential
+ * that travels with an invitation is a credential that bills you for strangers.
+ *
+ * @param {string} [licenseKey] the real key when we know it (the email does), else a placeholder
+ * @returns {string}
+ */
+export function mcpConfigJson(licenseKey = '') {
+  const key = (licenseKey || '').trim() || LICENSE_PLACEHOLDER
+  return `{
   "mcpServers": {
-    "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp"] }
+    "hivecode": {
+      "command": "npx",
+      "args": ["-y", "hivecode-mcp"],
+      "env": { "HIVE_LICENSE": "${key}" }
+    }
   }
 }`
+}
+
+/** Back-compat for callers that render the generic form. */
+export const MCP_CONFIG_JSON = mcpConfigJson()
+
+/**
+ * The equivalent for the CLI route and for anyone not going through an MCP host. Per-machine
+ * and outside every project folder, for the same reason as above.
+ */
+/**
+ * @param {string} [licenseKey]
+ * @returns {string}
+ */
+export function cliConfigNote(licenseKey = '') {
+  const key = (licenseKey || '').trim() || LICENSE_PLACEHOLDER
+  return `Not using an MCP host? Put the key in your home config instead:
+
+    ~/.hivecode/config.json
+    { "license": "${key}" }
+
+Or export it in the shell that starts the agent:
+
+    HIVE_LICENSE=${key}`
+}
 
 /** Exact command titles as contributed in extension/package.json. Keep them identical —
  *  these strings are what the customer types into the Command Palette. */
@@ -140,8 +191,28 @@ export const TRACKS = Object.freeze([
 ])
 
 /** For a self-hosted relay, the key goes in the environment instead of the editor. */
+/**
+ * WHAT IS SOLD, said accurately.
+ *
+ * The old text was: "Self-hosting the relay instead? Set HIVE_LICENSE to your key and
+ * HIVE_REQUIRE_LICENSE=true on the relay." Two things were wrong with it.
+ *
+ * It told a self-hoster to enforce OUR entitlement against THEMSELVES -- if they run their
+ * own relay there is nobody to pay and nothing to check, so the instruction is nonsense and
+ * it makes the product read as though it phones home even when self-hosted.
+ *
+ * And it promised something the package does not contain. `server.js` is NOT in
+ * package.json's `files[]` -- the published tarball is the CLIENT only. So "just self-host
+ * the relay" was an instruction nobody could follow with what they had downloaded.
+ *
+ * The accurate shape, and the one the code already implements: the client is MIT and free,
+ * the HOSTED RELAY is the product. Same as ngrok -- the binary costs nothing and you cannot
+ * self-host the service.
+ */
 export const SELF_HOST_NOTE =
-  'Self-hosting the relay instead? Set HIVE_LICENSE to your key and HIVE_REQUIRE_LICENSE=true on the relay, and skip step 2.'
+  'The Hivecode client is MIT-licensed and free — the key is for the hosted relay, which is '
+  + 'what your account pays for. Running a relay on your own infrastructure (air-gapped, or '
+  + 'inside your VPC) is available for teams that need it: support@getgrm.tech.'
 
 /**
  * Numbered plain-text rendering, for the email body and anywhere else without markup.

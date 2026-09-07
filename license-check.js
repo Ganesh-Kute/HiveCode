@@ -28,7 +28,7 @@ const GRACE_MS = Number(process.env.HIVE_LICENSE_GRACE_MS || 24 * 60 * 60 * 1000
 const OK_TTL = 10 * 60 * 1000 // re-check a good licence every 10 minutes
 const BAD_TTL = 60 * 1000 // re-check a bad one every minute, so a fresh purchase works fast
 
-/** @type {Map<string, {valid: boolean, seats: number, status: string|null, at: number}>} */
+/** @type {Map<string, {valid: boolean, seats: number, plan: string|null, status: string|null, at: number}>} */
 const cache = new Map()
 
 export function _clearCache() {
@@ -46,7 +46,7 @@ export function _ageCache(ms) {
 
 /**
  * @param {string} rawKey
- * @returns {Promise<{valid: boolean, seats: number, status: string|null, source: string, reason?: string}>}
+ * @returns {Promise<{valid: boolean, seats: number, plan: string|null, status: string|null, source: string, reason?: string}>}
  */
 export async function verifyLicense(rawKey) {
   const key = normalizeLicenseKey(rawKey)
@@ -54,13 +54,13 @@ export async function verifyLicense(rawKey) {
   // Shape check first: junk never costs a network round trip. Shape is not authority —
   // a well-formed key that is not on record is still refused below.
   if (!isWellFormedLicenseKey(key)) {
-    return { valid: false, seats: 0, status: null, source: 'shape', reason: 'malformed key' }
+    return { valid: false, seats: 0, plan: null, status: null, source: 'shape', reason: 'malformed key' }
   }
 
   const hit = cache.get(key)
   const now = Date.now()
   if (hit && now - hit.at < (hit.valid ? OK_TTL : BAD_TTL)) {
-    return { valid: hit.valid, seats: hit.seats, status: hit.status, source: 'cache' }
+    return { valid: hit.valid, seats: hit.seats, plan: hit.plan, status: hit.status, source: 'cache' }
   }
 
   let controller = null
@@ -79,11 +79,14 @@ export async function verifyLicense(rawKey) {
     const entry = {
       valid: Boolean(data && data.valid),
       seats: Number(data && data.seats) || 0,
+      // Kept so the relay can size a paying room's LIMITS to its tier, not just its seat
+      // count. Absent on older validator responses -> null, and callers treat null as free.
+      plan: (data && data.plan) || null,
       status: (data && data.status) || null,
       at: Date.now(),
     }
     cache.set(key, entry)
-    return { valid: entry.valid, seats: entry.seats, status: entry.status, source: 'api' }
+    return { valid: entry.valid, seats: entry.seats, plan: entry.plan, status: entry.status, source: 'api' }
   } catch (err) {
     // GRACE: an outage must not evict paying customers.
     if (hit && hit.valid && now - hit.at < GRACE_MS) {
@@ -91,10 +94,10 @@ export async function verifyLicense(rawKey) {
         `[relay] licence validator unreachable (${err && err.message}); admitting on cached grant, ` +
           `${Math.round((now - hit.at) / 60000)}m old`,
       )
-      return { valid: true, seats: hit.seats, status: hit.status, source: 'grace' }
+      return { valid: true, seats: hit.seats, plan: hit.plan, status: hit.status, source: 'grace' }
     }
     console.error(`[relay] licence validator unreachable and no cached grant: ${err && err.message}`)
-    return { valid: false, seats: 0, status: null, source: 'unavailable', reason: 'validator unreachable' }
+    return { valid: false, seats: 0, plan: null, status: null, source: 'unavailable', reason: 'validator unreachable' }
   } finally {
     if (timer) clearTimeout(timer)
   }

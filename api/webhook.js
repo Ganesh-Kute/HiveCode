@@ -18,6 +18,11 @@
 //   RESEND_API_KEY / LICENSE_FROM_EMAIL        optional (see api/_email.js)
 
 import crypto from 'crypto';
+const DAY_MS = 86_400_000;
+// Seven days to replace a card. Short enough to bound free usage, long enough to survive a
+// weekend and a holiday, which is when cards expire.
+const GRACE_DAYS = Number(process.env.HIVE_GRACE_DAYS) || 7;
+
 import { PLANS, clampSeats, formatLicenseKey } from '../shared/license.js';
 import { STATUS, findByPayment, findBySubscription, getLicense, isStoreConfigured, saveLicense, updateLicense } from './_store.js';
 import { sendLicenseEmail } from './_email.js';
@@ -117,6 +122,24 @@ export default async function handler(req, res) {
           status: STATUS.active,
           max_committers: seats,
           last_charged_at: new Date().toISOString(),
+          // RECORD THE PAYMENT ID WHENEVER ONE ARRIVES, and this branch is where it usually
+          // does. `subscription.activated` fires FIRST and carries only the subscription
+          // entity -- no payment -- so the row is created with payment_id: null. The payment
+          // id only appears later, on `subscription.charged`, which lands here.
+          //
+          // Without this the id is never stored at all, and /api/license?payment_id= plus the
+          // whole /recover page can never find a subscription customer's licence. Their only
+          // route to their own key would be the email, and if that is not configured they end
+          // up with a paid licence in the database that they cannot reach.
+          ...(paymentId && !existing.payment_id ? { payment_id: paymentId } : {}),
+          // Same for the subscription id: a first event of `payment.captured` (a one-off, or
+          // an out-of-order delivery) creates the row without one.
+          ...(subscriptionId && !existing.subscription_id ? { subscription_id: subscriptionId } : {}),
+          // A successful charge ends any grace or wind-down. Leaving these set would
+          // downgrade a customer a week after their payment went through.
+          grace_until: null,
+          access_until: null,
+          lapse_reason: null,
           ...(email ? { email } : {}),
         });
         console.log(`licence renewed: ${existing.license_key} (${seats} committers)`);
@@ -141,16 +164,71 @@ export default async function handler(req, res) {
     }
 
     // ── money stops ─────────────────────────────────────────────────────────────────
+    // CANCELLATION AND FAILED RENEWAL -- neither one revokes access on the spot.
+    //
+    // This used to set 'canceled' or 'suspended' immediately, and both were wrong in a way
+    // that costs customers rather than protecting revenue:
+    //
+    //   cancelled  A customer who cancels on the 3rd has paid through the 30th. Cutting
+    //              them off on the 3rd is not a cancellation, it is the shape of a
+    //              chargeback. Access runs to the end of the period they bought.
+    //
+    //   halted     A halt is almost always an expired card. Locking someone out of their
+    //              own workspace on the first failed charge loses a customer who would have
+    //              updated the card in a minute. GRACE_DAYS of paid access, then downgrade.
+    //
+    // In both cases the licence stays ACTIVE and carries a deadline; validate.js reports it
+    // valid until that deadline passes. Nothing is ever deleted -- a lapsed account drops to
+    // free ceilings and can still READ its own work, which is the difference between
+    // "renew to keep writing" and "we took your workspace".
     if (name === 'subscription.cancelled' || name === 'subscription.halted' || name === 'subscription.paused') {
-      const status = name === 'subscription.cancelled' ? STATUS.canceled : STATUS.suspended;
+      const existing = subscription ? await findBySubscription(subscription.id) : null;
+      if (!existing) {
+        console.warn(`${name} for unknown subscription ${subscription && subscription.id}`);
+        return res.status(200).json({ received: true, ignored: 'unknown subscription' });
+      }
+
+      if (name === 'subscription.cancelled') {
+        // Razorpay reports the end of the paid period as current_end (unix seconds). If it
+        // is missing or already past, fall back to now + 1 day rather than cutting access
+        // instantly -- a missing field must never be read as "revoke immediately".
+        const endSec = Number(subscription && subscription.current_end);
+        const paidUntil = Number.isFinite(endSec) && endSec * 1000 > Date.now()
+          ? new Date(endSec * 1000)
+          : new Date(Date.now() + DAY_MS);
+        await updateLicense(existing.license_key, {
+          status: STATUS.active,
+          access_until: paidUntil.toISOString(),
+          grace_until: null,
+          lapse_reason: 'cancelled',
+        });
+        console.log(`licence cancelled, access until ${paidUntil.toISOString()}: ${existing.license_key}`);
+        return res.status(200).json({ received: true, status: 'active-until-period-end', accessUntil: paidUntil.toISOString() });
+      }
+
+      // halted / paused -> grace
+      const graceUntil = new Date(Date.now() + GRACE_DAYS * DAY_MS);
+      await updateLicense(existing.license_key, {
+        status: STATUS.active,
+        grace_until: graceUntil.toISOString(),
+        lapse_reason: name === 'subscription.halted' ? 'payment-failed' : 'paused',
+      });
+      console.log(`licence in grace until ${graceUntil.toISOString()} (${name}): ${existing.license_key}`);
+      return res.status(200).json({ received: true, status: 'grace', graceUntil: graceUntil.toISOString() });
+    }
+
+    // A renewal that succeeds must CLEAR any grace or end-of-period deadline. Without this a
+    // customer who fixed their card would keep the old deadline and be downgraded anyway --
+    // a bug that would only surface a week after the money arrived.
+    if (name === 'subscription.resumed' || name === 'subscription.authenticated') {
       const existing = subscription ? await findBySubscription(subscription.id) : null;
       if (existing) {
-        await updateLicense(existing.license_key, { status });
-        console.log(`licence ${status}: ${existing.license_key}`);
-      } else {
-        console.warn(`${name} for unknown subscription ${subscription && subscription.id}`);
+        await updateLicense(existing.license_key, {
+          status: STATUS.active, grace_until: null, access_until: null, lapse_reason: null,
+        });
+        console.log(`licence recovered, deadlines cleared: ${existing.license_key}`);
       }
-      return res.status(200).json({ received: true, status });
+      return res.status(200).json({ received: true, status: 'active' });
     }
 
     if (name === 'refund.created' || name === 'refund.processed') {

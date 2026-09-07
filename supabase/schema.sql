@@ -70,3 +70,82 @@ CREATE TRIGGER licenses_touch_updated_at
 -- RLS is enabled on both tables with NO policies, so the anon and authenticated keys can
 -- read nothing at all. Only the service_role key bypasses RLS. That is what stops anyone
 -- holding your public anon key from listing every licence you have ever issued.
+
+-- 3. Usage Periods — the meter behind the auto-lock.
+--
+-- Replaces seat counting as the enforcement unit. Seats were never really enforced: the
+-- relay's committer set is keyed by FILE-room ("almost always one person", per its own
+-- comment), so a 2-seat licence admitted two agents per file with no overall limit. It was
+-- also per-process, so a restart forgot it.
+--
+-- `account` is a licence key when there is one, else the base room id. So a paid account
+-- accumulates across every room and every relay restart, and an anonymous room accumulates
+-- on its own.
+--
+-- One row per account per calendar month, UTC. The relay POSTs deltas and this row is the
+-- authority; several relay instances can report into the same row safely because every
+-- counter is additive and the two peaks are maxima.
+CREATE TABLE IF NOT EXISTS usage_periods (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account      VARCHAR(200) NOT NULL,
+    period       CHAR(7)      NOT NULL,          -- 'YYYY-MM', UTC
+    writes       BIGINT       NOT NULL DEFAULT 0,
+    write_bytes  BIGINT       NOT NULL DEFAULT 0,
+    msgs         BIGINT       NOT NULL DEFAULT 0,
+    bytes        BIGINT       NOT NULL DEFAULT 0,
+    peak_rooms   INTEGER      NOT NULL DEFAULT 0,
+    peak_agents  INTEGER      NOT NULL DEFAULT 0,
+    created_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- The unique pair is what makes the relay's upsert (on_conflict=account,period) work. Without
+-- it PostgREST cannot merge duplicates and every flush would insert a new row, so the total
+-- would be spread across hundreds of rows and the limit check would always read a small one.
+CREATE UNIQUE INDEX IF NOT EXISTS usage_periods_account_period_idx
+    ON usage_periods (account, period);
+
+-- Answers "who is over their limit this month" without a full scan.
+CREATE INDEX IF NOT EXISTS usage_periods_period_idx ON usage_periods (period);
+
+ALTER TABLE usage_periods ENABLE ROW LEVEL SECURITY;
+
+DROP TRIGGER IF EXISTS usage_periods_touch_updated_at ON usage_periods;
+CREATE OR REPLACE FUNCTION usage_periods_touch_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER usage_periods_touch_updated_at
+  BEFORE UPDATE ON usage_periods
+  FOR EACH ROW EXECUTE FUNCTION usage_periods_touch_updated_at();
+
+-- Same posture as the licence tables: RLS on, no policies, so anon and authenticated keys
+-- read nothing. Only service_role bypasses it, and that key lives only in Vercel.
+
+-- 4. Grace and end-of-period access on licences.
+--
+-- Two money bugs this closes, both in the same handler:
+--
+--   subscription.cancelled set the licence to 'canceled' IMMEDIATELY. A customer who cancels
+--   on the 3rd of the month loses access on the 3rd, having paid through the 30th. That is
+--   the shape of a chargeback, not a cancellation.
+--
+--   subscription.halted set it to 'suspended' IMMEDIATELY. A halt is usually an expired
+--   card -- the most common and most innocent failure there is -- and locking someone out of
+--   their workspace on the first failed charge is a customer lost over a card they would have
+--   replaced in a minute.
+--
+-- So the licence stays 'active' in both cases and carries a DEADLINE instead. validate.js
+-- reads them and reports valid until the deadline passes, which is what "we paid through the
+-- end of the month" and "we are chasing your card" actually mean.
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS grace_until  TIMESTAMP WITH TIME ZONE;
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS access_until TIMESTAMP WITH TIME ZONE;
+-- Why it is in one of those states, for support and for the dashboard banner.
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS lapse_reason VARCHAR(40);
+
+-- Finds everyone whose grace or paid period has run out and still reads as active.
+CREATE INDEX IF NOT EXISTS licenses_grace_until_idx  ON licenses (grace_until)  WHERE grace_until  IS NOT NULL;
+CREATE INDEX IF NOT EXISTS licenses_access_until_idx ON licenses (access_until) WHERE access_until IS NOT NULL;

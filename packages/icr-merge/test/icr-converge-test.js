@@ -71,7 +71,13 @@ console.log('\n# The routes scenario that broke the live test before â€” no
 
 console.log('\n# Random multi-round simulation: many concurrent-edit pairs all converge')
 {
-  const rand = (n) => Math.floor(Math.random() * n)
+  // SEED: same reason as icr-fuzz-test.js -- this simulation was unseeded, so converged
+  // drifted 1115..1157 across three runs of IDENTICAL code and no two runs exercised the
+  // same pairs. Replay a run exactly:  node icr-converge-test.js 12345
+  const SEED = (Number(process.argv[2] || (Math.random() * 0x7fffffff | 0)) | 0) >>> 0
+  const mulberry32 = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+  const rnd = mulberry32(SEED)
+  const rand = (n) => Math.floor(rnd() * n)
   const names = ['a', 'b', 'c', 'd', 'e']
   const mkFile = () => names.slice(0, 2 + rand(3)).map((n) => `function ${n}() { return ${rand(20)} }`).join('\n\n') + '\n'
   const edit = (src) => rand(2) ? src.replace(/return \d+/, 'return ' + rand(99)) : src + `\nfunction z${rand(50)}() { return 1 }\n`
@@ -88,7 +94,7 @@ console.log('\n# Random multi-round simulation: many concurrent-edit pairs all c
     if (!ok) continue
     if (A === B) converged++; else { diverged++; if (diverged <= 3) console.log('  DIVERGED:\n' + JSON.stringify({ A, B })) }
   }
-  assert(`all auto-merge pairs converged (converged=${converged}, diverged=${diverged})`, diverged === 0)
+  assert(`all auto-merge pairs converged (seed=${SEED}, converged=${converged}, diverged=${diverged})`, diverged === 0)
 }
 
 console.log(`\n=== ${failed === 0 ? 'CONVERGENCE HELD' : failed + ' FAILED'} ===`)

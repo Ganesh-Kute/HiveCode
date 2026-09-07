@@ -174,7 +174,12 @@ section('hive_check — the non-blocking call an agent can make mid-task')
 
   out = textOf(await _test.callTool('hive_check'))
   T('a real check consumes it', addressed(out))
-  T('and it is gone afterwards', textOf(await _test.callTool('hive_check')).includes('nothing waiting'))
+  // Asserts the MEANING, not the wording. The all-clear line legitimately changed once
+  // hive_check began reporting reply debts: the message really is consumed, but someone is
+  // still waiting on an answer to it, and reporting "nothing waiting" then would be a lie.
+  const after = textOf(await _test.callTool('hive_check'))
+  T('and it is gone afterwards', !addressed(after) && /no new mail|nothing waiting/.test(after))
+  T('...but it still says who is waiting on a reply', /STILL WAITING ON A REPLY/.test(after) && /PM-Claude|Hermes/.test(after))
 
   room.post('PM-Claude', '@Hermes STOP — you are writing to a file I hold')
   out = textOf(await _test.callTool('hive_check'))

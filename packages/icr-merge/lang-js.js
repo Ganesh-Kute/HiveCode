@@ -1,4 +1,4 @@
-﻿// lang-js.js â€” the JavaScript language provider for ICR.
+// lang-js.js â€” the JavaScript language provider for ICR.
 //
 // ICR's merge engine (icr.js) is language-agnostic: it merges a list of keyed "units"
 // and asks intent questions ("what names are declared / used / what's a function body").
@@ -197,6 +197,118 @@ function declBody(src, name) {
     return null
   }
   return null
+}
+
+// Check if top-level declaration `name` is declared `async`
+function isAsyncDecl(src, name) {
+  try {
+    for (const node of parse(src).body) {
+      if (bareName(node) !== name) continue
+      let n = node
+      if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
+      if (n.type === 'ExportDefaultDeclaration' && n.declaration) n = n.declaration
+      if (n.type === 'FunctionDeclaration') return !!n.async
+      if (n.type === 'VariableDeclaration' && n.declarations[0] && n.declarations[0].init) {
+        const init = n.declarations[0].init
+        if (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') {
+          return !!init.async
+        }
+      }
+    }
+  } catch {}
+  return false
+}
+
+// Upgrade free call sites of `fnName` to `await fnName(...)` if they are inside an async parent
+// and not already awaited.
+function upgradeCallSitesToAwait(src, fnName) {
+  try {
+    const ast = parse(src)
+    const spots = []
+
+    function walkAST(node, parent, isAsyncScope = false) {
+      if (!node || typeof node.type !== 'string') return
+
+      let childAsyncScope = isAsyncScope
+      if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+        childAsyncScope = !!node.async
+      }
+
+      if (node.type === 'CallExpression') {
+        let isTarget = false
+        if (node.callee.type === 'Identifier' && node.callee.name === fnName) isTarget = true
+        if (isTarget && childAsyncScope) {
+          const alreadyAwaited = parent && parent.type === 'AwaitExpression'
+          if (!alreadyAwaited) {
+            spots.push(node.start)
+          }
+        }
+      }
+
+      for (const k of Object.keys(node)) {
+        if (k === 'type' || k === 'start' || k === 'end' || k === 'loc' || k === 'range') continue
+        const v = node[k]
+        if (Array.isArray(v)) {
+          for (const c of v) walkAST(c, node, childAsyncScope)
+        } else if (v && typeof v.type === 'string') {
+          walkAST(v, node, childAsyncScope)
+        }
+      }
+    }
+
+    walkAST(ast, null, false)
+    if (!spots.length) return src
+
+    spots.sort((a, b) => b - a)
+    let out = src
+    for (const pos of spots) {
+      out = out.slice(0, pos) + 'await ' + out.slice(pos)
+    }
+    return out
+  } catch {
+    return src
+  }
+}
+
+// Find callers of `fnName` that are synchronous (cannot be auto-awaited without changing the caller's signature)
+function syncCallSitesOf(src, fnName) {
+  const syncCallers = []
+  try {
+    const ast = parse(src)
+    function walkAST(node, currentFnName = null, isAsyncScope = false) {
+      if (!node || typeof node.type !== 'string') return
+
+      let childAsyncScope = isAsyncScope
+      let fnNameContext = currentFnName
+      if (node.type === 'FunctionDeclaration') {
+        childAsyncScope = !!node.async
+        fnNameContext = node.id ? node.id.name : '<anonymous>'
+      } else if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+        childAsyncScope = !!node.async
+        if (node.id) fnNameContext = node.id.name
+      }
+
+      if (node.type === 'CallExpression') {
+        if (node.callee.type === 'Identifier' && node.callee.name === fnName) {
+          if (!childAsyncScope) {
+            syncCallers.push(fnNameContext || '<top-level>')
+          }
+        }
+      }
+
+      for (const k of Object.keys(node)) {
+        if (k === 'type' || k === 'start' || k === 'end' || k === 'loc' || k === 'range') continue
+        const v = node[k]
+        if (Array.isArray(v)) {
+          for (const c of v) walkAST(c, fnNameContext, childAsyncScope)
+        } else if (v && typeof v.type === 'string') {
+          walkAST(v, fnNameContext, childAsyncScope)
+        }
+      }
+    }
+    walkAST(ast, null, false)
+  } catch {}
+  return syncCallers
 }
 
 // Rewrite every reference to `oldName` as `newName` (skipping property/key positions,
@@ -518,6 +630,9 @@ export const javascript = {
   usedIdentifiers,      // approximate (kept for reference)
   referencedFreeNames,  // scope-aware â€” what the engine prefers for the dangling check
   declBody,
+  isAsyncDecl,
+  upgradeCallSitesToAwait,
+  syncCallSitesOf,
   renameRefs,           // rewrites every matching identifier (kept for reference)
   renameFreeRefs,       // scope-aware â€” only rewrites references that resolve to the binding
   splitUnit,            // finer granularity: split a function/class/method into keyed inner units

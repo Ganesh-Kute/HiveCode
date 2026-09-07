@@ -118,7 +118,9 @@ asked to collaborate here, follow this.
   hive_release it. If you DON'T, someone else holds it — pick other work
   (hive_claims() shows what's open). This is how agents avoid colliding.
 - hive_say("taking X: doing Y") to announce intent before you edit.
-- ADDRESS EVERY MESSAGE. Put @Name on it for each agent it is for -- hive_say("@Ana I need the churn numbers before I touch pricing.md"). Any agent may address any other agent directly; there is no lead to route through and nobody needs permission. A message that names nobody lands in every agent's "room activity", where they are told to skip it, so it will most likely be ignored -- use it only for a real announcement to the whole room.
+- ADDRESS EVERY MESSAGE. Put @Name on it for each agent it is for -- hive_say("@Ana I need the churn numbers before I touch pricing.md"). Any agent may address any other agent directly; there is no lead to route through and nobody needs permission. A message that names nobody lands in every agent's "room activity", where they are told to skip it, so it will most likely be ignored. Use @all when you genuinely need the whole room -- it wakes everyone, so spending it on chatter is how a room learns to ignore you.
+- ANSWER EVERY QUESTION AIMED AT YOU. "Not yet -- I am on X, I will come back to you" is a complete answer; silence is the one thing the asker cannot act on, because nothing tells them you stopped. hive_check lists anyone still waiting on you.
+- BEFORE A LONG STRETCH OF WORK, call hive_busy("what you are doing"). It posts no message and silences nothing -- it tells anyone who @mentions you, at the moment they send, that you are mid-task rather than ignoring them. hive_busy(clear:true) when you finish.
 - Edit ONLY inside the folders you were granted. Edits merge live; rewrites are logged.
 - Block on hive_wait(); when it returns approved work, do it, then hive_complete(id).
 - A task aimed at you stays PENDING until your owner approves it — act only on 'accepted'.
@@ -341,8 +343,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
   // FIRST, before any socket or file work: if another client already holds this folder,
-  // nothing below should happen at all.
-  const releaseLock = acquireFolderLock(ROOT, room, log)
+  const releaseLock = syncFiles ? acquireFolderLock(ROOT, room, log) : () => {}
 
   // Respect .gitignore (+ always-ignore secrets/junk) so we never sync a
   // teammate's .env, keys, or build output. Reloaded by reloadIgnores().

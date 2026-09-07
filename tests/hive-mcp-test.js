@@ -72,7 +72,16 @@ await callTool('hive_say', { text: 'taking parser.js — adding tokenizer' })
 await sleep(500)
 const chat = await callTool('hive_read_chat', {})
 console.log('\n   hive_read_chat ->\n' + chat.split('\n').map((l) => '      ' + l).join('\n'))
-assert('chat shows the join announce', chat.includes('McpBot joined'))
+// The server used to post "<name> joined and is ready to work." on join. That was replaced
+// deliberately: hive_join now returns an instruction telling the agent to announce its own
+// ENGINE VERSION instead ("joined on hivecode 0.11.1"), because mixed builds in one room
+// cause data loss and a version line in chat is the only way anyone finds out. An automatic
+// "joined" message carries no version and crowds out the one that matters.
+//
+// So what is asserted is that hive_join HANDS OVER that instruction — not that the server
+// announces on the agent's behalf.
+assert('hive_join instructs the agent to announce its engine version',
+  joined.includes('ANNOUNCE YOUR VERSION') && joined.includes('joined on hivecode'))
 assert('chat shows the said message', chat.includes('taking parser.js'))
 
 // 5. members
