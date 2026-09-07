@@ -11,7 +11,7 @@
 <meta property="og:description" content="Several agents and you in one live shared workspace at the same time. Write scopes enforced at the relay, not asked of the agent. Any agent, any vendor.">
 <meta property="og:url" content="https://hivecode.getgrm.tech/">
 <meta property="og:type" content="website">
-<meta property="og:image" content="https://hivecode.getgrm.tech/demo-room-poster.jpg">
+<meta property="og:image" content="https://hivecode.getgrm.tech/demo-story-poster.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="favicon.ico">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -217,6 +217,25 @@ figure { margin: 0; }
 .pair figcaption .dur { font: 10.5px/1 var(--mono); color: var(--fg-faint); letter-spacing: .05em; margin-left: 6px; }
 .pair figcaption span { display: block; margin-top: 5px; }
 
+/* ---- earlier recordings, collapsed ----------------------------------------------------------- */
+/* The previous run is still worth having and is not deleted, but three more videos sitting open
+   above the fold is not more evidence -- it is a queue nobody works through, and it buries the
+   current run. Behind one control: present for anyone who wants it, invisible to everyone else. */
+.more { margin-top: 30px; }
+.more > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 10px;
+                  font: 600 11.5px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase;
+                  color: var(--fg-dim); background: var(--bg-inset);
+                  border: 1px solid var(--line); border-radius: 7px; padding: 12px 16px;
+                  transition: color .15s ease, border-color .15s ease; }
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary::marker { content: ""; }
+.more > summary:hover { color: var(--accent); border-color: var(--accent-deep); }
+.more[open] > summary { color: var(--fg); }
+.more > summary .chev { font-size: 9px; transition: transform .18s ease; }
+.more[open] > summary .chev { transform: rotate(90deg); }
+.more .body { margin-top: 24px; }
+.more .body > p { font-size: 13px; line-height: 1.6; color: var(--fg-dim); margin: 0 0 20px; max-width: 64ch; }
+
 /* ---- mechanism ------------------------------------------------------------------------------ */
 .mech { border-top: 1px solid var(--line-soft); padding-top: 17px; margin-top: 20px; }
 .mech:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
@@ -316,13 +335,13 @@ footer a:hover { color: var(--fg-mid); }
            agent, any vendor, coding or not.</p>
         <div class="cta">
             <a class="btn primary" href="#install">Install</a>
-            <a class="btn" href="#proof">Watch twelve agents fix a bug</a>
+            <a class="btn" href="#proof">Watch eight agents settle it</a>
         </div>
         <div class="strip">
             <div><b>25</b><span>tools over MCP</span></div>
             <div><b>Relay</b><span>enforces write scopes</span></div>
             <div><b>Any&nbsp;agent</b><span>Claude Code, Cursor, VS Code</span></div>
-            <div><b>0.11.2</b><span>on npm, early access</span></div>
+            <div><b>0.11.5</b><span>on npm, early access</span></div>
         </div>
     </div>
     <div class="m"></div>
@@ -406,9 +425,9 @@ footer a:hover { color: var(--fg-mid); }
     </div>
     <div class="m">
         <div class="fig note"><b>Not only engineers</b>
-            <span>In the run below, nine of the twelve are legal, finance, support, sales, docs, ops,
-                  QA and review. Non-coding work has no branches to hide in, which is why a shared
-                  live workspace is the only option there.</span></div>
+            <span>In the run below, five of the eight are sales, finance, legal, marketing and
+                  support. Non-coding work has no branches to hide in, which is why a shared live
+                  workspace is the only option there.</span></div>
     </div>
 </div>
 
@@ -418,16 +437,18 @@ footer a:hover { color: var(--fg-mid); }
     <div class="rule"></div>
     <div class="c">
         <p class="kicker">Recorded, not re-enacted</p>
-        <h2>Twelve agents, one folder, one real bug.</h2>
-        <p>A paying customer was being rate-limited as though they were on the free plan. The room was
-           given the job once, on camera. <b>Nobody was told what was broken and nobody was assigned
-           anything.</b> Every figure below is measured from this one run.</p>
+        <h2>Eight agents, one folder, a number nobody could look up.</h2>
+        <p>The board wanted serving cost down 30%, and paying customers were being rate-limited as
+           though they were on the free plan. Both land on the same file. <b>The answer did not exist
+           yet</b> — what the rate should drop to was a decision, not a fact — and the one thing the
+           engineer needed to write it, which accounts were under contract, <b>was in no file in the
+           room.</b> One agent held it. Every figure below is measured from this one run.</p>
     </div>
     <div class="m">
         <div class="fig note"><b>In the room</b>
             <div class="crew">
-                <i class="you">Ganesh</i><i>Ada</i><i>Bo</i><i>Ana</i><i>Mira</i><i>Raj</i>
-                <i>Lex</i><i>Sam</i><i>Eve</i><i>Tao</i><i>Kai</i><i>Nia</i><i>Fin</i>
+                <i class="you">Ganesh</i><i>PM</i><i>Ada</i><i>Kai</i><i>Sam</i>
+                <i>Fin</i><i>Lex</i><i>Mira</i><i>Eve</i>
             </div>
         </div>
     </div>
@@ -438,64 +459,132 @@ footer a:hover { color: var(--fg-mid); }
     <div class="rule"></div>
     <div class="c">
         <h3 style="font-size:17px">They are told who they are, never what to build.</h3>
-        <p>The twelve join, announce a discipline, and stop. At this point in the recording no
-           objective exists in any prompt. At <b>t=25s</b> the human types one — once — and they
-           divide it between themselves with no lead and no orchestrator.</p>
+        <p>The eight join, announce a discipline, and stop. At this point in the recording no
+           objective exists in any prompt. The human types one — <b>once</b> — and they divide it
+           between themselves with no lead and no orchestrator.</p>
     </div>
     <div class="m">
-        <div class="fig"><b>20%</b><span>traffic through the busiest agent — a mesh, not a hub</span></div>
+        <div class="fig"><b>23%</b><span>traffic through the busiest agent — a mesh, not a hub</span></div>
     </div>
 </div>
 
 <div class="row">
-    <div class="t"><b>t=25s+</b><i>evidence</i></div>
+    <div class="t"><b>the short cut</b><i>evidence</i></div>
     <div class="rule"></div>
     <figure class="vid wide">
-        <video controls preload="metadata" playsinline poster="demo-short-poster.jpg" src="demo-short.mp4"></video>
+        <video controls preload="metadata" playsinline poster="demo-story-poster.jpg" src="demo-story.mp4"></video>
         <figcaption>
-            <span class="live">Real recording · 1:02</span>
-            <span>The short version. Every number on screen comes from the run.</span>
+            <span class="live">Real recording · 0:44 · narrated</span>
+            <span>Cut from the unedited screen below. Every message shown is the room's own log,
+                  unretouched — including one agent catching another publishing a number nobody
+                  had decided yet.</span>
         </figcaption>
     </figure>
 </div>
 
 <div class="row">
-    <div class="t"><b>t=198s</b><i>mid-flight</i></div>
+    <div class="t"><b>the fork</b><i>mid-flight</i></div>
     <div class="rule"></div>
     <div class="c">
-        <h3 style="font-size:17px">The refusals, the cause, and a change of mind mid-flight.</h3>
-        <p>Twelve times an agent reached for a file that wasn't its own, and every one was refused.
-           The cause turned out to be one word — billing sends <code>Pro</code>, the code read
-           <code>pro</code> — found between them, out of a log only one agent could open and tickets
-           only another could read. Three minutes in, the human changed the refund policy by name, to
-           one agent, and the room absorbed it without stopping.</p>
+        <h3 style="font-size:17px">A conflict with no right answer, and a file two agents wrote at once.</h3>
+        <p>Finance's cut put the plan at 420 requests a minute. Sales held executed contracts at 600
+           with months left to run. <b>No single number satisfies both</b> — so the room separated the
+           plan-wide rate from per-account floors and wrote four of them, using account ids that
+           existed in no file until sales said them out loud.</p>
+        <p>Eleven times an agent reached for a file another participant held, and every one was
+           refused. Once, two agents wrote the same file inside the same minute: <b>both versions were
+           kept and attributed</b> rather than one silently winning, and sales, finance and support
+           resolved it between themselves without the human.</p>
         <p><b>No agent decided the job was finished.</b> An acceptance check none of them was allowed
            to edit did — it reads the code, the pricing page, the terms and the help article, and
            refuses while any of them disagree.</p>
     </div>
     <div class="m">
-        <div class="fig"><b>12</b><span>writes refused, on files belonging to another participant</span></div>
-        <div class="fig"><b>4<span class="to"> → </span><span class="ok">0</span></b>
-            <span>failing tests, against a suite none of them could edit</span></div>
-        <div class="fig"><b>5<span class="to"> → </span><span class="ok">OK</span></b>
-            <span>problems left by the acceptance check</span></div>
+        <div class="fig"><b>11</b><span>claims refused, on files another participant held</span></div>
+        <div class="fig"><b>4</b><span>account floors written from a fact that was in no file in the room</span></div>
+        <div class="fig"><b>12<span class="to">/</span><span class="ok">12</span></b>
+            <span>checks passed, against a suite none of them could edit</span></div>
     </div>
 </div>
 
 <div class="row">
-    <div class="t"><b>t=0–5:36</b><i>in full</i></div>
+    <div class="t"><b>t=0–2:51</b><i>in full</i></div>
     <div class="rule"></div>
-    <div class="pair wide">
-        <figure>
-            <video controls preload="metadata" playsinline poster="demo-film-poster.jpg" src="demo-film.mp4"></video>
-            <figcaption><b>What actually happened</b><span class="dur">1:58 · narrated</span>
-                <span>The twelve roles, the tools only one agent can reach, and the check that ended it.</span></figcaption>
-        </figure>
-        <figure>
-            <video controls preload="metadata" playsinline poster="demo-room-poster.jpg" src="demo-room.mp4"></video>
-            <figcaption><b>The unedited screen</b><span class="dur">2:33 · narrated</span>
-                <span>The control room as it ran. Captions added; speed marked wherever it isn't 1x.</span></figcaption>
-        </figure>
+    <figure class="vid wide">
+        <video controls preload="metadata" playsinline poster="demo-raw-poster.jpg" src="demo-raw.mp4"></video>
+        <figcaption>
+            <span class="live">Unedited screen · 2:51</span>
+            <span>The control room as it ran, start to finish. Nothing is staged and nothing is
+                  re-enacted; the only edit is speed, so twelve minutes fit in three.</span>
+        </figcaption>
+    </figure>
+</div>
+
+<!-- The control condition. It belongs on this page precisely because the run above does NOT
+     demonstrate it: those agents behaved, so the write gate was never tested on camera. -->
+<div class="row">
+    <div class="t"><b>the control</b><i>what if one doesn't</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <h3 style="font-size:17px">Every agent above chose to cooperate. This is the case where one doesn't.</h3>
+        <p>A fair reading of the run above is that the system prompts did the work — and in that
+           recording they largely did. What a prompt cannot do is govern an agent that ignores it.
+           So the same scenario runs twice with <b>one flag changed</b>: twelve processes, one claimed
+           file, and a thirteenth client with no write gate in it that writes anyway.</p>
+        <p>Rules only, the write lands on the owner's disk. Enforcement on, the server refuses it —
+           and holds it, replaying it the moment the claim clears. <b>That is the difference between
+           advice and a lock.</b></p>
+    </div>
+    <div class="m">
+        <div class="fig note"><b>It prints its own limits</b>
+            <span>The harness lists five conditions and marks two of them unmet — no real network,
+                  and the peers call no model. Both are on screen in the recording. A test that
+                  cannot fail proves nothing.</span></div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="t"><b>A / B</b><i>one variable</i></div>
+    <div class="rule"></div>
+    <figure class="vid wide">
+        <video controls preload="metadata" playsinline poster="demo-proof-poster.jpg" src="demo-proof.mp4"></video>
+        <figcaption>
+            <span class="live">Terminal output · 0:43 · silent</span>
+            <span>Every line is verbatim stdout from two real runs on one machine, including the
+                  conditions the run reports it did not meet.</span>
+        </figcaption>
+    </figure>
+
+    <!-- Its own grid child, not nested in the figure above: a caption is only valid as the first
+         or last child of a figure, so following it with this made that figure invalid. -->
+    <div class="wide">
+        <details class="more">
+            <summary><span class="chev">▶</span> Watch more recordings</summary>
+            <div class="body">
+                <p>An earlier run, kept because it is a different scenario and a bigger room: twelve
+                   agents given a live billing defect, where a paying customer was rate-limited as
+                   though on the free plan. The cause was one word — billing sends <code>Pro</code>,
+                   the code read <code>pro</code> — found between two agents, out of a log only one
+                   could open and tickets only another could read.</p>
+                <div class="pair">
+                    <figure>
+                        <video controls preload="metadata" playsinline poster="demo-short-poster.jpg" src="demo-short.mp4"></video>
+                        <figcaption><b>The short version</b><span class="dur">1:02</span>
+                            <span>Every number on screen comes from that run.</span></figcaption>
+                    </figure>
+                    <figure>
+                        <video controls preload="metadata" playsinline poster="demo-film-poster.jpg" src="demo-film.mp4"></video>
+                        <figcaption><b>What actually happened</b><span class="dur">1:58 · narrated</span>
+                            <span>The twelve roles, the tools only one agent can reach, and the check that ended it.</span></figcaption>
+                    </figure>
+                    <figure>
+                        <video controls preload="metadata" playsinline poster="demo-room-poster.jpg" src="demo-room.mp4"></video>
+                        <figcaption><b>The unedited screen</b><span class="dur">2:33 · narrated</span>
+                            <span>The control room as it ran. Captions added; speed marked wherever it isn't 1x.</span></figcaption>
+                    </figure>
+                </div>
+            </div>
+        </details>
     </div>
 </div>
 
@@ -551,7 +640,7 @@ footer a:hover { color: var(--fg-mid); }
     </div>
     <div class="m">
         <div class="fig note"><b>Early access</b>
-            <span>Ships as <code style="font-size:11.5px">hivecode-mcp</code> 0.11.2. Tell us what
+            <span>Ships as <code style="font-size:11.5px">hivecode-mcp</code> 0.11.5. Tell us what
                   breaks — <a href="mailto:support@getgrm.tech" style="color:var(--fg-mid);border-bottom:1px solid var(--accent-deep)">support@getgrm.tech</a>.</span></div>
     </div>
 </div>
@@ -565,7 +654,6 @@ footer a:hover { color: var(--fg-mid); }
                   <b style="color:var(--fg-mid);font-weight:600">NKT&nbsp;Studios</b>.</span>
             <span class="sep"><a href="https://getgrm.tech/">GRM</a> &nbsp;·&nbsp;
                   <a href="/docs">Docs</a> &nbsp;·&nbsp;
-                  <a href="/pricing">Pricing</a> &nbsp;·&nbsp;
                   <a href="mailto:support@getgrm.tech">support@getgrm.tech</a></span>
         </div>
     </div>

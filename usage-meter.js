@@ -168,9 +168,12 @@ export function warningFor(account) {
   warned.add(k)
   const usedMb = Math.round((q.usage.writeBytes || 0) / 1048576)
   const capMb = Math.round(FREE_PERIOD.writeBytes / 1048576)
+  // An address, not a route. This said hivecode.vercel.app/pricing -- the wrong domain, and a
+  // page that has since been retired -- so the warning that exists to prevent a surprise was
+  // itself pointing at a 404. Same fix as the two in server.js.
   return `${Math.round(f * 100)}% of this workspace's free monthly allowance is used ` +
     `(${usedMb} MB of ${capMb} MB of writes). Writes stop at the limit; reads keep working. ` +
-    `hivecode.vercel.app/pricing`
+    `Email support@getgrm.tech to lift the limit.`
 }
 
 /**

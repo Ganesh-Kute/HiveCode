@@ -8,10 +8,6 @@
       "destination": "/api/$1"
     },
     {
-      "source": "/pricing",
-      "destination": "/pricing.html"
-    },
-    {
       "source": "/recover",
       "destination": "/recover.html"
     },

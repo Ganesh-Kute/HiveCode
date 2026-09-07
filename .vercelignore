@@ -19,6 +19,12 @@ packages
 .tasktmp
 .hive-relay-data
 
+# The demo toolchain and every master recording it has ever produced. Measured at 983 MB --
+# `*.mjs` kept the scripts out but nothing kept out the .mp4/.png they write, and a deploy that
+# tries to push a gigabyte either dies at 100% or publishes every raw master at a guessable URL.
+# The site serves its own re-encodes from public/; nothing here is ever fetched by a browser.
+demo
+
 # source and docs that never reach a browser
 docs
 tests
@@ -56,6 +62,7 @@ public/Hivecode___ICR.mp4
 # in production; so was /recover, the page someone reaches precisely when they have lost
 # their licence key. Adding a page to public/ is not enough. Add it here too.
 !public/index.html
+!public/pricing.html
 !public/control.html
 !public/contact.html
 !public/privacy.html
