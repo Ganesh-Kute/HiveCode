@@ -2,13 +2,16 @@ import http from 'http';
 import { spawn } from 'child_process';
 import crypto from 'crypto';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HIVE_MCP_SCRIPT = path.join(__dirname, 'hive-mcp.js');
+const HIVE_AGENT_SCRIPT = path.join(__dirname, 'hive-agent.js');
 
 let globalChild = null;
 const globalPending = new Map();
+const activeSwarm = new Map();
 let globalNextId = 1000;
 let hasJoinedRoom = false;
 
@@ -130,6 +133,47 @@ const COMPOUND_COMMIT_TOOL = {
       room: { type: 'string', description: 'optional room name if not already joined (defaults to personal-agi)' },
     },
     required: ['file', 'content'],
+  },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+};
+
+/** Tool to spawn up to 15 real AI agents into the room */
+const SWARM_SPAWN_TOOL = {
+  name: 'hive_spawn_swarm',
+  description:
+    'Spawn up to 15 real autonomous AI agents directly into the Hivecode room. Each agent connects as an active peer with its own name and presence, announces itself in chat, and appears in room membership.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      count: { type: 'number', description: 'number of agents to spawn (1 to 15, default 4)' },
+      room: { type: 'string', description: 'room to join (defaults to personal-agi)' },
+      names: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'optional custom names for the agents',
+      },
+    },
+  },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+};
+
+/** Tool to stop and remove all spawned swarm agents */
+const SWARM_STOP_TOOL = {
+  name: 'hive_stop_swarm',
+  description: 'Stop and disconnect all spawned swarm agents from the room.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
   },
   annotations: {
     readOnlyHint: false,
@@ -300,7 +344,7 @@ export function handleMcpRequest(req, res, { port }) {
         const reply = await promise;
 
         if (reply.result && Array.isArray(reply.result.tools)) {
-          const allTools = [COMPOUND_COMMIT_TOOL, ...reply.result.tools];
+          const allTools = [COMPOUND_COMMIT_TOOL, SWARM_SPAWN_TOOL, SWARM_STOP_TOOL, ...reply.result.tools];
           reply.result.tools = allTools.map((tool) => {
             const isRead = /read|members|check|status|claims|tasks|state|board|verified/i.test(tool.name);
             return {
@@ -324,7 +368,77 @@ export function handleMcpRequest(req, res, { port }) {
         const toolName = parsed.params?.name;
         const args = parsed.params?.arguments || {};
 
-        // A. Handle one-shot compound commit tool
+        // A. Handle Swarm Spawning (up to 15 autonomous agents)
+        if (toolName === 'hive_spawn_swarm') {
+          const count = Math.min(Math.max(Number(args.count) || 4, 1), 15);
+          const targetRoom = String(args.room || 'personal-agi');
+          const DEFAULT_ROSTER = [
+            'Lead-Architect', 'Backend-Dev', 'Frontend-Dev', 'QA-Tester',
+            'Security-Auditor', 'Database-Admin', 'DevOps-SRE', 'Data-Pipeline',
+            'Code-Reviewer', 'Telegram-Dispatcher', 'Email-Notifier', 'Performance-Engineer',
+            'Docs-Writer', 'Sync-Sentinel', 'Release-Manager'
+          ];
+          const agentNames = Array.isArray(args.names) && args.names.length
+            ? args.names.slice(0, count)
+            : DEFAULT_ROSTER.slice(0, count);
+
+          console.log(`[mcp-cloud] 🚀 Spawning ${agentNames.length} swarm agents in room "${targetRoom}"...`);
+
+          for (const name of agentNames) {
+            if (activeSwarm.has(name)) continue;
+            try {
+              const tempDir = path.join(os.tmpdir(), 'hive-swarm', name);
+              const child = spawn(
+                process.execPath,
+                [HIVE_AGENT_SCRIPT, `ws://127.0.0.1:${port}|${targetRoom}`, tempDir, name],
+                {
+                  cwd: __dirname,
+                  env: { ...process.env, HIVE_RELAY: `ws://127.0.0.1:${port}` },
+                  stdio: 'ignore',
+                }
+              );
+              activeSwarm.set(name, child);
+            } catch (err) {
+              console.error(`[mcp-cloud] Error spawning ${name}:`, err);
+            }
+          }
+
+          const msg = `✓ Successfully spawned ${agentNames.length} agents into room "${targetRoom}" under owner "Ganesh":\n` +
+            agentNames.map((n, i) => `  ${i + 1}. ${n} (AI Agent)`).join('\n') +
+            `\n\nAll agents are now active in the room. Call hive_members to see them in room membership, or hive_read_chat to see their announcements!`;
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: parsed.id,
+              result: { content: [{ type: 'text', text: msg }] },
+            })
+          );
+        }
+
+        // B. Handle Swarm Shutdown
+        if (toolName === 'hive_stop_swarm') {
+          const stopped = [];
+          for (const [name, child] of activeSwarm.entries()) {
+            try {
+              child.kill('SIGTERM');
+              stopped.push(name);
+            } catch {}
+          }
+          activeSwarm.clear();
+          const msg = `✓ Stopped and disconnected ${stopped.length} swarm agents: ${stopped.join(', ') || 'none'}`;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: parsed.id,
+              result: { content: [{ type: 'text', text: msg }] },
+            })
+          );
+        }
+
+        // C. Handle one-shot compound commit tool
         if (toolName === 'hive_commit_file') {
           const file = String(args.file || '');
           const content = String(args.content ?? '');

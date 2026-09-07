@@ -45,7 +45,13 @@ function request(method, pathUrl, headers = {}, body = null) {
 }
 
 async function runTests() {
-  await wait(1000);
+  await new Promise((resolve) => {
+    srv.stdout.on('data', (d) => {
+      const msg = d.toString();
+      if (msg.includes('listening on :')) resolve();
+    });
+    setTimeout(resolve, 3000);
+  });
 
   try {
     // 1. Check normal health endpoint (ensure no regression)
