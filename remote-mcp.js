@@ -61,7 +61,25 @@ function authorized(req, res) {
   const header = req.headers['authorization'] || '';
   const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
   const custom = req.headers['x-hive-key'] || '';
-  if (tokenMatches(bearer) || tokenMatches(custom)) return true;
+
+  // THE SAME SECRET, CARRIED IN THE PATH: /mcp/k/<token>.
+  //
+  // Some clients cannot attach a header at all. Gemini Enterprise's connector offers exactly two
+  // choices -- full OAuth 2.0, or no authentication -- with nowhere to paste a static token. That
+  // leaves implementing an OAuth server, or letting this endpoint go open to the whole internet.
+  // This is the third option: a URL nobody can guess, which is how Slack, Google Chat and Render's
+  // own deploy hooks solve exactly this problem.
+  //
+  // It is genuinely weaker than a header. A path is visible to proxies and lands in access logs
+  // where a header does not, so treat the URL as the secret it is: never paste it anywhere public.
+  // Both forms check the SAME value, so rotating HIVE_MCP_TOKEN once closes both doors.
+  const pathTok = (() => {
+    const parts = (req.url || '').split('?')[0].split('/').filter(Boolean);
+    if (parts.length !== 3 || parts[0] !== 'mcp' || parts[1] !== 'k') return '';
+    try { return decodeURIComponent(parts[2]); } catch { return ''; }
+  })();
+
+  if (tokenMatches(bearer) || tokenMatches(custom) || tokenMatches(pathTok)) return true;
   res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer' });
   res.end(JSON.stringify({ error: 'Q450 missing or invalid credential' }));
   return false;
