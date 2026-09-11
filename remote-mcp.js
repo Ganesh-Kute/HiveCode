@@ -22,6 +22,51 @@ function setCors(req, res) {
   res.setHeader('Access-Control-Allow-Credentials', 'true');
 }
 
+// CONFIGURATION. Everything below used to be baked into this file: the room name, the owner,
+// and the agent name. That meant any caller who reached this endpoint landed in ONE specific
+// room as ONE specific person, whoever they actually were. They are settings now.
+const MCP_TOKEN = process.env.HIVE_MCP_TOKEN || '';
+const MCP_ROOM = process.env.HIVE_MCP_ROOM || 'personal-agi';
+const MCP_OWNER = process.env.HIVE_MCP_OWNER || 'hivecode';
+const MCP_NAME = process.env.HIVE_MCP_NAME || 'remote-mcp';
+// Spawning agents is off unless asked for. A public endpoint that starts fifteen processes on
+// request is the one tool here that can actually cost someone money.
+const SWARM_ENABLED = process.env.HIVE_MCP_SWARM === 'on';
+
+/** Constant-time compare so a wrong token cannot be discovered one byte at a time. */
+function tokenMatches(given) {
+  const a = Buffer.from(String(given || ''), 'utf8');
+  const b = Buffer.from(MCP_TOKEN, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+/** Gate the data paths. Returns true if the request may proceed.
+ *
+ *  FAIL CLOSED. With no HIVE_MCP_TOKEN set this endpoint serves nobody, which is the opposite of
+ *  how it behaved before: it answered every caller and dropped them into the room as the owner.
+ *  An endpoint that is public by accident is worse than one that is briefly broken on purpose.
+ *
+ *  Probes stay open deliberately — HEAD reveals only that something is here, and /.well-known/
+ *  must keep answering 404 unauthenticated because that 404 is how a client learns it should send
+ *  a static token instead of starting an OAuth flow. Authenticating the discovery probe would make
+ *  clients negotiate an OAuth we do not implement.
+ */
+function authorized(req, res) {
+  if (!MCP_TOKEN) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Q451 remote MCP is not configured; set HIVE_MCP_TOKEN to enable it' }));
+    return false;
+  }
+  const header = req.headers['authorization'] || '';
+  const bearer = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+  const custom = req.headers['x-hive-key'] || '';
+  if (tokenMatches(bearer) || tokenMatches(custom)) return true;
+  res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer' });
+  res.end(JSON.stringify({ error: 'Q450 missing or invalid credential' }));
+  return false;
+}
+
 /** Check if an incoming HTTP request should be routed to the MCP handler */
 export function isMcpRequest(req) {
   if (process.env.ENABLE_REMOTE_MCP === 'false') return false;
@@ -184,16 +229,16 @@ const SWARM_STOP_TOOL = {
 };
 
 /** Ensure the agent has joined a room before performing operations */
-async function ensureJoined(port, defaultRoom = 'personal-agi') {
+async function ensureJoined(port, defaultRoom = MCP_ROOM) {
   if (hasJoinedRoom) return;
   console.log(`[mcp-cloud] Auto-joining room "${defaultRoom}" on local relay...`);
   try {
-    const tempDir = path.join(os.tmpdir(), 'gemini-spark-workspace');
+    const tempDir = path.join(os.tmpdir(), 'hive-remote-mcp-workspace');
     const res = await callToolInternal(port, 'hive_join', {
       link: `ws://127.0.0.1:${port}|${defaultRoom}`,
       dir: tempDir,
-      name: 'gemini-spark',
-      owner: 'Ganesh',
+      name: MCP_NAME,
+      owner: MCP_OWNER,
     });
     const replyText = res.result?.content?.[0]?.text || '';
     if (!res.error && !replyText.includes('EHIVELOCKED')) {
@@ -233,6 +278,9 @@ export function handleMcpRequest(req, res, { port }) {
     });
     return res.end();
   }
+
+  // Everything past this point reads or writes room state.
+  if (!authorized(req, res)) return;
 
   // Browser / GET status
   if (req.method === 'GET') {
@@ -348,7 +396,10 @@ export function handleMcpRequest(req, res, { port }) {
         const reply = await promise;
 
         if (reply.result && Array.isArray(reply.result.tools)) {
-          const allTools = [COMPOUND_COMMIT_TOOL, SWARM_SPAWN_TOOL, SWARM_STOP_TOOL, ...reply.result.tools];
+          const extras = SWARM_ENABLED
+            ? [COMPOUND_COMMIT_TOOL, SWARM_SPAWN_TOOL, SWARM_STOP_TOOL]
+            : [COMPOUND_COMMIT_TOOL];
+          const allTools = [...extras, ...reply.result.tools];
           reply.result.tools = allTools.map((tool) => {
             const isRead = /read|members|check|status|claims|tasks|state|board|verified/i.test(tool.name);
             return {
@@ -371,6 +422,17 @@ export function handleMcpRequest(req, res, { port }) {
       if (parsed.method === 'tools/call') {
         const toolName = parsed.params?.name;
         const args = parsed.params?.arguments || {};
+
+        // Refuse the spawn tools when they are not enabled. Hiding them from tools/list is not
+        // enough on its own — a client that remembers an older listing can still call them.
+        if (!SWARM_ENABLED && (toolName === 'hive_spawn_swarm' || toolName === 'hive_stop_swarm')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: parsed.id,
+            result: { content: [{ type: 'text', text: 'Q452 agent spawning is disabled on this endpoint' }], isError: true },
+          }));
+        }
 
         // A. Handle Swarm Spawning (up to 15 autonomous agents)
         if (toolName === 'hive_spawn_swarm') {
