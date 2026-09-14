@@ -776,6 +776,10 @@ const server = http.createServer((req, res) => {
     const STATIC = {
       '/': 'index.html', '/index.html': 'index.html',
       '/control': 'control.html', '/control.html': 'control.html',
+      // The live architecture map. Same CRDT bundle as /control, so it must be served from the
+      // same origin -- a page that loads hive-crdt.js from anywhere else gets two Yjs instances
+      // and goes silently deaf.
+      '/map': 'map.html', '/map.html': 'map.html',
       // Licence recovery. The page calls Vercel's /api/license directly (CORS is open for
       // exactly this), so it works served from here even though this host has no such route.
       '/recover': 'recover.html', '/recover.html': 'recover.html',

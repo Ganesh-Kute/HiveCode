@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hivecode — live map</title>
+<style>
+  :root{
+    --bg:#07080c; --panel:#0e1018; --line:#1c2030; --ink:#e7e9f0; --dim:#8b93a7;
+    --built:#2fd27a; --broken:#ff5a63; --wip:#ffc24b; --planned:#5b6b8c; --ghost:#3a4056;
+    --accent:#4da3ff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+  /* width/height are NOT optional here. A canvas is a replaced element, so `inset:0` alone leaves
+     it at its intrinsic 300x150 and the whole graph draws around a centre that is off screen. */
+  canvas{display:block;position:fixed;inset:0;width:100vw;height:100vh;cursor:grab}
+  canvas.drag{cursor:grabbing}
+
+  .hud{position:fixed;z-index:2;pointer-events:none}
+  .hud > *{pointer-events:auto}
+
+  #top{top:0;left:0;right:0;display:flex;gap:10px;align-items:center;
+    padding:10px 14px;background:linear-gradient(#07080cf2,#07080c00);}
+  #top b{font-weight:650;letter-spacing:.2px}
+  #room{color:var(--dim)}
+  #conn{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--dim);font-size:12px}
+  #dot{width:8px;height:8px;border-radius:50%;background:#555;box-shadow:0 0 8px #0000}
+  #dot.on{background:var(--built);box-shadow:0 0 10px var(--built)}
+  #dot.off{background:var(--broken)}
+
+  #legend{left:14px;bottom:14px;display:flex;gap:14px;flex-wrap:wrap;
+    background:#0e1018cc;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12px}
+  #legend span{display:flex;align-items:center;gap:6px;color:var(--dim)}
+  #legend i{width:9px;height:9px;border-radius:50%;display:inline-block}
+
+  #side{right:14px;top:58px;width:286px;max-height:calc(100% - 130px);overflow:auto;
+    background:#0e1018e6;border:1px solid var(--line);border-radius:12px;padding:14px;
+    backdrop-filter:blur(8px);display:none}
+  #side.show{display:block}
+  #side h3{margin:0 0 2px;font-size:15px}
+  #side .k{color:var(--dim);font-size:12px;margin-top:10px;text-transform:uppercase;letter-spacing:.6px}
+  #side .v{word-break:break-word}
+  #side .pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;
+    text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+  #side ul{margin:4px 0 0;padding-left:16px}
+  #side li{color:var(--dim)}
+  #close{position:absolute;right:10px;top:8px;border:0;background:none;color:var(--dim);
+    font-size:18px;cursor:pointer;line-height:1}
+
+  #stats{left:14px;top:58px;background:#0e1018cc;border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font-size:12px;color:var(--dim);min-width:150px}
+  #stats b{color:var(--ink);font-weight:600}
+  #stats div{display:flex;justify-content:space-between;gap:14px}
+
+  #hint{right:14px;bottom:14px;color:var(--dim);font-size:11px;text-align:right;line-height:1.7}
+  #err{position:fixed;inset:auto 0 0 0;background:#3a0f14;color:#ffd9dc;padding:10px 14px;
+    font-size:13px;z-index:5;display:none}
+  #empty{position:fixed;inset:0;display:none;place-items:center;text-align:center;z-index:1;padding:24px}
+  #empty div{max-width:440px;color:var(--dim)}
+  #empty code{color:var(--ink);background:#0e1018;border:1px solid var(--line);
+    border-radius:6px;padding:2px 6px;font-size:12px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud" id="top">
+  <b>Hivecode</b> <span id="room">—</span>
+  <span id="conn"><span id="dot"></span><span id="connText">connecting…</span></span>
+</div>
+
+<div class="hud" id="stats">
+  <div><span>nodes</span><b id="sN">0</b></div>
+  <div><span>edges</span><b id="sE">0</b></div>
+  <div><span>built</span><b id="sB">0</b></div>
+  <div><span>broken</span><b id="sX">0</b></div>
+  <div><span>in room</span><b id="sM">0</b></div>
+</div>
+
+<div class="hud" id="legend">
+  <span><i style="background:var(--built)"></i>built</span>
+  <span><i style="background:var(--broken)"></i>broken</span>
+  <span><i style="background:var(--wip)"></i>wip</span>
+  <span><i style="background:var(--planned)"></i>planned</span>
+  <span><i style="background:var(--ghost)"></i>ghost</span>
+</div>
+
+<div class="hud" id="side">
+  <button id="close" title="close">×</button>
+  <h3 id="dTitle">—</h3>
+  <span class="pill" id="dState">—</span>
+  <div id="dBody"></div>
+</div>
+
+<div class="hud" id="hint">drag to rotate · scroll to zoom · click a node<br>shift-drag to pan · R to recentre</div>
+<div id="empty"><div>
+  <p>This room has no map yet.</p>
+  <p>Add the first node:</p>
+  <p><code>node hive-map.js "&lt;link&gt;" you add relay --state built --kind service</code></p>
+</div></div>
+<div id="err"></div>
+
+<script type="module">
+// ONE Yjs, loaded from the bundle served next to this page.
+//
+// This page must NEVER import yjs or y-websocket from a CDN. Doing that is what made the control
+// room silently deaf for two investigations: two module URLs are two module instances, the bulk
+// sync on join lands so the page looks correct, and then incremental updates stop applying while
+// the socket reports perfectly healthy. It cannot be reproduced in node, because npm dedupes.
+let Y, WS
+const errEl = document.getElementById('err')
+const err = (m) => { errEl.textContent = m || ''; errEl.style.display = m ? 'block' : 'none' }
+
+try {
+  const m = await import('./hive-crdt.js')
+  Y = m.Y; WS = m.WebsocketProvider
+} catch (e) {
+  err('Q471 could not load hive-crdt.js (it is served next to this page). ' + e.message)
+}
+
+// ---------------------------------------------------------------- connection
+const qs = new URLSearchParams(location.search)
+const room = qs.get('room') || 'personal-agi'
+const relay = qs.get('relay') || (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
+const token = qs.get('token') || ''
+document.getElementById('room').textContent = room
+
+const dot = document.getElementById('dot')
+const connText = document.getElementById('connText')
+
+let doc, provider, graph, claims
+if (Y) {
+  doc = new Y.Doc()
+  const opts = { connect: true }
+  if (token) opts.params = { token }
+  provider = new WS(relay, room, doc, opts)
+  graph = doc.getMap('graph')
+  claims = doc.getMap('claims')
+
+  provider.on('status', (e) => {
+    const on = e.status === 'connected'
+    dot.className = on ? 'on' : 'off'
+    connText.textContent = on ? 'live' : e.status
+  })
+  provider.awareness.setLocalStateField('user', { name: 'map-viewer', kind: 'human' })
+  graph.observeDeep(() => rebuild())
+  claims.observe(() => rebuild())
+  provider.awareness.on('change', () => rebuild())
+}
+
+// ---------------------------------------------------------------- model
+// `sim` holds live physics state keyed by node id and SURVIVES rebuilds, so a node that already
+// found its place does not jump when an unrelated node is added. That continuity is most of why a
+// graph feels like a map rather than a chart.
+const sim = new Map()
+let nodes = [], edges = [], members = []
+
+const STATE_COLOR = { built: '#2fd27a', broken: '#ff5a63', wip: '#ffc24b', planned: '#5b6b8c' }
+const GHOST = '#3a4056'
+
+// A deterministic starting point per id — same id, same seed, every reload. Math.random() here
+// would make the layout different on every refresh, which destroys the one thing a spatial map is
+// for: you learn where things are.
+function seedPos(id) {
+  let h = 2166136261
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 16777619) }
+  const a = ((h >>> 0) % 1000) / 1000 * Math.PI * 2
+  const b = (((h >>> 10) % 1000) / 1000 - 0.5) * Math.PI
+  const r = 60 + ((h >>> 20) % 60)
+  return { x: r * Math.cos(b) * Math.cos(a), y: r * Math.sin(b), z: r * Math.cos(b) * Math.sin(a) }
+}
+
+function rebuild() {
+  if (!graph) return
+  const ns = new Map(), es = []
+  graph.forEach((v, k) => {
+    if (!v) return
+    if (k.startsWith('n:')) ns.set(v.id, { ...v, ghost: false })
+    else if (k.startsWith('e:')) es.push(v)
+  })
+  // An edge may name a node nobody has added yet — that is allowed on purpose, so an agent can
+  // record "Director needs timeline" the moment it learns it. Draw the missing end as a ghost:
+  // a hole in the map is information, not an error.
+  for (const e of es) {
+    for (const id of [e.from, e.to]) {
+      if (!ns.has(id)) ns.set(id, { id, label: id, state: 'planned', kind: 'unknown', ghost: true, note: '', file: '' })
+    }
+  }
+  nodes = [...ns.values()]
+  edges = es
+  for (const n of nodes) {
+    if (!sim.has(n.id)) sim.set(n.id, { ...seedPos(n.id), vx: 0, vy: 0, vz: 0 })
+  }
+  for (const id of [...sim.keys()]) if (!ns.has(id)) sim.delete(id)
+
+  members = []
+  if (provider) {
+    const seen = new Set()
+    for (const s of provider.awareness.getStates().values()) {
+      const u = s && s.user
+      if (u && u.name && !seen.has(u.name)) { seen.add(u.name); members.push(u) }
+    }
+  }
+
+  const st = (k) => nodes.filter((n) => !n.ghost && n.state === k).length
+  document.getElementById('sN').textContent = nodes.filter((n) => !n.ghost).length
+  document.getElementById('sE').textContent = edges.length
+  document.getElementById('sB').textContent = st('built')
+  document.getElementById('sX').textContent = st('broken')
+  document.getElementById('sM').textContent = members.length
+  document.getElementById('empty').style.display = nodes.length ? 'none' : 'grid'
+  energy = 1 // a change re-heats the layout so it settles into the new shape
+}
+
+/** Claims are keyed by the region (file path) they lock. A node pulses while its file is held. */
+function heldBy(node) {
+  if (!claims || !node.file) return null
+  let hit = null
+  claims.forEach((c, region) => {
+    if (!c || !c.by || hit) return
+    if (region === node.file || region.endsWith('/' + node.file) || node.file.endsWith(region)) {
+      const left = (Number(c.ttl) || 0) - (Date.now() - (Number(c.at) || 0))
+      if (left > 0) hit = { by: c.by, intent: c.intent || 'edit', left }
+    }
+  })
+  return hit
+}
+
+// ---------------------------------------------------------------- physics
+// Plain O(n²) repulsion plus springs. At the scale a human can read — a couple of hundred nodes —
+// this is far cheaper than the barnes-hut it would take to avoid it, and it is exact.
+let energy = 1
+function step() {
+  if (energy < 0.002) return
+  const arr = nodes.map((n) => sim.get(n.id)).filter(Boolean)
+  const REP = 14000, SPRING = 0.010, REST = 130, CENTER = 0.0012, DAMP = 0.88
+
+  for (let i = 0; i < arr.length; i++) {
+    for (let j = i + 1; j < arr.length; j++) {
+      const a = arr[i], b = arr[j]
+      let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z
+      let d2 = dx * dx + dy * dy + dz * dz
+      if (d2 < 1) { d2 = 1; dx = (i - j) || 1 }
+      const f = REP / d2 / Math.sqrt(d2)
+      a.vx += dx * f; a.vy += dy * f; a.vz += dz * f
+      b.vx -= dx * f; b.vy -= dy * f; b.vz -= dz * f
+    }
+  }
+  for (const e of edges) {
+    const a = sim.get(e.from), b = sim.get(e.to)
+    if (!a || !b) continue
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
+    const d = Math.hypot(dx, dy, dz) || 1
+    const f = (d - REST) * SPRING
+    a.vx += dx / d * f; a.vy += dy / d * f; a.vz += dz / d * f
+    b.vx -= dx / d * f; b.vy -= dy / d * f; b.vz -= dz / d * f
+  }
+  for (const p of arr) {
+    p.vx -= p.x * CENTER; p.vy -= p.y * CENTER; p.vz -= p.z * CENTER
+    p.vx *= DAMP; p.vy *= DAMP; p.vz *= DAMP
+    p.x += p.vx * energy; p.y += p.vy * energy; p.z += p.vz * energy
+  }
+  energy *= 0.997
+}
+
+// ---------------------------------------------------------------- camera + draw
+const cv = document.getElementById('c')
+const ctx = cv.getContext('2d')
+let W = 0, H = 0, DPR = 1
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2)
+  // Fall back to the window: on the very first frame a fixed-position canvas can still report 0,
+  // and a zero here puts the centre at (0,0), which parks the whole graph in the top-left corner
+  // half off screen. It looks like a layout bug and is really a timing one.
+  W = cv.clientWidth || window.innerWidth
+  H = cv.clientHeight || window.innerHeight
+  cv.width = W * DPR; cv.height = H * DPR
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0)
+}
+window.addEventListener('resize', () => { resize(); energy = Math.max(energy, 0.5) })
+
+let yaw = 0.6, pitch = -0.3, zoom = 1, panX = 0, panY = 0
+const FOV = 520
+
+function project(p) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw)
+  const x1 = p.x * cy - p.z * sy
+  const z1 = p.x * sy + p.z * cy
+  const cp = Math.cos(pitch), sp = Math.sin(pitch)
+  const y2 = p.y * cp - z1 * sp
+  const z2 = p.y * sp + z1 * cp
+  // Perspective divide. `f` doubles as the depth cue: far things are smaller AND fainter, which is
+  // what makes a flat canvas read as depth at all.
+  const f = FOV / (FOV + z2 + 260)
+  return { x: W / 2 + panX + x1 * f * zoom, y: H / 2 + panY + y2 * f * zoom, f, z: z2 }
+}
+
+let hover = null, selected = null
+const radiusOf = (n) => (n.ghost ? 5 : n.kind === 'service' ? 11 : 9)
+
+function draw() {
+  ctx.clearRect(0, 0, W, H)
+  const P = new Map()
+  for (const n of nodes) { const p = sim.get(n.id); if (p) P.set(n.id, project(p)) }
+
+  // Edges first, sorted back-to-front so nearer lines sit on top.
+  const drawn = edges.map((e) => ({ e, a: P.get(e.from), b: P.get(e.to) }))
+    .filter((o) => o.a && o.b)
+    .sort((o1, o2) => (o1.a.z + o1.b.z) - (o2.a.z + o2.b.z))
+  for (const { e, a, b } of drawn) {
+    const lit = selected && (e.from === selected.id || e.to === selected.id)
+    ctx.strokeStyle = lit ? 'rgba(77,163,255,.85)' : `rgba(120,132,160,${0.10 + 0.18 * ((a.f + b.f) / 2)})`
+    ctx.lineWidth = lit ? 1.8 : 1
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke()
+    // Direction tick at 62% — an arrowhead at this line weight turns into mush.
+    const t = 0.62, mx = a.x + (b.x - a.x) * t, my = a.y + (b.y - a.y) * t
+    const ang = Math.atan2(b.y - a.y, b.x - a.x)
+    ctx.beginPath()
+    ctx.moveTo(mx, my)
+    ctx.lineTo(mx - 6 * Math.cos(ang - 0.4), my - 6 * Math.sin(ang - 0.4))
+    ctx.moveTo(mx, my)
+    ctx.lineTo(mx - 6 * Math.cos(ang + 0.4), my - 6 * Math.sin(ang + 0.4))
+    ctx.stroke()
+  }
+
+  const order = nodes.map((n) => ({ n, p: P.get(n.id) })).filter((o) => o.p).sort((a, b) => b.p.z - a.p.z)
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 320)
+  for (const { n, p } of order) {
+    const held = heldBy(n)
+    const col = n.ghost ? GHOST : (STATE_COLOR[n.state] || GHOST)
+    const r = radiusOf(n) * p.f * zoom
+
+    if (held) {
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, r + 6 + 7 * pulse, 0, 7)
+      ctx.fillStyle = `rgba(255,194,75,${0.20 * (1 - pulse)})`
+      ctx.fill()
+    }
+    if (n === selected || n === hover) {
+      ctx.beginPath(); ctx.arc(p.x, p.y, r + 5, 0, 7)
+      ctx.strokeStyle = 'rgba(77,163,255,.9)'; ctx.lineWidth = 1.5; ctx.stroke()
+    }
+
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7)
+    if (n.ghost) {
+      ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([])
+    } else {
+      ctx.fillStyle = col; ctx.globalAlpha = 0.35 + 0.65 * p.f; ctx.fill(); ctx.globalAlpha = 1
+    }
+
+    if (p.f > 0.55 || n === selected || n === hover) {
+      ctx.font = `${Math.max(10, 12 * p.f)}px ui-sans-serif,system-ui,sans-serif`
+      ctx.fillStyle = `rgba(231,233,240,${0.35 + 0.65 * p.f})`
+      ctx.textAlign = 'center'
+      ctx.fillText(n.label || n.id, p.x, p.y + r + 13)
+      if (held) {
+        ctx.fillStyle = 'rgba(255,194,75,.95)'
+        ctx.font = `${Math.max(9, 10 * p.f)}px ui-sans-serif,system-ui,sans-serif`
+        ctx.fillText(`${held.by} · ${held.intent}`, p.x, p.y + r + 26)
+      }
+    }
+  }
+  hitmap = order.map(({ n, p }) => ({ n, x: p.x, y: p.y, r: radiusOf(n) * p.f * zoom + 6 }))
+}
+let hitmap = []
+
+function frame() {
+  // Re-check every frame rather than trusting one call at startup. The canvas can report 0 on the
+  // first frame, and a stale W/H silently moves the centre of the world off screen.
+  if (cv.clientWidth && (cv.clientWidth !== W || cv.clientHeight !== H)) { resize(); energy = Math.max(energy, 0.6) }
+  step(); draw(); requestAnimationFrame(frame)
+}
+
+// ---------------------------------------------------------------- interaction
+let dragging = false, lastX = 0, lastY = 0, moved = 0, shift = false
+cv.addEventListener('pointerdown', (e) => {
+  dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY; shift = e.shiftKey
+  cv.classList.add('drag'); cv.setPointerCapture(e.pointerId)
+})
+cv.addEventListener('pointermove', (e) => {
+  if (!dragging) {
+    const hit = pick(e.clientX, e.clientY)
+    if (hit !== hover) { hover = hit; cv.style.cursor = hit ? 'pointer' : 'grab' }
+    return
+  }
+  const dx = e.clientX - lastX, dy = e.clientY - lastY
+  moved += Math.abs(dx) + Math.abs(dy)
+  if (shift) { panX += dx; panY += dy }
+  else { yaw += dx * 0.006; pitch = Math.max(-1.4, Math.min(1.4, pitch + dy * 0.006)) }
+  lastX = e.clientX; lastY = e.clientY
+})
+cv.addEventListener('pointerup', (e) => {
+  dragging = false; cv.classList.remove('drag')
+  if (moved < 5) select(pick(e.clientX, e.clientY))
+})
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault()
+  zoom = Math.max(0.25, Math.min(4, zoom * (e.deltaY < 0 ? 1.12 : 0.89)))
+}, { passive: false })
+addEventListener('keydown', (e) => {
+  if (e.key === 'r' || e.key === 'R') { yaw = 0.6; pitch = -0.3; zoom = 1; panX = panY = 0; energy = 1 }
+  if (e.key === 'Escape') select(null)
+})
+
+function pick(cx, cy) {
+  const r = cv.getBoundingClientRect()
+  const x = cx - r.left, y = cy - r.top
+  // hitmap is far-to-near, so scanning backwards finds the nearest node first.
+  for (let i = hitmap.length - 1; i >= 0; i--) {
+    const h = hitmap[i]
+    if ((x - h.x) ** 2 + (y - h.y) ** 2 <= h.r * h.r) return h.n
+  }
+  return null
+}
+
+const side = document.getElementById('side')
+document.getElementById('close').onclick = () => select(null)
+function select(n) {
+  selected = n
+  if (!n) { side.classList.remove('show'); return }
+  side.classList.add('show')
+  document.getElementById('dTitle').textContent = n.label || n.id
+  const st = document.getElementById('dState')
+  st.textContent = n.ghost ? 'referenced, not defined' : n.state
+  st.style.background = (n.ghost ? GHOST : STATE_COLOR[n.state]) + '33'
+  st.style.color = n.ghost ? '#aab' : STATE_COLOR[n.state]
+
+  const needs = edges.filter((e) => e.from === n.id)
+  const blocks = edges.filter((e) => e.to === n.id)
+  const held = heldBy(n)
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+  const rows = []
+  if (held) rows.push(`<div class="k">right now</div><div class="v" style="color:var(--wip)">${esc(held.by)} holds this — ${esc(held.intent)}, ${Math.round(held.left / 1000)}s left</div>`)
+  if (n.file) rows.push(`<div class="k">file</div><div class="v">${esc(n.file)}</div>`)
+  if (n.kind && n.kind !== 'unknown') rows.push(`<div class="k">kind</div><div class="v">${esc(n.kind)}</div>`)
+  if (n.note) rows.push(`<div class="k">note</div><div class="v">${esc(n.note)}</div>`)
+  if (needs.length) rows.push(`<div class="k">needs</div><ul>${needs.map((e) => `<li>${esc(e.to)}${e.why ? ' — ' + esc(e.why) : ''}</li>`).join('')}</ul>`)
+  if (blocks.length) rows.push(`<div class="k">blocks</div><ul>${blocks.map((e) => `<li>${esc(e.from)}</li>`).join('')}</ul>`)
+  if (n.by) rows.push(`<div class="k">last touched by</div><div class="v">${esc(n.by)}</div>`)
+  if (n.ghost) rows.push(`<div class="k">why dashed</div><div class="v">Something depends on this, but nobody has added it to the map yet.</div>`)
+  document.getElementById('dBody').innerHTML = rows.join('')
+}
+
+resize(); rebuild(); frame()
+</script>
+</body>
+</html>
