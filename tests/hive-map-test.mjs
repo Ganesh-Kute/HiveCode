@@ -167,5 +167,29 @@ section('map.html — the loading rules that made /control deaf')
   T('the relay still serves the CRDT bundle', /'\/hive-crdt\.js':\s*'hive-crdt\.js'/.test(server))
 }
 
+
+// ---------------------------------------------------------------------------
+section('map.html - readability (the Obsidian borrow)')
+{
+  const html = fs.readFileSync(path.join(root, 'public', 'map.html'), 'utf8')
+  T('has a neighbourhood walk', /function neighbourhood\(/.test(html))
+  T('has a lit set (focus dimming)', /function litSet\(/.test(html))
+  T('hovering sets the focus, so reading costs no clicks', /if \(!selected\) focusId = hit \? hit\.id : null/.test(html))
+  T('selecting pins the focus', /focusId = n \? n\.id : null/.test(html))
+  T('node size comes from degree, not a fixed constant', /radiusOf = \(n\) =>[\s\S]{0,120}deg\.get\(n\.id\)/.test(html))
+  T('builds adjacency from edges', /adj\.get\(e\.from\)\.add\(e\.to\)/.test(html))
+  T('says in words what the graph means', /function renderReading\(/.test(html))
+  T('names broken things other things depend on', /broken, and depended on/.test(html))
+  T('search box exists', /id="q"/.test(html))
+  T('depth control exists', /class="depth"/.test(html))
+  T('legend doubles as a state filter', /#legend span\[data-s\]/.test(html))
+
+  // A fixed-width panel plus `display:flex` on every child div made the reading prose run off the
+  // side of the screen. The rule it needs is block + wrap; assert the bad one cannot come back.
+  T('no flex rule that would stop the reading prose wrapping',
+    !/#stats div\{display:flex/.test(html))
+  T('reading text is allowed to wrap', /#reading \.r\{display:block;overflow-wrap:anywhere\}/.test(html))
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

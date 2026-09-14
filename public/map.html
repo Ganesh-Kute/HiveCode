@@ -49,11 +49,29 @@
   #close{position:absolute;right:10px;top:8px;border:0;background:none;color:var(--dim);
     font-size:18px;cursor:pointer;line-height:1}
 
-  #stats{left:14px;top:58px;background:#0e1018cc;border:1px solid var(--line);border-radius:10px;
-    padding:10px 12px;font-size:12px;color:var(--dim);min-width:150px}
+  #stats{left:14px;top:58px;background:#0e1018e6;border:1px solid var(--line);border-radius:10px;
+    padding:11px 12px;font-size:12px;color:var(--dim);width:238px;backdrop-filter:blur(8px)}
   #stats b{color:var(--ink);font-weight:600}
-  #stats div{display:flex;justify-content:space-between;gap:14px}
 
+  #stats input{width:100%;background:#07080c;border:1px solid var(--line);border-radius:7px;
+    color:var(--ink);padding:6px 9px;font:inherit;font-size:12px;outline:none;margin-bottom:10px}
+  #stats input:focus{border-color:var(--accent)}
+  #reading{font-size:12px;line-height:1.6;max-height:40vh;overflow:auto}
+  #reading .r{display:block;overflow-wrap:anywhere}
+  #reading b{color:var(--ink);font-weight:600}
+  #reading .r{margin-bottom:7px}
+  #reading .bad{color:var(--broken)}
+  .depth{display:flex;align-items:center;gap:5px;margin-top:11px;padding-top:10px;
+    border-top:1px solid var(--line);font-size:11px}
+  .depth span{flex:1}
+  .depth button{background:#07080c;border:1px solid var(--line);color:var(--dim);
+    border-radius:5px;padding:2px 7px;font:inherit;font-size:11px;cursor:pointer}
+  .depth button.on{border-color:var(--accent);color:var(--accent)}
+  #legend span{cursor:pointer;user-select:none}
+  #legend span.off{opacity:.35}
+  #legend span.on{color:var(--ink)}
+  #legend b{color:var(--ink);font-weight:600;margin-left:1px}
+  #clearF{color:var(--accent)}
   #hint{right:14px;bottom:14px;color:var(--dim);font-size:11px;text-align:right;line-height:1.7}
   #err{position:fixed;inset:auto 0 0 0;background:#3a0f14;color:#ffd9dc;padding:10px 14px;
     font-size:13px;z-index:5;display:none}
@@ -72,19 +90,20 @@
 </div>
 
 <div class="hud" id="stats">
-  <div><span>nodes</span><b id="sN">0</b></div>
-  <div><span>edges</span><b id="sE">0</b></div>
-  <div><span>built</span><b id="sB">0</b></div>
-  <div><span>broken</span><b id="sX">0</b></div>
-  <div><span>in room</span><b id="sM">0</b></div>
+  <input id="q" placeholder="search…" autocomplete="off">
+  <div id="reading"></div>
+  <div class="depth">
+    <span>focus depth</span>
+    <button data-d="1">1</button><button data-d="2">2</button><button data-d="3">3</button><button data-d="99">all</button>
+  </div>
 </div>
 
 <div class="hud" id="legend">
-  <span><i style="background:var(--built)"></i>built</span>
-  <span><i style="background:var(--broken)"></i>broken</span>
-  <span><i style="background:var(--wip)"></i>wip</span>
-  <span><i style="background:var(--planned)"></i>planned</span>
-  <span><i style="background:var(--ghost)"></i>ghost</span>
+  <span data-s="built"><i style="background:var(--built)"></i>built <b id="sB">0</b></span>
+  <span data-s="broken"><i style="background:var(--broken)"></i>broken <b id="sX">0</b></span>
+  <span data-s="wip"><i style="background:var(--wip)"></i>wip <b id="sW">0</b></span>
+  <span data-s="planned"><i style="background:var(--planned)"></i>planned <b id="sP">0</b></span>
+  <span id="clearF" style="display:none">clear filter ×</span>
 </div>
 
 <div class="hud" id="side">
@@ -157,6 +176,51 @@ if (Y) {
 const sim = new Map()
 let nodes = [], edges = [], members = []
 
+// ---- FOCUS. This is the whole answer to "how am I supposed to read this".
+// A graph of 23 equal dots is 23 things shouting at once. Obsidian's real trick is not the layout,
+// it is that hovering one node fades everything it does not touch -- so at any moment you are
+// looking at ONE neighbourhood rather than the whole system. Size carries importance, dimming
+// carries relevance, and the graph becomes legible without anything being removed from it.
+const adj = new Map()      // id -> Set(neighbours), undirected, for walking the neighbourhood
+const deg = new Map()      // id -> connection count, which drives node size
+let focusId = null         // hovered or selected
+let depth = 1              // hops lit around the focus
+let filterState = null     // light only this state and what it touches
+let query = ''
+
+function neighbourhood(id, d) {
+  const seen = new Set([id])
+  let frontier = [id]
+  for (let i = 0; i < d && frontier.length; i++) {
+    const next = []
+    for (const a of frontier) for (const b of (adj.get(a) || [])) if (!seen.has(b)) { seen.add(b); next.push(b) }
+    frontier = next
+  }
+  return seen
+}
+
+/** Which nodes are lit. Everything else is drawn faint rather than hidden, so the shape of the
+ *  whole system stays visible while one part of it is readable. null means "everything". */
+function litSet() {
+  if (query) {
+    const q = query.toLowerCase()
+    const out = new Set()
+    for (const n of nodes) {
+      if (((n.label || '') + ' ' + n.id + ' ' + (n.note || '')).toLowerCase().includes(q)) {
+        for (const x of neighbourhood(n.id, 1)) out.add(x)
+      }
+    }
+    return out
+  }
+  if (focusId) return neighbourhood(focusId, depth)
+  if (filterState) {
+    const out = new Set()
+    for (const n of nodes) if (n.state === filterState) for (const x of neighbourhood(n.id, 1)) out.add(x)
+    return out
+  }
+  return null
+}
+
 const STATE_COLOR = { built: '#2fd27a', broken: '#ff5a63', wip: '#ffc24b', planned: '#5b6b8c' }
 const GHOST = '#3a4056'
 
@@ -204,14 +268,59 @@ function rebuild() {
     }
   }
 
+  adj.clear(); deg.clear()
+  for (const n of nodes) { adj.set(n.id, new Set()); deg.set(n.id, 0) }
+  for (const e of edges) {
+    if (adj.has(e.from)) { adj.get(e.from).add(e.to); deg.set(e.from, deg.get(e.from) + 1) }
+    if (adj.has(e.to)) { adj.get(e.to).add(e.from); deg.set(e.to, deg.get(e.to) + 1) }
+  }
+
   const st = (k) => nodes.filter((n) => !n.ghost && n.state === k).length
-  document.getElementById('sN').textContent = nodes.filter((n) => !n.ghost).length
-  document.getElementById('sE').textContent = edges.length
   document.getElementById('sB').textContent = st('built')
   document.getElementById('sX').textContent = st('broken')
-  document.getElementById('sM').textContent = members.length
+  document.getElementById('sW').textContent = st('wip')
+  document.getElementById('sP').textContent = st('planned')
   document.getElementById('empty').style.display = nodes.length ? 'none' : 'grid'
+  renderReading()
   energy = 1 // a change re-heats the layout so it settles into the new shape
+}
+
+/** Say in words what the picture means.
+ *
+ *  A graph you cannot read is a graph that needs a sentence. The shape answers "what connects to
+ *  what"; it does NOT answer "so what". These lines do, and they are the first thing a person
+ *  should be able to take away without touching the mouse. */
+function renderReading() {
+  const el = document.getElementById('reading')
+  const real = nodes.filter((n) => !n.ghost)
+  if (!real.length) { el.innerHTML = ''; return }
+  const out = []
+  const by = (k) => real.filter((n) => n.state === k)
+  const nameOf = (id) => (nodes.find((n) => n.id === id) || {}).label || id
+
+  out.push('<div class="r"><b>' + real.length + '</b> parts, <b>' + edges.length + '</b> dependencies</div>')
+
+  // Broken things other things rely on. This is the only line here that changes what you do today.
+  const bad = by('broken')
+    .map((n) => ({ n, on: edges.filter((e) => e.to === n.id).length }))
+    .filter((x) => x.on > 0)
+    .sort((a, b) => b.on - a.on)
+  if (bad.length) {
+    out.push('<div class="r bad">broken, and depended on:<br>' +
+      bad.map((x) => '<b>' + x.n.label + '</b> &mdash; ' + x.on + ' need' + (x.on > 1 ? '' : 's') + ' it').join('<br>') +
+      '</div>')
+  }
+
+  const hub = [...deg.entries()].sort((a, b) => b[1] - a[1])[0]
+  if (hub && hub[1] > 1) out.push('<div class="r">most connected: <b>' + nameOf(hub[0]) + '</b> (' + hub[1] + ')</div>')
+
+  // Points at nothing and nothing points at it: work nobody is currently waiting on.
+  const orphans = real.filter((n) => (deg.get(n.id) || 0) === 0)
+  if (orphans.length) {
+    out.push('<div class="r">nothing connects to: ' + orphans.map((n) => '<b>' + n.label + '</b>').join(', ') + '</div>')
+  }
+
+  el.innerHTML = out.join('')
 }
 
 /** Claims are keyed by the region (file path) they lock. A node pulses while its file is held. */
@@ -298,68 +407,82 @@ function project(p) {
 }
 
 let hover = null, selected = null
-const radiusOf = (n) => (n.ghost ? 5 : n.kind === 'service' ? 11 : 9)
+// Size carries importance. A hub and a leaf being the same dot is what makes an unfamiliar graph
+// unreadable -- you cannot tell what matters without tracing every line by eye.
+const radiusOf = (n) => n.ghost ? 4.5 : 6 + Math.min(9, Math.sqrt(deg.get(n.id) || 0) * 3.4)
 
 function draw() {
   ctx.clearRect(0, 0, W, H)
   const P = new Map()
   for (const n of nodes) { const p = sim.get(n.id); if (p) P.set(n.id, project(p)) }
+  const lit = litSet()
+  const isLit = (id) => !lit || lit.has(id)
+  const FADE = 0.07
 
-  // Edges first, sorted back-to-front so nearer lines sit on top.
   const drawn = edges.map((e) => ({ e, a: P.get(e.from), b: P.get(e.to) }))
     .filter((o) => o.a && o.b)
     .sort((o1, o2) => (o1.a.z + o1.b.z) - (o2.a.z + o2.b.z))
   for (const { e, a, b } of drawn) {
-    const lit = selected && (e.from === selected.id || e.to === selected.id)
-    ctx.strokeStyle = lit ? 'rgba(77,163,255,.85)' : `rgba(120,132,160,${0.10 + 0.18 * ((a.f + b.f) / 2)})`
-    ctx.lineWidth = lit ? 1.8 : 1
+    const on = isLit(e.from) && isLit(e.to)
+    const touching = focusId && (e.from === focusId || e.to === focusId)
+    ctx.strokeStyle = touching ? 'rgba(77,163,255,.9)'
+      : on ? 'rgba(120,132,160,' + (0.12 + 0.22 * ((a.f + b.f) / 2)) + ')'
+      : 'rgba(120,132,160,' + FADE + ')'
+    ctx.lineWidth = touching ? 1.9 : 1
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke()
-    // Direction tick at 62% — an arrowhead at this line weight turns into mush.
+    if (!on) continue
+    // Direction tick at 62%. An arrowhead at this line weight turns into mush.
     const t = 0.62, mx = a.x + (b.x - a.x) * t, my = a.y + (b.y - a.y) * t
     const ang = Math.atan2(b.y - a.y, b.x - a.x)
     ctx.beginPath()
-    ctx.moveTo(mx, my)
-    ctx.lineTo(mx - 6 * Math.cos(ang - 0.4), my - 6 * Math.sin(ang - 0.4))
-    ctx.moveTo(mx, my)
-    ctx.lineTo(mx - 6 * Math.cos(ang + 0.4), my - 6 * Math.sin(ang + 0.4))
+    ctx.moveTo(mx, my); ctx.lineTo(mx - 6 * Math.cos(ang - 0.4), my - 6 * Math.sin(ang - 0.4))
+    ctx.moveTo(mx, my); ctx.lineTo(mx - 6 * Math.cos(ang + 0.4), my - 6 * Math.sin(ang + 0.4))
     ctx.stroke()
   }
 
   const order = nodes.map((n) => ({ n, p: P.get(n.id) })).filter((o) => o.p).sort((a, b) => b.p.z - a.p.z)
   const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 320)
   for (const { n, p } of order) {
+    const on = isLit(n.id)
     const held = heldBy(n)
     const col = n.ghost ? GHOST : (STATE_COLOR[n.state] || GHOST)
     const r = radiusOf(n) * p.f * zoom
 
-    if (held) {
-      ctx.beginPath()
-      ctx.arc(p.x, p.y, r + 6 + 7 * pulse, 0, 7)
-      ctx.fillStyle = `rgba(255,194,75,${0.20 * (1 - pulse)})`
-      ctx.fill()
+    if (held && on) {
+      ctx.beginPath(); ctx.arc(p.x, p.y, r + 6 + 7 * pulse, 0, 7)
+      ctx.fillStyle = 'rgba(255,194,75,' + (0.20 * (1 - pulse)) + ')'; ctx.fill()
     }
-    if (n === selected || n === hover) {
+    if (on && (n === selected || n === hover)) {
       ctx.beginPath(); ctx.arc(p.x, p.y, r + 5, 0, 7)
       ctx.strokeStyle = 'rgba(77,163,255,.9)'; ctx.lineWidth = 1.5; ctx.stroke()
     }
 
+    ctx.globalAlpha = on ? 1 : 0.13
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7)
     if (n.ghost) {
       ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([])
     } else {
-      ctx.fillStyle = col; ctx.globalAlpha = 0.35 + 0.65 * p.f; ctx.fill(); ctx.globalAlpha = 1
+      ctx.fillStyle = col; ctx.globalAlpha = (on ? 1 : 0.13) * (0.4 + 0.6 * p.f); ctx.fill()
     }
+    ctx.globalAlpha = 1
 
-    if (p.f > 0.55 || n === selected || n === hover) {
-      ctx.font = `${Math.max(10, 12 * p.f)}px ui-sans-serif,system-ui,sans-serif`
-      ctx.fillStyle = `rgba(231,233,240,${0.35 + 0.65 * p.f})`
+    // Label rules, in order of how much a person needs the label:
+    // always for the focus and its neighbours, then for hubs, then for anything near the camera.
+    // Labelling everything at all times is what turned the first version into a wall of text.
+    const important = (deg.get(n.id) || 0) >= 3
+    const show = on && (focusId || query || filterState ? true : (important || p.f > 0.62)) || n === selected || n === hover
+    if (show) {
+      ctx.globalAlpha = on ? 1 : 0.2
+      ctx.font = Math.max(10, 12 * p.f) + 'px ui-sans-serif,system-ui,sans-serif'
+      ctx.fillStyle = 'rgba(231,233,240,' + (0.4 + 0.6 * p.f) + ')'
       ctx.textAlign = 'center'
       ctx.fillText(n.label || n.id, p.x, p.y + r + 13)
       if (held) {
         ctx.fillStyle = 'rgba(255,194,75,.95)'
-        ctx.font = `${Math.max(9, 10 * p.f)}px ui-sans-serif,system-ui,sans-serif`
-        ctx.fillText(`${held.by} · ${held.intent}`, p.x, p.y + r + 26)
+        ctx.font = Math.max(9, 10 * p.f) + 'px ui-sans-serif,system-ui,sans-serif'
+        ctx.fillText(held.by + ' · ' + held.intent, p.x, p.y + r + 26)
       }
+      ctx.globalAlpha = 1
     }
   }
   hitmap = order.map(({ n, p }) => ({ n, x: p.x, y: p.y, r: radiusOf(n) * p.f * zoom + 6 }))
@@ -382,7 +505,11 @@ cv.addEventListener('pointerdown', (e) => {
 cv.addEventListener('pointermove', (e) => {
   if (!dragging) {
     const hit = pick(e.clientX, e.clientY)
-    if (hit !== hover) { hover = hit; cv.style.cursor = hit ? 'pointer' : 'grab' }
+    if (hit !== hover) {
+      hover = hit
+      cv.style.cursor = hit ? 'pointer' : 'grab'
+      if (!selected) focusId = hit ? hit.id : null
+    }
     return
   }
   const dx = e.clientX - lastX, dy = e.clientY - lastY
@@ -419,6 +546,7 @@ const side = document.getElementById('side')
 document.getElementById('close').onclick = () => select(null)
 function select(n) {
   selected = n
+  focusId = n ? n.id : null
   if (!n) { side.classList.remove('show'); return }
   side.classList.add('show')
   document.getElementById('dTitle').textContent = n.label || n.id
@@ -441,6 +569,37 @@ function select(n) {
   if (n.by) rows.push(`<div class="k">last touched by</div><div class="v">${esc(n.by)}</div>`)
   if (n.ghost) rows.push(`<div class="k">why dashed</div><div class="v">Something depends on this, but nobody has added it to the map yet.</div>`)
   document.getElementById('dBody').innerHTML = rows.join('')
+}
+
+// ---- controls: search, depth, state filter -------------------------------
+// Hover sets the focus, so reading the graph costs no clicks. Selecting pins it, so you can move
+// the mouse to the panel without the neighbourhood collapsing behind you.
+const qBox = document.getElementById('q')
+qBox.addEventListener('input', () => { query = qBox.value.trim(); renderReading() })
+
+for (const b of document.querySelectorAll('.depth button')) {
+  b.onclick = () => {
+    depth = Number(b.dataset.d)
+    for (const o of document.querySelectorAll('.depth button')) o.classList.toggle('on', o === b)
+  }
+}
+document.querySelector('.depth button[data-d="1"]').classList.add('on')
+
+const clearF = document.getElementById('clearF')
+for (const sp of document.querySelectorAll('#legend span[data-s]')) {
+  sp.onclick = () => {
+    filterState = filterState === sp.dataset.s ? null : sp.dataset.s
+    for (const o of document.querySelectorAll('#legend span[data-s]')) {
+      o.classList.toggle('on', o.dataset.s === filterState)
+      o.classList.toggle('off', !!filterState && o.dataset.s !== filterState)
+    }
+    clearF.style.display = filterState ? 'flex' : 'none'
+  }
+}
+clearF.onclick = () => {
+  filterState = null
+  for (const o of document.querySelectorAll('#legend span[data-s]')) o.classList.remove('on', 'off')
+  clearF.style.display = 'none'
 }
 
 resize(); rebuild(); frame()
