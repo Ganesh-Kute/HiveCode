@@ -362,7 +362,7 @@ function step() {
     if (!a || !b) continue
     const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
     const d = Math.hypot(dx, dy, dz) || 1
-    const f = (d - REST) * SPRING
+    const f = (d - (e.ekind === 'then' ? REST * 1.25 : REST)) * SPRING
     a.vx += dx / d * f; a.vy += dy / d * f; a.vz += dz / d * f
     b.vx -= dx / d * f; b.vy -= dy / d * f; b.vz -= dz / d * f
   }
@@ -425,11 +425,17 @@ function draw() {
   for (const { e, a, b } of drawn) {
     const on = isLit(e.from) && isLit(e.to)
     const touching = focusId && (e.from === focusId || e.to === focusId)
+    const flow = e.ekind === 'then'
+    // A step in a process and a dependency are different claims about the world, so they cannot
+    // look the same. Flow edges are brighter and dashed-in-motion; you read them as "then".
     ctx.strokeStyle = touching ? 'rgba(77,163,255,.9)'
-      : on ? 'rgba(120,132,160,' + (0.12 + 0.22 * ((a.f + b.f) / 2)) + ')'
-      : 'rgba(120,132,160,' + FADE + ')'
-    ctx.lineWidth = touching ? 1.9 : 1
+      : !on ? 'rgba(120,132,160,' + FADE + ')'
+      : flow ? 'rgba(120,200,255,' + (0.30 + 0.35 * ((a.f + b.f) / 2)) + ')'
+      : 'rgba(120,132,160,' + (0.12 + 0.22 * ((a.f + b.f) / 2)) + ')'
+    ctx.lineWidth = touching ? 1.9 : flow ? 1.5 : 1
+    if (flow && on) { ctx.setLineDash([7, 5]); ctx.lineDashOffset = -(Date.now() / 45) % 12 }
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke()
+    ctx.setLineDash([]); ctx.lineDashOffset = 0
     if (!on) continue
     // Direction tick at 62%. An arrowhead at this line weight turns into mush.
     const t = 0.62, mx = a.x + (b.x - a.x) * t, my = a.y + (b.y - a.y) * t

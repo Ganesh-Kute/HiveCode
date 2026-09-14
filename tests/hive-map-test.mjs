@@ -191,5 +191,26 @@ section('map.html - readability (the Obsidian borrow)')
   T('reading text is allowed to wrap', /#reading \.r\{display:block;overflow-wrap:anywhere\}/.test(html))
 }
 
+
+// ---------------------------------------------------------------------------
+section('edge kinds: needs vs then')
+{
+  const g = fresh()
+  run(g, 'add', ['a']); run(g, 'add', ['b'])
+  T('default edge kind is needs', run(g, 'link', ['a', 'b']).ok && g.get(edgeKey('a', 'b')).ekind === 'needs')
+  T('then is accepted', run(g, 'link', ['a', 'b'], { kind: 'then' }).ok && g.get(edgeKey('a', 'b')).ekind === 'then')
+  T('an unknown edge kind is refused', run(g, 'link', ['a', 'b'], { kind: 'maybe' }).code === 'Q472')
+  T('list distinguishes a flow from a dependency', run(g, 'list').msg.includes('a => b'))
+  run(g, 'link', ['b', 'a'], { kind: 'needs' })
+  T('and still shows -> for a dependency', run(g, 'list').msg.includes('b -> a'))
+
+  const html = fs.readFileSync(path.join(root, 'public', 'map.html'), 'utf8')
+  // A step in a process and a dependency are different claims about the world. Drawn the same way
+  // a workflow renders as a dependency web and reads as neither.
+  T('the renderer tells a flow edge from a dependency', /const flow = e\.ekind === 'then'/.test(html))
+  T('flow edges are drawn differently', /flow \?[\s\S]{0,90}rgba\(120,200,255/.test(html))
+  T('flow edges animate, so direction is readable without tracing', /lineDashOffset = -\(Date\.now\(\)/.test(html))
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

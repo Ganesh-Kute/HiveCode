@@ -11,7 +11,7 @@
 // every change within a second, and `public/map.html` draws it in 3D.
 //
 //   node hive-map.js "<link>" <YourName> add   <id> [--label L] [--kind K] [--state S] [--file F] [--note N]
-//   node hive-map.js "<link>" <YourName> link  <from> <to> [--why W]
+//   node hive-map.js "<link>" <YourName> link  <from> <to> [--why W] [--kind needs|then]
 //   node hive-map.js "<link>" <YourName> state <id> <built|broken|planned|wip>
 //   node hive-map.js "<link>" <YourName> note  <id> "<text>"
 //   node hive-map.js "<link>" <YourName> rm    <id>
@@ -30,6 +30,11 @@
 import { startSync, parseLink } from './sync.js'
 
 const STATES = new Set(['built', 'broken', 'planned', 'wip'])
+// An edge means one of two different things and they must not be drawn the same way.
+//   needs  A depends on B. The architecture reading: "if B breaks, A breaks."
+//   then   A is followed by B. The workflow reading: "this happens, then this."
+// Without the distinction a process flow renders as a dependency web and reads as neither.
+const EDGE_KINDS = new Set(['needs', 'then'])
 const nowMicros = () => Date.now() * 1000
 
 const argv = process.argv.slice(2)
@@ -100,8 +105,10 @@ export function applyCommand(graph, name, action, pos, flags) {
     // Deliberately NOT requiring both nodes to exist. An agent that has just discovered
     // "Director needs timeline" should be able to say so before anyone has added timeline;
     // the renderer draws the missing end as a ghost, which is itself useful information.
-    graph.set(edgeKey(from, to), { from, to, why: flags.why || '', ...stamp })
-    return { ok: true, msg: `${from} -> ${to}` }
+    const ekind = flags.kind || 'needs'
+    if (!EDGE_KINDS.has(ekind)) return { ok: false, code: 'Q472', msg: `unknown edge kind "${ekind}" (needs|then)` }
+    graph.set(edgeKey(from, to), { from, to, why: flags.why || '', ekind, ...stamp })
+    return { ok: true, msg: `${from} ${ekind === 'then' ? '=>' : '->'} ${to}` }
   }
 
   if (action === 'state') {
@@ -156,7 +163,7 @@ export function applyCommand(graph, name, action, pos, flags) {
     for (const n of nodes) lines.push(`${mark[n.state] || '[?]      '} ${n.id}${n.label !== n.id ? ` — ${n.label}` : ''}${n.file ? `  (${n.file})` : ''}`)
     if (edges.length) {
       lines.push('')
-      for (const e of edges) lines.push(`  ${e.from} -> ${e.to}${e.why ? `   ${e.why}` : ''}`)
+      for (const e of edges) lines.push(`  ${e.from} ${e.ekind === 'then' ? '=>' : '->'} ${e.to}${e.why ? `   ${e.why}` : ''}`)
     }
     if (!nodes.length && !edges.length) lines.push('(empty map)')
     return { ok: true, msg: lines.join('\n') }
