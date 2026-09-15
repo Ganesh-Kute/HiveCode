@@ -130,7 +130,7 @@
   <div id="dBody"></div>
 </div>
 
-<div class="hud" id="hint">drag to rotate · scroll to zoom · click a node<br>shift-drag to pan · R to recentre</div>
+<div class="hud" id="hint">drag to pan · scroll to zoom · click a node<br>R to recentre</div>
 <div id="empty"><div>
   <p>This room has no map yet.</p>
   <p>Add the first node:</p>
@@ -359,6 +359,7 @@ function rebuild() {
   document.getElementById('sX').textContent = st('broken')
   document.getElementById('sW').textContent = st('wip')
   document.getElementById('sP').textContent = st('planned')
+  layout()
   document.getElementById('empty').style.display = nodes.length ? 'none' : 'grid'
   renderReading()
   energy = 1 // a change re-heats the layout so it settles into the new shape
@@ -416,61 +417,99 @@ function heldBy(node) {
   return hit
 }
 
-// ---------------------------------------------------------------- physics
-// Plain O(n²) repulsion plus springs. At the scale a human can read — a couple of hundred nodes —
-// this is far cheaper than the barnes-hut it would take to avoid it, and it is exact.
+// ---------------------------------------------------------------- layout
+//
+// TWO DIMENSIONS. This is the whole fix, and it took three attempts to see it.
+//
+// Every complaint about the old view -- "nodes scattered in space", "no pattern", "I cannot see
+// anything I understand" -- was really one complaint about 3D. In a rotating 3D cloud, two nodes
+// that look adjacent are usually just at different depths, near things hide behind other near
+// things, and every drag throws away whatever mental map you had built. No amount of colour or
+// label tuning fixes a picture whose geometry lies to you.
+//
+// Flat, a plain force layout does the thing Obsidian's does: repulsion pushes everything apart,
+// links pull related things together, and what settles out are visible clusters in a plane you
+// can actually read and, crucially, REMEMBER. Position becomes stable and meaningful, so "policy
+// is over on the right" stays true.
+//
+// There is no separate layout step now. The forces below are the layout.
+
+// ---------------------------------------------------------------- layout: layers
+//
+// COLUMNS, NOT A CLOUD.
+//
+// A force field -- 2D or 3D -- gives you an organic blob whose shape is an accident of the
+// simulation. Nothing is anywhere in particular, so there is nothing to learn and nothing to
+// remember. This instead states the hierarchy the system actually has:
+//
+//     the core ->  the seven subsystems  ->  what implements them  ->  the tools  ->  surfaces
+//
+// x is DEPTH FROM THE CORE. y is position within that depth, ordered so a group's members sit
+// together, so each column reads top-to-bottom as a list of related things. Edges are then drawn
+// as bundled curves between columns, which is what produces the woven look: many strands leaving
+// one column, converging, and fanning into the next.
+//
+// The payoff is that position MEANS something and stays put. "policy is the third column, upper
+// half" is a fact a person can hold in their head, which is the entire difference between a
+// diagram and a decoration.
 let energy = 1
+const LAYER_W = 260, ROW_H = 30
+
+/** Hops from the core over the undirected graph; anything unreachable lands in the last column. */
+function depthMap() {
+  const d = new Map()
+  const start = nodes.find((n) => n.id === 'hivecode') || nodes.find((n) => n.group === 'core') || nodes[0]
+  if (!start) return d
+  d.set(start.id, 0)
+  let front = [start.id]
+  while (front.length) {
+    const next = []
+    for (const id of front) for (const nb of (adj.get(id) || [])) if (!d.has(nb)) { d.set(nb, d.get(id) + 1); next.push(nb) }
+    front = next
+  }
+  return d
+}
+
+function layout() {
+  if (!nodes.length) return
+  const depth = depthMap()
+  const far = Math.max(0, ...[...depth.values()])
+  const cols = new Map()
+  for (const n of nodes) {
+    const k = depth.has(n.id) ? depth.get(n.id) : far + 1
+    if (!cols.has(k)) cols.set(k, [])
+    cols.get(k).push(n)
+  }
+  const order = [...cols.keys()].sort((x, y) => x - y)
+  for (const k of order) {
+    // Within a column, keep a group together and put the best-connected of each group first --
+    // so the eye can run down one column and find "the locks ones" as a contiguous run.
+    const list = cols.get(k).sort((x, y) => {
+      const g = (GROUP_RANK[x.group] ?? 99) - (GROUP_RANK[y.group] ?? 99)
+      return g || (deg.get(y.id) || 0) - (deg.get(x.id) || 0) || String(x.id).localeCompare(String(y.id))
+    })
+    const h = (list.length - 1) * ROW_H
+    list.forEach((n, i) => {
+      const p = sim.get(n.id); if (!p) return
+      p.tx = order.indexOf(k) * LAYER_W - (order.length - 1) * LAYER_W / 2
+      p.ty = i * ROW_H - h / 2
+    })
+  }
+}
+const GROUP_RANK = { core: 0, identity: 1, perms: 2, locks: 3, ipc: 4, sched: 5, audit: 6, policy: 7,
+  medium: 8, tools: 9, flow: 10, surface: 11, dist: 12, proof: 13, rule: 14, gap: 15 }
+
 function step() {
   if (energy < 0.002) return
-  const arr = nodes.map((n) => sim.get(n.id)).filter(Boolean)
-  const REP = 14000, SPRING = 0.010, REST = 130, CENTER = 0.0012, DAMP = 0.88
-
-  for (let i = 0; i < arr.length; i++) {
-    for (let j = i + 1; j < arr.length; j++) {
-      const a = arr[i], b = arr[j]
-      let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z
-      let d2 = dx * dx + dy * dy + dz * dz
-      if (d2 < 1) { d2 = 1; dx = (i - j) || 1 }
-      const f = REP / d2 / Math.sqrt(d2)
-      a.vx += dx * f; a.vy += dy * f; a.vz += dz * f
-      b.vx -= dx * f; b.vy -= dy * f; b.vz -= dz * f
-    }
-  }
-  for (const e of edges) {
-    const a = sim.get(e.from), b = sim.get(e.to)
-    if (!a || !b) continue
-    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
-    const d = Math.hypot(dx, dy, dz) || 1
-    const f = (d - (e.ekind === 'then' ? REST * 1.25 : REST)) * SPRING
-    a.vx += dx / d * f; a.vy += dy / d * f; a.vz += dz / d * f
-    b.vx -= dx / d * f; b.vy -= dy / d * f; b.vz -= dz / d * f
-  }
-  // GROUP COHESION. Springs alone lay out a graph by its edges, which produces one continuous
-  // cloud -- correct, and unreadable, because the thing a person is trying to see first is "what
-  // are the parts". Pulling each node gently toward its own group's centre of mass makes the
-  // subsystems separate into visible islands without overriding the real structure: it is an
-  // order of magnitude weaker than the springs, so an edge that crosses groups still pulls its
-  // ends together and the crossing stays visible as a crossing.
-  const cen = new Map()
+  // Ease each node onto its slot. Nothing repels anything: the slots are already disjoint, so a
+  // repulsion term could only push nodes off the grid the layout just built for them.
   for (const n of nodes) {
-    const p = sim.get(n.id); if (!p || !n.group) continue
-    let c = cen.get(n.group); if (!c) cen.set(n.group, c = { x: 0, y: 0, z: 0, n: 0 })
-    c.x += p.x; c.y += p.y; c.z += p.z; c.n++
+    const p = sim.get(n.id); if (!p || p.tx === undefined) continue
+    p.x += (p.tx - p.x) * 0.12
+    p.y += (p.ty - p.y) * 0.12
+    p.z = 0
   }
-  for (const c of cen.values()) { c.x /= c.n; c.y /= c.n; c.z /= c.n }
-  const COHESION = 0.0065
-  for (const n of nodes) {
-    const p = sim.get(n.id); if (!p) continue
-    const c = cen.get(n.group); if (!c || c.n < 2) continue
-    p.vx += (c.x - p.x) * COHESION; p.vy += (c.y - p.y) * COHESION; p.vz += (c.z - p.z) * COHESION
-  }
-
-  for (const p of arr) {
-    p.vx -= p.x * CENTER; p.vy -= p.y * CENTER; p.vz -= p.z * CENTER
-    p.vx *= DAMP; p.vy *= DAMP; p.vz *= DAMP
-    p.x += p.vx * energy; p.y += p.vy * energy; p.z += p.vz * energy
-  }
-  energy *= 0.997
+  energy *= 0.99
 }
 
 // ---------------------------------------------------------------- camera + draw
@@ -489,36 +528,39 @@ function resize() {
 }
 window.addEventListener('resize', () => { resize(); energy = Math.max(energy, 0.5) })
 
-let yaw = 0.6, pitch = -0.3, zoom = 1, panX = 0, panY = 0
-const FOV = 520
+let zoom = 1, panX = 0, panY = 0
 
 function project(p) {
-  const cy = Math.cos(yaw), sy = Math.sin(yaw)
-  const x1 = p.x * cy - p.z * sy
-  const z1 = p.x * sy + p.z * cy
-  const cp = Math.cos(pitch), sp = Math.sin(pitch)
-  const y2 = p.y * cp - z1 * sp
-  const z2 = p.y * sp + z1 * cp
-  // Perspective divide. `f` doubles as the depth cue: far things are smaller AND fainter, which is
-  // what makes a flat canvas read as depth at all.
-  //
-  // THE NEAR PLANE IS NOT OPTIONAL. Once z2 passes -(FOV + 260) the denominator flips sign, `f`
-  // goes negative, and every size derived from it goes negative with it -- at which point the
-  // first arc() throws IndexSizeError and the WHOLE canvas stops drawing. The panel still reads
-  // the graph, so the map looks empty rather than broken, which is the worst way to fail.
-  // An 18-node cloud never spread deep enough to reach it; 87 nodes do.
-  const f = FOV / Math.max(60, FOV + z2 + 260)
-  return { x: W / 2 + panX + x1 * f * zoom, y: H / 2 + panY + y2 * f * zoom, f, z: z2 }
+  // Flat. No yaw, no pitch, no perspective divide. `f` stays 1 so everything downstream that used
+  // it as a depth cue simply becomes uniform -- which is the point: in 2D there is no depth to
+  // cue, and pretending otherwise is what made the old view unreadable.
+  return { x: W / 2 + panX + p.x * zoom, y: H / 2 + panY + p.y * zoom, f: 1, z: 0 }
 }
 
 /**
- * The starting zoom, from the size of the graph. Not a computed fit: measuring the projected
- * extent and then SETTING the zoom means the next measurement is taken through the zoom it just
- * applied, and the two chase each other down until the graph is a knot in the middle. Tried it,
- * watched it shrink. Node count is a stable input and a 30-node room is what zoom 1 was tuned for.
+ * Fit the graph to the window, measured in WORLD space.
+ *
+ * The 3D version of this fought itself: it measured the PROJECTED extent, which already had the
+ * current zoom baked in, so setting the zoom changed the next measurement and the two chased each
+ * other until the graph was a knot in the middle. Flat, the simulation's own coordinates are
+ * zoom-independent, so the measurement is stable and one pass is exact.
+ *
+ * Percentiles rather than min/max: a force layout always flings one or two nodes a long way out,
+ * and fitting the absolute extent shrinks the other eighty-five to make room for them.
  */
-function zoomForSize(n) {
-  return Math.max(0.35, Math.min(1, Math.sqrt(30 / Math.max(30, n))))
+function fitToView() {
+  const xs = [], ys = []
+  for (const n of nodes) { const p = sim.get(n.id); if (p) { xs.push(p.x); ys.push(p.y) } }
+  if (xs.length < 2) return
+  xs.sort((a, b) => a - b); ys.sort((a, b) => a - b)
+  const pct = (arr, q) => arr[Math.min(arr.length - 1, Math.max(0, Math.round((arr.length - 1) * q)))]
+  const dx = Math.max(1, pct(xs, 0.97) - pct(xs, 0.03))
+  const dy = Math.max(1, pct(ys, 0.97) - pct(ys, 0.03))
+  zoom = Math.max(0.12, Math.min(2.2, Math.min((W - 90) / dx, (H - 170) / dy)))
+  // Centre on the middle of that same range, so the fit is about the body of the graph rather
+  // than about wherever the simulation's origin happens to have drifted.
+  panX = -((pct(xs, 0.97) + pct(xs, 0.03)) / 2) * zoom
+  panY = -((pct(ys, 0.97) + pct(ys, 0.03)) / 2) * zoom
 }
 
 let hover = null, selected = null
@@ -557,11 +599,20 @@ function draw() {
       : `rgba(${c[0]},${c[1]},${c[2]},${0.07 + 0.13 * depth})`
     ctx.lineWidth = touching ? 2.1 : flow ? 1.4 : 0.9
     if (flow && on) { ctx.setLineDash([7, 5]); ctx.lineDashOffset = -(Date.now() / 45) % 12 }
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke()
+    // BUNDLED STRANDS, not straight lines. Two control points placed hard against the columns
+    // either side pull every edge into the gap between them, so a hundred edges leaving one column
+    // converge, cross, and fan out into the next -- the woven spindle look, and it comes from the
+    // geometry rather than from any per-edge styling. It also gets the lines OFF the nodes: a
+    // straight chord cuts through everything between its ends, a curve arcs around it.
+    const mid = (a.x + b.x) / 2
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.bezierCurveTo(mid, a.y, mid, b.y, b.x, b.y)
+    ctx.stroke()
     ctx.setLineDash([]); ctx.lineDashOffset = 0
     if (!on) continue
-    // Direction tick at 62%. An arrowhead at this line weight turns into mush.
-    const t = 0.62, mx = a.x + (b.x - a.x) * t, my = a.y + (b.y - a.y) * t
+    // Direction read at the waist of the curve, where the strands are tightest.
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
     const ang = Math.atan2(b.y - a.y, b.x - a.x)
     ctx.beginPath()
     ctx.moveTo(mx, my); ctx.lineTo(mx - 6 * Math.cos(ang - 0.4), my - 6 * Math.sin(ang - 0.4))
@@ -685,15 +736,16 @@ let hitmap = []
 // cloud that is still flying apart, so the view would settle wrong and stay wrong; and refitting
 // forever would fight the viewer every time they zoomed. It re-arms whenever the graph itself
 // changes size, because that is a genuinely new shape to frame.
-let lastFitCount = -1
+let lastFitCount = -1, fitted = false
 function frame() {
   // Re-check every frame rather than trusting one call at startup. The canvas can report 0 on the
   // first frame, and a stale W/H silently moves the centre of the world off screen.
   if (cv.clientWidth && (cv.clientWidth !== W || cv.clientHeight !== H)) { resize(); energy = Math.max(energy, 0.6) }
   step()
-  // Set the zoom once for this graph size, then never touch the camera again — it belongs to
-  // whoever is driving it.
-  if (nodes.length && nodes.length !== lastFitCount) { lastFitCount = nodes.length; zoom = zoomForSize(nodes.length) }
+  // Track the fit while the layout is still moving, then stop and leave the camera to whoever is
+  // driving it. Re-arms when the graph itself changes size, because that is a new shape to frame.
+  if (nodes.length !== lastFitCount) { lastFitCount = nodes.length; fitted = false }
+  if (!fitted && nodes.length) { fitToView(); if (energy < 0.08) fitted = true }
   draw(); requestAnimationFrame(frame)
 }
 
@@ -716,7 +768,7 @@ cv.addEventListener('pointermove', (e) => {
   const dx = e.clientX - lastX, dy = e.clientY - lastY
   moved += Math.abs(dx) + Math.abs(dy)
   if (shift) { panX += dx; panY += dy }
-  else { yaw += dx * 0.006; pitch = Math.max(-1.4, Math.min(1.4, pitch + dy * 0.006)) }
+  else { panX += dx; panY += dy }
   lastX = e.clientX; lastY = e.clientY
 })
 cv.addEventListener('pointerup', (e) => {
@@ -728,7 +780,7 @@ cv.addEventListener('wheel', (e) => {
   zoom = Math.max(0.25, Math.min(4, zoom * (e.deltaY < 0 ? 1.12 : 0.89)))
 }, { passive: false })
 addEventListener('keydown', (e) => {
-  if (e.key === 'r' || e.key === 'R') { yaw = 0.6; pitch = -0.3; panX = panY = 0; zoom = zoomForSize(nodes.length); energy = 1 }
+  if (e.key === 'r' || e.key === 'R') { fitToView(); energy = 0.25 }
   if (e.key === 'Escape') select(null)
 })
 
