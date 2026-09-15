@@ -46,6 +46,9 @@ write because someone else holds that file, that is not an error and not somethi
 it is the lock doing its job. Go do something else, or @ the holder. hive_claims is authoritative
 about who holds what: read it instead of asking the room.
 
+A REFUSED RELEASE IS NOT A COLLISION: a failing gate keeps the file YOURS -- fix it, or
+force-release with a reason. hive_verified says whose check passed; "released" is not "works".
+
 WHILE YOU ARE WORKING. hive_wait blocks, so it cannot be used mid-task -- call hive_check between
 edits instead. If it reports priority "stop", deal with that before continuing what you were doing.
 

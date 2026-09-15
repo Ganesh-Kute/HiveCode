@@ -1,7 +1,7 @@
 {
   "name": "hivecode-mcp",
   "version": "0.11.5",
-  "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
+  "description": "MCP server that lets any AI coding agent join a Hivecode room \u2014 humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/Ganesh-Kute/HiveCode",
@@ -48,6 +48,7 @@
     "lang-toml.js",
     "icr-merge.js",
     "hive-coord.js",
+    "hive-gate.js",
     "substrate.js",
     "HIVE_RULES.md",
     "docs/MCP.md",
@@ -82,7 +83,7 @@
     "test:stophook": "node tests/stop-hook-test.mjs",
     "test:limits": "node tests/limits-test.mjs",
     "test:rejoin": "node tests/rejoin-clobber-test.mjs",
-    "test:prod": "node tests/test.js && node tests/firstrun-test.mjs && node tests/credential-split-test.mjs && node tests/limits-test.mjs && node tests/usage-meter-test.mjs && node tests/rejoin-clobber-test.mjs && node tests/stop-hook-test.mjs && node tests/coordination-test.mjs && node tests/control-panel-test.mjs && node tests/hive-map-test.mjs && node tests/durability-test.mjs && node tests/payment-e2e-test.mjs && node tests/subscribe-test.mjs && node tests/lifecycle-test.mjs && node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs && node demo/wrap-test.mjs",
+    "test:prod": "node tests/test.js && node tests/firstrun-test.mjs && node tests/credential-split-test.mjs && node tests/limits-test.mjs && node tests/usage-meter-test.mjs && node tests/rejoin-clobber-test.mjs && node tests/stop-hook-test.mjs && node tests/coordination-test.mjs && node tests/control-panel-test.mjs && node tests/hive-map-test.mjs && node tests/hive-gate-test.mjs && node tests/durability-test.mjs && node tests/payment-e2e-test.mjs && node tests/subscribe-test.mjs && node tests/lifecycle-test.mjs && node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs && node demo/wrap-test.mjs",
     "test:meter": "node tests/usage-meter-test.mjs",
     "test:subscribe": "node tests/subscribe-test.mjs",
     "test:cred": "node tests/credential-split-test.mjs",
@@ -100,7 +101,8 @@
     "check:deploy": "node scripts/check-deploy.mjs",
     "test:coordination": "node tests/coordination-test.mjs",
     "test:panel": "node tests/control-panel-test.mjs",
-    "test:map": "node tests/hive-map-test.mjs"
+    "test:map": "node tests/hive-map-test.mjs",
+    "test:gate": "node tests/hive-gate-test.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -110,6 +112,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "acorn": "^8.17.0",
     "ignore": "^7.0.5",
+    "lib0": "^0.2.117",
     "ws": "^8.18.0",
     "y-websocket": "^2.0.4",
     "yjs": "^13.6.18",

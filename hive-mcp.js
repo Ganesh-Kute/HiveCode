@@ -313,8 +313,12 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_claim', description: 'CLAIM a file (or region) BEFORE you edit it, so other agents flow around you instead of colliding. Returns whether you got it — if false, someone else holds it: work on something else. Claims auto-expire, so call hive_release when done (or it frees itself).',
     inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'the file path (or region id) you want to edit' }, intent: { type: 'string', description: 'short note on what you intend to do' } }, required: ['region'] } },
-  { name: 'hive_release', description: 'Release a file/region you claimed, so other agents can take it. Call this when you finish editing it.',
-    inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'the file path (or region id) to release' } }, required: ['region'] } },
+  { name: 'hive_release', description: 'Hand a file back so other agents can take it. If the room has set a gate, this RUNS it in your folder first and a failing check REFUSES the handoff — you keep the file, nobody else can take it, and retrying will not help. Fix what the gate reported, or pass force with a reason if you are abandoning the work (recorded against your name and announced).',
+    inputSchema: { type: 'object', properties: {
+      region: { type: 'string', description: 'the file path (or region id) to release' },
+      force: { type: 'boolean', description: 'release even though the gate failed. Recorded against your name in the room and posted to chat — use it for abandoned work, never to get past a failing check.' },
+      why: { type: 'string', description: 'why the work is being abandoned. Give this whenever force is true; a forced release with no reason is recorded as exactly that.' },
+    }, required: ['region'] } },
   { name: 'hive_claims', description: 'See what every agent is currently working on (the live claim board). Read this to pick open work and avoid taken regions.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_edit', description: 'Write a file THROUGH the medium (preferred over editing on disk): your intent and exact change are cryptographically stamped into the provenance ledger at the instant of writing — race-free — then merged and synced like any edit. Claim the file first with hive_claim; pass your intent here too so the WHY travels with the change.',
@@ -661,9 +665,29 @@ async function dispatch(req) {
       case 'hive_verified': {
         const f = String(args.file || ''); if (!f) return err('need a file path')
         const r = requireSession().hive.verified(f)
-        if (!r.count) return text(`${f}: NOT attested by anyone. Unverified — measure it and call hive_attest.`)
+        // Attestation and gate verdicts are independent records, so an unattested path must still
+        // report its gate. Returning early here would hide a FAILED check behind "nobody measured
+        // the bytes", which is the opposite of what this tool is for.
+        if (!r.count) {
+          const g0 = requireSession().hive.gateVerdicts(f)
+          const extra = Object.entries(g0).map(([n, v]) => v.forced
+            ? `\n  [!] ${n} FORCE-released it without passing the gate${v.why ? ` — "${v.why}"` : ''}`
+            : `\n  ${v.pass ? '[ok]' : '[!]'} ${n}'s gate ${v.pass ? 'passed' : `FAILED (exit ${v.exit})`}`).join('')
+          return text(`${f}: NOT attested by anyone. Unverified — measure it and call hive_attest.${extra}`)
+        }
         const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`).join('\n  ')
-        return text(`${f}\n  ${who}\n\n${r.diverged ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.' : r.quorum ? 'QUORUM: confirmed by 2+ peers at the same size.' : 'Attested by ONE peer only — not yet proof.'}`)
+        // Same bytes in two folders says the file PROPAGATED. It says nothing about whether it
+        // WORKS, which is the actual question an agent is asking here — so the gate verdicts
+        // belong in this answer. A file two peers agree on and whose owner's tests failed is the
+        // exact thing somebody is about to build on.
+        const g = requireSession().hive.gateVerdicts(f)
+        const gLines = Object.entries(g).map(([n, v]) => v.forced
+          ? `  [!] ${n} FORCE-released it without passing the gate${v.why ? ` — "${v.why}"` : ' and gave no reason'}`
+          : `  ${v.pass ? '[ok]' : '[!]'} ${n}'s gate ${v.pass ? 'passed' : `FAILED (exit ${v.exit})`}: ${v.cmd}`)
+        const gate = gLines.length
+          ? `\n\nCHECKS RUN BY THE AGENTS THAT HELD IT:\n${gLines.join('\n')}${Object.values(g).some((v) => !v.pass) ? '\n  Somebody handed this back knowing it did not pass. Read it before you build on it.' : ''}`
+          : '\n\nNo gate verdict recorded for this path — nobody has run a check on it here.'
+        return text(`${f}\n  ${who}\n\n${r.diverged ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.' : r.quorum ? 'QUORUM: confirmed by 2+ peers at the same size.' : 'Attested by ONE peer only — not yet proof.'}${gate}`)
       }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
@@ -679,7 +703,16 @@ async function dispatch(req) {
         const c = requireSession().hive.senseClaim(region)
         return text(`could NOT claim ${region}${c ? ` — held by ${c.by}${c.intent ? ` (${c.intent})` : ''}` : ''}. Work on something else; check hive_claims for open files.`)
       }
-      case 'hive_release': { const region = String(args.region || ''); if (!region) return err('need a region'); requireSession().hive.release(region); return text(`released ${region}`) }
+      case 'hive_release': {
+        const region = String(args.region || '')
+        if (!region) return err('need a region')
+        // A gated release can REFUSE, and reporting "released" either way is the worst thing this
+        // could do: the agent moves on believing it handed the file back while it still holds it.
+        const r = requireSession().hive.release(region, { force: !!args.force, why: String(args.why || '') })
+        if (r && r.ok === false) return text(r.message)
+        if (r && r.forced) return text(`released ${region} WITHOUT passing the gate — recorded against your name in the room`)
+        return text(`released ${region}${r && r.gated ? ' (gate passed)' : ''}`)
+      }
       case 'hive_claims': { const b = requireSession().hive.claimsBoard(); return text(b.length ? b.map((c) => `${c.region} — ${c.by}${c.intent ? ` (${c.intent})` : ''}`).join('\n') : '(nothing claimed right now — all open)') }
       case 'hive_edit': {
         const editPath = String(args.file || '')

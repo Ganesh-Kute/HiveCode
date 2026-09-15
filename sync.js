@@ -25,6 +25,7 @@ import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
+import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
 // `languageFor` belongs in this list and was missing: reconcile() calls it on the
@@ -89,10 +90,15 @@ const LOCK_FILE = '.hive-lock.json'     // one sync client per folder; see acqui
 const ID_FILE = '.hive-id.json'    // this client's substrate signing identity (private); never synced
 const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
 const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
+// The claim map is the stigmergic trace agents SENSE before editing (see `claims` below), but it
+// was the one part of the room that never reached disk — so an agent could only learn it by
+// remembering to call a tool, and a trace nobody can see coordinates nothing. Rendered here for
+// the same reason HIVE_CHAT.md is: a file in the working folder needs no tool call and no memory.
+const CLAIMS_FILE = 'HIVE_CLAIMS.md'
 const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder joins (via .hive.json) + behaves
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
-const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, AGENTS_FILE])
+const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
 
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the
@@ -432,6 +438,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // DISAGREEMENT becomes the signal. One shared "size" field would have silently converged on
   // whichever peer wrote last, which is precisely the failure it exists to catch.
   const swarmAttest = doc.getMap('swarm_attest')
+  // GATE VERDICTS — `<region>|<peerName>` -> the result of that peer running the room's check in
+  // ITS OWN folder before handing the file back. Keyed per peer for the same reason swarmAttest
+  // is: "the tests pass" is a fact about one folder's bytes, and storing it as a single shared
+  // value would converge on whoever released last, silently erasing the disagreement that is the
+  // entire signal. Two agents reporting different verdicts for one path both survive here.
+  const gateResults = doc.getMap('gate_results')
   // CLAIM LEASE. Expiry is evaluated lazily on read, so the moment a lease passes its TTL the
   // next agent that tries simply gets the file -- that is what stops a stalled agent
   // deadlocking the room.
@@ -1731,6 +1743,44 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     writeToDisk(MEMBERS_FILE, out.join('\n') + '\n')
   }
+  /** The claim map as a file. Same contract as renderMembers: generated locally, never synced.
+   *
+   *  EXPIRY IS SHOWN, NOT HIDDEN. A claim whose TTL has run out is not a lock any more — the
+   *  region is free — so rendering it as "held" would make agents queue behind a crashed peer,
+   *  which is the deadlock TTLs exist to prevent. Expired rows stay visible but labelled, because
+   *  "AgentX died holding this" is information, and silently dropping the row loses it. */
+  function renderClaims() {
+    const now = Date.now()
+    const rows = []
+    claims.forEach((c, region) => {
+      if (!c || !c.by) return
+      const ttl = Number(c.ttl) || 0
+      const age = now - (Number(c.at) || 0)
+      const left = ttl - age
+      rows.push({ region, by: c.by, intent: c.intent || 'edit', age, left, dead: left <= 0 })
+    })
+    rows.sort((a, b) => a.region.localeCompare(b.region))
+
+    const secs = (ms) => `${Math.max(0, Math.round(ms / 1000))}s`
+    const live = rows.filter((r) => !r.dead)
+    const out = [
+      '# Hive Claims — who holds which file right now (live).',
+      '# SENSE this before you edit. A region held by someone else is not yours to write:',
+      '# flow to open work instead of waiting. Claims expire on their own, so nothing deadlocks.',
+      '',
+      `held: ${live.length}`,
+      '',
+    ]
+    for (const r of rows) {
+      out.push(r.dead
+        ? `- ${r.region} — EXPIRED (was ${r.by}, ${r.intent}, ${secs(r.age)} ago) — free to take`
+        : `- ${r.region} — ${r.by} (${r.intent}) — held ${secs(r.age)}, ${secs(r.left)} left`)
+    }
+    if (!rows.length) out.push('- nothing claimed; every region is open')
+    writeToDisk(CLAIMS_FILE, out.join('\n') + '\n')
+  }
+  if (syncFiles) claims.observe(() => renderClaims())
+
   // Warn (once per peer) when someone joins on an incompatible protocol version —
   // otherwise they'd silently fail to sync and look like a "broken room".
   const versionWarned = new Set()
@@ -1745,7 +1795,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { say(`⚠ ${u.name} is on an incompatible version — files won't sync with them until everyone updates Hivecode.`) } catch { }
     }
   }
-  if (syncFiles) provider.awareness.on('change', () => { renderMembers(); checkVersions() })
+  if (syncFiles) provider.awareness.on('change', () => { renderMembers(); renderClaims(); checkVersions() })
 
   function scan() {
     const diskFulls = walk(ROOT)
@@ -1815,6 +1865,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (chat.length) renderChat()
     if (tasks.size) renderTasks()
     renderMembers()
+    renderClaims() // unconditional: "nothing is claimed" is the answer an arriving agent needs most
     scan()
     log(`[${name}] folder sync active on ${ROOT} (room "${room}") as ${kind}. ${manifest.size} files.`)
     if (!scanTimer) {
@@ -1921,7 +1972,52 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     controls,            // the live control map
     // --- hive coordination: claim a region BEFORE editing (collision prevention) ---
     claim: (region, intent) => { const r = String(region), i = String(intent || 'edit'); myIntents.set(r, i); return coordinator.acquire(r, i) }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
-    release: (region) => { const r = String(region); myIntents.delete(r); return coordinator.release(r) },
+    // RELEASE IS A HANDOFF, AND A HANDOFF CAN BE REFUSED.
+    //
+    // Until the room sets `gate:cmd`, this behaves exactly as it always did and returns
+    // {ok:true} — no configured gate means no new failure mode for existing rooms.
+    //
+    // With a gate set, the check runs in THIS agent's folder and a non-zero exit keeps the claim.
+    // That is the whole idea: the file stays visibly yours, so the next agent cannot quietly
+    // inherit something that looked finished. It does NOT unsend the bytes — the CRDT syncs
+    // continuously and they are already everywhere — it refuses the "I am done, it is yours".
+    //
+    // `force` exists because abandoning work is legitimate, and it is never silent: it releases,
+    // records that it was forced, and says so in the room.
+    release: (region, opts = {}) => {
+      const r = String(region)
+      const g = gateConfig((k) => swarmState.get(k))
+      const letGo = () => { myIntents.delete(r); coordinator.release(r) }
+      if (!g) { letGo(); return { ok: true, gated: false } }
+
+      if (opts.force) {
+        const rec = verdictRecord({ region: r, by: name, cmd: g.cmd, result: null, forced: true, why: opts.why })
+        gateResults.set(`${r}|${name}`, rec)
+        letGo()
+        try { say(forcedMessage({ region: r, by: name, why: opts.why })) } catch { /* chat is not the point */ }
+        return { ok: true, gated: true, forced: true }
+      }
+
+      const result = runGate({ cmd: g.cmd, cwd: ROOT, timeoutMs: g.timeoutMs })
+      gateResults.set(`${r}|${name}`, verdictRecord({ region: r, by: name, cmd: g.cmd, result }))
+      if (!result.ok) {
+        // The claim is NOT dropped. Saying so in the room is what makes the refusal visible to
+        // everyone rather than a private error the holder can ignore.
+        try { say(`@all ${name} could not hand back ${r}: the gate failed (exit ${result.code}). Still held.`) } catch { /* ignore */ }
+        return { ok: false, gated: true, code: result.timedOut ? 'Q491' : 'Q490', result, message: refusalMessage({ region: r, cmd: g.cmd, result }) }
+      }
+      letGo()
+      return { ok: true, gated: true, result }
+    },
+    /** The verdicts recorded for a path, by peer. Read this before building on someone's file. */
+    gateVerdicts: (region) => {
+      const out = {}
+      const pre = String(region) + '|'
+      gateResults.forEach((v, k) => { if (k.startsWith(pre)) out[k.slice(pre.length)] = v })
+      return out
+    },
+    /** The room's gate, or null. Exposed so a client can say what it is about to be judged by. */
+    gate: () => gateConfig((k) => swarmState.get(k)),
     senseClaim: (region) => coordinator.sense(String(region)), // the live claim on a region, or null
     claimsBoard: () => coordinator.board(),                     // everything currently claimed
     // --- intent-aware fork resolution: any agent may judge; the medium validates ---
