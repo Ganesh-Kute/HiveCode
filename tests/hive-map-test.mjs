@@ -208,7 +208,16 @@ section('edge kinds: needs vs then')
   // A step in a process and a dependency are different claims about the world. Drawn the same way
   // a workflow renders as a dependency web and reads as neither.
   T('the renderer tells a flow edge from a dependency', /const flow = e\.ekind === 'then'/.test(html))
-  T('flow edges are drawn differently', /flow \?[\s\S]{0,90}rgba\(120,200,255/.test(html))
+  // Asserted as a PROPERTY, not as a literal colour. It used to pin the exact rgba() of the flow
+  // edge, so recolouring edges by group — a deliberate change — failed a test whose real subject
+  // (a step must not look like a dependency) was still perfectly true. A test that breaks when the
+  // implementation changes but the guarantee does not is a test that gets deleted in a hurry.
+  const flowAlpha = html.match(/flow \? `rgba\(\$\{c\[0\]\},\$\{c\[1\]\},\$\{c\[2\]\},\$\{([\d.]+) \+ ([\d.]+)/)
+  const depAlpha = html.match(/: `rgba\(\$\{c\[0\]\},\$\{c\[1\]\},\$\{c\[2\]\},\$\{([\d.]+) \+ ([\d.]+)/)
+  T('a flow edge is drawn more strongly than a dependency',
+    !!flowAlpha && !!depAlpha && Number(flowAlpha[1]) > Number(depAlpha[1]))
+  T('a dependency edge is quiet enough that 100+ of them do not bury the nodes',
+    !!depAlpha && Number(depAlpha[1]) + Number(depAlpha[2]) < 0.35)
   T('flow edges animate, so direction is readable without tracing', /lineDashOffset = -\(Date\.now\(\)/.test(html))
 }
 

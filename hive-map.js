@@ -92,6 +92,11 @@ export function applyCommand(graph, name, action, pos, flags) {
       label: flags.label || prev.label || id,
       kind: flags.kind || prev.kind || 'component',
       state,
+      // GROUP is what a reader uses to see structure; KIND is what a thing is. They are different
+      // questions and collapsing them is why a 90-node map reads as one undifferentiated cloud:
+      // `kind` says "service", which every second node also is, so it separates nothing. `group`
+      // says which subsystem this belongs to, which is the only cut that makes the shape visible.
+      group: flags.group || prev.group || '',
       file: flags.file || prev.file || '',
       note: flags.note || prev.note || '',
       ...stamp,
