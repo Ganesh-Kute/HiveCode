@@ -2018,6 +2018,23 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     },
     /** The room's gate, or null. Exposed so a client can say what it is about to be judged by. */
     gate: () => gateConfig((k) => swarmState.get(k)),
+    // THE LOCK YOU MAY WRITE BEHIND. `claim()` answers from this replica alone, so under real
+    // concurrency it says yes to everyone (see hive-coord.js). This waits for the claim to
+    // round-trip through the relay -- the only place the room is actually serialised -- and then
+    // asks who the converged map says holds it. Exactly one caller gets true.
+    //
+    // The loser has nothing to release: the winner's entry replaced its own under last-writer-
+    // wins on the same key, so conceding is just returning false.
+    claimSettled: async (region, intent, waitMs = 900) => {
+      const r = String(region), i = String(intent || 'edit')
+      myIntents.set(r, i)
+      if (!coordinator.acquire(r, i)) return false          // someone already visibly holds it
+      await new Promise((res) => setTimeout(res, Math.max(200, waitMs)))
+      const holder = coordinator.sense(r)
+      if (holder && holder.by === name) return true
+      myIntents.delete(r)
+      return false
+    },
     senseClaim: (region) => coordinator.sense(String(region)), // the live claim on a region, or null
     claimsBoard: () => coordinator.board(),                     // everything currently claimed
     // --- intent-aware fork resolution: any agent may judge; the medium validates ---

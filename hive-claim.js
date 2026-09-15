@@ -49,7 +49,7 @@ const hive = startSync({
   token: process.env.HIVE_TOKEN || cfg.token || '', syncFiles: false, log: () => {},
 })
 
-hive.provider.on('sync', (s) => {
+hive.provider.on('sync', async (s) => {
   if (!s) return
   let out
   if (action === 'board') out = JSON.stringify(hive.claimsBoard())
@@ -61,7 +61,11 @@ hive.provider.on('sync', (s) => {
     if (r && r.ok === false) { console.error(r.message); setTimeout(() => { try { hive.stop() } catch {} ; process.exit(1) }, 300); return }
     out = (r && r.forced ? 'FORCE-RELEASED ' : 'RELEASED ') + region
   }
-  else { out = (hive.claim(region, 'edit') ? 'CLAIMED ' : 'DENIED ') + region }
+  else {
+    // Settled, not optimistic: the synchronous claim grants three simultaneous callers at once.
+    const got = await hive.claimSettled(region, 'edit')
+    out = (got ? 'CLAIMED ' : 'DENIED ') + region
+  }
   console.log(out)
   setTimeout(() => { hive.stop(); process.exit(0) }, 1500) // let the claim update propagate
 })

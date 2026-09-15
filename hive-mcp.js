@@ -698,7 +698,10 @@ async function dispatch(req) {
         // always a mistake, and refusing here is far cheaper than refusing after the agent has
         // built the content it intended to write.
         enforceDcoLock({ path: region });
-        const got = requireSession().hive.claim(region, String(args.intent || 'edit'))
+        // SETTLED, not optimistic. The synchronous claim answers from this replica alone and
+        // tells three simultaneous callers "it's yours" (measured 5/5). An agent then edits
+        // behind a lock it does not hold. This waits for the relay to serialise it.
+        const got = await requireSession().hive.claimSettled(region, String(args.intent || 'edit'))
         if (got) return text(`claimed ${region} — it's yours. Edit it, then call hive_release.`)
         const c = requireSession().hive.senseClaim(region)
         return text(`could NOT claim ${region}${c ? ` — held by ${c.by}${c.intent ? ` (${c.intent})` : ''}` : ''}. Work on something else; check hive_claims for open files.`)
