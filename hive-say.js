@@ -23,7 +23,18 @@ if (!MESSAGE) { console.error('Usage: node hive-say.js [join-link] <name> "<mess
 let relay, room
 if (link) { const p = parseLink(link); relay = p.relay || DEFAULT_RELAY; room = p.room }
 else {
-  try { const cfg = JSON.parse(fs.readFileSync(path.join(path.resolve(DIR), '.hive.json'), 'utf8')); relay = cfg.relay || DEFAULT_RELAY; room = cfg.room } catch {}
+  const searchDirs = [DIR, '.', './workspace'].filter(Boolean)
+  for (const d of searchDirs) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(path.resolve(d), '.hive.json'), 'utf8'))
+      if (cfg.room) {
+        relay = cfg.relay || DEFAULT_RELAY
+        room = cfg.room
+        DIR = d
+        break
+      }
+    } catch {}
+  }
 }
 if (!room) { console.error('No room found (give a link or run from a folder with .hive.json).'); process.exit(1) }
 

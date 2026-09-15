@@ -212,5 +212,16 @@ section('edge kinds: needs vs then')
   T('flow edges animate, so direction is readable without tracing', /lineDashOffset = -\(Date\.now\(\)/.test(html))
 }
 
+
+// ---------------------------------------------------------------------------
+section('clear')
+{
+  const g = fresh()
+  run(g, 'add', ['a']); run(g, 'add', ['b']); run(g, 'link', ['a', 'b'])
+  T('clear without confirmation is refused', run(g, 'clear').code === 'Q473')
+  T('the map survives a refused clear', readGraph(g).nodes.length === 2)
+  T('clear yes wipes nodes and edges', run(g, 'clear', ['yes']).ok && readGraph(g).nodes.length === 0 && readGraph(g).edges.length === 0)
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
