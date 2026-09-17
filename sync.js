@@ -968,6 +968,43 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // "not pulled yet", NOT "new file", so we must not re-seed it from disk (that
   // would create a second CRDT history and duplicate/garble content on rejoin).
   const fileDocs = new Map() // relPath -> { doc, provider, text, synced }
+
+  // REFUSED FILE-ROOMS. y-websocket retries a failed upgrade forever, with backoff and in
+  // silence. That is right for a flaky network and badly wrong for a relay that is full: on
+  // 18 Sep 2026 a relay answered 38,011 connections with Q430 while the agents involved
+  // showed no symptom at all. Their files simply never arrived, and an unsynced file-doc
+  // reads as EMPTY, which is how the same evening ended with 186 files written to 0 bytes.
+  //
+  // So count refusals for docs that have NEVER synced, and say it once. The condition is
+  // usually a whole-relay problem rather than a per-file one, so one message naming the
+  // count is the useful shape -- one per file would be 800 lines of chat.
+  const refusedFiles = new Map() // relPath -> consecutive connection errors, cleared on sync
+  let refusalSaidAt = 0
+  let refusalTimer = null
+  function noteRefusals() {
+    if (refusalTimer) return
+    // Debounced: a full relay refuses every file at once, and we want the total, not the first.
+    refusalTimer = setTimeout(() => {
+      refusalTimer = null
+      const stuck = [...refusedFiles.keys()].filter((r) => { const e = fileDocs.get(r); return e && !e.synced })
+      // One transient error on one file is a blip, not an outage. Two or more files stuck, or
+      // repeated failures on one, is the shape of a relay that will not take us.
+      const repeated = stuck.some((r) => (refusedFiles.get(r) || 0) >= 3)
+      if (stuck.length < 2 && !repeated) return
+      const now = Date.now()
+      if (now - refusalSaidAt < 300000) return // at most once every 5 minutes
+      refusalSaidAt = now
+      const msg =
+        `${stuck.length} file(s) cannot connect to the relay and are NOT syncing. ` +
+        `They will read as empty until this clears. The usual cause is the relay being full ` +
+        `(Q430): Hivecode opens one socket PER FILE, so a large folder can exhaust it alone. ` +
+        `Check <relay-http>/health -- connections against limits.maxConnsTotal -- then raise ` +
+        `HIVE_MAX_CONNS_TOTAL or narrow what syncs. Do not trust this folder's contents meanwhile.`
+      log(`[${name}] !! ${msg}`)
+      try { say(`[!] @all ${msg}`) } catch { /* chat may itself be unreachable — the log still carries it */ }
+    }, 4000)
+    if (refusalTimer.unref) refusalTimer.unref()
+  }
   function openFile(relPath) {
     let e = fileDocs.get(relPath)
     if (e) return e
@@ -1010,7 +1047,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // The fork record arrived/changed from a peer: render it locally, or — if it was
     // cleared (resolved elsewhere) — adopt the now-clean shared text to disk.
     conflict.observe((_ev, txn) => { if (txn.local) return; if (e.conflict.has('meta')) renderConflict(relPath); else adoptResolved(relPath) })
-    fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(relPath, 'remote'); detectFork(relPath) } }) // initial pull settled
+    fprovider.on('sync', (s) => { if (s) { e.synced = true; refusedFiles.delete(relPath); reconcile(relPath, 'remote'); detectFork(relPath) } }) // initial pull settled
+    // A refused upgrade lands here. The provider will keep retrying by itself, which is the
+    // right behaviour and exactly why nothing surfaces it — so count it and let noteRefusals
+    // decide whether this is a blip or a relay that will not take us.
+    fprovider.on('connection-error', () => {
+      if (e.synced) return // already have the content; a later blip is the provider's business
+      refusedFiles.set(relPath, (refusedFiles.get(relPath) || 0) + 1)
+      noteRefusals()
+    })
     return e
   }
   function closeFile(relPath) {
@@ -2108,11 +2153,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     status: () => {
       let synced = 0
       for (const e of fileDocs.values()) if (e.synced) synced++
+      // `notSyncing` is the number the caller actually needs when something is wrong: files
+      // whose own socket the relay refused. They are not slow, they are not arriving, and
+      // until they do they read as empty. filesSynced alone shows a shortfall but not a cause.
+      const notSyncing = [...refusedFiles.keys()].filter((r) => { const e = fileDocs.get(r); return e && !e.synced })
       return {
         connected: !!provider.wsconnected,
         connecting: !!provider.wsconnecting,
         files: fileDocs.size,
         filesSynced: synced,
+        notSyncing: notSyncing.length,
+        notSyncingFiles: notSyncing.slice(0, 20),
       }
     },
     stop: () => {
