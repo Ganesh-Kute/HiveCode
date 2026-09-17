@@ -41,6 +41,7 @@ import * as meter from './usage-meter.js'
 const Y = createRequire(import.meta.url)('yjs')
 import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import { verifyReceipt, contentHash, headOk, contentHealth } from './substrate.js'
+import { makeGovernor } from './governor.js'
 import * as decoding from 'lib0/decoding'
 
 // Enforce a read-only connection: drop the client's inbound SYNC writes (sync
@@ -164,6 +165,20 @@ function makeReadOnly(conn) {
 // kind of 'human' (the value this function's exemption above keys on).
 const ENFORCE_CLAIMS = (process.env.HIVE_ENFORCE_CLAIMS || 'off').toLowerCase()
 
+// --- THE GOVERNOR: relay-side stop button and spend caps ---------------------------------
+// ON by default, unlike every other gate here, and that is deliberate. The others change how
+// ordinary work behaves, so opting in is right. This one does nothing at all until a human
+// pauses somebody or sets a budget -- and the moment either happens, it has to be real. A stop
+// button that depends on an env var somebody forgot to set is the same as no stop button, and
+// its absence is exactly the sort of thing nobody discovers until the night it mattered.
+const GOVERNOR = (process.env.HIVE_GOVERNOR || 'on').toLowerCase()
+// `strict` is per ROOM, not per relay: a secured hs_ room carries token-verified identities even
+// on an otherwise open relay, so the hard guarantee is available there without locking the relay.
+const gov = makeGovernor({ audit, strict: (room) => AUTH_MODE === 'required' || !!roomFingerprint(baseRoomOf(room)) })
+// A `minutes` budget must fire on wall clock, not on the next write: an agent stuck in a loop
+// that has stopped writing has not stopped spending.
+if (GOVERNOR !== 'off') setInterval(() => { try { gov.sweep() } catch { /* never kill the relay */ } }, 15000).unref()
+
 function isSyncWrite(data) {
   try {
     const dec = decoding.createDecoder(new Uint8Array(data))
@@ -204,9 +219,27 @@ const PATH_BLOCK = {
 function writeBlockReason(conn) {
   const h = conn._hive
   if (!h || !h.identity || !h.room) return null            // unknown identity -> can't enforce
-  if (h.identity.kind === 'human') return null             // humans/overseers are exempt
+  // Humans/overseers are exempt -- but ONLY where `human` is a verified claim. On an open relay a
+  // real person reads as kind 'unknown' (the relay refuses to honour a self-declared human, or
+  // any client could opt out of every gate by saying so), so this exemption does not fire there
+  // and a paused participant is paused whoever they are. That is the honest behaviour for a relay
+  // that cannot tell a person from an agent, and it is the safe direction: they can release
+  // themselves, because mayControl() lets them.
+  if (h.identity.kind === 'human') return null
   const filePath = pathOf(h.room)
   if (filePath === null) return null                       // base-room writes (chat/claims/state) never gated
+  // THE GOVERNOR. Deliberately AFTER the base-room exemption above: a paused agent must still be
+  // able to post to chat, or an agent stopped mid-task has no way to say what state it left
+  // things in, and the person who stopped it learns nothing. "Stop working" and "stop talking"
+  // are different instructions and only the first one was given. (The control map itself lives in
+  // that same ungated base room, which is exactly why the governor guards it separately, by
+  // reverting writes from anyone who may not press the button -- see mayControl.)
+  //
+  // Otherwise this is first among the file checks, because being paused is a property of the
+  // WRITER: no claim, unlock or path state can buy a paused agent a write.
+  if (GOVERNOR !== 'off' && gov.isPaused(baseRoomOf(h.room), h.identity.name)) {
+    return { reason: 'paused by mission control', permanent: false, paused: true }
+  }
   let baseDoc
   try { baseDoc = getYDoc(baseRoomOf(h.room)) } catch { return null }
   if (!baseDoc) return null
@@ -247,14 +280,35 @@ function installWriteGate(conn) {
     return realOn('message', (data, ...rest) => {
       if (isSyncWrite(data)) {
         const block = writeBlockReason(conn)
-        if (block) {
+        if (!block) {
+          // ACCEPTED. Meter it, and if that was the write that blew the budget, the governor
+          // pauses this participant right here -- so the cap is enforced by the same mechanism
+          // as the stop button rather than by a second one that could disagree with it.
+          if (GOVERNOR !== 'off' && conn._hive && conn._hive.identity) {
+            try { gov.note(baseRoomOf(conn._hive.room), conn._hive.identity.name, data.length || data.byteLength || 0) } catch { /* metering must never drop a legal write */ }
+          }
+        } else {
           audit('write-blocked', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason, permanent: !!block.permanent, mode: ENFORCE_CLAIMS })
-          if (ENFORCE_CLAIMS === 'block') return // drop the write
+          // A GOVERNOR PAUSE IGNORES THE CLAIM-ENFORCEMENT MODE, AND IT ALWAYS QUEUES.
+          //
+          // It ignores the mode because `warn` is a defensible setting for claims -- you may want
+          // to watch collisions before refusing them -- but there is no reading of "stop that
+          // agent" that means "log that it did not stop".
+          //
+          // It queues rather than drops because these are CRDT ops, not HTTP requests. Dropping
+          // one does not refuse an edit; it removes an op that the agent's LATER updates are
+          // causally built on, and those arrive referencing something the relay never saw and sit
+          // unintegrated forever. The room would silently stop accepting that agent's work even
+          // after you resumed it. Holding and replaying is the only way to refuse a write
+          // TEMPORARILY without corrupting the history -- and it is also the better promise:
+          // being stopped for a minute costs the agent nothing once you let it go.
+          const mode = block.paused ? 'queue' : ENFORCE_CLAIMS
+          if (mode === 'block') return // drop the write
           // A PERMANENT block is never queued. Queueing exists so a legitimate write that
           // arrived early is not lost; a write to an unwritable path is not early, it is
           // wrong, and replaying it when the queue flushes would land exactly the damage the
           // flag exists to prevent. Drop it even in queue mode, and say so in the audit.
-          if (ENFORCE_CLAIMS === 'queue') {
+          if (mode === 'queue') {
             if (block.permanent) { audit('write-dropped-permanent', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason }); return }
             queueWrite(conn, data, rest); return // hold + replay later
           }
@@ -278,9 +332,12 @@ function attachFlush(conn) {
   let baseDoc; try { baseDoc = getYDoc(baseRoomOf(conn._hive.room)) } catch { return }
   if (!baseDoc) return
   const claims = baseDoc.getMap('claims'), state = baseDoc.getMap('swarm_state')
+  // `controls` too: a resume must replay the writes held while the agent was paused, or being
+  // stopped for a minute silently costs an agent whatever it was in the middle of writing.
+  const controls = baseDoc.getMap('controls')
   const onChange = () => flushQueue(conn)
-  claims.observe(onChange); state.observe(onChange)
-  conn._wgDetach = () => { try { claims.unobserve(onChange); state.unobserve(onChange) } catch {} }
+  claims.observe(onChange); state.observe(onChange); controls.observe(onChange)
+  conn._wgDetach = () => { try { claims.unobserve(onChange); state.unobserve(onChange); controls.unobserve(onChange) } catch {} }
   conn.on('close', () => { if (conn._wgDetach) conn._wgDetach() })
 }
 
@@ -1096,7 +1153,11 @@ wss.on('connection', (conn, req) => {
   }
   installUsageLimits(conn) // FIRST: every gate below costs work per message, so bound it here
   if (conn._hive && conn._hive.role === 'reader') makeReadOnly(conn) // enforce read-only BEFORE y-websocket wires its handler
-  else if (ENFORCE_CLAIMS !== 'off') installWriteGate(conn) // dynamic claim/DCO write-gate (opt-in)
+  // The gate now carries TWO jobs: the opt-in claim/DCO enforcement, and the governor's stop
+  // button which is on by default. Installing it for the governor alone changes nothing until
+  // somebody is actually paused -- writeBlockReason returns null for everyone else.
+  else if (ENFORCE_CLAIMS !== 'off' || GOVERNOR !== 'off') installWriteGate(conn)
+  if (GOVERNOR !== 'off' && conn._hive) { try { gov.attach(baseRoomOf(room), getYDoc(baseRoomOf(room))) } catch { /* room may be mid-teardown */ } }
   setupWSConnection(conn, req, { docName: room })
   postNotice(room)                       // service notice, if one is set
   if (PROVENANCE !== 'off') installProvenanceGuard(room) // substrate: verify/enforce the file's provenance ledger (opt-in)
@@ -1121,6 +1182,8 @@ server.listen(PORT, () => {
   console.log(`[relay] claim/DCO write-enforcement: ${ENFORCE_CLAIMS}` +
     (ENFORCE_CLAIMS === 'off' ? '   <-- OFF: nothing refuses a write to a claimed file' : ''))
   console.log(`[relay] substrate provenance enforcement: ${PROVENANCE}`)
+  console.log(`[relay] governor (stop button + spend caps): ${GOVERNOR}` +
+    (GOVERNOR === 'off' ? '   <-- OFF: a paused agent can still write, and no budget is enforced' : ''))
   console.log(`[relay] connections per room: ${roomCap}`)
   // Metering is off unless HIVE_USAGE_SECRET is set, and it says which it is out loud. A
   // relay silently not metering is how you discover at the end of a month that the free tier

@@ -201,41 +201,51 @@ let nodes = [], edges = [], members = []
 const adj = new Map()      // id -> Set(neighbours), undirected, for walking the neighbourhood
 const deg = new Map()      // id -> connection count, which drives node size
 let focusId = null         // hovered or selected
-let depth = 1              // hops lit around the focus
+let depth = 2              // hops lit around the focus -- 2, not 1, because one hop shows
+                           // WHAT touches this and nothing about how those reach anything else
 let filterState = null     // light only this state and what it touches
 // Filtering by GROUP is the other half of the same idea: colour tells you the subsystems exist,
 // clicking one is how you look at just that subsystem and the things it touches.
 let filterGroup = null
 let query = ''
 
+// Returns a Map of id -> HOPS AWAY, not a bare Set. The distance is the whole point: lighting
+// three hops equally makes a 3-hop node look exactly like a direct neighbour, so you can see that
+// more things are involved but not how they reach each other. Fading by hop turns the same
+// selection into a chain you can follow outward. A Map still answers .has(), so callers that only
+// ask "is this lit" are unchanged.
 function neighbourhood(id, d) {
-  const seen = new Set([id])
+  const seen = new Map([[id, 0]])
   let frontier = [id]
   for (let i = 0; i < d && frontier.length; i++) {
     const next = []
-    for (const a of frontier) for (const b of (adj.get(a) || [])) if (!seen.has(b)) { seen.add(b); next.push(b) }
+    for (const a of frontier) for (const b of (adj.get(a) || [])) if (!seen.has(b)) { seen.set(b, i + 1); next.push(b) }
     frontier = next
   }
   return seen
 }
+
+// How bright a lit node is, by how far it sits from what you are pointing at.
+const HOP_DIM = [1, 1, 0.58, 0.34, 0.22]
+const dimOf = (hop) => HOP_DIM[Math.min(hop === undefined ? 1 : hop, HOP_DIM.length - 1)]
 
 /** Which nodes are lit. Everything else is drawn faint rather than hidden, so the shape of the
  *  whole system stays visible while one part of it is readable. null means "everything". */
 function litSet() {
   if (query) {
     const q = query.toLowerCase()
-    const out = new Set()
+    const out = new Map()
     for (const n of nodes) {
       if (((n.label || '') + ' ' + n.id + ' ' + (n.note || '')).toLowerCase().includes(q)) {
-        for (const x of neighbourhood(n.id, 1)) out.add(x)
+        for (const [x, h] of neighbourhood(n.id, depth)) if (!out.has(x) || out.get(x) > h) out.set(x, h)
       }
     }
     return out
   }
   if (focusId) return neighbourhood(focusId, depth)
   if (filterGroup) {
-    const out = new Set()
-    for (const n of nodes) if (n.group === filterGroup) for (const x of neighbourhood(n.id, 1)) out.add(x)
+    const out = new Map()
+    for (const n of nodes) if (n.group === filterGroup) for (const [x, h] of neighbourhood(n.id, 1)) if (!out.has(x) || out.get(x) > h) out.set(x, h)
     return out
   }
   if (filterState) {
@@ -574,6 +584,7 @@ function draw() {
   for (const n of nodes) { const p = sim.get(n.id); if (p) P.set(n.id, project(p)) }
   const lit = litSet()
   const isLit = (id) => !lit || lit.has(id)
+  const hopDim = (id) => (lit && lit.get ? dimOf(lit.get(id)) : 1)
   const FADE = 0.07
 
   const drawn = edges.map((e) => ({ e, a: P.get(e.from), b: P.get(e.to) }))
@@ -593,10 +604,13 @@ function draw() {
     // each other. Unlit edges are barely present, lit ones are quiet, and only the neighbourhood
     // you asked about is drawn to be followed by eye.
     const depth = (a.f + b.f) / 2
+    // An edge is only as bright as its FARTHER end, so a link reaching out to hop 3 visibly
+    // recedes instead of shouting as loudly as one touching the focus.
+    const hd = Math.min(hopDim(e.from), hopDim(e.to))
     ctx.strokeStyle = touching ? 'rgba(140,200,255,.95)'
       : !on ? 'rgba(120,132,160,' + FADE + ')'
-      : flow ? `rgba(${c[0]},${c[1]},${c[2]},${0.22 + 0.30 * depth})`
-      : `rgba(${c[0]},${c[1]},${c[2]},${0.07 + 0.13 * depth})`
+      : flow ? `rgba(${c[0]},${c[1]},${c[2]},${(0.22 + 0.30 * depth) * hd})`
+      : `rgba(${c[0]},${c[1]},${c[2]},${(0.07 + 0.13 * depth) * hd})`
     ctx.lineWidth = touching ? 2.1 : flow ? 1.4 : 0.9
     if (flow && on) { ctx.setLineDash([7, 5]); ctx.lineDashOffset = -(Date.now() / 45) % 12 }
     // BUNDLED STRANDS, not straight lines. Two control points placed hard against the columns
@@ -640,7 +654,8 @@ function draw() {
       ctx.strokeStyle = 'rgba(160,215,255,.95)'; ctx.lineWidth = 1.5; ctx.stroke()
     }
 
-    ctx.globalAlpha = on ? 1 : 0.13
+    const hd = hopDim(n.id)
+    ctx.globalAlpha = on ? hd : 0.13
     // GLOW, but only where it is earned. shadowBlur is the single most expensive thing in this
     // loop, so it is spent on lit nodes near the camera -- which is exactly where the eye already
     // is. Applying it to all 87 costs frames and, worse, turns the whole field into fog.
@@ -651,10 +666,10 @@ function draw() {
     // hollow outline is only agreed. That reads at a glance and leaves hue free to say WHERE.
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7)
     if (n.ghost || n.state === 'planned') {
-      ctx.strokeStyle = rgba(col, (on ? 0.8 : 0.13) * (0.4 + 0.6 * p.f))
+      ctx.strokeStyle = rgba(col, (on ? 0.8 * hd : 0.13) * (0.4 + 0.6 * p.f))
       ctx.lineWidth = 1.4; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([])
     } else {
-      ctx.fillStyle = col; ctx.globalAlpha = (on ? 1 : 0.13) * (0.45 + 0.55 * p.f); ctx.fill()
+      ctx.fillStyle = col; ctx.globalAlpha = (on ? hd : 0.13) * (0.45 + 0.55 * p.f); ctx.fill()
     }
     ctx.shadowBlur = 0
     ctx.globalAlpha = 1
@@ -688,10 +703,16 @@ function draw() {
   //
   // Drawn in a second pass so labels sit above every node, not just the ones behind them.
   const focused = !!(focusId || query || filterState || filterGroup)
-  const BUDGET = focused ? 26 : 14
+  // A deeper focus lights more nodes, so it needs more labels or the outer hops are anonymous
+  // dots -- which is exactly the thing depth was turned up to see.
+  const BUDGET = focused ? (18 + 10 * depth) : 14
   labelQueue.sort((A, B) => {
     const pri = (o) => (o.n === selected || o.n === hover ? 3 : o.n.id === focusId ? 3 : focused && o.on ? 2 : 0)
     const d = pri(B) - pri(A); if (d) return d
+    // then by hop: the chain is read outward, so hop 1 gets named before hop 3
+    const ha = lit && lit.get ? (lit.get(A.n.id) ?? 9) : 0
+    const hb = lit && lit.get ? (lit.get(B.n.id) ?? 9) : 0
+    if (ha !== hb) return ha - hb
     const gd = (deg.get(B.n.id) || 0) - (deg.get(A.n.id) || 0); if (gd) return gd
     return B.p.f - A.p.f
   })
@@ -836,7 +857,7 @@ for (const b of document.querySelectorAll('.depth button')) {
     for (const o of document.querySelectorAll('.depth button')) o.classList.toggle('on', o === b)
   }
 }
-document.querySelector('.depth button[data-d="1"]').classList.add('on')
+document.querySelector('.depth button[data-d="2"]').classList.add('on')
 
 const clearF = document.getElementById('clearF')
 for (const sp of document.querySelectorAll('#legend span[data-s]')) {

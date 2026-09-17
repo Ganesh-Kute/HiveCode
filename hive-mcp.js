@@ -216,6 +216,32 @@ const fmtTask = (t) => `${t.id} [${t.status}] ${t.by} -> ${t.to}: ${t.text}${t.d
 // Block until there is approved work for me (or a new chat message), then return.
 // This is how the agent reacts the INSTANT the owner approves — no polling loop,
 // no interval to tune. Resolves immediately if approved work already exists.
+/** WAKE ON STATE — the predicate that lets a roster run itself.
+ *
+ *  Without this, hive_wait only returns on work assigned TO you or a message naming you, so every
+ *  multi-agent roster silently depends on agents remembering to @ each other after each step. The
+ *  rules ASK them to (sync.js: "block on hive_wait until your specific state flag turns
+ *  APPROVED/READY") and nothing MAKES them, so a night roster stalls with no error: the reviewer
+ *  is asleep, the tests went green an hour ago, and nobody said so.
+ *
+ *  Shapes, all on one state key:
+ *     { key: 'tests', is: 'GREEN' }            exactly this value
+ *     { key: 'tests', in: ['GREEN', 'SKIP'] }  any of these
+ *     { key: 'tests', not: 'RED' }             anything except this (INCLUDING unset)
+ *     { key: 'tests' }                         any value at all, i.e. the key exists
+ *
+ *  `not` deliberately matches an unset key. A reviewer told "wake unless the build is RED" should
+ *  wake on a fresh room where nobody has set `build` yet -- treating absent as RED would hang it
+ *  forever waiting for a flag no one is going to write. */
+export function stateMatches(until, get) {
+  if (!until || !until.key) return false
+  const v = get(until.key)
+  if (Object.prototype.hasOwnProperty.call(until, 'is')) return String(v) === String(until.is)
+  if (Array.isArray(until.in)) return until.in.some((x) => String(x) === String(v))
+  if (Object.prototype.hasOwnProperty.call(until, 'not')) return String(v) !== String(until.not)
+  return v !== undefined && v !== null
+}
+
 function waitForWork(timeoutMs, opts = {}) {
   const s = requireSession()
   const tmap = s.hive.doc.getMap('tasks')
@@ -260,6 +286,13 @@ function waitForWork(timeoutMs, opts = {}) {
   }
   // Queued work no longer hides the mail. This returned `newChat: []` outright, which made
   // the busiest agent in the room the one guaranteed to see no messages at all.
+  // A state the caller is waiting for, checked BEFORE anything blocks: if it is already true the
+  // agent must not sit through a timeout waiting to be told something that happened an hour ago.
+  const state = s.hive.doc.getMap('swarm_state')
+  const until = opts.until && opts.until.key ? opts.until : null
+  const stateHit = () => stateMatches(until, (k) => state.get(k))
+  if (until && stateHit()) return Promise.resolve(deliver({ tasks: accepted(), stateReached: { ...until, value: state.get(until.key) } }))
+
   const ready = accepted()
   if (ready.length) return Promise.resolve(deliver({ tasks: ready }))
   // Anything already unread is handed over immediately rather than waited past — that backlog
@@ -270,7 +303,7 @@ function waitForWork(timeoutMs, opts = {}) {
   }
   return new Promise((resolve) => {
     let done = false
-    const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); controls.unobserve(onCtl); resolve(v) } }
+    const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); controls.unobserve(onCtl); if (until) { try { state.unobserve(onState) } catch { /* never observed */ } } resolve(v) } }
     const onTask = () => { const a = accepted(); if (a.length) finish(deliver({ tasks: a })) }
     const onChat = () => {
       const seen = box.peek(chat.toArray())
@@ -279,7 +312,11 @@ function waitForWork(timeoutMs, opts = {}) {
       finish(deliver({ tasks: accepted() }))
     }
     const onCtl = () => { if (paused()) finish({ paused: true }) } // paused mid-wait -> stop handing out work
-    tmap.observe(onTask); chat.observe(onChat); controls.observe(onCtl)
+    // A paused agent is NOT woken by state: pausing means stop picking up work, and a state flag
+    // turning green is the room offering it work. It re-checks the predicate on its next wait
+    // after a human resumes it.
+    const onState = () => { if (until && !paused() && stateHit()) finish(deliver({ tasks: accepted(), stateReached: { ...until, value: state.get(until.key) } })) }
+    tmap.observe(onTask); chat.observe(onChat); controls.observe(onCtl); if (until) state.observe(onState)
     // On timeout, flush anything that arrived rather than dropping it: a message must never
     // expire unread just because the wait window closed on it.
     setTimeout(() => finish(box.hasUnread(chat.toArray()) ? deliver({ tasks: accepted() }) : null), timeoutMs)
@@ -293,8 +330,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name to assign to' }, text: { type: 'string', description: 'what to do' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Read tasks. Shows tasks directed at YOU (act only on accepted ones) and all pending tasks awaiting approval.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_wait', description: 'BLOCK until there is approved work for you, or unread mail arrives, then return BOTH. Use this as your main loop: call hive_wait; do the work; hive_complete; call hive_wait again. Returns instantly if approved work or unread mail already exists — nothing addressed to you can be missed while you were busy, because your read position is remembered between calls.',
-    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: "'any' (default) wakes on any new message; 'mention' only wakes when you are @mentioned or assigned a task — use it in a noisy room. Ambient messages are still delivered on the next wake either way, never dropped." } } } },
+  { name: 'hive_wait', description: 'BLOCK until there is approved work for you, unread mail arrives, or a project-state flag you named reaches the value you are waiting for — then return all of it. Use this as your main loop: call hive_wait; do the work; hive_complete; call hive_wait again. Returns instantly if any of those is ALREADY true, so nothing that happened while you were busy can be missed. Pass `until` to wait on the state machine instead of on somebody remembering to message you — that is how a roster runs itself overnight: the tester sets tests=GREEN, and the reviewer waiting on it wakes by itself.',
+    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: "'any' (default) wakes on any new message; 'mention' only wakes when you are @mentioned or assigned a task — use it in a noisy room. Ambient messages are still delivered on the next wake either way, never dropped." }, until: { type: 'object', description: 'wake when a GLOBAL PROJECT STATE key reaches a value. { key, is } for one exact value, { key, in: [...] } for any of several, { key, not } for anything else (an unset key counts as "not"), or { key } alone for "as soon as this is set at all". The result carries stateReached with the value that fired.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
   { name: 'hive_check', description: 'NON-BLOCKING: is anyone calling me? Returns unread messages addressed to you, plus approved work, and returns immediately. Call this between edits during a long task — that is the whole point: hive_wait blocks, so it cannot be used while you are working, and this can. If it reports priority "stop", deal with that BEFORE continuing what you were doing.',
     inputSchema: { type: 'object', properties: { peek: { type: 'boolean', description: 'true = look without marking messages read (default false: reading them here counts as read)' } } } },
   { name: 'hive_approve', description: 'Approve a pending task (you must be the owner of the target AI). The AI may then act on it.',
@@ -605,7 +642,7 @@ async function dispatch(req) {
       }
       case 'hive_wait': {
         const ms = Math.min(Math.max(Number(args.timeoutSeconds) || 60, 1), 300) * 1000
-        const r = await waitForWork(ms, { wakeOn: args.wakeOn })
+        const r = await waitForWork(ms, { wakeOn: args.wakeOn, until: args.until })
         const globalState = requireSession().hive.getState()
         const stateStr = Object.keys(globalState).length ? `\n[GLOBAL PROJECT STATE]\n${JSON.stringify(globalState, null, 2)}\n` : ''
         // Connection state, reported ONLY when it is bad. An agent that cannot tell a
