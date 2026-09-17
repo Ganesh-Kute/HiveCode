@@ -1845,7 +1845,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         try { fs.rmSync(path.join(ROOT, key)) } catch { }
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key)
         log(`[${name}] <- deleted ${key}`)
-      } else if (canOpen(key)) {
+      } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
+        // Same rule as the initial sweep above: a path this client ignores must not cost it
+        // a socket just because somebody else registered it.
         openFile(key)
       }
     })
@@ -1871,7 +1873,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!s || !syncFiles) return
     writeToDisk(RULES_FILE, HIVE_RULES_TEXT) // the law is always present in the room
     writeToDisk(AGENTS_FILE, AGENT_MANUAL_TEXT) // so an agent opening this folder learns how to join + behave
-    for (const key of manifest.keys()) if (canOpen(key)) openFile(key) // connect to every file I'm granted; each file-room's sync pulls its content
+    // Connect to every file I'm granted AND have not excluded; each file-room's sync pulls
+    // its content. `canOpen` is the TOKEN's scope -- what the relay would let me see. It is
+    // not the same question as "do I want this file", and using it alone meant a participant
+    // could not bound its own footprint: on 18 Sep 2026 two agents kept opening demo/** file
+    // rooms after their .gitignore had been narrowed to 35 paths, and between them consumed
+    // the relay's entire 512-connection budget. Since one socket is opened PER FILE, an
+    // ignore rule that does not stop the connection is not a containment tool at all.
+    // Same predicate reconcile() uses, so a file is never open but unreconcilable.
+    for (const key of manifest.keys()) if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) openFile(key)
     if (board.size) renderBoard()
     if (chat.length) renderChat()
     if (tasks.size) renderTasks()
