@@ -1174,7 +1174,13 @@ function start(root, room, relay, linkToken) {
     if (!fe) { if (disk === null) return; openFile(r); return }
     if (!fe.synced) return
     const docText = fe.text.toString()
-    if (docText === '' && !manifest.has(r)) {
+    // An empty shared doc is authoritative ONLY if we have history for this path. A file's
+    // NAME lives in the parent doc and its CONTENT in the file's own doc, on two separate
+    // connections with no atomicity between them — a client that dies mid-join leaves paths
+    // registered with nothing behind them. With no ancestor and real bytes on disk, "" means
+    // the publisher never finished, and adopting it silently empties the user's file.
+    // Mirrors the same fix in sync.js reconcile(); this copy is what a human in VS Code runs.
+    if (docText === '' && (!manifest.has(r) || (disk && !bases.has(r)))) {
       if (disk === null) return
       fe.doc.transact(() => applyDiff(fe.text, disk))
       manifest.set(r, 1)

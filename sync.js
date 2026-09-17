@@ -1216,8 +1216,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (disk !== null && hasConflictMarkers(disk) && !hasConflictMarkers(fe.text.toString())) { adoptResolved(relPath); return }
     }
     const docText = fe.text.toString()
-    if (docText === '' && !manifest.has(relPath)) {
-      // the relay has no copy of this path -> publish ours (a genuinely new file)
+    // An empty shared doc is authoritative ONLY if we have history for this path.
+    // A file's NAME lives in the parent doc and its CONTENT in the file's own doc, on two
+    // different connections — there is no atomicity across them. A client that joins a large
+    // project and dies mid-join gets every manifest key up and only some file bodies, leaving
+    // the room asserting that paths exist with nothing behind them. With no ancestor and real
+    // bytes on disk, "" means the publisher never finished, not that the file is empty, and
+    // adopting it deletes real work (measured: 186 files zeroed across three folders).
+    // A genuine emptying of a file we HAVE synced still has an ancestor, so it falls through
+    // to the merge below and still lands.
+    const noHistory = !bases.has(relPath) && !priorShadow.has(relPath)
+    if (docText === '' && (!manifest.has(relPath) || (disk && noHistory))) {
+      // the relay has no usable copy of this path -> publish ours (a genuinely new file,
+      // or one whose registration outlived the join that promised it)
       if (disk === null) return
       fe.doc.transact(() => applyDiff(fe.text, disk))
       stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)

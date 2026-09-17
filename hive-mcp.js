@@ -112,13 +112,52 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
   }
   session = { hive, room, relay, dir, name, owner, mailbox: null }
   persistSession({ dir, name, owner }) // survive MCP host restarts (see tryResumeSession)
-  // wait for the first sync so members/board/rules are ready
+  // Wait for the first sync so members/board/rules are ready.
+  //
+  // REPORT THE TRUTH ABOUT THIS. Until 18 Sep 2026 the timeout below simply resolved and the
+  // caller returned a cheerful "joined" banner whether or not the relay had accepted us. On a
+  // relay at capacity that is a false success report: the agent is told it is in a room, reads
+  // the rules, claims files and writes code, and NONE of it reaches anybody. It happened for
+  // real -- a relay answered 38,011 connections with Q430 while three agents believed they were
+  // collaborating. An agent cannot detect this on its own; the only honest place to catch it is
+  // here, at the moment we know whether the socket came up.
+  let synced = false
+  let connErr = ''
   await new Promise((resolve) => {
     let done = false
     const finish = () => { if (!done) { done = true; resolve() } }
-    hive.provider.on('sync', (s) => s && finish())
+    hive.provider.on('sync', (s) => { if (s) { synced = true; finish() } })
+    // A refusal arrives as a failed upgrade: the relay writes an HTTP status line carrying the
+    // Q-code and destroys the socket, so this event is the only place the reason is visible.
+    hive.provider.on('connection-error', (ev) => {
+      const code = ev && (ev.code || ev.status || ev.type)
+      if (!connErr) connErr = `the relay refused the connection${code ? ` (${code})` : ''}`
+    })
     setTimeout(finish, 8000) // don't hang if the relay is cold
   })
+  if (!synced) {
+    const why = connErr || 'no sync within 8s -- the relay did not answer'
+    return [
+      `NOT JOINED -- ${why}.`,
+      `room: ${room}`,
+      `relay: ${relay}`,
+      `folder: ${ROOT}`,
+      '',
+      'DO NOT START WORK. You are not in this room. Nothing you write will reach anyone, no',
+      'claim you make binds anyone else, and the files in this folder are NOT shared. Any work',
+      'you do now is invisible to the team and can be silently overwritten later.',
+      '',
+      'Most likely causes, in the order worth checking:',
+      '  - the relay is at capacity (Q430). Hivecode opens one socket PER FILE, so a large',
+      '    folder can exhaust it by itself. Check <relay-http>/health: connections vs',
+      '    limits.maxConnsTotal. Raise HIVE_MAX_CONNS_TOTAL, or narrow what syncs via .gitignore.',
+      '  - the relay is not running, or the port/room in the link is wrong.',
+      '  - the room is secured and this link carries no token (Q4xx on connect).',
+      '',
+      'Tell whoever is running the relay, then retry hive_join. Call hive_status to re-check:',
+      'it reports `connected` and `filesSynced`, and both are authoritative.',
+    ].join('\n')
+  }
   // The mailbox is created AFTER the first sync, so chat.length is the real room history and
   // not 0 — otherwise a fresh joiner would be handed the entire backlog as unread mail.
   // A resumed session carries its saved cursor forward instead, so anything posted while this
@@ -874,7 +913,44 @@ function mailBanner() {
   } catch { return '' }
 }
 
+// A MISSING REQUIRED ARGUMENT MUST BE REFUSED, NOT WRITTEN AS `undefined`.
+//
+// Nothing was validating `inputSchema.required`. The SDK does not enforce it, and every handler
+// read its arguments straight off the object, so a near-miss parameter name sailed through as
+// `undefined` and the tool reported success. Two real cases, both on 18 Sep 2026:
+//   hive_say({ message })    -> posted an EMPTY message and answered "sent: "
+//   hive_set_state({ value }) -> answered "Set global state [gate:cmd] to [undefined]", which
+//                                overwrote the room's gate command with the string "undefined"
+//                                and would have broken the handoff gate for every agent.
+// The failure mode is what makes it serious: the agent is told the action happened. It moves on,
+// and the room is left holding a corrupted value nobody wrote on purpose. Near-miss names are
+// the common case, so the refusal names the unknown argument that was supplied too.
+function missingRequired(req) {
+  const name = req && req.params && req.params.name
+  const tool = TOOLS.find((t) => t.name === name)
+  const schema = tool && tool.inputSchema
+  const required = schema && Array.isArray(schema.required) ? schema.required : []
+  if (!required.length) return ''
+  const args = (req.params && req.params.arguments) || {}
+  // undefined/null only: '' and 0 and false are legitimate values a caller may mean.
+  const missing = required.filter((k) => args[k] === undefined || args[k] === null)
+  if (!missing.length) return ''
+  const known = Object.keys(schema.properties || {})
+  const unknown = Object.keys(args).filter((k) => !known.includes(k))
+  const lines = [
+    `REFUSED -- ${name} needs ${missing.map((m) => `\`${m}\``).join(', ')} and it was not supplied.`,
+    `Nothing was written. This call did NOT happen.`,
+  ]
+  if (unknown.length) {
+    lines.push(`You passed ${unknown.map((u) => `\`${u}\``).join(', ')}, which ${name} does not take -- most likely you meant ${missing.map((m) => `\`${m}\``).join(', ')}.`)
+  }
+  lines.push(`${name} accepts: ${known.map((k) => (required.includes(k) ? `${k} (required)` : k)).join(', ')}.`)
+  return lines.join('\n')
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const bad = missingRequired(req)
+  if (bad) return { content: [{ type: 'text', text: bad }], isError: true }
   const res = await dispatch(req)
   // Never let the banner break a tool: append only to a well-formed text result, and skip the two
   // tools that already deliver mail themselves (appending would double-report the same messages).

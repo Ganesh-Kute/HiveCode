@@ -194,7 +194,11 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
       const t = tasks.get(taskId) || {}
       const where = room ? ` in room \`${room}\`` : ''
       const body = `Hivecode: **${t.to || rec.to}** finished this${where}.${note ? `\n\n${note}` : ''}`
-      await linear.call('create_comment', { issueId, body })   // issueId IS the uuid -- see idOf()
+      // `save_comment`, NOT `create_comment`. Linear's MCP uses save_* upsert naming for every
+      // write (save_issue, save_comment, save_document) -- the create_* names in third-party
+      // directory listings do not exist on the server, and calling one fails at the first real
+      // write-back with an unknown-tool error. Found by listing the live server's 66 tools.
+      await linear.call('save_comment', { issueId, body })   // issueId IS the uuid -- see idOf()
       return { ok: true, issue: rec.identifier }
     }
     return { ok: false, why: 'Q532 that task did not come from Linear' }

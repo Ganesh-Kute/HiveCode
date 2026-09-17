@@ -90,11 +90,21 @@ linearSrv = http.createServer((req, res) => {
     calls.push({ method: msg.method, name: (msg.params || {}).name, args: (msg.params || {}).arguments, session: req.headers['mcp-session-id'] })
     let result = {}
     if (msg.method === 'initialize') result = { protocolVersion: '2025-06-18', serverInfo: { name: 'linear-fake' } }
-    else if (msg.method === 'tools/list') result = { tools: [{ name: 'list_issues' }, { name: 'create_comment' }] }
+    else if (msg.method === 'tools/list') result = { tools: [{ name: 'list_issues' }, { name: 'save_comment' }] }
     else if ((msg.params || {}).name === 'list_issues') {
       if (!req.headers['mcp-session-id']) badSession = true
       result = { content: [{ type: 'text', text: JSON.stringify({ issues: ISSUES }) }] }
-    } else if ((msg.params || {}).name === 'create_comment') result = { content: [{ type: 'text', text: '{"ok":true}' }] }
+    } else if ((msg.params || {}).name === 'save_comment') result = { content: [{ type: 'text', text: '{"ok":true}' }] }
+    else if (/^create_(comment|issue)$/.test((msg.params || {}).name || '')) {
+      // The real server has NO create_* write tools -- it uses save_* upsert naming. The fake
+      // refuses them so the adapter can never quietly go back to a name that does not exist.
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Mcp-Session-Id': 'sess-123' })
+      res.end(`event: message
+data: ${JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'unknown tool' } })}
+
+`)
+      return
+    }
     const payload = JSON.stringify({ jsonrpc: '2.0', id: msg.id, result })
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Mcp-Session-Id': 'sess-123' })
     res.end(`event: message\ndata: ${payload}\n\n`)
@@ -160,8 +170,8 @@ try {
   bridge.watch()
   A.complete(mine.id, 'gate passed')
   await sleep(1500)
-  const comment = calls.filter((c) => c.name === 'create_comment').pop()
-  T('finishing the work comments on the ticket', !!comment, `${calls.filter((c) => c.name === 'create_comment').length} comment(s)`)
+  const comment = calls.filter((c) => c.name === 'save_comment').pop()
+  T('finishing the work comments on the ticket', !!comment, `${calls.filter((c) => c.name === 'save_comment').length} comment(s)`)
   T('the comment names the agent that did it', comment && /AgentA|AgentB/.test(comment.args.body), comment && comment.args.body)
   T('the ticket was NOT closed by us', !calls.some((c) => /update_issue|close/.test(String(c.name))))
 
