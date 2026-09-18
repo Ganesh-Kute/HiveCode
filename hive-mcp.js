@@ -774,6 +774,19 @@ async function dispatch(req) {
         // always a mistake, and refusing here is far cheaper than refusing after the agent has
         // built the content it intended to write.
         enforceDcoLock({ path: region });
+        // HIV-27: A CLAIM YOU CANNOT PUBLISH IS NOT A CLAIM. The claim is a path string in the
+        // shared map; whether that path's BYTES sync is decided separately, per client. Nothing
+        // compared them, so an agent could hold an exclusive claim on a file nobody else can
+        // see, do the work, pass a gate running in its own folder where the file is real, and
+        // hand back something that never existed for anyone else -- every signal green.
+        // Refused HERE rather than at release: by release time the work is already built and
+        // all we could do is tell the agent it was wasted.
+        const unshared = requireSession().hive.whyNotShared(region)
+        if (unshared) {
+          return err(`refusing to claim ${region} — ${unshared}
+
+Nothing was claimed. Put the path inside the room's sync scope, or pick one that is already in it, BEFORE you start work: a claim whose bytes never leave this folder is indistinguishable from one that works.`)
+        }
         // SETTLED, not optimistic. The synchronous claim answers from this replica alone and
         // tells three simultaneous callers "it's yours" (measured 5/5). An agent then edits
         // behind a lock it does not hold. This waits for the relay to serialise it.
@@ -798,6 +811,15 @@ async function dispatch(req) {
         // Path gate + lease consumed BEFORE the write, not after: a spent lease that still wrote is
         // indistinguishable from no lease at all.
         enforceDcoLock({ consumes: true, path: editPath })
+        // HIV-27, same reasoning: this tool's entire promise is that the change reaches every
+        // peer. On a path this client never opens a connection for, it would not -- and it
+        // would still report success.
+        const unshared = requireSession().hive.whyNotShared(editPath)
+        if (unshared) {
+          return err(`refusing to write ${editPath} through the medium — ${unshared}
+
+Nothing was written. This tool exists to guarantee the change syncs to every peer; on this path it cannot.`)
+        }
         const r = requireSession().hive.edit(editPath, String(args.content ?? ''), String(args.intent || ''))
         if (r.error) return err(r.error)
         return text(r.conflicted

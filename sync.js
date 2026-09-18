@@ -1188,6 +1188,43 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // or a full-write grant => everything I can open is writable (back-compat).
   const canWrite = (relPath) => !myScope || writeAllowed(myScope, relPath)
 
+  // WOULD AN EDIT TO THIS PATH ACTUALLY REACH ANYONE? '' if yes, else the reason. (HIV-27)
+  //
+  // A claim is a path STRING in the shared `claims` map. Whether that path's BYTES sync is
+  // decided somewhere else entirely, per client, by canOpen/isIgnored. Nothing compared the
+  // two, so an agent could hold an exclusive claim on a file nobody else can see, do the work,
+  // pass a gate that runs in its OWN folder where the file is real, and hand back something
+  // that never existed for anyone else. Every signal green, the work genuinely done, and
+  // invisible. Observed live: an agent edited scripts/check-deploy.mjs, claimed it, released it
+  // through the gate, and the other two folders still held the old bytes.
+  //
+  // This is checked at CLAIM time on purpose. Release is too late -- by then the agent has
+  // built the thing it intended to write, and all we could do is tell it the work was wasted.
+  //
+  // THE FALSE-POSITIVE DIRECTION IS WHAT MAKES THIS USABLE, and it is easy to get wrong.
+  // A claim may name a logical region rather than a file ("auth-refactor", "the parser"), and
+  // under an ALLOW-LIST .gitignore -- `/*` followed by negations, which is how a room bounds
+  // itself against the one-socket-per-file limit -- isIgnored() returns true for every string
+  // that is not an explicitly allowed path. A naive isIgnored() check would therefore refuse
+  // almost every legitimate claim in exactly the rooms that need this guard most, and it would
+  // be switched off within a day. So we only judge things we have positive reason to believe
+  // are FILES: known to the room, present on disk, or carrying a directory separator.
+  const whyNotShared = (relPath) => {
+    const p = String(relPath || '')
+    if (!p) return ''
+    let onDisk = false
+    try { onDisk = fs.existsSync(path.join(ROOT, p)) } catch { onDisk = false }
+    // SKIP counts as positive evidence: those names ARE files by definition, and a control
+    // file sits in the room root with no separator in its name, so the heuristics below miss it.
+    const isFile = manifest.has(p) || fileDocs.has(p) || SKIP.has(p) || onDisk || p.includes('/')
+    if (!isFile) return ''                       // a label, not a path -- not ours to judge
+    if (!isSafeRelPath(p)) return `"${p}" is not a safe relative path, so it can never be synced`
+    if (SKIP.has(p)) return `${p} is a Hivecode control file, not shared source`
+    if (!canOpen(p)) return `your access token's scope does not cover ${p}, so its bytes stay in this folder`
+    if (isIgnored(p)) return `${p} is ignored by a .gitignore here, so this client never opens a sync connection for it -- anything you write stays in this folder and no other agent will ever see it`
+    return ''
+  }
+
   const known = new Set()
   const mtimes = new Map()
   // Paths that already existed on disk when this client STARTED. This is the
@@ -2265,6 +2302,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       return false
     },
     senseClaim: (region) => coordinator.sense(String(region)), // the live claim on a region, or null
+    whyNotShared,        // '' if edits to this path reach the room, else why they would not (HIV-27)
     claimsBoard: () => coordinator.board(),                     // everything currently claimed
     // --- intent-aware fork resolution: any agent may judge; the medium validates ---
     forkInfo,            // the active fork on a file as a resolvable object (base + versions + signed intents), or null
