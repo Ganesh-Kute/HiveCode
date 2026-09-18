@@ -37,6 +37,7 @@ import { startSync, parseLink } from './sync.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
+import * as OB from './hive-obligations.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
 let session = null // { hive, room, relay, dir, name, mailbox }
@@ -205,7 +206,17 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
       // 0, and a later single mention must still ring. `>` would go permanently silent.
       if (!m.mentioned || m.mentions.length === lastMailSignal) return
       lastMailSignal = m.mentions.length
-      server.notification({
+      // THE CATCH BELOW DOES NOT COVER THIS CALL. `notification()` is async, so a failure inside
+      // it is a REJECTED PROMISE, not a thrown exception -- it sails past the surrounding
+      // try/catch, becomes an unhandled rejection, and takes the whole agent down. Observed
+      // 19 Sep 2026: a second agent posting chat to a server whose transport was not connected
+      // crashed the process from inside this Yjs observer, with the stack pointing at a `try`
+      // that looked like it had the case covered.
+      //
+      // A doorbell that can kill the agent is strictly worse than no doorbell -- and this one is
+      // already optional by design (custom MCP notifications are ignorable by spec), so the right
+      // behaviour on any failure is silence.
+      Promise.resolve(server.notification({
         method: 'notifications/hive_mail',
         params: {
           mentioned: true,
@@ -215,7 +226,7 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
           latest: formatMessage(m.mentions[m.mentions.length - 1] || {}),
           hint: 'call hive_wait or hive_check to read it — this notification consumed nothing',
         },
-      })
+      })).catch(() => { /* no transport, or a client that does not take notifications */ })
     } catch (e) {
       // client might not support notifications, swallow error
     }
@@ -379,8 +390,12 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   { name: 'hive_complete', description: 'Mark a task you were doing as done (optionally with a note).',
     inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id'] } },
-  { name: 'hive_say', description: 'Post a coordination message to the room chat. Use this to announce what you are about to work on BEFORE editing (e.g. "taking auth.js: adding login"). Address someone directly with @Name — that is what makes it land as mail rather than ambient chatter. Set urgent:true when you need them to stop what they are doing.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = prefix [!] so the recipient treats it as "handle before continuing", not "read at your next boundary"' } }, required: ['text'] } },
+  { name: 'hive_say', description: 'Post a coordination message to the room chat. Use this to announce what you are about to work on BEFORE editing (e.g. "taking auth.js: adding login"). Address someone directly with @Name — that is what makes it land as mail rather than ambient chatter. Set urgent:true when you need them to stop what they are doing. Set needsReply:true when you are ASKING something — the room then tracks that you are owed an answer, and tells you if you addressed somebody who is not here.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = prefix [!] so the recipient treats it as "handle before continuing", not "read at your next boundary"' }, needsReply: { type: 'boolean', description: 'true = this is a QUESTION and you are owed an answer. Records an obligation against everyone you named. It stays open until YOU call hive_answered -- the person you asked cannot close it, and answering is not closing. If you named someone who is not in the room you are told so immediately, instead of waiting forever.' }, replyWithinMinutes: { type: 'number', description: 'how long before you are reminded (default 10). The reminder arrives on a hive_wait you were going to make anyway, so it costs nothing.' } }, required: ['text'] } },
+  { name: 'hive_answered', description: 'Close a question YOU asked with needsReply — you are saying you got what you needed. Only the asker can call this: the agent you asked cannot mark its own answer sufficient, and a reply alone does not close anything. Pass id for one, or from:"Name" to close everything you asked that agent.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'the obligation id from hive_say or hive_owed' }, from: { type: 'string', description: 'close every open question you asked this agent' } } } },
+  { name: 'hive_owed', description: 'Who owes an answer to whom, and for how long. Read this when the room has gone quiet: an agent that stopped replying looks exactly like an agent that is thinking, and this is the difference. Shows questions aimed at YOU (answer these) and questions you asked (close these with hive_answered). Anything marked STALE has been reminded three times and is now the room\'s problem, not one agent\'s.',
+    inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'true = the whole room, not just yours' } } } },
   { name: 'hive_busy', description: 'Tell the room you are mid-task, so anyone who @mentions you is told to expect a delay AT THE MOMENT THEY SEND, instead of waiting on a reply that is not coming yet. This posts no message and silences nothing — you still receive mail and must still call hive_check between edits. It expires by itself, so a crash cannot leave you permanently "busy". Clear it when you finish.',
     inputSchema: { type: 'object', properties: { what: { type: 'string', description: 'what you are working on, in a few words — the sender reads this' }, minutes: { type: 'number', description: 'how long to hold it (default 10). It expires on its own either way.' }, clear: { type: 'boolean', description: 'true = I am free again' } } } },
   { name: 'hive_read_chat', description: 'Read the room conversation. Read this to see what humans and other agents are doing before and while you work. Use mentioningMe to recover only what was addressed to you.',
@@ -579,7 +594,40 @@ async function dispatch(req) {
           .map((n) => describeRecipient(n, findBusy(busyMap, n), present.has(n.toLowerCase())))
           .filter(Boolean)
         const to = mentionsAll(body) ? 'the whole room (@all)' : named.map((n) => '@' + n).join(', ')
-        return text(`sent to ${to}: ${body}` + (notes.length ? '\n\n' + notes.join('\n') : ''))
+        // NEEDS REPLY. A question is recorded, not just spoken. One obligation per agent named,
+        // and `absent` is stamped NOW -- because "was anyone even there when I asked" is a fact
+        // about the past, and recomputing it later would let a question asked into an empty room
+        // start looking fine the moment somebody walks in. This is the 19 Sep 2026 failure
+        // exactly: one message to @Reviewer, who had never been in the room, then six hours of
+        // silence that no tool, log or process reported.
+        let obStr = ''
+        if (args.needsReply) {
+          const obMap = s.hive.doc.getMap('obligations')
+          // Floor in MILLISECONDS, not minutes. `Math.max(1, mins)` silently turned a caller's
+          // 0.05 into 1 -- a clamp that changes what was asked for and says nothing, which is the
+          // same shape as every other defect on this project. One second is enough to stop a
+          // zero-or-negative busy loop, and everything above it is honoured as written.
+          const dueMs = Math.max(1000, (Number(args.replyWithinMinutes) || 10) * 60000)
+          const targets = mentionsAll(body)
+            ? s.hive.members().map((m) => String(m.name)).filter((n) => n.toLowerCase() !== s.name.toLowerCase())
+            : named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+          const opened = targets.map((n) => OB.open(obMap, {
+            from: s.name, to: n, text: body, dueMs, absent: !present.has(n.toLowerCase()),
+          }))
+          if (opened.length) {
+            obStr = `\n\nYOU ARE OWED AN ANSWER — ${opened.map((o) => `${o.id} (${o.to})`).join(', ')}\n` +
+              `This stays open until YOU call hive_answered. The agent you asked cannot close it, and ` +
+              `a reply does not close it either — you decide whether you were actually answered. If it ` +
+              `is still open in ${Math.round(dueMs / 60000)} min you will be reminded on your next hive_wait.`
+            const ghosts = opened.filter((o) => o.absent)
+            if (ghosts.length) {
+              obStr += `\n\n⚠ ${ghosts.map((o) => '@' + o.to).join(', ')} — NOT IN THIS ROOM. Nobody by that ` +
+                `name is here, so nobody is going to answer. Call hive_members and re-address it now; ` +
+                `this is the one failure mode that otherwise costs you a whole shift.`
+            }
+          }
+        }
+        return text(`sent to ${to}: ${body}` + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
       }
       case 'hive_busy': {
         const s = requireSession()
@@ -698,6 +746,25 @@ async function dispatch(req) {
           : ''
         
         const me = requireSession().name
+        // THE KNOCK RIDES THE WAIT. hive_wait is the agent's idle state and a blocked wait costs
+        // zero tokens, so a reminder delivered here arrives on a call that was going to happen
+        // anyway. Agent Relay re-injects its boomerang on a broker timer, which spends a turn on
+        // every knock; this spends nothing. The reminder is deliberately NOT sent to a paused
+        // agent -- paused means stop, and nagging a stopped agent is just noise.
+        const obMap = (() => { try { return requireSession().hive.doc.getMap('obligations') } catch { return null } })()
+        let owedStr = ''
+        if (obMap) {
+          const due = OB.overdue(obMap, me)
+          if (due.length) {
+            // Only a DELIVERED knock moves the deadline. If merely NOTICING an overdue record
+            // rescheduled it, an agent that never calls hive_wait would have its deadline pushed
+            // out forever by whoever happened to read the board -- exactly backwards.
+            for (const o of due) OB.knock(obMap, o.id)
+            owedStr = `\n[YOU OWE ${due.length} ANSWER(S)] These were asked of you and are still open. ` +
+              `Answer in chat with @Name — you cannot close them yourself, the asker does that.\n` +
+              due.map((o) => '  ' + OB.describe(o)).join('\n') + '\n'
+          }
+        }
         // Direct address is separated from ambient traffic on every path. It used to be that
         // only a PAUSED agent got this distinction, so a working agent could not tell "stop,
         // wrong file" from two other agents talking to each other.
@@ -717,13 +784,41 @@ async function dispatch(req) {
           }
           return text(`⏸ You are PAUSED by mission control. Stop new work and wait. You will be woken if someone @mentions you or assigns you a task; otherwise just call hive_wait again.${stateStr}`)
         }
-        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${connStr}${stateStr}`)
+        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${stateStr}`)
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${connStr}${stateStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+        return text(`${owedStr}${connStr}${stateStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+      }
+      case 'hive_answered': {
+        const s2 = requireSession()
+        const obMap = s2.hive.doc.getMap('obligations')
+        if (args.from) {
+          const closed = OB.dischargeFrom(obMap, { by: s2.name, to: String(args.from) })
+          if (!closed.length) return text(`Nothing open that you asked @${args.from}. hive_owed shows what is.`)
+          return text(`Closed ${closed.length} question(s) you asked @${args.from}:\n` + closed.map((o) => '  ' + o.text).join('\n'))
+        }
+        if (!args.id) return err('hive_answered needs either id (one question) or from (everything you asked one agent). hive_owed lists both.')
+        const r2 = OB.discharge(obMap, { id: String(args.id), by: s2.name })
+        if (!r2.ok) return err(r2.reason)
+        return text(r2.already ? `${args.id} was already closed.` : `Closed ${args.id}: "${r2.rec.text}"`)
+      }
+      case 'hive_owed': {
+        const s2 = requireSession()
+        const obMap = s2.hive.doc.getMap('obligations')
+        if (args.all) {
+          const b = OB.board(obMap)
+          if (!b.open) return text('Nothing outstanding in this room.')
+          return text(`${b.open} open, ${b.stale} stale:\n` + b.lines.map((l) => '  ' + l).join('\n'))
+        }
+        const mine = OB.owedBy(obMap, s2.name), theirs = OB.owedTo(obMap, s2.name)
+        if (!mine.length && !theirs.length) return text('You owe nothing and are owed nothing. (Pass all:true for the whole room.)')
+        const parts = []
+        if (mine.length) parts.push(`YOU OWE ${mine.length} ANSWER(S) — answer in chat with @Name; the asker closes it:\n` + mine.map((o) => '  ' + OB.describe(o)).join('\n'))
+        if (theirs.length) parts.push(`YOU ARE OWED ${theirs.length} — close with hive_answered once you actually have what you needed:\n` + theirs.map((o) => '  ' + OB.describe(o)).join('\n'))
+        return text(parts.join('\n\n'))
       }
       case 'hive_set_state': { requireSession().hive.setState(String(args.key), String(args.val)); return text(`Set global state [${args.key}] to [${args.val}]`) }
       case 'hive_read_state': { return text(requireSession().hive.getState()) }
