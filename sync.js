@@ -1056,6 +1056,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       refusedFiles.set(relPath, (refusedFiles.get(relPath) || 0) + 1)
       noteRefusals()
     })
+    // Newly opened counts as used, and opening is the moment the working set can go over
+    // its bound — so this is where the least-recently-used ones are let go.
+    touched.set(relPath, Date.now())
+    evictIfOverCap(relPath)
     return e
   }
   function closeFile(relPath) {
@@ -1067,6 +1071,60 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fileDocs.delete(relPath)
   }
   const fileText = (relPath) => { const e = fileDocs.get(relPath); return e ? e.text : null }
+
+  // HIV-18: BOUND HOW MANY FILE SOCKETS THIS CLIENT HOLDS.
+  //
+  // Hivecode opens one WebSocket per FILE. A relay allows 512 connections in total by
+  // default, and a normal project has more files than that, so a single client could
+  // exhaust the whole relay by itself. Measured 18 Sep 2026: 889 files, 38,011 Q430
+  // refusals in one evening, three agents locked out — and because a file-doc that never
+  // syncs reads as EMPTY, 186 files per folder were written to 0 bytes.
+  //
+  // Holding every file open forever is what made that possible. A client now keeps a
+  // BOUNDED working set: the most recently used MAX_OPEN files stay connected, the rest
+  // are closed and reopened on demand. Closing a file doc costs nothing on disk — the
+  // bytes stay where they are, the room keeps the content, and touching the file reopens
+  // it and pulls the current copy.
+  //
+  // THE TRADE, stated plainly: a file outside the working set does not receive remote
+  // edits until something touches it. That is a real semantic change, and it is strictly
+  // better than the alternative it replaces, which was not receiving them either AND
+  // believing the file was empty. The default is high enough that ordinary projects never
+  // notice; size it as MAX_OPEN x agents < the relay's maxConnsTotal.
+  //
+  // NEVER EVICT, because these lose work rather than merely adding latency:
+  //   - a doc that has not synced (its content has not reached the relay yet)
+  //   - a file in an unresolved conflict (its fork record is live and local-only)
+  //   - a file anyone currently holds a claim on (they are mid-edit)
+  //   - anything used within the grace window
+  const MAX_OPEN = Math.max(8, Number(process.env.HIVE_MAX_OPEN_FILES) || 128)
+  // Configurable because the grace window is what makes eviction untestable otherwise: in a
+  // short run every file was touched seconds ago, so nothing is ever eligible.
+  const EVICT_GRACE_MS = Number(process.env.HIVE_EVICT_GRACE_MS) || 30000
+  const touched = new Map() // relPath -> last use (ms)
+  const touchFile = (relPath) => { if (fileDocs.has(relPath)) touched.set(relPath, Date.now()) }
+  let evicted = 0
+  function evictIfOverCap(keep) {
+    if (fileDocs.size <= MAX_OPEN) return
+    const now = Date.now()
+    const isClaimed = (r) => { try { return claims.has(r) } catch { return false } }
+    const cand = []
+    for (const [r, e] of fileDocs) {
+      if (r === keep || !e.synced) continue
+      if (conflicted.has(r)) continue
+      try { if (e.conflict && e.conflict.size) continue } catch { }
+      if (isClaimed(r)) continue
+      const t = touched.get(r) || 0
+      if (now - t < EVICT_GRACE_MS) continue
+      cand.push([r, t])
+    }
+    cand.sort((a, b) => a[1] - b[1]) // least recently used first
+    let over = fileDocs.size - MAX_OPEN
+    for (const [r] of cand) {
+      if (over-- <= 0) break
+      closeFile(r); touched.delete(r); evicted++
+    }
+  }
 
   // My own path scope, read from my token (for THIS room). Used so I don't even
   // try to open files I'm not granted — the relay would reject them anyway, but
@@ -1211,6 +1269,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
+    touchFile(relPath) // reconciling a file IS using it — keep it in the working set
     // SOURCE CAPTURE (fork gate): before ANYTHING in this pass can merge over or render into
     // this file, record any authored edit sitting on disk. The edit enters the provenance
     // DAG first; whatever happens to the disk afterwards can no longer lose it.
@@ -1891,9 +1950,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key)
         log(`[${name}] <- deleted ${key}`)
       } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
-        // Same rule as the initial sweep above: a path this client ignores must not cost it
-        // a socket just because somebody else registered it.
-        openFile(key)
+        // Same rule as the initial sweep: a path this client ignores must not cost it a
+        // socket just because somebody else registered it.
+        //
+        // AND the same BOUND. This observer is how a joining client learns the room's whole
+        // manifest — every existing path arrives here as a remote change — so capping only
+        // the sweep achieved nothing: the first measurement of this cap showed a client with
+        // cap 8 holding 30 file docs, every one of them opened right here. A path we decline
+        // to open now is not lost; it opens when something touches it.
+        if (fileDocs.size < MAX_OPEN) openFile(key)
       }
     })
   })
@@ -1926,7 +1991,24 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // the relay's entire 512-connection budget. Since one socket is opened PER FILE, an
     // ignore rule that does not stop the connection is not a containment tool at all.
     // Same predicate reconcile() uses, so a file is never open but unreconcilable.
-    for (const key of manifest.keys()) if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) openFile(key)
+    // BOUND THE INITIAL SWEEP, not just the steady state. This burst is precisely when the
+    // budget blows: a client with 889 files used to try to open 889 sockets at once against
+    // a 512-connection relay. LRU eviction cannot help here — during a burst every file was
+    // touched seconds ago, so nothing is eligible to evict. The only thing that works is to
+    // not open them all.
+    //
+    // Files that exist on THIS client's disk come first: they are the ones that need
+    // reconciling, and a path we have no local copy of can wait until something asks for it.
+    const openable = [...manifest.keys()].filter((k) => canOpen(k) && !SKIP.has(k) && !isIgnored(k))
+    const localFirst = openable.sort((a, b) => {
+      const la = fs.existsSync(path.join(ROOT, a)) ? 0 : 1
+      const lb = fs.existsSync(path.join(ROOT, b)) ? 0 : 1
+      return la - lb
+    })
+    for (const key of localFirst.slice(0, MAX_OPEN)) openFile(key)
+    if (localFirst.length > MAX_OPEN) {
+      log(`[${name}] ${localFirst.length} files in this room, holding ${MAX_OPEN} open (HIVE_MAX_OPEN_FILES). The rest sync when touched.`)
+    }
     if (board.size) renderBoard()
     if (chat.length) renderChat()
     if (tasks.size) renderTasks()
@@ -2164,6 +2246,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         filesSynced: synced,
         notSyncing: notSyncing.length,
         notSyncingFiles: notSyncing.slice(0, 20),
+        // The working set and its bound. `openCap` x agents must stay under the relay's
+        // maxConnsTotal, and `evicted` climbing steadily means the cap is too small for
+        // how this room actually works — both are things an operator can only act on if
+        // they can see them.
+        openCap: MAX_OPEN,
+        evicted,
       }
     },
     stop: () => {
