@@ -137,7 +137,7 @@ export function chooseAssignee(issue, { agents, identity = {}, openCount = () =>
 // `room` is passed in rather than read off the sync handle: startSync returns no room field, so
 // `hive.room` is undefined and interpolating it posted "in room `undefined`" into a real ticket.
 // A comment on somebody's Linear issue is the most externally visible thing this file does.
-export function makeBridge({ hive, linear, room = '', label = 'hivecode', states = null, statusTypes, identity = {}, assignAs, readOnly = false, team = null, limit = 50 }) {
+export function makeBridge({ hive, linear, room = '', label = 'hivecode', states = null, statusTypes, identity = {}, assignAs, readOnly = false, team = null, limit = 50, maxPages = 20 }) {
   // issue id -> room task id. In ROOM state so a restart cannot duplicate the board.
   const seen = hive.doc.getMap('linear_tasks')
   const tasks = hive.doc.getMap('tasks')
@@ -145,16 +145,41 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
   const agentsHere = () => (hive.members ? hive.members() : []).filter((p) => p.kind === 'ai').map((p) => p.name)
 
   /** One pass: read Linear, put anything new on the board. Safe to run on a timer. */
-  async function pull({ agents } = {}) {
+  async function pull({ agents, team: teamOverride } = {}) {
+    const filterTeam = teamOverride !== undefined ? teamOverride : team
     // `limit`, NOT the GraphQL-style `first` this originally sent. Linear answered a `first`
     // query with an empty list rather than an error, so the bridge reported "0 tickets" against a
     // workspace that had four -- a wrong parameter name that looked exactly like an empty backlog.
     // list_issues also takes server-side team/label/state filters, but the fetch is deliberately
     // left BROAD so that when nothing matches, pull() can still say what labels and statuses it
     // actually saw. A server-side filter returns an empty list and takes the diagnosis with it.
-    const res = await linear.call('list_issues', { limit, ...(team ? { team } : {}) })
-    const payload = unwrap(res)
-    const issues = Array.isArray(payload) ? payload : (payload && payload.issues) || []
+    // HIV-14: Paginate and filter by team; keep the label/status filtering local.
+    const issues = []
+    let cursor = undefined
+    let pageCount = 0
+    const pageCap = maxPages > 0 ? maxPages : 20
+
+    while (pageCount < pageCap) {
+      pageCount++
+      const args = { limit, ...(filterTeam ? { team: filterTeam } : {}) }
+      if (cursor) args.cursor = cursor
+      const res = await linear.call('list_issues', args)
+      const payload = unwrap(res)
+      const pageIssues = Array.isArray(payload) ? payload : (payload && payload.issues) || []
+      issues.push(...pageIssues)
+
+      let nextCursor = null
+      if (payload && !Array.isArray(payload)) {
+        if (payload.hasNextPage !== false) {
+          nextCursor = payload.cursor || (payload.pageInfo && payload.pageInfo.endCursor) || payload.nextCursor || null
+        }
+      }
+      if (!nextCursor || pageIssues.length === 0 || nextCursor === cursor) {
+        break
+      }
+      cursor = nextCursor
+    }
+
     const wanted = pickIssues(issues, { label, states, statusTypes })
     const roster = agents || agentsHere()
     const made = []
@@ -224,13 +249,13 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
 }
 
 // ---- main -------------------------------------------------------------------------------
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const argv = process.argv.slice(2)
   const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || '') }
   const LINK = argv.find((a) => !a.startsWith('--')) || ''
   const TOKEN = process.env.LINEAR_MCP_TOKEN || ''
   if (!LINK || !TOKEN) {
-    console.error('usage: LINEAR_MCP_TOKEN=… node hive-linear.js "<relay|room>" [--label hivecode] [--once]')
+    console.error('usage: LINEAR_MCP_TOKEN=… node hive-linear.js "<relay|room>" [--label hivecode] [--team team] [--limit N] [--max-pages N] [--once]')
     process.exit(2)
   }
   const { relay, room } = parseLink(LINK)
@@ -242,7 +267,12 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const READ_ONLY = /\/readonly\/?$/.test(URL_)
   const linear = mcpClient({ url: URL_, token: TOKEN })
   const LABEL = argv.includes('--any-label') ? null : flag('label', 'hivecode')
-  const bridge = makeBridge({ hive, linear, room, readOnly: READ_ONLY, label: LABEL, team: flag('team') || null, assignAs: flag('name', 'Linear') })
+  const bridge = makeBridge({
+    hive, linear, room, readOnly: READ_ONLY, label: LABEL,
+    team: flag('team') || null, assignAs: flag('name', 'Linear'),
+    limit: flag('limit') ? Number(flag('limit')) : 50,
+    maxPages: flag('max-pages') ? Number(flag('max-pages')) : 20,
+  })
   console.log(`[hive-linear] ${URL_}${READ_ONLY ? '  (read-only: tickets come in, nothing is written back)' : '  (read-write)'}`)
 
   await linear.init()

@@ -82,6 +82,7 @@ let ISSUES = [
   { id: 'ENG-3', uuid: 'u-i3', title: 'not ours', labels: [{ name: 'design' }], status: 'Todo', statusType: 'unstarted' },
 ]
 let badSession = false
+let paginateLinearSrv = false
 linearSrv = http.createServer((req, res) => {
   let body = ''
   req.on('data', (d) => { body += d })
@@ -93,7 +94,31 @@ linearSrv = http.createServer((req, res) => {
     else if (msg.method === 'tools/list') result = { tools: [{ name: 'list_issues' }, { name: 'save_comment' }] }
     else if ((msg.params || {}).name === 'list_issues') {
       if (!req.headers['mcp-session-id']) badSession = true
-      result = { content: [{ type: 'text', text: JSON.stringify({ issues: ISSUES }) }] }
+      const args = (msg.params || {}).arguments || {}
+      if (paginateLinearSrv) {
+        if (!args.cursor) {
+          result = { content: [{ type: 'text', text: JSON.stringify({
+            issues: [
+              { id: 'MULTI-1', uuid: 'u-m1', title: 'multi 1', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' },
+              { id: 'MULTI-2', uuid: 'u-m2', title: 'multi 2 (design)', labels: [{ name: 'design' }], status: 'Todo', statusType: 'unstarted' },
+            ],
+            hasNextPage: true,
+            cursor: 'page-2'
+          }) }] }
+        } else if (args.cursor === 'page-2') {
+          result = { content: [{ type: 'text', text: JSON.stringify({
+            issues: [
+              { id: 'MULTI-3', uuid: 'u-m3', title: 'multi 3', labels: [{ name: 'hivecode' }], status: 'In Progress', statusType: 'started' }
+            ],
+            hasNextPage: false,
+            cursor: null
+          }) }] }
+        } else {
+          result = { content: [{ type: 'text', text: JSON.stringify({ issues: [], hasNextPage: false }) }] }
+        }
+      } else {
+        result = { content: [{ type: 'text', text: JSON.stringify({ issues: ISSUES }) }] }
+      }
     } else if ((msg.params || {}).name === 'save_comment') result = { content: [{ type: 'text', text: '{"ok":true}' }] }
     else if (/^create_(comment|issue)$/.test((msg.params || {}).name || '')) {
       // The real server has NO create_* write tools -- it uses save_* upsert naming. The fake
@@ -186,6 +211,53 @@ try {
   // contain the word undefined.
   T('the comment names the real room', comment && comment.args.body.includes(ROOM), comment && comment.args.body)
   T('nothing undefined was posted to the ticket', comment && !/undefined/.test(comment.args.body))
+
+  // HIV-14: multi-page pagination and team filter against the live fake Linear server
+  paginateLinearSrv = true
+  const multiBridge = makeBridge({ hive: board, linear, room: ROOM, team: 'Eng', assignAs: 'Linear' })
+  const multiRes = await multiBridge.pull()
+  await sleep(1200)
+
+  const multiCalls = calls.filter((c) => c.name === 'list_issues').slice(-2)
+  T('follows cursor across multiple pages until exhausted', multiCalls.length === 2)
+  T('first call has no cursor and second call carries nextCursor',
+    multiCalls[0].args.cursor === undefined && multiCalls[1].args.cursor === 'page-2')
+  T('passes server-side team filter to all page calls',
+    multiCalls.every((c) => c.args.team === 'Eng'))
+  T('collects all eligible issues across multiple pages',
+    multiRes.considered === 3 && multiRes.eligible === 2, `considered=${multiRes.considered}, eligible=${multiRes.eligible}`)
+  T('creates tasks on the room board from later pages',
+    taskList().some((t) => /^MULTI-3/.test(t.text)))
+
+  // Page cap stops pagination
+  let infiniteCount = 0
+  const infiniteLinear = {
+    call: async (name, args) => {
+      infiniteCount++
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            issues: [{ id: `INF-${infiniteCount}`, uuid: `u-inf-${infiniteCount}`, title: 'inf', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' }],
+            hasNextPage: true,
+            cursor: `cur-${infiniteCount}`,
+          })
+        }]
+      }
+    }
+  }
+  const capBridge = makeBridge({ hive: board, linear: infiniteLinear, room: ROOM, maxPages: 3, assignAs: 'Linear' })
+  const capRes = await capBridge.pull()
+  T('respects sane page cap and does not loop forever', infiniteCount === 3)
+  T('issues up to page cap are collected', capRes.considered === 3)
+
+  // Multi-page diagnosis when nothing matches
+  const mismatchBridge = makeBridge({ hive: board, linear, room: ROOM, label: 'nonexistent-label', assignAs: 'Linear' })
+  const diagRes = await mismatchBridge.pull()
+  T('multi-page diagnosis reports total issues and seen statuses/labels',
+    diagRes.eligible === 0 && diagRes.why.includes('3 issue(s) seen, none matched label "nonexistent-label"') &&
+    diagRes.why.includes('Todo') && diagRes.why.includes('hivecode, design'),
+    diagRes.why)
 } catch (e) {
   T('end to end ran', false, e.message)
 } finally {
