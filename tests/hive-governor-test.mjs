@@ -261,5 +261,37 @@ try {
   try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* best effort */ }
 }
 
+
+// -- snapshot() must report REAL minutes (HIV-13 follow-up) --------------------------
+// Builder exposed governor.snapshot() on /usage for HIV-13, and on the way past changed
+// the minutes divisor from /6000 then /10, to /60000 then /10. 6000 reads like a typo
+// for 60000, but it is the one-decimal idiom: ms/6000 rounded, divided by 10, is
+// minutes to one decimal place. The change made every reported figure TEN TIMES small.
+//
+// Enforcement was never affected -- check() computes minutes itself and was untouched,
+// so caps kept firing on time. What broke is the number an OPERATOR READS, on /usage
+// and in the control room: thirty minutes of agent runtime displayed as 3.0. For a
+// product whose pitch is that you can leave the room and still be in control, the
+// dashboard under-reporting how long an agent has been running is the defect that
+// matters, even though nothing enforced on it.
+//
+// It survived 85 green assertions across three suites. Builder's own HIV-13 test
+// PRINTED it while passing -- {"minutes":0,...} -- because the assertion was
+// `used.writes > 0` and nothing ever looked at minutes. A value that is logged but
+// never asserted is not covered; it is just visible.
+{
+  let clock = 1000000
+  const g = makeGovernor({ now: () => clock })
+  g.note('r', 'A', 10)                  // firstSeen is stamped on the first write
+  clock += 30 * 60000                   // thirty minutes pass
+  T('snapshot reports 30 minutes after 30 minutes, not 3',
+    g.snapshot('r').A.used.minutes === 30, JSON.stringify(g.snapshot('r').A.used))
+  clock += 6000                         // six seconds more
+  T('and it keeps the one decimal place the idiom exists for',
+    g.snapshot('r').A.used.minutes === 30.1, JSON.stringify(g.snapshot('r').A.used))
+  T('the all-rooms form reports the same minutes as the single-room form',
+    g.snapshot().r.A.used.minutes === g.snapshot('r').A.used.minutes)
+}
+
 console.log(`\n${pass}/${pass + fail} passed`)
 process.exit(fail ? 1 : 0)

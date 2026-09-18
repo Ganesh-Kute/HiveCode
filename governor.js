@@ -313,19 +313,27 @@ export function makeGovernor({ now = () => Date.now(), audit = () => {}, strict 
   function detach(room) { const d = attached.get(room); if (d) { d(); attached.delete(room) } }
 
   /** Everything the relay knows about a room, for /usage and the control room. */
-  function snapshot(room) {
-    const out = {}
-    const names = new Set([...bucket(pauses, room).keys(), ...bucket(budgets, room).keys(), ...bucket(usage, room).keys()])
-    for (const n of names) {
-      const u = bucket(usage, room).get(n) || { firstSeen: 0, writes: 0, bytes: 0, tokens: 0 }
-      out[n] = {
-        state: isPaused(room, n) ? 'paused' : 'running',
-        why: (bucket(pauses, room).get(n) || {}).why || '',
-        budget: budgetOf(room, n),
-        used: { minutes: u.firstSeen ? Math.round((now() - u.firstSeen) / 6000) / 10 : 0, writes: u.writes, bytes: u.bytes, tokens: u.tokens },
+  function snapshot(room = null) {
+    if (room) {
+      const out = {}
+      const names = new Set([...bucket(pauses, room).keys(), ...bucket(budgets, room).keys(), ...bucket(usage, room).keys()])
+      for (const n of names) {
+        const u = bucket(usage, room).get(n) || { firstSeen: 0, writes: 0, bytes: 0, tokens: 0 }
+        out[n] = {
+          state: isPaused(room, n) ? 'paused' : 'running',
+          why: (bucket(pauses, room).get(n) || {}).why || '',
+          budget: budgetOf(room, n),
+          used: { minutes: u.firstSeen ? Math.round((now() - u.firstSeen) / 6000) / 10 : 0, writes: u.writes, bytes: u.bytes, tokens: u.tokens },
+        }
       }
+      return out
     }
-    return out
+    const allRooms = new Set([...pauses.keys(), ...budgets.keys(), ...usage.keys()])
+    const allOut = {}
+    for (const r of allRooms) {
+      allOut[r] = snapshot(r)
+    }
+    return allOut
   }
 
   return { control, isPaused, setBudget, budgetOf, note, check, sweep, attach, detach, snapshot, useOf, nameOf }

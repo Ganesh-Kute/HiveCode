@@ -23,6 +23,7 @@
 import http from 'http'
 import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
+import { attachRateLimit } from './limits.js'
 
 const PROTOCOL = '2025-06-18'
 const MAX_BODY = 1 << 20           // a control-plane request is never a megabyte
@@ -201,9 +202,21 @@ export function actorOf(msg, verified) {
   return 'slack'
 }
 
-export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '', now = Date.now }) {
+export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '', now = Date.now, tier = null }) {
   const tools = makeTools(hive, room)
   const sessions = new Set()
+  const limiters = new Map()
+
+  function limiterFor(ip) {
+    let l = limiters.get(ip)
+    if (!l) {
+      const conn = {}
+      l = attachRateLimit(conn, tier)
+      limiters.set(ip, l)
+    }
+    return l
+  }
+
   return async function handle(req, res) {
     const send = (code, obj, headers = {}) => {
       const body = obj === null ? '' : JSON.stringify(obj)
@@ -212,6 +225,14 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
     }
     if (req.method === 'GET') return send(405, { error: 'Q518 this endpoint takes POST' })
     if (req.method !== 'POST') return send(405, { error: 'Q518 this endpoint takes POST' })
+
+    // Rate limiting (HIV-15): per-IP rate limit applied BEFORE signature verification
+    const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.socket?.remoteAddress || '127.0.0.1').trim()
+    const limiter = limiterFor(ip)
+    const rateRefusal = limiter.check(1)
+    if (rateRefusal) {
+      return send(429, { error: rateRefusal.reason })
+    }
 
     let raw = ''
     let tooBig = false
@@ -262,8 +283,8 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
   }
 }
 
-export function serve({ hive, room = '', port, auth, signingSecret, now }) {
-  const handle = makeHandler({ hive, room, auth, signingSecret, now })
+export function serve({ hive, room = '', port, auth, signingSecret, now, tier = null }) {
+  const handle = makeHandler({ hive, room, auth, signingSecret, now, tier })
   const server = http.createServer((req, res) => {
     handle(req, res).catch(() => { try { res.writeHead(500); res.end('{}') } catch { /* already sent */ } })
   })

@@ -165,6 +165,55 @@ try {
   const sse = await rpc('tools/list', {}, { accept: 'text/event-stream' })
   T('an SSE-only client gets SSE framing', /text\/event-stream/.test(sse.ct) && /^event: message\ndata: \{/.test(sse.text),
     sse.ct)
+
+  // 7. rate limiting (HIV-15)
+  console.log('\n# per-IP rate limiting (HIV-15)')
+  const ratePort = HTTP_PORT + 10
+  const rateHttpd = await serve({
+    hive: panel, room: ROOM, port: ratePort, auth: 'slack', signingSecret: SECRET,
+    tier: { msgsPerSec: 1, msgBurst: 2, cooloffMs: 2000, bytesPerSec: 1024 * 1024, byteBurst: 2 * 1024 * 1024 }
+  })
+
+  async function postMcp(body, headers = {}) {
+    const ts = String(Math.floor(Date.now() / 1000))
+    const sig = 'v0=' + crypto.createHmac('sha256', SECRET).update(`v0:${ts}:${body}`).digest('hex')
+    const r = await fetch(`http://127.0.0.1:${ratePort}/mcp`, {
+      method: 'POST', body,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Slack-Request-Timestamp': ts,
+        'X-Slack-Signature': sig,
+        ...headers,
+      },
+    })
+    return { status: r.status, text: await r.text() }
+  }
+
+  const normalBody = JSON.stringify({ jsonrpc: '2.0', id: 101, method: 'tools/list' })
+  const r1 = await postMcp(normalBody, { 'X-Forwarded-For': '192.168.1.50' })
+  T('request 1 from IP is allowed', r1.status === 200)
+
+  const r2 = await postMcp(normalBody, { 'X-Forwarded-For': '192.168.1.50' })
+  T('request 2 within burst is allowed', r2.status === 200)
+
+  const r3 = await postMcp(normalBody, { 'X-Forwarded-For': '192.168.1.50' })
+  T('request 3 exceeding burst is refused with 429', r3.status === 429)
+  T('refusal contains Q-code (Q432)', /Q432/.test(r3.text), r3.text)
+
+  // Critical assertion: limit applies BEFORE signature verification
+  // Send an unsigned / bad-signature request from the throttled IP
+  const unsignedReq = await fetch(`http://127.0.0.1:${ratePort}/mcp`, {
+    method: 'POST',
+    body: normalBody,
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '192.168.1.50' },
+  })
+  T('throttled IP is refused with 429 BEFORE signature check (not 401)', unsignedReq.status === 429)
+
+  // Request from a different IP is admitted normally
+  const otherIp = await postMcp(normalBody, { 'X-Forwarded-For': '192.168.1.99' })
+  T('request from different IP is admitted while first IP is throttled', otherIp.status === 200)
+
+  try { rateHttpd.close() } catch {}
 } catch (e) {
   T('end to end ran', false, e.message)
 } finally {

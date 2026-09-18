@@ -777,11 +777,13 @@ const server = http.createServer((req, res) => {
     let room = null
     try { room = new URL(req.url, 'http://x').searchParams.get('room') } catch { }
     const rows = usageFor(room)
+    const govData = room ? { [room]: gov.snapshot(room) } : gov.snapshot()
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     return res.end(JSON.stringify({
       note: 'relay-observed activity. NOT LLM token spend — agent model calls do not pass through this relay.',
       agents: rows.length,
       usage: rows,
+      governor: govData,
     }))
   }
 
