@@ -157,6 +157,7 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
     const issues = []
     let cursor = undefined
     let pageCount = 0
+    let truncated = ''
     const pageCap = maxPages > 0 ? maxPages : 20
 
     while (pageCount < pageCap) {
@@ -165,6 +166,22 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
       if (cursor) args.cursor = cursor
       const res = await linear.call('list_issues', args)
       const payload = unwrap(res)
+      // A page that FAILED must not read as a page that was EMPTY. unwrap() hands back whatever
+      // JSON arrived, and Linear answers a bad or expired cursor with {error,message,status,
+      // requestId} rather than throwing -- verified against the live API. So payload.issues is
+      // undefined, pageIssues comes out [], the loop breaks on "no more pages", and pull()
+      // reports whatever it happened to collect as the entire backlog.
+      //
+      // Pagination made that WORSE than the single-page read it replaced, not better. Before you
+      // always got exactly one page and you knew it. Now you get somewhere between one page and
+      // all of them, and nothing says which -- a partial backlog is indistinguishable from a
+      // complete one, and the board quietly holds less work than the workspace does.
+      if (payload && payload.error && !payload.issues) {
+        truncated = `Q443 INCOMPLETE BACKLOG: page ${pageCount} failed (${payload.error}` +
+          `${payload.message ? ': ' + payload.message : ''}). ${issues.length} ticket(s) were read ` +
+          'before the failure and there are more -- this is NOT the whole backlog.'
+        break
+      }
       const pageIssues = Array.isArray(payload) ? payload : (payload && payload.issues) || []
       issues.push(...pageIssues)
 
@@ -178,6 +195,12 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
         break
       }
       cursor = nextCursor
+    }
+    // Stopping at the cap is a deliberate safety valve rather than a failure -- but it is still
+    // a partial answer, and the caller has to be told which of the two it is holding.
+    if (!truncated && pageCount >= pageCap && cursor) {
+      truncated = `Q443 INCOMPLETE BACKLOG: stopped at the ${pageCap}-page cap with more pages ` +
+        `available. ${issues.length} ticket(s) read. Raise --max-pages to see the rest.`
     }
 
     const wanted = pickIssues(issues, { label, states, statusTypes })
@@ -194,7 +217,7 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
     }
     // A silent zero is the failure mode of this whole integration: it looks identical whether the
     // label is misspelled, the statuses were renamed, or there is genuinely no work. So say WHICH.
-    const why = !issues.length ? 'Linear returned no issues at all'
+    const reason = !issues.length ? 'Linear returned no issues at all'
       : !wanted.length ? `${issues.length} issue(s) seen, none matched` +
         (label ? ` label "${label}"` : '') +
         (label && (states || statusTypes) ? ' and' : '') +
@@ -203,7 +226,11 @@ export function makeBridge({ hive, linear, room = '', label = 'hivecode', states
         ` | labels present: ${[...new Set(issues.flatMap((i) => (i.labels || []).map((l) => (l && l.name) || l)))].join(', ') || '(none)'}`
       : !roster.length ? 'no AI agents are in the room to take the work'
       : ''
-    return { considered: issues.length, eligible: wanted.length, created: made, why }
+    // Truncation is wrong even when tickets DID arrive, so it cannot ride on the chain above --
+    // that one only speaks when the result came out empty. This one has to speak either way.
+    const why = truncated ? (reason ? `${truncated} ${reason}` : truncated) : reason
+    if (truncated) { try { hive.say && hive.say(truncated) } catch { /* the room may be gone */ } }
+    return { considered: issues.length, eligible: wanted.length, created: made, why, truncated: !!truncated }
   }
 
   /** A room task finished -> say so on the ticket. Comment rather than close: a room's gate is a

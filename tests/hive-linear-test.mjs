@@ -258,6 +258,46 @@ try {
     diagRes.eligible === 0 && diagRes.why.includes('3 issue(s) seen, none matched label "nonexistent-label"') &&
     diagRes.why.includes('Todo') && diagRes.why.includes('hivecode, design'),
     diagRes.why)
+
+  // A page that FAILED must not read as a page that was EMPTY (HIV-14 follow-up).
+  //
+  // Linear answers a bad or expired cursor with {error,message,status,requestId} rather than
+  // throwing -- confirmed against the live API, not assumed. unwrap() hands that object back,
+  // payload.issues is undefined, pageIssues comes out [], and the loop breaks on "no more
+  // pages". pull() then reported whatever it had collected as the ENTIRE backlog, with why:''.
+  //
+  // Pagination made this worse than the single-page read it replaced. Before, you always got
+  // exactly one page and you knew it. After, you get somewhere between one page and all of
+  // them and nothing tells you which, so a partial backlog is indistinguishable from a
+  // complete one and the board silently holds less work than the workspace does.
+  let failPage = 0
+  const failingLinear = {
+    call: async () => {
+      failPage++
+      if (failPage === 1) {
+        return { content: [{ type: 'text', text: JSON.stringify({
+          issues: [{ id: 'PART-1', uuid: 'u-part-1', title: 'p', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' }],
+          hasNextPage: true, cursor: 'CUR-2',
+        }) }] }
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'invalid_cursor', message: 'cursor expired', status: 400, requestId: 'r1' }) }] }
+    },
+  }
+  const failBridge = makeBridge({ hive: board, linear: failingLinear, room: ROOM, assignAs: 'Linear' })
+  const failRes = await failBridge.pull()
+  T('a page that errors mid-pagination is reported, not swallowed', failRes.truncated === true, String(failRes.why))
+  T('the truncation names its Q-code and how much was read', /Q443/.test(failRes.why) && /1 ticket/.test(failRes.why), String(failRes.why))
+  T('tickets read BEFORE the failure are still delivered, not discarded', failRes.considered === 1)
+
+  // Stopping at the page cap is deliberate, but it is still a partial answer and must say so.
+  T('stopping at the page cap is also reported as incomplete',
+    capRes.truncated === true && /Q443/.test(capRes.why), String(capRes.why))
+
+  // ...and the false-positive direction, which is what makes the signal worth anything: a
+  // COMPLETE read must never claim truncation, or everyone learns to ignore the flag.
+  T('a complete multi-page read is NOT flagged as truncated',
+    multiRes.truncated === false && !/Q443/.test(String(multiRes.why || '')), String(multiRes.why))
+
 } catch (e) {
   T('end to end ran', false, e.message)
 } finally {
