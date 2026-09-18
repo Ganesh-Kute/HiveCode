@@ -160,6 +160,99 @@ try {
   await sleep(1500)
   T('and can release themselves without anyone else',
     (boss.doc.getMap('controls').get('Ganesh') || {}).state === 'running')
+
+  // ---- persistence across relay restart (HIV-12) -----------------------------
+  console.log('\n# relay restart: usage counters and caps survive (HIV-12)')
+  const persistDir = path.join(tmp, 'persist')
+  fs.mkdirSync(persistDir, { recursive: true })
+  const P_PORT = PORT + 1
+  const P_ROOM = 'gov-restart-' + process.pid
+
+  let pRelay = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(P_PORT), HIVE_PERSIST_DIR: persistDir, HIVE_GOVERNOR: 'on', HIVE_ENFORCE_CLAIMS: 'block' },
+  })
+  pRelay.stderr.on('data', () => {})
+  await new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('persist relay did not start')), 15000)
+    pRelay.stdout.on('data', (d) => { if (/listening on/.test(String(d))) { clearTimeout(t); res() } })
+  })
+  await sleep(500)
+
+  const pDirs = {
+    boss: fs.mkdtempSync(path.join(tmp, 'p-boss')),
+    agent: fs.mkdtempSync(path.join(tmp, 'p-agent')),
+  }
+  const pBoss = startSync({ relay: `ws://127.0.0.1:${P_PORT}`, room: P_ROOM, dir: pDirs.boss, name: 'Ganesh', kind: 'human', syncFiles: true, log: () => {} })
+  const pAgent = startSync({ relay: `ws://127.0.0.1:${P_PORT}`, room: P_ROOM, dir: pDirs.agent, name: 'AgentP', kind: 'ai', syncFiles: true, log: () => {} })
+  clients.push(pBoss, pAgent)
+  await sleep(5000)
+
+  // Wait for initial sync writes to settle and record baseline
+  let baseWrites = 0
+  for (let i = 0; i < 10; i++) {
+    const u = pBoss.doc.getMap('usage').get('AgentP')
+    if (u && u.writes > 0) {
+      baseWrites = u.writes
+      break
+    }
+    await sleep(500)
+  }
+  console.log('  [test] settled baseline writes =', baseWrites)
+
+  // Agent writes file1
+  fs.writeFileSync(path.join(pDirs.agent, 'file1.js'), 'export const f1 = 1\n')
+  await sleep(4000)
+
+  const usageBefore = pBoss.doc.getMap('usage').get('AgentP')
+  T('pre-restart: usage is recorded in document', usageBefore && usageBefore.writes > 0, JSON.stringify(usageBefore))
+
+  // Monotonicity test: AI attempts to tamper and lower its usage to zero
+  pAgent.doc.getMap('usage').set('AgentP', { writes: 0, bytes: 0, tokens: 0 })
+  await sleep(1500)
+  const docReverted = pBoss.doc.getMap('usage').get('AgentP')
+  T('monotonicity: lower doc usage rejected and reverted in doc', docReverted && docReverted.writes >= usageBefore.writes, JSON.stringify(docReverted))
+
+  // Agent is still running (no budget set yet)
+  T('pre-restart: agent is not paused yet', (pBoss.doc.getMap('controls').get('AgentP') || {}).state !== 'paused')
+
+  // Kill the relay
+  pBoss.stop(); pAgent.stop()
+  pRelay.kill()
+  await sleep(2000)
+
+  // Restart relay with same persist dir
+  pRelay = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(P_PORT), HIVE_PERSIST_DIR: persistDir, HIVE_GOVERNOR: 'on', HIVE_ENFORCE_CLAIMS: 'block' },
+  })
+  pRelay.stderr.on('data', () => {})
+  await new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('restart relay did not start')), 15000)
+    pRelay.stdout.on('data', (d) => { if (/listening on/.test(String(d))) { clearTimeout(t); res() } })
+  })
+  await sleep(1000)
+
+  // Reconnect fresh clients
+  const pBoss2 = startSync({ relay: `ws://127.0.0.1:${P_PORT}`, room: P_ROOM, dir: pDirs.boss, name: 'Ganesh', kind: 'human', syncFiles: true, log: () => {} })
+  const pAgent2 = startSync({ relay: `ws://127.0.0.1:${P_PORT}`, room: P_ROOM, dir: pDirs.agent, name: 'AgentP', kind: 'ai', syncFiles: true, log: () => {} })
+  clients.push(pBoss2, pAgent2)
+  await sleep(2500)
+
+  const usageAfter = pBoss2.doc.getMap('usage').get('AgentP')
+  T('post-restart: usage counter SURVIVED relay restart', usageAfter && usageAfter.writes >= usageBefore.writes, JSON.stringify(usageAfter))
+
+  // Set cap to current writes + 1, then write file2 to hit cap
+  pBoss2.doc.getMap('budgets').set('AgentP', { writes: usageAfter.writes + 1 })
+  await sleep(1000)
+
+  fs.writeFileSync(path.join(pDirs.agent, 'file2.js'), 'export const f2 = 2\n')
+  await sleep(4000)
+
+  const controlAfter = pBoss2.doc.getMap('controls').get('AgentP') || {}
+  T('post-restart: subsequent write hits cap and pauses agent', controlAfter.state === 'paused', JSON.stringify(controlAfter))
+
+  try { pRelay.kill() } catch {}
 } catch (e) {
   T('end to end ran', false, e.message)
 } finally {

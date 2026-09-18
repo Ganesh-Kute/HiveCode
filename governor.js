@@ -117,7 +117,10 @@ export function makeGovernor({ now = () => Date.now(), audit = () => {}, strict 
 
   const useOf = (room, name) => {
     const b = bucket(usage, room)
-    if (!b.has(name)) b.set(name, { firstSeen: now(), writes: 0, bytes: 0, tokens: 0 })
+    if (!b.has(name)) {
+      b.set(name, { firstSeen: now(), writes: 0, bytes: 0, tokens: 0 })
+      mirrorUsage(room, name, b.get(name))
+    }
     return b.get(name)
   }
 
@@ -128,6 +131,7 @@ export function makeGovernor({ now = () => Date.now(), audit = () => {}, strict 
     u.writes += 1
     u.bytes += Math.max(0, Number(bytes) || 0)
     u.tokens += Math.max(0, Number(tokens) || 0)
+    mirrorUsage(room, name, u)
     return check(room, name)
   }
 
@@ -161,6 +165,21 @@ export function makeGovernor({ now = () => Date.now(), audit = () => {}, strict 
     } catch { /* the mirror is a convenience; the authority is above */ }
   }
 
+  function mirrorUsage(room, name, u) {
+    const doc = docs.get(room)
+    if (!doc) return
+    try {
+      doc.transact(() => {
+        doc.getMap('usage').set(name, {
+          firstSeen: u.firstSeen,
+          writes: u.writes,
+          bytes: u.bytes,
+          tokens: u.tokens
+        })
+      }, GOV_ORIGIN)
+    } catch { /* convenience mirror */ }
+  }
+
   /** Watch a base room's `controls` and `budgets` maps.
    *
    *  A change authored by a HUMAN is adopted as the new authority. A change authored by an AI is
@@ -173,6 +192,7 @@ export function makeGovernor({ now = () => Date.now(), audit = () => {}, strict 
     docs.set(room, doc)
     const controls = doc.getMap('controls')
     const budgetMap = doc.getMap('budgets')
+    const usageMap = doc.getMap('usage')
 
     // Seed from what the document already holds, so a relay restart does not silently release
     // every pause. Adopting a PAUSE is always safe; adopting a RESUME is not, because the last
@@ -182,6 +202,22 @@ export function makeGovernor({ now = () => Date.now(), audit = () => {}, strict 
       if (rec && rec.state === 'paused') bucket(pauses, room).set(name, { ...rec, at: rec.at || now() })
     }
     for (const [name, b] of budgetMap.entries()) { const nb = normalizeBudget(b); if (nb) bucket(budgets, room).set(name, nb) }
+
+    // Seed usage counters from the document so caps survive relay restart (HIV-12).
+    for (const [name, u] of usageMap.entries()) {
+      if (u && typeof u === 'object') {
+        const existing = bucket(usage, room).get(name) || { firstSeen: 0, writes: 0, bytes: 0, tokens: 0 }
+        bucket(usage, room).set(name, {
+          firstSeen: u.firstSeen ? (existing.firstSeen ? Math.min(existing.firstSeen, u.firstSeen) : u.firstSeen) : existing.firstSeen || now(),
+          writes: Math.max(existing.writes || 0, Number(u.writes) || 0),
+          bytes: Math.max(existing.bytes || 0, Number(u.bytes) || 0),
+          tokens: Math.max(existing.tokens || 0, Number(u.tokens) || 0),
+        })
+      }
+    }
+
+    // Immediately re-check budgets against restored usage
+    for (const name of bucket(budgets, room).keys()) check(room, name)
 
     const onControls = (event, tr) => {
       if (tr && tr.origin === GOV_ORIGIN) return                 // our own mirror write
@@ -229,11 +265,47 @@ export function makeGovernor({ now = () => Date.now(), audit = () => {}, strict 
       }
     }
 
+    const onUsage = (event, tr) => {
+      if (tr && tr.origin === GOV_ORIGIN) return
+      const who = identOf(tr && tr.origin)
+      const allowed = tr && tr.origin && tr.origin._hive
+        ? mayControl(who, roleOf(tr.origin), !!strict(room))
+        : true
+      for (const [name] of event.changes.keys) {
+        const truth = bucket(usage, room).get(name) || { firstSeen: now(), writes: 0, bytes: 0, tokens: 0 }
+        const wrote = usageMap.get(name)
+        // Monotonicity: spend only ever goes up. A decrease arriving from the doc is either tampering
+        // or a stale replica; in both cases the higher number wins and doc is reverted (HIV-12).
+        const lower = wrote && typeof wrote === 'object' && (
+          (wrote.writes !== undefined && wrote.writes < truth.writes) ||
+          (wrote.bytes !== undefined && wrote.bytes < truth.bytes) ||
+          (wrote.tokens !== undefined && wrote.tokens < truth.tokens)
+        )
+        if (!allowed || lower || !wrote || typeof wrote !== 'object') {
+          audit('governor-usage-refused', { room, by: (who && who.name) || 'unknown', target: name })
+          try {
+            doc.transact(() => {
+              usageMap.set(name, { firstSeen: truth.firstSeen, writes: truth.writes, bytes: truth.bytes, tokens: truth.tokens })
+            }, GOV_ORIGIN)
+          } catch { /* best effort */ }
+          continue
+        }
+        bucket(usage, room).set(name, {
+          firstSeen: truth.firstSeen,
+          writes: Math.max(truth.writes, Number(wrote.writes) || 0),
+          bytes: Math.max(truth.bytes, Number(wrote.bytes) || 0),
+          tokens: Math.max(truth.tokens, Number(wrote.tokens) || 0)
+        })
+      }
+    }
+
     controls.observe(onControls)
     budgetMap.observe(onBudgets)
+    usageMap.observe(onUsage)
     attached.set(room, () => {
       try { controls.unobserve(onControls) } catch { /* going away */ }
       try { budgetMap.unobserve(onBudgets) } catch { /* going away */ }
+      try { usageMap.unobserve(onUsage) } catch { /* going away */ }
       docs.delete(room)
     })
   }
