@@ -42,7 +42,10 @@ function workdir(label) {
 
 // ── A + B: a relay too small to take the files ─────────────────────────────────────────
 // Two connections total: enough for the room itself and one file, so the rest are refused.
-const PORT_FULL = 1340
+// pid-derived: this suite runs as a room gate, so two agents may run it at the same
+// moment. A fixed port means one fails to bind and the gate refuses a handoff for a
+// reason that has nothing to do with the code under test.
+const PORT_FULL = Number(process.env.HIVE_TEST_PORT) || (20000 + (process.pid % 20000))
 const full = await startRelay(PORT_FULL, { HIVE_MAX_CONNS_TOTAL: '2' })
 const logsFull = []
 const dFull = workdir('full')
@@ -70,7 +73,7 @@ full.kill()
 await sleep(1000)
 
 // ── C: a healthy relay must produce no alarm at all ────────────────────────────────────
-const PORT_OK = 1341
+const PORT_OK = PORT_FULL + 1
 const ok = await startRelay(PORT_OK, {})
 const logsOk = []
 const dOk = workdir('ok')

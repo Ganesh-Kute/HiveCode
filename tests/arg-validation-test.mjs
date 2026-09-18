@@ -24,7 +24,10 @@ import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
 
-const PORT = 1338
+// pid-derived: this suite runs as a room gate, so two agents may run it at the same
+// moment. A fixed port means one fails to bind and the gate refuses a handoff for a
+// reason that has nothing to do with the code under test.
+const PORT = Number(process.env.HIVE_TEST_PORT) || (20000 + (process.pid % 20000))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0
 const T = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); c ? pass++ : fail++ }
