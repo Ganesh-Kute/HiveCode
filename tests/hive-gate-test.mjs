@@ -16,7 +16,7 @@ import { gateConfig, runGate, trimOutput, verdictRecord, refusalMessage, forcedM
 import { startSync } from '../sync.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const PORT = 1251
+const PORT = Number(process.env.HIVE_TEST_PORT) || 1251
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0
 const T = (name, cond, detail) => {
@@ -47,6 +47,12 @@ T('a command that cannot run FAILS rather than passing', missing.ok === false)
 const out = runGate({ cmd: 'node -e "console.error(\'boom-marker\');process.exit(1)"', cwd: ROOT })
 T('stderr is captured, not just stdout', /boom-marker/.test(out.out))
 T('it measures how long the check took', out.ms >= 0 && Number.isFinite(out.ms))
+// HIV-24: runGate supplies an isolated environment to the spawned gate command
+const envOut = runGate({ cmd: 'node -e "console.log(process.env.HIVE_TEST_PORT)"', cwd: ROOT })
+T('runGate sets an isolated HIVE_TEST_PORT in the command environment',
+  /^\d+$/.test(envOut.out.trim()) && Number(envOut.out.trim()) > 1024, envOut.out.trim())
+const customEnv = runGate({ cmd: 'node -e "console.log(process.env.CUSTOM_GATE_FLAG)"', cwd: ROOT, env: { CUSTOM_GATE_FLAG: 'isolated-ok' } })
+T('custom env extends gate environment cleanly', customEnv.out.trim() === 'isolated-ok')
 
 section('trimOutput — keep the END, because that is where failures are printed')
 T('short output is untouched', trimOutput('all good') === 'all good')

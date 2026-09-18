@@ -65,13 +65,21 @@ export function trimOutput(s, max = MAX_OUTPUT) {
  * would mean a typo in the gate silently disables it for the whole room, which is the worst
  * outcome available here: everyone would believe they were gated and nobody would be.
  */
-export function runGate({ cmd, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, run = spawnSync }) {
+export function runGate({ cmd, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, run = spawnSync, env = {} }) {
   const started = Date.now()
   let r
+  // Isolated test port per gate run so concurrent gates on the same machine never collide over fixed ports (HIV-24).
+  const isolatedPort = Number(process.env.HIVE_TEST_PORT) || (20000 + (process.pid % 10000) + Math.floor(Math.random() * 10000))
+  const gateEnv = {
+    ...process.env,
+    HIVE_TEST_PORT: String(isolatedPort),
+    ...env,
+  }
   try {
     r = run(cmd, {
       cwd, shell: true, encoding: 'utf8', timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+      env: gateEnv,
     })
   } catch (e) {
     return { ok: false, code: null, timedOut: false, ms: Date.now() - started, out: trimOutput('could not run the gate: ' + e.message) }
