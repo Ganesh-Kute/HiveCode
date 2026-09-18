@@ -79,6 +79,52 @@ const ALWAYS_IGNORE = [
   '__pycache__/', '*.pyc', '.pytest_cache/', '.mypy_cache/', '.venv/',
 ]
 
+// Is this "merge" actually a FUSION — output neither author wrote? Returns the reason, or ''.
+//
+// Exported and pure so it can be tested against crafted inputs. Forcing a real fusion is
+// timing-dependent (it needs concurrent writes landing inside the sync window), and a guard
+// this important should not be covered only by a test that is inherently flaky.
+//
+// The two signals, and why each is here:
+//   - BROKE IT: both versions parsed and the merged output does not. There is no reading of
+//     that which is correct — whatever it produced, neither author wrote it.
+//   - DUPLICATION: distinctive lines appear MORE often in the output than in the side they
+//     came from. That is content copied rather than merged, and it is what a union of two
+//     near-identical versions looks like — the live corruption had `const MAX_OPEN` and
+//     `function evictIfOverCap` three times each.
+//
+// LENGTH IS DELIBERATELY NOT A SIGNAL, and the first version of this got that wrong. "The
+// output is about as long as both inputs combined" describes a fusion, but it equally
+// describes two authors who each added two hundred lines in different places — a perfectly
+// good merge. The test caught it firing on exactly that. Duplication separates them: a
+// genuine disjoint merge repeats nothing.
+export function fusionReason(merged, mine, theirs, lang) {
+  if (!merged || !mine || !theirs || mine === theirs) return ''
+  // If a side was ALREADY broken, the merge did not break it — blaming the merge would make
+  // every merge on a half-written file look like corruption.
+  if (lang && lang.parses(mine) && lang.parses(theirs) && !lang.parses(merged)) {
+    return 'the merged result does not parse, although BOTH versions did'
+  }
+  // Only distinctive lines: a closing brace or a blank line legitimately repeats, and
+  // counting those would make every file look duplicated.
+  const sig = (s) => s.split('\n').map((l) => l.trim()).filter((l) => l.length > 24)
+  const tally = (arr) => { const m = new Map(); for (const l of arr) m.set(l, (m.get(l) || 0) + 1); return m }
+  const M = tally(sig(merged)), A = tally(sig(mine)), B = tally(sig(theirs))
+  let dup = 0, seen = 0
+  for (const [line, n] of M) {
+    const expected = Math.max(A.get(line) || 0, B.get(line) || 0)
+    if (expected === 0) continue // content in neither side — new, and not our business here
+    seen++
+    if (n > expected) dup++
+  }
+  // Needs enough lines to mean anything, and enough of them repeated to be structural rather
+  // than one unlucky duplicated statement.
+  if (seen >= 10 && dup / seen >= 0.25) {
+    return `${dup} of ${seen} distinctive lines appear more often in the result than in either version — that is content duplicated, not merged`
+  }
+  return ''
+}
+
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
 const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
@@ -1463,6 +1509,41 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
     } else {
       res = icrMerge3(base, disk, docText, relPath) // incoming remote change merged into our working copy
+    }
+
+    // FUSION GUARD (HIV-26). A merge must never produce something NEITHER author wrote.
+    //
+    // On 18 Sep 2026 three peers wrote the same file within about a second of each other and
+    // the character-CRDT UNIONED the versions instead of converging: sync.js went 144,144 ->
+    // 291,750 bytes, `const MAX_OPEN` appeared three times, and the splice landed mid-token
+    // (`evicted// Newly opened...`). There were NO conflict markers, every peer converged on
+    // the corruption — so agreement proved nothing — and the only thing that caught it was a
+    // parse failure at the handoff gate, by which point it had already reached every folder.
+    //
+    // Two cheap signals, each catching what the other misses:
+    //   - the merge BROKE a file both sides could parse. Definitionally wrong: whatever that
+    //     output is, neither author wrote it.
+    //   - the result is about as long as both sides put together. That is concatenation in a
+    //     merge's clothing, and it catches a fusion that happens to still parse.
+    //
+    // We land NOTHING. Not a conflict block either: this engine deliberately keeps markers
+    // out of the shared text, because writing them into the very layer that fuses is what
+    // produced marker-fusion before. So the doc keeps its version, disk keeps its version,
+    // both are still intact and recoverable, and the room is TOLD. A file left visibly
+    // divergent is a bad day; a file silently fused is an unrecoverable one.
+    if (res && !res.conflict) {
+      const why = fusionReason(res.text, disk, docText, supports(relPath) ? languageFor(relPath) : null)
+      if (why) {
+        conflicted.add(relPath)
+        if (icrWarned.get(relPath) !== why) {
+          icrWarned.set(relPath, why)
+          log(`[${name}] !! REFUSED a fused merge of ${relPath}: ${why}`)
+          try {
+            say(`[!] @all ${relPath}: a merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact and unchanged. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+          } catch { /* the log still carries it */ }
+        }
+        return
+      }
     }
 
     // Snapshot the state JUST BEFORE this author's edit lands, attributed to them —
