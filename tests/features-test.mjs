@@ -80,9 +80,9 @@ console.log('\n# C. promises with no proof — reported, never hidden')
   // fake test, which is worse than the gap. It fails only if the list grows silently -- the count
   // is pinned, so adding an unproven feature without deciding to is a red line.
   T(`C1 the unproven-but-automatable count is still ${automatable.length} — raise this deliberately, never by accident`,
-    automatable.length === 3, `${automatable.length}: ${automatable.map((f) => f.id).join(', ')}`)
+    automatable.length === 2, `${automatable.length}: ${automatable.map((f) => f.id).join(', ')}`)
   T('C2 tier-6 promises are counted separately, because they are unprovable here and not neglected',
-    manualOnly.length === 1 && manualOnly.every((f) => f.tier === 6))
+    manualOnly.length === 2 && manualOnly.every((f) => f.tier === 6))
 }
 
 if (SHAPE_ONLY) {

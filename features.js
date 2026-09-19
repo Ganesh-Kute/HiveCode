@@ -246,10 +246,30 @@ export const FEATURES = [
     proves: [{ suite: 'tests/pr-staleness-e2e-test.mjs', assertion: 'hive-pr succeeds when the branch is where the room left it' }],
   },
   {
-    id: 'extension-reconcile-parity',
-    name: 'The extension\'s copy of reconcile() behaves identically to sync.js',
+    id: 'extension-bundle-current',
+    name: 'The extension\'s generated ICR bundle matches its sources, and behaves like them',
     criticality: 'critical', tier: 1,
-    breaks: 'Merge logic exists TWICE. Fixing one silently ships the other broken, and nothing covers the extension side. (HIV-8, characterisation landed, extraction unfinished.)',
+    breaks: 'extension/icr.cjs is GENERATED from icr.js + lang-*.js, and the generator\'s own instruction was "re-run this whenever a source changes" — a sentence aimed at a person. MEASURED 19 Sep: the committed bundle was 18,563 bytes behind its sources, 373 insertions of engine work, shipped in marketplace v0.9.3. Users got an older merge engine than the relay and nothing reported it, because a stale bundle loads fine and merges fine. It is just behind.',
+    proves: [
+      { suite: 'tests/extension-parity-test.mjs', assertion: 'THE SHIPPED BUNDLE IS CURRENT' },
+      { suite: 'tests/extension-parity-test.mjs', assertion: 'EVERY case answers identically' },
+    ],
+  },
+  {
+    id: 'extension-reconcile-divergence-pinned',
+    name: 'Divergence between the two reconcile() copies cannot grow silently',
+    criticality: 'critical', tier: 1,
+    breaks: 'Merge logic exists TWICE and the copies are NOT equivalent — they share 34 lines; sync.js has 182 code lines to the extension\'s 105. This does not claim they match, because they do not. It claims a NEW divergence fails a test instead of shipping. Without it, a fix landing in sync.js silently leaves the marketplace extension broken — which is how the rejoin-clobber gap below happened.',
+    proves: [
+      { suite: 'tests/extension-parity-test.mjs', assertion: 'known sync-only capabilities' },
+      { suite: 'tests/extension-parity-test.mjs', assertion: 'AND IT ACTUALLY RUNS' },
+    ],
+  },
+  {
+    id: 'extension-rejoin-safety',
+    name: 'A VS Code user\'s offline edits survive a reconnect',
+    criticality: 'critical', tier: 6,
+    breaks: 'KNOWN BROKEN TODAY, not merely unproven. The .hive-shadow.json ancestor that makes a rejoin a 3-way merge has ZERO mentions in the extension\'s 109 KB. sync.js has it, covered by 17 assertions; marketplace v0.9.3 does not, so a user who edits offline and reconnects loses that work silently. The characterisation suite PINS it as current behaviour (tests/extension-reconcile-characterisation-test.mjs: "clobbers offline edits on rejoin"). Fixing it means porting the shadow record into the extension and verifying in a real VS Code host, which is why this is tier 6.',
     proves: [],
   },
   {

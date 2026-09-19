@@ -69,6 +69,7 @@
     "test:features": "node tests/features-test.mjs",
     "test:features:shape": "node tests/features-test.mjs --shape",
     "test:learnings": "node tests/learnings-test.mjs",
+    "test:extension": "node tests/extension-parity-test.mjs",
     "test:identity": "node tests/identity-audit-test.mjs",
     "test:billing": "node tests/billing-test.mjs",
     "test:license": "node tests/hive-license-test.js",
