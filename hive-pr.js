@@ -34,11 +34,16 @@ import fs from 'fs'
 import path from 'path'
 import { spawnSync } from 'child_process'
 import { startSync, parseLink } from './sync.js'
+import { accountFor, verdict, explain, DIVERGED } from './hive-pr-staleness.js'
 
 const argv = process.argv.slice(2)
 const [LINK = '', NAME = 'hive-pr'] = argv.filter((a) => !a.startsWith('--'))
 const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || '') }
 const has = (k) => argv.includes('--' + k)
+// --force takes a REASON, not a bare switch. A switch is typed once and never explained; a
+// required reason has to be written down, ends up in the PR body, and is the thing somebody asks
+// about later. hive_release already works this way for exactly the same argument.
+const FORCE = flag('force')
 
 const REPO = flag('repo')
 const DRY = has('dry-run')
@@ -52,6 +57,19 @@ function die(code, msg) { console.error(`${code} ${msg}`); process.exit(1) }
 function git(args, opts = {}) {
   const r = spawnSync('git', args, { cwd: REPO, encoding: 'utf8', ...opts })
   return { code: r.status, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() }
+}
+
+/** The same, WITHOUT trimming. For reading file CONTENT, where a trailing newline is part of the
+ *  file and not whitespace around an answer.
+ *
+ *  `git()` above trims, which is right for `rev-parse` and `log` and wrong for `cat-file blob` --
+ *  and wrong in the worst way: it strips the final newline, so the content hash of a healthy file
+ *  never matches the room's chain, every file reads DIVERGED, and the staleness check refuses
+ *  every run. Caught by the end-to-end suite on its FIRST assertion; the unit suite could not
+ *  have seen it, because it passes text straight in and never goes near git. */
+function gitRaw(args, opts = {}) {
+  const r = spawnSync('git', args, { cwd: REPO, encoding: 'utf8', ...opts })
+  return { code: r.status, out: r.stdout == null ? '' : r.stdout, err: (r.stderr || '').trim() }
 }
 
 /** The authors of a file, newest-landed first, from VERIFIED receipts only.
@@ -98,7 +116,7 @@ export function commitMessage(g, room) {
 // ---- main ---------------------------------------------------------------------------------
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   if (!LINK || !REPO) {
-    console.error('usage: node hive-pr.js "<relay|room>" <YourName> --repo <path> [--branch b] [--dry-run] [--push] [--pr]')
+    console.error('usage: node hive-pr.js "<relay|room>" <YourName> --repo <path> [--branch b] [--dry-run] [--push] [--pr] [--force "<reason>"]')
     process.exit(2)
   }
   if (!fs.existsSync(path.join(REPO, '.git'))) die('Q500', `${REPO} is not a git repository`)
@@ -167,11 +185,59 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
     if (!groups.length) { console.error('Q501 nothing attributed to commit'); return finish(1) }
 
     const base = flag('base') || git(['rev-parse', '--abbrev-ref', 'HEAD']).out || 'HEAD'
+
+    // ── HIV-28: DO NOT WRITE OVER A BRANCH CHANGE WE CANNOT ACCOUNT FOR ──────────────────
+    //
+    // Measured 19 Sep 2026: this tool produced a PR with three clean per-agent commits, real git
+    // authorship and signed trailers, which deleted the HIV-27 claim guard, the HIV-14 truncation
+    // fix and ~200 lines of tests. It looked perfect. The cause was the copyFileSync below with
+    // nothing in front of it.
+    //
+    // The check runs BEFORE `checkout -b`, so a refusal leaves no branch behind. Refusing after
+    // creating it would hand the operator a half-made artefact to clean up, and the next thing a
+    // person does with a branch that exists is push it.
+    const decisions = []
+    for (const g of groups) {
+      for (const f of g.files) {
+        // `git cat-file blob` and not `git show`: cat-file reads the object as stored, with no
+        // smudge filter. With core.autocrlf on -- true in this repo -- `show` through a working
+        // tree hands back bytes git never stored, and every content hash misses.
+        const sha = git(['rev-parse', `${base}:${f.rel}`])
+        const branchText = sha.code === 0 ? gitRaw(['cat-file', 'blob', sha.out]).out : null
+        const roomText = fs.readFileSync(f.abs, 'utf8')
+        decisions.push({ ...accountFor({ rel: f.rel, branchText, roomText, receipts: hive.provenanceOf(f.rel) || [] }), _f: f })
+      }
+    }
+    const v = verdict(decisions)
+    if (v.identical.length) console.log(`  (${v.identical.length} file(s) already identical on ${base} -- nothing to write)`)
+
+    if (!v.ok) {
+      const lastTouch = (rel) => git(['log', '-1', '--format=%h %an %ad %s', '--date=short', base, '--', rel]).out
+      console.error('')
+      console.error(explain(v.blocked, lastTouch))
+      if (!FORCE) return finish(1)
+      // A forced run is still reported in full, and the reason travels into the PR body. The
+      // point is not to make forcing hard, it is to make it visible.
+      console.error('')
+      console.error(`--force given: "${FORCE}" -- overwriting ${v.blocked.length} file(s) anyway. This is recorded in the PR body.`)
+    }
+
     const co = git(['checkout', '-b', BRANCH, base])
     if (co.code !== 0) { console.error(`Q502 could not create branch ${BRANCH}: ${co.err}`); return finish(1) }
 
+    // IDENTICAL files are dropped rather than copied. Copying one rewrites its line endings when
+    // the room and the blob differ in style -- which on this repo is most files -- producing a
+    // diff of every line for a change nobody made.
+    const skip = new Set(v.identical.map((d) => d.rel))
     let made = 0
-    for (const g of groups) {
+    for (const g0 of groups) {
+      // THE COMMIT MESSAGE MUST DESCRIBE WHAT WAS COMMITTED. Built from g0.files it said
+      // "Builder: 2 files" and listed both while only one was written, because the other was
+      // already identical on the branch. A message that names files a commit does not contain is
+      // a small false success in the one artefact a reviewer trusts most -- and it is in `git log`
+      // forever.
+      const g = { ...g0, files: g0.files.filter((f) => !skip.has(f.rel)) }
+      if (!g.files.length) { console.log(`  (nothing to write from ${g.name} — all already on ${base})`); continue }
       for (const f of g.files) {
         const dest = path.join(REPO, f.rel)
         fs.mkdirSync(path.dirname(dest), { recursive: true })
@@ -197,7 +263,20 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
       console.log(`pushed ${BRANCH}`)
     }
     if (DO_PR) {
-      const body = [`Opened by Hivecode from room \`${room}\`.`, '', '| agent | files |', '|---|---|',
+      // A forced overwrite is stated in the PR BODY, not only in the terminal of the person who
+      // ran it. The reviewer is the one who needs to know that files were written over branch
+      // content this room had never seen -- and a reviewer looking at three clean signed commits
+      // has no other way to find that out. That is the whole shape of the 19 Sep incident.
+      const forcedNote = (!v.ok && FORCE)
+        ? ['',
+           '> **Forced past a staleness refusal.** ' + v.blocked.length + ' file(s) were written',
+           '> over branch content this room had never seen.',
+           '>',
+           '> Reason given: ' + JSON.stringify(FORCE),
+           '>',
+           '> ' + v.blocked.map((d) => d.rel).join(', ')]
+        : []
+      const body = [`Opened by Hivecode from room \`${room}\`.`, ...forcedNote, '', '| agent | files |', '|---|---|',
         ...groups.map((g) => `| ${g.name} | ${g.files.map((f) => '`' + f.rel + '`').join(', ')} |`),
         '', 'Each commit carries its agent as the git author and the signed author id as a `Hivecode-Author` trailer.'].join('\n')
       const r = spawnSync('gh', ['pr', 'create', '--title', TITLE, '--body', body, '--base', base, '--head', BRANCH],

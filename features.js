@@ -230,9 +230,20 @@ export const FEATURES = [
   {
     id: 'pr-staleness',
     name: 'hive-pr refuses to overwrite a branch that has moved',
-    criticality: 'critical', tier: 5,
-    breaks: 'A PR that looks perfect — clean per-agent commits, signed attribution — silently reverts every commit that reached the branch another way. MEASURED 19 Sep: a generated PR deleted the HIV-27 guard, the HIV-14 fix and ~200 lines of tests, and restored the 10x dashboard bug. Filed HIV-28. --push and --pr are unsafe until this is proved.',
-    proves: [],
+    criticality: 'critical', tier: 3,
+    breaks: 'A PR that looks perfect — clean per-agent commits, signed attribution — silently reverts every commit that reached the branch another way. MEASURED 19 Sep: a generated PR deleted the HIV-27 guard, the HIV-14 fix and ~200 lines of tests, and restored the 10x dashboard bug. (HIV-28, closed.)',
+    proves: [
+      { suite: 'tests/pr-staleness-test.mjs', assertion: 'AND IT IS NOT WRITABLE' },
+      { suite: 'tests/pr-staleness-e2e-test.mjs', assertion: 'HIVE-PR REFUSES' },
+      { suite: 'tests/pr-staleness-e2e-test.mjs', assertion: 'NO BRANCH WAS CREATED' },
+    ],
+  },
+  {
+    id: 'pr-still-works',
+    name: 'hive-pr still produces a PR when the branch has not moved',
+    criticality: 'critical', tier: 3,
+    breaks: 'The staleness guard refuses everything and the tool is dead. This is the assertion that stops the safety check from being the bug — a guard that fires on the healthy path is the one that earns a --force alias and stops being run. It nearly happened: git() trims its output, so reading a blob through it dropped the trailing newline and every file read as diverged.',
+    proves: [{ suite: 'tests/pr-staleness-e2e-test.mjs', assertion: 'hive-pr succeeds when the branch is where the room left it' }],
   },
   {
     id: 'extension-reconcile-parity',
