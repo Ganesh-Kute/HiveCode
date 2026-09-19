@@ -273,11 +273,26 @@ export const FEATURES = [
     proves: [],
   },
   {
-    id: 'connection-ceiling',
-    name: 'Running out of connections is reported, not turned into empty files',
+    id: 'connection-ceiling-reported',
+    name: 'Running out of connections is reported, by name, once',
     criticality: 'critical', tier: 3,
-    breaks: 'One socket per file against a 512 cap. MEASURED: 38,011 Q430 refusals in one evening and 186 files read as EMPTY per folder, because an unsynced file-doc is indistinguishable from an empty one.',
-    proves: [],
+    breaks: 'One socket per file against a 512 cap. MEASURED 18 Sep: 38,011 Q430 refusals in one evening while the agents involved showed no symptom at all — y-websocket retries a failed upgrade forever, in silence, which is right for a flaky network and badly wrong for a relay that is full.',
+    proves: [
+      { suite: 'tests/refused-visible-test.mjs', assertion: 'status reports files whose sockets were refused' },
+      { suite: 'tests/refused-visible-test.mjs', assertion: 'the client says so rather than retrying quietly' },
+      { suite: 'tests/refused-visible-test.mjs', assertion: 'a healthy relay reports nothing refused' },
+    ],
+  },
+  {
+    id: 'connection-ceiling-no-data-loss',
+    name: 'A full relay does not cost you your files',
+    criticality: 'critical', tier: 3,
+    breaks: 'THE 186-FILE INCIDENT. A file-doc whose socket was refused is a Y.Doc that never received an update, so getText() returns "" — indistinguishable from a file the room knows to be empty. The engine then writes that to disk. Everything succeeds, nothing throws, the folder is destroyed. 186 files went to 0 bytes across three folders in one evening.',
+    proves: [
+      { suite: 'tests/ceiling-no-data-loss-test.mjs', assertion: 'NOT ONE FILE WAS ZEROED' },
+      { suite: 'tests/ceiling-no-data-loss-test.mjs', assertion: 'none was altered at all' },
+      { suite: 'tests/ceiling-no-data-loss-test.mjs', assertion: 'NOT ONE ARRIVED EMPTY' },
+    ],
   },
   {
     id: 'telegram-reach',
