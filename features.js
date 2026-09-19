@@ -1,0 +1,286 @@
+// features.js — what this product promises, how hard each promise is to check, and the exact
+// assertion that proves it still holds.
+//
+// THE INCIDENT THIS EXISTS FOR. On 18 Sep 2026 an agent shipped six tickets. Every suite was
+// green. Two of the six were wrong. One of them, HIV-13, changed a divisor and made the operator's
+// dashboard under-report agent runtime by 10x; its own test PRINTED `{"minutes":0,...}` while
+// passing, because the assertion was `used?.writes > 0`. The test ran, went green, and asserted
+// something other than the behaviour that mattered.
+//
+// A file listing features would not have caught that, and neither would a document of procedures.
+// What catches it is naming, per promise, THE ASSERTION THAT PROVES IT -- and then mechanically
+// checking that the assertion actually ran and actually passed. That is what tests/features-test
+// .mjs does with this file, and it is the difference between a manifest and a gate.
+//
+// (Agent Relay keeps the same artefact at .agentworkforce/features/manifest.yaml, scored by
+// criticality and by a 1-6 verify tier, with a guardian agent reading it. Their own comment is the
+// load-bearing one: "Tier alone is deliberately not a test plan." Theirs is a document an LLM
+// reads; this one is executable, which is the only version that can fail a build.)
+//
+// A JS MODULE RATHER THAN YAML, for two reasons that are not style. This repo has no YAML parser
+// and adding a dependency to describe the repo would be a poor trade. And the `breaks:` line on
+// every entry is the part that makes the file worth keeping -- JSON cannot carry a comment, and a
+// manifest nobody can annotate is a manifest that rots.
+//
+// HOW TO ADD A FEATURE: write the promise, say what breaks without it in one sentence a non-author
+// would understand, and name a real assertion string from a real suite. `proves: []` is allowed and
+// is not a placeholder -- it is a declaration that this promise is currently unproven, and the
+// checker reports every one of them. That list is the most useful thing this file produces.
+
+/** How much of the world has to exist before a promise can be checked at all. */
+export const TIERS = {
+  1: 'pure — no relay, no network, no clock. Runs anywhere in milliseconds.',
+  2: 'a local relay and one client.',
+  3: 'a local relay and two or more clients — everything about contention lives here.',
+  4: 'two or more MCP sessions driven exactly as an agent drives them.',
+  5: 'an external service (Linear, Telegram, npm, the hosted relay).',
+  6: 'a human, a browser, or another vendor\'s agent. CANNOT be automated in this repo.',
+}
+
+/**
+ * critical — the product is not the product without it. Check on every change.
+ * hot      — used constantly; check whenever anything near it moves.
+ * standard — real, but a regression here is an inconvenience rather than a breach.
+ */
+export const CRITICALITY = ['critical', 'hot', 'standard']
+
+/**
+ * THE POINT OF `breaks`. A feature name tells a reader what the code does. `breaks` tells them
+ * what it costs when it stops, which is the only thing that lets somebody who did not write it
+ * decide whether a red line matters at 3am. Every entry is written for that reader.
+ */
+export const FEATURES = [
+  // ── the concurrency guarantees: the reason this product exists ───────────────────────────
+  {
+    id: 'crdt-converge',
+    name: 'Concurrent edits converge without losing text',
+    criticality: 'critical', tier: 1,
+    breaks: 'Two agents edit one file and one of them silently loses their work.',
+    proves: [{ suite: 'tests/test.js', assertion: 'no text lost' }],
+  },
+  {
+    id: 'claim-exclusive',
+    name: 'A claimed file is held against every other agent',
+    criticality: 'critical', tier: 1,
+    breaks: 'Claims become decoration: two agents "own" the same file and both write it.',
+    proves: [
+      { suite: 'tests/test.js', assertion: 'B sees A holds the lock' },
+      { suite: 'tests/test.js', assertion: 'expired lock is free' },
+    ],
+  },
+  {
+    id: 'claim-scope',
+    name: 'A claim on a file outside sync scope is refused, with the reason',
+    criticality: 'critical', tier: 3,
+    breaks: 'An agent works for hours on a file nobody else can see, and every tool says fine. (HIV-27, and it happened.)',
+    proves: [{ suite: 'tests/claim-scope-test.mjs', assertion: 'hive_claim REFUSES the unshared path' }],
+  },
+  {
+    id: 'conflict-surfaced',
+    name: 'An overlapping edit is surfaced as a conflict, not fused',
+    criticality: 'critical', tier: 1,
+    breaks: 'Two edits to one region merge into code neither agent wrote and nothing reports it.',
+    proves: [
+      { suite: 'tests/test.js', assertion: 'flags overlapping edit as conflict' },
+      { suite: 'tests/test.js', assertion: 'conflict has git-style markers' },
+    ],
+  },
+  {
+    id: 'rejoin-no-clobber',
+    name: 'Reconnecting merges; it does not push the room\'s stale copy over newer local edits',
+    criticality: 'critical', tier: 3,
+    breaks: 'Every dropped connection is a silent data-loss event. Observed live before it was fixed.',
+    proves: [{ suite: 'tests/rejoin-clobber-test.mjs', assertion: 'REJOIN DID NOT CLOBBER' }],
+  },
+
+  // ── control: the half that lets a human leave the room ───────────────────────────────────
+  {
+    id: 'stop-button',
+    name: 'A paused agent\'s write does not land',
+    criticality: 'critical', tier: 3,
+    breaks: 'The stop button is advice. Nobody can leave a room running unattended.',
+    proves: [{ suite: 'tests/hive-governor-test.mjs', assertion: 'THE PAUSED WRITE DID NOT LAND' }],
+  },
+  {
+    id: 'self-unpause',
+    name: 'An AI cannot unpause itself',
+    criticality: 'critical', tier: 1,
+    breaks: 'The stop button is advice with extra steps — the control map sits in the room the agent can write.',
+    proves: [{ suite: 'tests/hive-governor-test.mjs', assertion: 'an AI may never touch the control map' }],
+  },
+  {
+    id: 'budget-caps',
+    name: 'A spend cap pauses the agent that hits it',
+    criticality: 'hot', tier: 1,
+    breaks: 'An overnight run can spend without bound.',
+    proves: [{ suite: 'tests/hive-governor-test.mjs', assertion: 'the write that hits the cap pauses the agent' }],
+  },
+  {
+    id: 'governor-honest-numbers',
+    name: 'The usage dashboard reports the real figures',
+    criticality: 'critical', tier: 1,
+    breaks: 'The operator decides whether to intervene using a number that is wrong. THIS IS THE HIV-13 DEFECT: 30 minutes displayed as 3.0, shipped green.',
+    proves: [{ suite: 'tests/hive-governor-test.mjs', assertion: 'snapshot reports 30 minutes after 30 minutes, not 3' }],
+  },
+
+  // ── honesty: every defect on this project has been a false success ───────────────────────
+  {
+    id: 'join-honesty',
+    name: 'A refused join says NOT JOINED and withholds the rules',
+    criticality: 'critical', tier: 2,
+    breaks: 'An agent believes it is in the room, works for an hour, and nothing it did exists.',
+    proves: [{ suite: 'tests/join-honesty-test.mjs', assertion: 'a refused join does NOT claim to have joined' }],
+  },
+  {
+    id: 'say-offline',
+    name: 'hive_say refuses the word "sent" when the socket is down',
+    criticality: 'hot', tier: 4,
+    breaks: 'An agent reports a handoff it never made, in the same words it uses on success. (HIV-30.)',
+    proves: [{ suite: 'tests/receipts-e2e-test.mjs', assertion: 'hive_say REFUSES THE WORD "SENT"' }],
+  },
+  {
+    id: 'receipts-unknown',
+    name: 'An agent that publishes no read position is UNKNOWN, never counted as delivered',
+    criticality: 'hot', tier: 1,
+    breaks: 'A receipt system that reassures instead of measuring: every bridge and human reads as confirmed.',
+    proves: [
+      { suite: 'tests/receipts-test.mjs', assertion: 'AN AGENT THAT PUBLISHES NO CURSOR IS UNKNOWN' },
+      { suite: 'tests/receipts-test.mjs', assertion: 'COUNTDELIVERED COUNTS ONLY READ' },
+    ],
+  },
+  {
+    id: 'backlog-truncation',
+    name: 'A partially read backlog says so, with its Q-code',
+    criticality: 'hot', tier: 1,
+    breaks: 'The night shift plans against half the tickets and believes it has them all. (HIV-14 / Q443.)',
+    proves: [{ suite: 'tests/hive-linear-test.mjs', assertion: 'a page that errors mid-pagination is reported, not swallowed' }],
+  },
+  {
+    id: 'truncation-no-false-alarm',
+    name: 'A COMPLETE read is not flagged as truncated',
+    criticality: 'standard', tier: 1,
+    breaks: 'A warning that fires on healthy runs is a warning nobody reads.',
+    proves: [{ suite: 'tests/hive-linear-test.mjs', assertion: 'a complete multi-page read is NOT flagged as truncated' }],
+  },
+
+  // ── coordination: the half this week's failures came from ────────────────────────────────
+  {
+    id: 'obligation-author-only',
+    name: 'Only the asker can close a question they asked',
+    criticality: 'hot', tier: 1,
+    breaks: 'An agent marks its own answer sufficient, and "answered" stops meaning anything. (HIV-29.)',
+    proves: [
+      { suite: 'tests/obligations-test.mjs', assertion: 'THE DEBTOR CANNOT CLOSE ITS OWN OBLIGATION' },
+      { suite: 'tests/obligations-e2e-test.mjs', assertion: 'BUILDER IS REFUSED' },
+    ],
+  },
+  {
+    id: 'obligation-absent-target',
+    name: 'Addressing an agent that is not in the room is reported at once',
+    criticality: 'hot', tier: 4,
+    breaks: 'A question hangs unanswered for a whole shift. Happened 19 Sep: one message to @Reviewer, who never existed, then six hours of silence.',
+    proves: [{ suite: 'tests/obligations-e2e-test.mjs', assertion: 'NOBODY BY THAT NAME IS HERE' }],
+  },
+  {
+    id: 'throttle-change-wins',
+    name: 'A changed block is always delivered, whatever the throttle says',
+    criticality: 'critical', tier: 1,
+    breaks: 'An agent acts on tests=RUNNING while the room has said RED, and nothing reports the message was withheld. (HIV-31.)',
+    proves: [
+      { suite: 'tests/throttle-test.mjs', assertion: 'A CHANGED BLOCK IS SENT IMMEDIATELY' },
+      { suite: 'tests/throttle-e2e-test.mjs', assertion: 'A CHANGE IS DELIVERED AT ONCE' },
+    ],
+  },
+
+  // ── the relay's own perimeter ────────────────────────────────────────────────────────────
+  {
+    id: 'room-isolation',
+    name: 'One room never sees another room\'s content',
+    criticality: 'critical', tier: 3,
+    breaks: 'Two customers on one relay read each other\'s source.',
+    proves: [{ suite: 'tests/test.js', assertion: 'room Y never sees room X' }],
+  },
+  {
+    id: 'token-forgery',
+    name: 'Forged, unsigned and alg-confused tokens are refused',
+    criticality: 'critical', tier: 1,
+    breaks: 'Anyone who can reach the relay can join any secured room.',
+    proves: [
+      { suite: 'tests/test.js', assertion: 'alg-confusion (HS256 signed with public key) is rejected' },
+      { suite: 'tests/test.js', assertion: 'unsigned token (empty sig) is rejected' },
+    ],
+  },
+  {
+    id: 'ratelimit-before-auth',
+    name: 'A throttled IP is refused BEFORE the signature is checked',
+    criticality: 'hot', tier: 2,
+    breaks: 'An unauthenticated flood spends your CPU on signature verification for free.',
+    proves: [{ suite: 'tests/hive-mcp-http-test.mjs', assertion: 'BEFORE signature check' }],
+  },
+
+  // ── PROMISES WITH NO PROOF. Not placeholders. These are the gap list, and the reason this ──
+  // ── file is worth more than the passing half above. ───────────────────────────────────────
+  {
+    id: 'pr-staleness',
+    name: 'hive-pr refuses to overwrite a branch that has moved',
+    criticality: 'critical', tier: 5,
+    breaks: 'A PR that looks perfect — clean per-agent commits, signed attribution — silently reverts every commit that reached the branch another way. MEASURED 19 Sep: a generated PR deleted the HIV-27 guard, the HIV-14 fix and ~200 lines of tests, and restored the 10x dashboard bug. Filed HIV-28. --push and --pr are unsafe until this is proved.',
+    proves: [],
+  },
+  {
+    id: 'extension-reconcile-parity',
+    name: 'The extension\'s copy of reconcile() behaves identically to sync.js',
+    criticality: 'critical', tier: 1,
+    breaks: 'Merge logic exists TWICE. Fixing one silently ships the other broken, and nothing covers the extension side. (HIV-8, characterisation landed, extraction unfinished.)',
+    proves: [],
+  },
+  {
+    id: 'connection-ceiling',
+    name: 'Running out of connections is reported, not turned into empty files',
+    criticality: 'critical', tier: 3,
+    breaks: 'One socket per file against a 512 cap. MEASURED: 38,011 Q430 refusals in one evening and 186 files read as EMPTY per folder, because an unsynced file-doc is indistinguishable from an empty one.',
+    proves: [],
+  },
+  {
+    id: 'telegram-reach',
+    name: 'A message from the phone reaches the room and wakes a waiting agent',
+    criticality: 'standard', tier: 5,
+    breaks: 'The operator cannot start or stop a shift from outside the house. Proven by hand 19 Sep (round trip ~2s); never automated.',
+    proves: [],
+  },
+  {
+    id: 'multi-vendor',
+    name: 'Agents from different vendors coordinate in one room',
+    criticality: 'hot', tier: 6,
+    breaks: 'The central claim of the product — "any agent, any vendor" — is unproven. STRUCTURALLY unautomatable here: it needs another vendor\'s agent running. Demonstrated by hand with Antigravity; that is the only evidence there is, and it should be described that way.',
+    proves: [],
+  },
+]
+
+/** Group by criticality for reporting; order is the order in CRITICALITY. */
+export function byCriticality(features = FEATURES) {
+  const out = {}
+  for (const c of CRITICALITY) out[c] = features.filter((f) => f.criticality === c)
+  return out
+}
+
+/** Every distinct suite this manifest depends on. The checker runs each exactly once. */
+export function suites(features = FEATURES) {
+  return [...new Set(features.flatMap((f) => f.proves.map((p) => p.suite)))].sort()
+}
+
+/**
+ * The gap list, and the reason to keep this file.
+ *
+ * Tier 6 is separated from the rest because the distinction is real and collapsing it is a lie:
+ * `multi-vendor` is not unproven through neglect, it is unprovable in this repo without another
+ * vendor's agent running. A coverage number that quietly counts it as a failure would push someone
+ * to write a fake test for it; one that quietly counts it as a pass is worse.
+ */
+export function unproven(features = FEATURES) {
+  const none = features.filter((f) => !f.proves.length)
+  return {
+    automatable: none.filter((f) => f.tier < 6),
+    manualOnly: none.filter((f) => f.tier === 6),
+  }
+}
