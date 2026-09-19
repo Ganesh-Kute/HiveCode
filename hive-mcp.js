@@ -39,11 +39,25 @@ import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
+import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
 let session = null // { hive, room, relay, dir, name, mailbox }
 
-const text = (s) => ({ content: [{ type: 'text', text: typeof s === 'string' ? s : JSON.stringify(s, null, 2) }] })
+// ONE THROTTLE PER SERVER PROCESS, which is one agent. It deliberately does NOT live on the
+// session: a rejoin does not empty the agent's context, so resetting the throttle there would
+// re-send everything the agent can still see -- the exact waste this removes.
+const throttle = makeThrottle()
+
+const text = (s) => {
+  const body = typeof s === 'string' ? s : JSON.stringify(s, null, 2)
+  // THE METER. Every tool result leaves through here, so this count is exact rather than
+  // sampled -- it is the local equivalent of the PTY output bytes Agent Relay's broker measures,
+  // and it is the only evidence available that an agent has done enough since it last saw a
+  // block for that block to have been compacted away.
+  try { throttle.note(body.length) } catch { /* the meter must never break a tool result */ }
+  return { content: [{ type: 'text', text: body }] }
+}
 const err = (s) => ({ content: [{ type: 'text', text: s }], isError: true })
 
 function resolveRoom(link, dir) {
@@ -179,8 +193,18 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
 
   // Event-Driven Wakeups: notify the MCP client the millisecond the DCO state changes
   hive.doc.getMap('swarm_state').observe(() => {
+    // SAME DEFECT AS THE MAIL DOORBELL BELOW, AND FOUND THE SAME WAY -- a test crashed inside a
+    // Yjs observer with the stack pointing at a `try` that looked like it had the case covered.
+    // `notification()` is async: a failure is a REJECTED PROMISE, which sails past this catch,
+    // becomes an unhandled rejection and takes the whole agent down.
+    //
+    // Worth recording that the first fix only repaired the copy in the chat observer. This one
+    // survived untouched for another two tickets and then crashed a second test -- which is the
+    // duplicated-wire-contract lesson arriving in person: repair the CLASS, not the instance.
+    // Both call sites are now the same shape, deliberately.
     try {
-      server.notification({ method: 'notifications/hive_state_changed', params: { state: hive.getState() } })
+      Promise.resolve(server.notification({ method: 'notifications/hive_state_changed', params: { state: hive.getState() } }))
+        .catch(() => { /* no transport, or a client that does not take notifications */ })
     } catch (e) {
       // client might not support notifications, swallow error
     }
@@ -255,6 +279,10 @@ function requireSession() { if (!session) throw new Error('not in a room — cal
 /** The read cursor for this participant. Lazily built if a session predates it. */
 function mailbox() {
   const s = requireSession()
+  // hive_join has just handed over the full HIVE_RULES.md, so the nudge would be pure noise on
+  // the next wait. Marking it sent here is what makes the join and the reminder one mechanism
+  // rather than two that disagree.
+  try { throttle.sent('rules', RULES_NUDGE) } catch { }
   if (!s.mailbox) s.mailbox = createMailbox({ me: s.name, startAt: s.hive.doc.getArray('chat').length })
   return s.mailbox
 }
@@ -748,7 +776,21 @@ async function dispatch(req) {
         const ms = Math.min(Math.max(Number(args.timeoutSeconds) || 60, 1), 300) * 1000
         const r = await waitForWork(ms, { wakeOn: args.wakeOn, until: args.until })
         const globalState = requireSession().hive.getState()
-        const stateStr = Object.keys(globalState).length ? `\n[GLOBAL PROJECT STATE]\n${JSON.stringify(globalState, null, 2)}\n` : ''
+        // THE STATE BLOCK WAS RETURNED ON EVERY SINGLE WAIT, unchanged, forever -- an agent
+        // sitting in the night-shift loop was handed the same JSON hundreds of times and paid for
+        // it each time. It is now sent when the agent has not seen it, when it CHANGED (which
+        // always wins: a suppressed state change is a wrong answer, not a saving), or when enough
+        // time AND enough output have passed that it is probably no longer in context.
+        const stateBody = Object.keys(globalState).length ? `\n[GLOBAL PROJECT STATE]\n${JSON.stringify(globalState, null, 2)}\n` : ''
+        const stateStr = stateBody && throttle.send('state', stateBody) ? stateBody : ''
+        // The room rules went the other way: 6 KB handed over ONCE in the hive_join result, where
+        // compaction reaches them first. They are the ROOM-specific half -- lanes, gate command,
+        // ownership -- so the general rules in the system prompt do not cover them. A pointer is
+        // re-sent, never a copy: the file is on this agent's own disk, and a second summary here
+        // would be one more description to drift out of date.
+        const rulesStr = throttle.should('rules', RULES_NUDGE).why === 'likely-compacted'
+          ? (throttle.sent('rules', RULES_NUDGE), `\n${RULES_NUDGE}\n`)
+          : ''
         // Connection state, reported ONLY when it is bad. An agent that cannot tell a
         // quiet room from a dead socket reaches for hive_join -- which calls stop() and
         // tears the session down, turning a blip that would have healed itself into a
@@ -801,13 +843,13 @@ async function dispatch(req) {
           }
           return text(`⏸ You are PAUSED by mission control. Stop new work and wait. You will be woken if someone @mentions you or assigns you a task; otherwise just call hive_wait again.${stateStr}`)
         }
-        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${stateStr}`)
+        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${stateStr}${rulesStr}`)
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${owedStr}${connStr}${stateStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
       }
       case 'hive_delivered': {
         const s2 = requireSession()
@@ -1140,6 +1182,10 @@ if (isEntryPoint) {
 export const _test = {
   waitForWork,
   mailbox,
+  // Exposed so the throttle's saving is asserted against the counter itself rather than inferred
+  // from what happened not to appear in a tool result. Counting absences is how you prove a thing
+  // is quiet, not how you prove it is working.
+  throttleStats: () => throttle.stats(),
   setSession(s) { session = s },
   getSession() { return session },
   callTool: (name, args = {}) =>
