@@ -182,6 +182,13 @@ export const FEATURES = [
     proves: [{ suite: 'tests/obligations-e2e-test.mjs', assertion: 'NOBODY BY THAT NAME IS HERE' }],
   },
   {
+    id: 'doorbell-cannot-kill',
+    name: 'An optional notification cannot take the agent down',
+    criticality: 'hot', tier: 1,
+    breaks: 'A doorbell that fails kills the whole agent from inside a Yjs observer, with the stack pointing at a try/catch that structurally cannot catch it. Crashed two suites two tickets apart, because the first fix repaired one of the two identical sites. See learnings/repair-the-class-not-the-copy.md.',
+    proves: [{ suite: 'tests/learnings-test.mjs', assertion: 'EVERY server.notification() is wrapped' }],
+  },
+  {
     id: 'throttle-change-wins',
     name: 'A changed block is always delivered, whatever the throttle says',
     criticality: 'critical', tier: 1,
