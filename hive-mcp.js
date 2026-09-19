@@ -38,6 +38,7 @@ import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as OB from './hive-obligations.js'
+import * as RC from './hive-receipts.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
 let session = null // { hive, room, relay, dir, name, mailbox }
@@ -72,6 +73,12 @@ function readSessionFile() {
 function persistCursor() {
   if (!session || !session.mailbox) return
   persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor })
+  // AND PUBLISH IT INTO THE ROOM. The file above is for resuming THIS session; the room copy is
+  // what makes "did they actually read it" answerable by anybody other than me. The cursor only
+  // advances inside box.take(), which is the call that hands messages to the agent -- so a cursor
+  // past a message is the one honest piece of evidence this system has that the message reached
+  // somebody's context. Before this, that evidence existed and was thrown away on disk.
+  try { RC.publishCursor(session.hive.doc.getMap('cursors'), session.name, session.mailbox.cursor) } catch { /* a room that predates receipts */ }
 }
 async function tryResumeSession() {
   try {
@@ -392,6 +399,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id'] } },
   { name: 'hive_say', description: 'Post a coordination message to the room chat. Use this to announce what you are about to work on BEFORE editing (e.g. "taking auth.js: adding login"). Address someone directly with @Name — that is what makes it land as mail rather than ambient chatter. Set urgent:true when you need them to stop what they are doing. Set needsReply:true when you are ASKING something — the room then tracks that you are owed an answer, and tells you if you addressed somebody who is not here.',
     inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = prefix [!] so the recipient treats it as "handle before continuing", not "read at your next boundary"' }, needsReply: { type: 'boolean', description: 'true = this is a QUESTION and you are owed an answer. Records an obligation against everyone you named. It stays open until YOU call hive_answered -- the person you asked cannot close it, and answering is not closing. If you named someone who is not in the room you are told so immediately, instead of waiting forever.' }, replyWithinMinutes: { type: 'number', description: 'how long before you are reminded (default 10). The reminder arrives on a hive_wait you were going to make anyway, so it costs nothing.' } }, required: ['text'] } },
+  { name: 'hive_delivered', description: 'Did anyone actually READ what you said? "sent" only means the message entered your local copy. This reports, per recipient: READ (their read position passed it — real evidence), UNREAD (they are here and behind), UNKNOWN (they publish no read position, e.g. a bridge or a human client — so their silence means NOTHING either way), UNREACHABLE (they left, or you are offline). Read it before concluding an agent is ignoring you, and before believing a handoff landed.',
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many of your recent addressed messages to check (default 10)' } } } },
   { name: 'hive_answered', description: 'Close a question YOU asked with needsReply — you are saying you got what you needed. Only the asker can call this: the agent you asked cannot mark its own answer sufficient, and a reply alone does not close anything. Pass id for one, or from:"Name" to close everything you asked that agent.',
     inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'the obligation id from hive_say or hive_owed' }, from: { type: 'string', description: 'close every open question you asked this agent' } } } },
   { name: 'hive_owed', description: 'Who owes an answer to whom, and for how long. Read this when the room has gone quiet: an agent that stopped replying looks exactly like an agent that is thinking, and this is the difference. Shows questions aimed at YOU (answer these) and questions you asked (close these with hive_answered). Anything marked STALE has been reminded three times and is now the room\'s problem, not one agent\'s.',
@@ -566,6 +575,14 @@ async function dispatch(req) {
     switch (name) {
       case 'hive_join': return text(await joinRoom(args))
       case 'hive_say': {
+        // THE CONNECTION IS CHECKED BEFORE ANYTHING ELSE. Until today this tool reported
+        // "sent to @Builder: ..." with the socket down, which is a false success in the most
+        // literal sense: the bytes are in a local Yjs doc, the relay has never seen them, and the
+        // word the agent reads is the same word it reads on success. status().connected was
+        // right there and free the whole time.
+        const sendConn = (() => { try { return requireSession().hive.status() } catch { return null } })()
+        const sendWarn = RC.sendWarning({ connected: !sendConn || !!sendConn.connected })
+        const stamp = (t) => (sendWarn ? `${sendWarn}\n\n${t}` : t)
         const raw = String(args.text || '')
         // The marker is in the text itself so it survives into HIVE_CHAT.md and is visible to
         // a human reading the log, not just to the recipient's tool output.
@@ -577,7 +594,7 @@ async function dispatch(req) {
         // Immediate, per-call feedback, at the moment the mistake is made.
         const named = mentionedNames(body)
         if (!named.length) {
-          return text(`sent: ${body}\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
+          return text(stamp(`sent: ${body}`) + `\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
             `activity", where they are told to skip it — so assume no one acts on it. Name the ` +
             `agents you actually need with @Name (hive_members lists who is here). Use an ` +
             `unaddressed message only for a genuine announcement to the whole room.`)
@@ -627,7 +644,7 @@ async function dispatch(req) {
             }
           }
         }
-        return text(`sent to ${to}: ${body}` + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
+        return text(stamp(`sent to ${to}: ${body}`) + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
       }
       case 'hive_busy': {
         const s = requireSession()
@@ -791,6 +808,32 @@ async function dispatch(req) {
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
         return text(`${owedStr}${connStr}${stateStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+      }
+      case 'hive_delivered': {
+        const s2 = requireSession()
+        const conn = (() => { try { return s2.hive.status() } catch { return null } })()
+        const connected = !conn || !!conn.connected
+        const here = new Set(s2.hive.members().map((m) => String(m.name).toLowerCase()))
+        const rs = RC.receipts({
+          chat: s2.hive.doc.getArray('chat').toArray(),
+          cursors: s2.hive.doc.getMap('cursors'),
+          me: s2.name,
+          present: (n) => here.has(String(n).toLowerCase()),
+          connected,
+          limit: Math.min(Math.max(Number(args.limit) || 10, 1), 50),
+        })
+        if (!rs.length) return text('You have not addressed anyone recently, so there is nothing to confirm. (Unaddressed and @all messages are not tracked — nobody promised to read those.)')
+        const states = rs.flatMap((r) => r.to)
+        const read = RC.countDelivered(states)
+        const unknown = states.filter((x) => x.state === RC.UNKNOWN).length
+        // The headline deliberately reports READ over TOTAL and names UNKNOWN separately rather
+        // than folding it in. Summing "not proven undelivered" into the good number is how a
+        // receipt system starts reassuring instead of measuring.
+        const head = `${read}/${states.length} confirmed READ` +
+          (unknown ? ` — ${unknown} UNKNOWN (no read position published; that is an absence of evidence, not evidence of delivery)` : '')
+        const worst = states.filter((x) => x.state !== RC.READ)
+        return text(`${head}\n\n` + rs.map((r) => '  ' + RC.describe(r)).join('\n') +
+          (worst.length ? '\n\n' + [...new Set(worst.map((x) => `${x.name}: ${x.why}`))].join('\n') : ''))
       }
       case 'hive_answered': {
         const s2 = requireSession()
