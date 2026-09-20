@@ -586,13 +586,8 @@ function enforceDcoLock(opts = {}) {
 // itself reporting the wrong build. Read the truth instead; package.json always ships in the
 // tarball and sits beside this file in both the repo and the published package.
 // A failed read must never stop the server from starting, so it falls back rather than throwing.
-export const VERSION = (() => {
-  try {
-    const v = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
-    if (typeof v === 'string' && v) return v
-  } catch { /* fall through */ }
-  return '0.0.0-unknown'
-})()
+import { VERSION } from "./hive-version.js"
+export { VERSION }
 // `instructions` is placed in the agent's SYSTEM PROMPT by the client at connect time, which
 // makes it the only channel that reaches an agent before its first tool call. Everything else we
 // have -- tool descriptions, the HIVE_RULES returned by hive_join -- is read too late or scrolls

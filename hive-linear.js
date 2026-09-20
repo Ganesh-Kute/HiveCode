@@ -17,7 +17,11 @@
 // from issue -> task lives in ROOM STATE, not in this process, so a bridge that restarts (or a
 // second one started by mistake) does not fill the board with duplicates of work already running.
 
+import fs from 'fs'
 import { startSync, parseLink } from './sync.js'
+
+import { VERSION } from "./hive-version.js"
+export { VERSION }
 
 const DEFAULT_URL = 'https://mcp.linear.app/mcp'
 // Linear exposes a read-only endpoint. It is the DEFAULT here on purpose: the first run of this
@@ -61,7 +65,7 @@ export function mcpClient({ url = DEFAULT_URL, token = '', fetchImpl = fetch } =
   }
 
   return {
-    init: () => rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hivecode', version: '1.0.0' } }),
+    init: () => rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hivecode', version: VERSION } }),
     tools: () => rpc('tools/list', {}),
     call: (name, args) => rpc('tools/call', { name, arguments: args || {} }),
     sessionId: () => session,

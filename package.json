@@ -28,6 +28,7 @@
   },
   "files": [
     "hive-mcp.js",
+    "hive-version.js",
     "hive-mailbox.js",
     "hive-obligations.js",
     "hive-receipts.js",

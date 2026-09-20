@@ -20,10 +20,14 @@
 // it until the request signature has been verified. In `--auth slack` mode an unsigned request is
 // refused before it is parsed as a call at all.
 
+import fs from 'fs'
 import http from 'http'
 import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 import { attachRateLimit } from './limits.js'
+
+import { VERSION } from "./hive-version.js"
+export { VERSION }
 
 const PROTOCOL = '2025-06-18'
 const MAX_BODY = 1 << 20           // a control-plane request is never a megabyte
@@ -172,7 +176,7 @@ export async function dispatch({ msg, tools, actor }) {
     return reply({
       protocolVersion: PROTOCOL,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'hivecode', version: '1.0.0' },
+      serverInfo: { name: 'hivecode', version: VERSION },
     })
   }
   // Notifications carry no id and MUST NOT be answered with a result.
@@ -292,7 +296,11 @@ export function serve({ hive, room = '', port, auth, signingSecret, now, tier = 
 }
 
 // ---- main -------------------------------------------------------------------------------
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+// `process.argv[1] &&` is not defensive noise: without it this module THROWS on import in any
+// host that has no script path -- a worker thread, a REPL, `node --eval`. hive-linear.js:288
+// already guards it; this file did not, so importing it crashed rather than simply not running
+// main. Found while reviewing HIV-P7; pre-existing, not caused by it.
+if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const argv = process.argv.slice(2)
   const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || '') }
   const LINK = argv.find((a) => !a.startsWith('--')) || ''

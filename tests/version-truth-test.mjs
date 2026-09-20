@@ -191,5 +191,79 @@ console.log('\n# D. THE SCAN IS NOT VACUOUS — it is shown catching each real s
     violationsIn(`{ protocolVersion: '2024-11-05', name: 'hivecode' }`).length === 0)
 }
 
-console.log(`\n=== HIV-P7 VERSION TRUTH: ${pass} passed, ${fail} failed ===`)
+// ── E. SINGLE SOURCE OF TRUTH (HIV-P7b). ─────────────────────────────────────
+// Having four separate copies of the package.json reader means they can drift independently
+// (measured: a mutation to remote-mcp.js's fallback passed 16/16 green).
+// The solution is extraction: exactly ONE module (hive-version.js) defines the reader,
+// and all four entry points import it.
+console.log('\n# E. SINGLE SOURCE OF TRUTH (HIV-P7b: hive-version.js)')
+
+function hasVersionReader(src) {
+  const flat = String(src).replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, ' ')
+  return /package\.json['"`][\s\S]{0,120}\.version|\.version[\s\S]{0,120}package\.json['"`]/i.test(flat)
+}
+
+const readers = []
+for (const f of ENTRY_FILES) {
+  let src = ''
+  try { src = fs.readFileSync(path.join(ROOT, f), 'utf8') } catch { continue }
+  if (hasVersionReader(src)) readers.push(f)
+}
+
+T('E1 exactly one module in the source tree extracts package.json version',
+  readers.length === 1 && readers[0] === 'hive-version.js',
+  `found ${readers.length}: ${readers.join(', ')}`)
+
+const hvPath = path.join(ROOT, 'hive-version.js')
+const hvExists = fs.existsSync(hvPath)
+T('E2 hive-version.js exists on disk', hvExists)
+
+if (hvExists) {
+  try {
+    const hvMod = await import('../hive-version.js')
+    T('E3 hive-version.js exports VERSION matching package.json',
+      hvMod.VERSION === TRUTH, `${hvMod.VERSION} vs ${TRUTH}`)
+    T('E4 hive-version.js VERSION is not the fallback',
+      hvMod.VERSION !== '0.0.0-unknown', hvMod.VERSION)
+  } catch (e) {
+    T('E3 hive-version.js exports VERSION matching package.json', false, String(e))
+    T('E4 hive-version.js VERSION is not the fallback', false)
+  }
+} else {
+  T('E3 hive-version.js exports VERSION matching package.json', false, 'file does not exist')
+  T('E4 hive-version.js VERSION is not the fallback', false)
+}
+
+// All 4 entry points must import from ./hive-version.js
+const targets = ['hive-mcp.js', 'remote-mcp.js', 'hive-mcp-http.js', 'hive-linear.js']
+for (const t of targets) {
+  let src = ''
+  try { src = fs.readFileSync(path.join(ROOT, t), 'utf8') } catch {}
+  const importsFromHiveVersion = /from\s*['"]\.\/hive-version(?:\.js)?['"]/.test(src)
+  T(`E5 ${t} imports VERSION from ./hive-version.js`, importsFromHiveVersion)
+}
+
+// package.json files[] packaging invariant
+const listed = new Set(PKG.files || [])
+T('E6 package.json files[] includes "hive-version.js"', listed.has('hive-version.js'))
+
+import { spawnSync } from 'child_process'
+const checkRes = spawnSync(process.execPath, ['scripts/check-files.mjs'], { cwd: ROOT, encoding: 'utf8' })
+T('E7 scripts/check-files.mjs passes (no broken imports in tarball)',
+  checkRes.status === 0, (checkRes.stderr || checkRes.stdout || '').trim())
+
+// ── F. NON-VACUOUS SINGLE-READER SCANNER (synthetic test cases) ─────────────
+console.log('\n# F. NON-VACUOUS SINGLE-READER SCANNER')
+{
+  T('F1 catches duplicate inline reader',
+    hasVersionReader('const v = JSON.parse(fs.readFileSync("./package.json")).version') === true)
+  T('F2 catches multi-line package.json URL reader',
+    hasVersionReader('const pkg = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"))\nconst v = pkg.version') === true)
+  T('F3 does NOT flag import of hive-version',
+    hasVersionReader("import { VERSION } from './hive-version.js'") === false)
+  T('F4 does NOT flag non-version package.json read (like reading files[])',
+    hasVersionReader("const pkg = JSON.parse(fs.readFileSync('./package.json')); const f = pkg.files;") === false)
+}
+
+console.log(`\n=== HIV-P7/P7b VERSION TRUTH: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
