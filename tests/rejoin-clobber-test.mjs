@@ -120,13 +120,13 @@ B.stop()
 fs.writeFileSync(path.join(dB, SHADOW), '{ truncated')
 const dC = path.join(tmp, 'c'); fs.mkdirSync(dC)
 fs.writeFileSync(path.join(dC, SHADOW), JSON.stringify({ v: 1, room: 'some-other-room', files: { 'app.js': 'not from here' } }))
-fs.writeFileSync(path.join(dC, 'app.js'), 'local only\n')
+fs.writeFileSync(path.join(dC, 'app.js'), SEED)
 const C = startSync({ relay: wsUrl, room, dir: dC, name: 'C', kind: 'ai', log: () => {} })
 await sleep(4500)
 const cText = read(path.join(dC, 'app.js')) || ''
 T('an ancestor from a DIFFERENT room is ignored (no merge against foreign history)',
   !cText.includes('not from here'))
-T('C still converged on the room copy', cText.includes('function alpha'))
+T('C with cloned ancestor still converged on the room copy', cText.includes('function alpha'))
 
 // CROSS-CONTAMINATION. C's folder contained an ancestor record naming a foreign room and a
 // sentinel string. If the record were syncable, that sentinel would now be in every peer's
@@ -136,6 +136,31 @@ const sentinelLeaked = [dA, dB].some((d) => (read(path.join(d, SHADOW)) || '').i
 T('one client\'s ancestor record never reaches another (never synced)', !sentinelLeaked)
 T('a corrupt ancestor record does not crash the client that owns it', fs.existsSync(path.join(dB, 'app.js')))
 C.stop()
+
+// ── HIV-P9: FIRST CONTACT WITH PRE-EXISTING DIVERGENT CONTENT (NO SHADOW) ───
+// Client D joins a room for the very first time. D's folder ALREADY has an app.js
+// with distinct local work, and NO shadow ancestor exists.
+// The room has its own app.js. The room has NEVER seen D's content (UNPROVEN / DIVERGED).
+// Old bug: blind adopt wiped out D's local work with room copy.
+// Buggy merge: concatenated both files into an unparseable doubled mess.
+// Correct behavior: D's local file is PRESERVED on disk, room's doc is NOT corrupted/doubled,
+// and D's file parses cleanly!
+const dD = path.join(tmp, 'd'); fs.mkdirSync(dD)
+const D_LOCAL = 'function customFeature() {\n  return "d-unique"\n}\n'
+fs.writeFileSync(path.join(dD, 'app.js'), D_LOCAL)
+const D = startSync({ relay: wsUrl, room, dir: dD, name: 'D', kind: 'ai', log: () => {} })
+await sleep(4500)
+const dText = read(path.join(dD, 'app.js')) || ''
+T('FIRST-CONTACT CLOBBER SHIELD: D local unproven work was NOT wiped out by room copy',
+  dText.includes('customFeature'))
+T('D local work was NOT doubled/concatenated with room copy',
+  !dText.includes('function alpha') && !dText.includes('function gamma'))
+T('D local file still parses cleanly',
+  (() => { try { new Function(dText); return true } catch { return false } })())
+const aText = read(fileA) || ''
+T('Room copy was NOT corrupted by D joining',
+  aText.includes('function alpha') && !aText.includes('customFeature'))
+D.stop()
 
 for (const c of [A]) { try { c.stop() } catch { } }
 relay.kill(); try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { }

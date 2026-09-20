@@ -36,6 +36,7 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 // whole file is the most common thing an agent does, so this fired constantly.
 import grmLink from './grm-link.cjs' // hands this room's history to GRM, so the ROOM has a memory
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
+import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from './hive-pr-staleness.js' // room-versus-branch provenance staleness checks (HIV-P9)
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -1574,14 +1575,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         try { say(`⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`) } catch { }
         return
       }
-      // Genuinely no ancestor (a clone-then-join). Adopt the room's copy, keep ours as a
-      // restore point — and SAY SO. This branch used to be the only silent one on this
-      // path, which is why the data loss went unnoticed rather than merely being rare.
-      captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
-      writeToDisk(relPath, docText)
-      bases.set(relPath, docText); forkBases.set(relPath, docText)
-      if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(relPath) }
-      try { say(`↓ ${relPath} already existed in this room — ${name} adopted the room's copy. The local version before joining is saved in the file's history.`) } catch { }
+      // Genuinely no ancestor (a clone-then-join, or joining with an existing checkout).
+      // HIV-P9: Do NOT adopt the room's copy blindly. Check provenance!
+      // Has the room ever seen what is currently on disk?
+      const receipts = fe && fe.ledger ? fe.ledger.toArray() : []
+      const st = accountFor({ rel: relPath, branchText: disk, roomText: docText, receipts })
+
+      if (st.state === DESCENDS || st.state === IDENTICAL) {
+        // Safe: The room has passed through our disk content, so the room's copy is a true descendant.
+        captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
+        writeToDisk(relPath, docText)
+        bases.set(relPath, docText); forkBases.set(relPath, docText)
+        if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(relPath) }
+        try { say(`↓ ${relPath} already existed in this room — ${name} adopted the room's copy. The local version before joining is saved in the file's history.`) } catch { }
+        return
+      }
+
+      // DIVERGED or UNPROVEN: The room has NEVER seen local disk's content, or has no proof.
+      // Overwriting disk with docText would cause silent data loss (e.g. wiping out local fixes).
+      // Merging from an empty base would concatenate both copies, creating invalid syntax.
+      // Refuse adoption: keep local disk untouched, keep room doc untouched, snapshot local, and announce loudly.
+      captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: `local copy preserved at join (${st.state}: room copy refused)` })
+      bases.set(relPath, disk); forkBases.set(relPath, disk)
+      try {
+        say(`⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted. Local disk was preserved. Resolve deliberately.`)
+      } catch { }
       return
     }
     const base = bases.has(relPath) ? bases.get(relPath) : disk
