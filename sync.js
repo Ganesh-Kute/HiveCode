@@ -37,6 +37,10 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 import grmLink from './grm-link.cjs' // hands this room's history to GRM, so the ROOM has a memory
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
 import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from './hive-pr-staleness.js' // room-versus-branch provenance staleness checks (HIV-P9)
+// HIV-P8. The map key MUST be the string 'obligations' — hive-mcp.js:656 reads that exact key, and
+// a debt written anywhere else would be invisible to hive_owed: a warning nobody can see, which is
+// the defect this ticket is about, one level down.
+import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -1325,15 +1329,28 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // work (it would look like a deliberate deletion against an up-to-date base).
 
   const rel = (full) => path.relative(ROOT, full).split(path.sep).join('/')
-  function walk(d, acc = []) {
+  // HIV-P8: `skipped` collects the files this walk DECLINES to sync, and that second list is the
+  // whole ticket. Everything in this engine is derived from "the files we sync", so every natural
+  // place to notice a born-invisible file is definitionally blind to it: walk() dropped ignored
+  // paths, so scan() never saw them, so reconcile() was never called for them, so the guard at the
+  // top of reconcile() was unreachable for exactly the class of file it names. Hooking there would
+  // have passed a unit test that called reconcile() directly and done nothing in a real session.
+  //
+  // DIRECTORY PRUNING IS UNCHANGED, deliberately. Descending into ignored directories to find
+  // ignored files would walk vendor and build trees on every tick. Measured on a real checkout with
+  // pruning kept: 7934 synced, 256 ignored files visible, 280 directories descended, 191ms for the
+  // whole traversal — and that traversal already happens. We are keeping an answer isIgnored()
+  // already computed instead of discarding it. An ignored file inside an ignored directory stays
+  // unseen, which is the correct trade at that price.
+  function walk(d, acc = [], skipped = []) {
     let entries = []
     try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return acc }
     for (const e of entries) {
       if (IGNORE.has(e.name)) continue
       const full = path.join(d, e.name)
       const r = rel(full)
-      if (e.isDirectory()) { if (!isIgnored(r + '/')) walk(full, acc) }      // prune ignored dirs
-      else if (e.isFile()) { if (!isIgnored(r)) acc.push(full) }             // skip ignored/secret files
+      if (e.isDirectory()) { if (!isIgnored(r + '/')) walk(full, acc, skipped) }   // prune ignored dirs
+      else if (e.isFile()) { if (isIgnored(r)) skipped.push(full); else acc.push(full) }
     }
     return acc
   }
@@ -2117,16 +2134,106 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
   if (syncFiles) provider.awareness.on('change', () => { renderMembers(); renderClaims(); checkVersions() })
 
+  // HIV-P8: A FILE THAT WILL NEVER LEAVE THIS FOLDER, SAID OUT LOUD.
+  //
+  // HIV-P3 closed the genesis-claim hole at CLAIM time by classifying the claim string, and it
+  // could only ever be a classifier: at claim time a bare string is all there is, and `config`,
+  // `hosts` and `staging` are indistinguishable from ticket labels. At WRITE time there is no
+  // ambiguity left — the file is on disk and isIgnored() is exact. So this is the backstop for
+  // everything the classifier could not decide.
+  //
+  // IT CANNOT REFUSE. The bytes are already written by the time anyone knows, so this is
+  // structurally a warning — and a warning is exactly what every born-invisible incident has
+  // already scrolled past. That is why the claimed case opens an OBLIGATION instead of logging:
+  // an obligation rides hive_wait, backs off, escalates to STALE and shows on the board. It is
+  // un-ignorable by construction and costs nothing while nobody is idle.
+  //
+  // THE TWO GATES ARE THE WHOLE DESIGN, and the numbers are why. On a real checkout there are 256
+  // ignored files. Warning about all of them would open 256 debts on join, each closable only by
+  // its author, and the ledger would be unusable inside one join — the same flooding we spent this
+  // morning clearing forty entries of. So:
+  //   CLAIMED     the author declared they were working on this path. That is their own stated
+  //               intent, already in the CRDT — not a guess about the filename.
+  //   NOT PREEXISTING   it appeared during this session, rather than having sat there for a week.
+  // Neither alone is sufficient: without the claim gate, 256; without the other, every long-lived
+  // ignored file re-fires on every join.
+  //
+  // THE UNCLAIMED CASE GETS ONE LINE AND NO LEDGER ENTRY. The room rule is CLAIM BEFORE YOU WRITE,
+  // so an unclaimed write is outside the protocol and does not get to consume the ledger. I am not
+  // confident this tier earns its place — a chat line is precisely the signal these incidents
+  // scroll past — but deleting the case entirely is worse than announcing it cheaply.
+  const ENGINE_ID = 'hivecode'
+  const invisibleWarned = new Map()  // relPath -> obligation id, or null for the ambient case
+
+  function noticeBornInvisible(ignoredRel) {
+    // DISCHARGE FIRST. A file that has gone away takes its debt with it: the question "this will
+    // never sync" stops being a question when there is nothing left to sync. Left open, the ledger
+    // fills with debts about paths that no longer exist, which is the noise the three-state
+    // lifecycle exists to prevent. Its expiry cannot help here — that only covers names never seen
+    // in the room, and this path was seen, on disk, by us.
+    for (const [r, id] of [...invisibleWarned]) {
+      if (ignoredRel.has(r)) continue
+      if (id) { try { OB.discharge(doc.getMap('obligations'), { id, by: ENGINE_ID }) } catch { } }
+      invisibleWarned.delete(r)
+    }
+    for (const r of ignoredRel) {
+      if (SKIP.has(r)) continue           // control files are ours and are supposed to be invisible
+      if (preexisting.has(r)) continue    // it was already here; nobody did this during the session
+      if (invisibleWarned.has(r)) continue // once per path, not once per scan tick
+      const holder = coordinator.sense(r)
+      if (holder && holder.by) {
+        let id = null
+        try {
+          const rec = OB.open(doc.getMap('obligations'), {
+            from: ENGINE_ID,
+            to: holder.by,
+            text: `${r} is on disk and claimed by you, but it is ignored by a .gitignore here — ` +
+              `no sync connection is opened for it, so nothing written to it will ever reach the room. ` +
+              `Add it to the allow-list, or confirm the work is deliberately local.`,
+            absent: false,
+            neverSeen: false,
+          })
+          id = rec && rec.id
+        } catch { }
+        invisibleWarned.set(r, id)
+        try {
+          say(`⛔ ${r} is claimed and on disk, but it is ignored by a .gitignore here — its bytes will never leave this folder.`)
+        } catch { }
+      } else {
+        invisibleWarned.set(r, null)
+        try {
+          say(`· ${r} was created here but is ignored by a .gitignore — it stays local, and no other agent will see it.`)
+        } catch { }
+      }
+    }
+  }
+
   function scan() {
-    const diskFulls = walk(ROOT)
+    const skippedFulls = []
+    const diskFulls = walk(ROOT, [], skippedFulls)
     const diskRel = new Set(diskFulls.map(rel))
+    const ignoredRel = new Set(skippedFulls.map(rel))
     // Snapshot the starting file set BEFORE the first reconcile pass touches anything.
     // Everything here pre-dates our participation; anything that shows up later was
     // authored while we were connected. See `preexisting`.
     // The ancestor must be loaded BEFORE any path can reach reconcile(), and this is the
     // one place guaranteed to run first exactly once. Loading it later would mean the first
     // scan's reconciles see no ancestor — precisely the bug this is here to close.
-    if (!firstScanDone) { loadPriorShadow(); for (const r of diskRel) preexisting.add(r); firstScanDone = true }
+    //
+    // HIV-P8: THE UNION IS NOT A DETAIL. `preexisting` used to be seeded from diskRel alone, and
+    // diskRel comes from walk(), which dropped ignored files — so `preexisting.has(r)` was
+    // permanently FALSE for every ignored path, whether it was created a second ago or had been
+    // sitting there for a week. Any check phrased as "ignored AND not preexisting" therefore
+    // reduced to "ignored", and a client joining a real checkout would have opened an obligation
+    // for each of its 256 ignored files, about files nobody touched. Seeding the union is what
+    // makes "not preexisting" mean what it says: authored during this session.
+    if (!firstScanDone) {
+      loadPriorShadow()
+      for (const r of diskRel) preexisting.add(r)
+      for (const r of ignoredRel) preexisting.add(r)
+      firstScanDone = true
+    }
+    noticeBornInvisible(ignoredRel)
     for (const full of diskFulls) {
       const r = rel(full)
       if (SKIP.has(r)) continue
