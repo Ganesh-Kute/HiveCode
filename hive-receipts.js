@@ -129,6 +129,51 @@ export function stateFor({ cursors, name, index, present = true, connected = tru
   return { name, state: UNREAD, at: cur.ts, behind: index + 1 - Number(cur.at), why: `@${name} is ${index + 1 - Number(cur.at)} message(s) behind and has NOT been handed this one` }
 }
 
+/**
+ * The state of ONE message for ONE recipient, ASKED AS A DIFFERENT QUESTION.
+ *
+ * `stateFor` above answers "should I wait for a reply from them right now?", so absence outranks
+ * a cursor: an agent that read your message and then left still cannot answer you, and blocking on
+ * them is the failure that function exists to prevent. That is correct, it is deliberate, and
+ * tests/receipts-test.mjs D1 pins it in capital letters.
+ *
+ * This one answers a different question: "did this message ever land?" — and there the cursor
+ * outranks absence, because A READ IS A FACT ABOUT THE PAST AND LOGGING OFF CANNOT UNDO IT.
+ *
+ * WHY TWO FUNCTIONS AND NOT A FLAG. A boolean that silently changes what the returned STRING means
+ * is how this class of bug is born: a caller that forgets it gets a confident answer to a question
+ * it did not ask. Two names cannot be confused by omission.
+ *
+ * WHY THIS ORDER, AND IT IS THE WHOLE DESIGN:
+ *   - `!cur` is checked BEFORE `!present`. A human in a browser, a Telegram bridge and every older
+ *     build publish no cursor at all. Reaching `!present` first would render them UNREACHABLE with
+ *     the claim "they left without reading it" — a claim we cannot support, because we have no
+ *     evidence either way. That is precisely what UNKNOWN exists to express, and folding it into
+ *     UNREACHABLE would make every human in the room read as a delivery failure forever.
+ *   - `!present` may therefore only be reached when a cursor EXISTS and is behind the message.
+ *     Only then is "they left without reading it" a measurement rather than a guess.
+ *   - `connected` is absent on purpose. The cursors map is LOCAL. Our own socket being down right
+ *     now says nothing about whether a three-day-old message was read; that was recorded and is
+ *     already here. Gate this on connectivity and the whole transcript blanks to UNKNOWN during
+ *     every reconnect — exactly when a human is reading it to work out what happened.
+ *
+ * Built by DeepMind-Agent (Gemini, in its own container) in room `night`, 20 Sep 2026, against a
+ * design argued in the room over four rounds. Tests are antigravity1's, written before the code
+ * existed and verified red first: tests/transcript-receipts-test.mjs.
+ */
+export function transcriptStateFor({ cursors, name, index, present = true }) {
+  if (index < 0) return { name, state: UNKNOWN, why: 'that message is not in the room log — it may not have synced' }
+  const cur = cursorOf(cursors, name)
+  if (!cur) return { name, state: UNKNOWN, why: `@${name} publishes no read position (an older build, a bridge, or a human client) — silence from them means nothing either way` }
+  // A cursor of N means N messages consumed, i.e. indexes 0..N-1. So the message at `index` has
+  // been handed over exactly when the cursor is STRICTLY greater than it. A cursor sitting exactly
+  // at `index` means NOT read; an off-by-one here is a receipt that lies quietly.
+  if (Number(cur.at) > index) return { name, state: READ, at: cur.ts, why: `@${name} has read it` }
+  // Only reachable when a cursor exists and is behind the message.
+  if (!present) return { name, state: UNREACHABLE, at: cur.ts, behind: index + 1 - Number(cur.at), why: `@${name} is not in the room, and left with cursor behind this message` }
+  return { name, state: UNREAD, at: cur.ts, behind: index + 1 - Number(cur.at), why: `@${name} is ${index + 1 - Number(cur.at)} message(s) behind and has NOT been handed this one` }
+}
+
 /** Only READ counts. Written as a function so no caller can quietly widen it to include UNKNOWN. */
 export const countDelivered = (states) => states.filter((s) => DELIVERED_STATES.includes(s.state)).length
 

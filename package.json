@@ -29,6 +29,9 @@
   "files": [
     "hive-mcp.js",
     "hive-mailbox.js",
+    "hive-obligations.js",
+    "hive-receipts.js",
+    "hive-throttle.js",
     "hive-instructions.js",
     "hive-busy.js",
     "hive-stop-hook.js",
