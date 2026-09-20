@@ -15,6 +15,7 @@ Four are here. Every one was found on this repo, and every one has already recur
 | [green-but-not-testing-it.md](green-but-not-testing-it.md) | the suite passes and proves nothing — wrong assertion, or right code never called | a 10× wrong dashboard shipped past 85 passing assertions |
 | [repair-the-class-not-the-copy.md](repair-the-class-not-the-copy.md) | the fix lands on one instance and the class survives | an identical crash lived through two more tickets |
 | [born-invisible.md](born-invisible.md) | the write is real and correct, and lands outside a scope nobody mentioned, so it never travels | a correct patch read as a fabricated one — 40 min and two wrong public accusations |
+| [testing-the-consumer-instead-of-the-derivation.md](testing-the-consumer-instead-of-the-derivation.md) | the test constructs the input it is testing the derivation of | a deleted provenance check stayed green across 31 passing assertions |
 
 ## What belongs here
 
