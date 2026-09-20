@@ -27,6 +27,7 @@ import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; fall
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
 import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
+import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
 // `languageFor` belongs in this list and was missing: reconcile() calls it on the
 // clean-rewrite path, so a local whole-file rewrite of a supported file threw
@@ -405,6 +406,20 @@ export function acquireFolderLock(root, room, log = console.log) {
 }
 
 export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true }) {
+  // BEFORE ANY DISK OR SOCKET WORK. A name outside the mention grammar joins successfully and is
+  // then unreachable: its mail, its obligations and its wake-on-mention are all silently dead,
+  // and the only symptom is other people being told "@X is NOT in the room" about someone who is
+  // sitting right there. Refusing here costs the caller one clear error; allowing it cost an hour
+  // on 20 Sep 2026 and was only found because a human noticed the routing failures by eye.
+  // This throws rather than returning, because startSync has no failure channel and a half-joined
+  // client is worse than no client.
+  const nameCheck = validateMemberName(name)
+  if (!nameCheck.ok) {
+    const e = new Error(`${nameCheck.error} Try "${nameCheck.suggested}".`)
+    e.code = 'EHIVEINVALIDNAME'
+    e.suggested = nameCheck.suggested
+    throw e
+  }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
   // FIRST, before any socket or file work: if another client already holds this folder,

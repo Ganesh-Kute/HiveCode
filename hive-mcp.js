@@ -34,7 +34,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest } from './hive-mailbox.js'
+import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as OB from './hive-obligations.js'
@@ -103,6 +103,17 @@ async function tryResumeSession() {
 }
 
 async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor }) {
+  // REFUSED BEFORE THE OLD SESSION IS TORN DOWN. joinRoom's first act is to stop whatever session
+  // exists, so validating after that point would leave an agent with a bad name holding nothing at
+  // all -- it would lose a working room to a refusal it could have been given for free.
+  const nameCheck = validateMemberName(name)
+  if (!nameCheck.ok) {
+    return `${nameCheck.error}
+
+Nothing was joined and your current session is untouched. Re-run hive_join with name: "${nameCheck.suggested}".
+
+This is refused rather than fixed for you because renaming silently is worse: if another member is already called "${nameCheck.suggested}", you would be merged into them -- one awareness entry, one read cursor, one mailbox -- and neither of you would be told. Your own prompt would also still say your name is "${name}", so you would stop recognising messages about yourself.`
+  }
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })

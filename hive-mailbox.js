@@ -56,6 +56,83 @@ export function mentionedNames(text) {
 }
 
 /**
+ * A NAME THAT CANNOT BE ADDRESSED IS NOT A NAME. Refuse it at the door.
+ *
+ * On 20 Sep 2026 an agent joined room `night` as "antigravity 1". `mentionedNames` above splits
+ * on /@([\w-]+)/g, so "@antigravity 1" reads as "@antigravity", and no such member existed. Its
+ * mail, its obligations and its wake-on-mention were all silently dead for an hour. It saw
+ * messages only because it happened to be tailing the chat log. Nothing errored; the room said
+ * "@antigravity is NOT in the room", which was true and useless, because the member WAS present
+ * under a name this parser cannot produce.
+ *
+ * WHY REFUSE RATHER THAN NORMALISE. Silently rewriting "coder 1" to "coder-1" collides with a
+ * real "coder-1" and merges two processes into one participant — one awareness entry, one cursor,
+ * one mailbox — with neither told. And the agent's own prompt still says its name is the original,
+ * so it stops recognising messages about itself.
+ *
+ * WHY REFUSE RATHER THAN RESOLVE @mentions AGAINST THE MEMBER LIST. That would make a departed
+ * member break the historical record: a fact about the past decided by who happens to be present
+ * now. Same defect as the receipts work in HIV-P2.
+ *
+ * WHY THIS CHARSET AND NOT A NICER ONE. It is not taste, it is arithmetic. The extractor above
+ * only recognises [\w-]. A name outside that set CANNOT be produced by it, however carefully the
+ * sender types. Constraining names to the charset the parser already uses makes the two
+ * consistent by construction instead of by coincidence.
+ *
+ * KNOWN LIMIT, stated because it is a product decision and not an oversight: `\w` is ASCII, so a
+ * name in Devanagari, Han or Cyrillic is refused. That is honest rather than good — those names
+ * are equally unaddressable today, and refusing at least says so out loud. Widening it means
+ * widening the extractor first; the two move together or not at all.
+ *
+ * @param {any} name
+ * @returns {{ ok: boolean, error?: string, suggested?: string }}
+ */
+export function validateMemberName(name) {
+  if (name == null || typeof name !== 'string' || name.length === 0) {
+    return {
+      ok: false,
+      error: 'Member name must be a non-empty string so that the participant can be addressed via @mentions.',
+      suggested: 'agent-1',
+    }
+  }
+  // Whitespace is checked BEFORE the charset so the message names the actual problem. "contains
+  // whitespace" tells you what to do; "contains invalid characters" makes you hunt for which one.
+  if (/\s/.test(name)) {
+    return {
+      ok: false,
+      error: `Member name "${name}" contains whitespace. Names with spaces cannot be addressed via @mentions, breaking message routing, mailboxes, and delivery receipts.`,
+      suggested: suggestMemberName(name),
+    }
+  }
+  if (!/^[\w-]+$/.test(name)) {
+    return {
+      ok: false,
+      error: `Member name "${name}" contains invalid characters. Names must contain only letters, numbers, underscores, and hyphens so that @mentions can route mail to you.`,
+      suggested: suggestMemberName(name),
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * A refusal nobody can act on gets worked around, so every refusal above carries one of these.
+ *
+ * It deliberately validates its own output before returning it: a suggestion that is itself
+ * invalid is worse than no suggestion, because the caller retries, fails again, and now distrusts
+ * the error message. Whitespace-only and non-ASCII names both collapse to nothing here, which is
+ * why the fallback exists rather than being defensive padding.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function suggestMemberName(name) {
+  if (!name || typeof name !== 'string') return 'agent-1'
+  let s = name.replace(/[\s]+/g, '-').replace(/[^\w-]+/g, '-')
+  s = s.replace(/-+/g, '-').replace(/^[-_]+|[-_]+$/g, '')
+  return /^[\w-]+$/.test(s) ? s : 'agent-1'
+}
+
+/**
  * Who has directly addressed `me` and not been answered since?
  *
  * "Answered" is deliberately cheap to satisfy: any later message from me that names them. It is
