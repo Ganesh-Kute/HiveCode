@@ -67,16 +67,43 @@ console.log('\n# B. every path a learning cites still exists')
 
   // Inline code spans naming a source file are a citation too, and they rot the same way -- they
   // are just not links, so nothing else would ever check them.
+  //
+  // This pattern used to be /`([a-z0-9-]+\.(?:js|mjs))`/ -- no "/" in the character class, so any
+  // citation carrying a directory was invisible to it. Measured 20 Sep 2026: 12 citations guarded,
+  // 8 unguarded, and the unguarded ones were `tests/mention-boundary-test.mjs`,
+  // `tests/non-answerable-test.mjs` and `tests/learnings-test.mjs` -- the three that carry the
+  // argument of testing-the-consumer-instead-of-the-derivation.md. Renaming one of them to a file
+  // that does not exist left this suite at 12/12. The check read bare filenames and assumed that
+  // was how people cite things; citing a test by its path is the more common habit, not the rarer.
   const namedBroken = []
+  let bare = 0, prefixed = 0
   for (const f of learnings) {
-    for (const m of read(f).matchAll(/`([a-z0-9-]+\.(?:js|mjs))`/g)) {
-      const base = m[1]
-      const hit = ['', 'tests', 'scripts'].some((d) => fs.existsSync(path.join(ROOT, d, base)))
-      if (!hit) namedBroken.push(`${f} -> ${base}`)
+    const text = read(f)
+    for (const m of text.matchAll(/`((?:[a-z0-9_-]+\/)?[A-Za-z0-9_-]+\.(?:js|mjs))`/g)) {
+      // An external citation is legal and must stay legal: learnings borrow defect classes from
+      // other repos on purpose. The tell is a markdown link straight to a URL --
+      // [`their-file.mjs`](https://github.com/...) -- and its target is somebody else's uptime.
+      if (/^\]\(\s*https?:/.test(text.slice(m.index + m[0].length))) continue
+      const cited = m[1]
+      // A citation that names its directory has already said where the file lives: resolve it
+      // there and nowhere else, because landing in the wrong directory IS the rot being looked for.
+      // A bare name still gets the search, since it never claimed a location.
+      const hit = cited.includes('/')
+        ? fs.existsSync(path.join(ROOT, cited))
+        : ['', 'tests', 'scripts'].some((d) => fs.existsSync(path.join(ROOT, d, cited)))
+      cited.includes('/') ? prefixed++ : bare++
+      if (!hit) namedBroken.push(`${f} -> ${cited}`)
     }
   }
-  T('B2 every source file named in backticks exists somewhere in the repo',
+  T(`B2 all ${bare + prefixed} source files named in backticks exist where they say they do`,
     namedBroken.length === 0, namedBroken.join('; '))
+
+  // THE NON-VACUITY LINE. A widened pattern that silently matches nothing reports full compliance,
+  // which is exactly how the version scanner failed earlier the same day: it swept 81 files, matched
+  // 0, and printed a clean bill of health. B2 above cannot distinguish "every path-prefixed citation
+  // resolves" from "no path-prefixed citation was looked at". This can.
+  T('B3 B2 actually looked at path-prefixed citations, rather than matching none of them',
+    prefixed > 0, `${prefixed} path-prefixed, ${bare} bare`)
 }
 
 // ── C. it is a class writeup, not a bug report ────────────────────────────────
