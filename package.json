@@ -35,6 +35,7 @@
     "hive-receipts.js",
     "hive-throttle.js",
     "hive-instructions.js",
+    "hive-activity.js",
     "hive-busy.js",
     "hive-stop-hook.js",
     "hive-hook-install.js",

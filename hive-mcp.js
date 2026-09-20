@@ -37,6 +37,7 @@ import { startSync, parseLink } from './sync.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
+import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
 import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
@@ -298,6 +299,10 @@ function mailbox() {
   return s.mailbox
 }
 function chatArray() { return requireSession().hive.doc.getArray('chat').toArray() }
+
+// HIV-P11. Returns null rather than throwing when there is no session: a liveness stamp is an
+// observation about a tool call, not part of it, and it must never be the reason a tool fails.
+function activityMap() { try { return requireSession().hive.doc.getMap('activity') } catch { return null } }
 // Names are matched case-insensitively everywhere else (mentionsName is /i), so a busy lookup
 // keyed on the exact string would silently miss whenever a sender typed @sam for Sam.
 function findBusy(map, name) {
@@ -606,6 +611,21 @@ async function dispatch(req) {
     // persisted session exists for this cwd, transparently rejoin before any tool runs —
     // the agent (and its human) never see a "not in a room" flake again.
     if (!session && name !== 'hive_join' && name !== 'hive_leave') await tryResumeSession()
+    // HIV-P11. STAMPED BEFORE THE TOOL RUNS, not after it returns.
+    //
+    // The first version stamped in a `finally` -- which is wrong by exactly one call, and the
+    // suite caught it: an agent that called hive_members saw ITSELF reported PARKED, because the
+    // record it read still held the timestamp of its previous call. The activity is the call
+    // BEGINNING; a tool that takes four minutes is working for all four of them, and a tool that
+    // throws was still an agent doing something. Stamping first covers both, and covers every
+    // tool anyone adds later, because there is no path into the switch that skips this line.
+    //
+    // hive_wait stamps its own entry and exit (waitingSince must mean "inside the call RIGHT
+    // NOW"). hive_leave drops the row instead of refreshing it. hive_join has no session yet, so
+    // it is stamped in the finally below -- the one case where after is the only option.
+    if (session && name !== 'hive_wait' && name !== 'hive_leave') {
+      try { ACT.noteAction(activityMap(), { name: session.name, tool: name }) } catch { }
+    }
     switch (name) {
       case 'hive_join': return text(await joinRoom(args))
       case 'hive_say': {
@@ -830,7 +850,21 @@ async function dispatch(req) {
       }
       case 'hive_wait': {
         const ms = Math.min(Math.max(Number(args.timeoutSeconds) || 60, 1), 300) * 1000
-        const r = await waitForWork(ms, { wakeOn: args.wakeOn, until: args.until })
+        // HIV-P11. `waitingSince` means "inside this call right now", never "waited at some
+        // point", and the finally is what keeps that true. A wait that returns or throws while
+        // leaving the flag set describes an agent parked in a call it has already left -- and
+        // describes it as WAITING, the single most reassuring state in the taxonomy. stateOf()
+        // gates WAITING on awareness so a process that DIES here cannot fake it, but a live
+        // process that merely threw is still present, so the gate does not cover that and this
+        // does. The name is captured first because the session can be gone by the finally.
+        const waitName = requireSession().name
+        ACT.noteWaitStart(activityMap(), { name: waitName })
+        let r
+        try {
+          r = await waitForWork(ms, { wakeOn: args.wakeOn, until: args.until })
+        } finally {
+          try { ACT.noteWaitEnd(activityMap(), { name: waitName }) } catch { }
+        }
         const globalState = requireSession().hive.getState()
         // THE STATE BLOCK WAS RETURNED ON EVERY SINGLE WAIT, unchanged, forever -- an agent
         // sitting in the night-shift loop was handed the same JSON hundreds of times and paid for
@@ -1079,7 +1113,37 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         const dropped = (r.coverage || []).filter((c) => !c.covered)
         return text(`✓ resolution LANDED in ${file} — validated by ICR (parses, no dangling refs), signed by you, synced to every peer.${dropped.length ? ` ⚠ Intent coverage: ${dropped.map((c) => `${c.name}'s changes (${c.missing.slice(0, 5).join(', ')}) did not survive`).join('; ')} — if that was not deliberate, submit a better reconciliation.` : ' Full intent coverage: every side\'s changes survived.'}`)
       }
-      case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.passive ? ' [passive]' : ''}${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
+      case 'hive_members': {
+        const now = Date.now()
+        const s = requireSession()
+        const act = activityMap()
+        const controls = s.hive.doc.getMap('controls')
+        const parkedAfter = ACT.parkedAfterMs()
+        const present = s.hive.members()
+        const presentKeys = new Set(present.map((m) => String(m.name).toLowerCase()))
+
+        const rows = present.map((m) => {
+          const rec = act ? act.get(String(m.name).toLowerCase()) : null
+          const c = controls.get(m.name)
+          const editing = m.editing && now - m.editing.at < 15000 ? `\n    editing ${m.editing.file}` : ''
+          return ACT.line(`${m.name} (${m.kind})`, rec, {
+            present: true, passive: !!m.passive,
+            paused: !!(c && c.state === 'paused'),
+            now, parkedAfter,
+          }) + editing
+        })
+
+        // HIV-P11. THE ONES THAT ARE NOT HERE ANY MORE, which is the half a human coming back in
+        // the morning actually needs. Awareness is ephemeral: an agent that died at 23:00 simply
+        // vanishes from members(), so the old output could not distinguish "never joined" from
+        // "worked here for three hours and stopped". The activity record is durable, so it can.
+        const goneRows = ACT.all(act)
+          .filter((r) => !presentKeys.has(r.key))
+          .map((r) => ACT.line(r.name || r.key, r, { present: false, now, parkedAfter }))
+
+        const body = [...rows, ...(goneRows.length ? ['', '— not connected —', ...goneRows] : [])]
+        return text(body.join('\n') || '(none)')
+      }
       case 'hive_status': {
         const s = requireSession()
         // Connection state belongs here too, not only in hive_wait: this is the tool an
@@ -1094,10 +1158,21 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
         })
       }
-      case 'hive_leave': { requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
+      // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity
+      // row is dropped rather than left to read as GONE. GONE means "stopped without saying so",
+      // and diluting it with agents that signed off correctly is how a signal stops being read.
+      case 'hive_leave': { try { ACT.forget(activityMap(), requireSession().name) } catch { }; requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
       default: return err(`unknown tool: ${name}`)
     }
   } catch (e) { return err(`error: ${e.message}`) }
+  finally {
+    // hive_join only: the session does not exist until the case has run, so this is the single
+    // tool that cannot be stamped on the way in. Everything else is stamped above, before the
+    // switch, so that an agent's own record reflects the call it is currently making.
+    try {
+      if (session && name === 'hive_join') ACT.noteAction(activityMap(), { name: session.name, tool: name })
+    } catch { /* a liveness stamp must never be able to fail a tool call */ }
+  }
 }
 
 // MAIL PIGGYBACK — the delivery channel that cannot be ignored.
