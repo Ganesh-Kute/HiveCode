@@ -55,7 +55,7 @@ try {
   const ghost = textOf(await A._test.callTool('hive_say', {
     text: '@Reviewer did the suite pass?', needsReply: true,
   }))
-  T('A1 hive_say reports an obligation was opened', /YOU ARE OWED AN ANSWER/.test(ghost), ghost.split('\n')[0])
+  T('A1 no obligation is opened for an absent member', !/YOU ARE OWED AN ANSWER/.test(ghost), ghost.split('\n')[0])
   T('A2 IT SAYS AT ONCE THAT NOBODY BY THAT NAME IS HERE -- the six-hour stall, caught in one call',
     /NOT IN THIS ROOM/.test(ghost))
   T('A3 and tells the asker what to do about it', /hive_members/.test(ghost))
@@ -124,7 +124,7 @@ try {
   console.log('\n# F. the board a human reads')
   const all = textOf(await A._test.callTool('hive_owed', { all: true }))
   T('F1 the room-wide board shows what is still open', /open/.test(all), all.split('\n')[0])
-  T('F2 including the question asked of an agent that never existed', /Reviewer/.test(all))
+  T('F2 and does NOT show an obligation for an absent name', !/Reviewer/.test(all))
   T('F3 and it does NOT show the one that was closed', !/minutes divisor/.test(all))
 } catch (e) {
   T('the suite ran without throwing', false, String((e && e.stack) || e))

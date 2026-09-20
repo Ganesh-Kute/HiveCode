@@ -102,7 +102,7 @@ async function tryResumeSession() {
   } catch { /* resume is best-effort; the agent can always hive_join explicitly */ }
 }
 
-async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor }) {
+async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false }) {
   // REFUSED BEFORE THE OLD SESSION IS TORN DOWN. joinRoom's first act is to stop whatever session
   // exists, so validating after that point would leave an agent with a bad name holding nothing at
   // all -- it would lose a working room to a refusal it could have been given for free.
@@ -133,7 +133,7 @@ This is refused rather than fixed for you because renaming silently is worse: if
   // folder is precisely the situation the lock exists to prevent.
   let hive
   try {
-    hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: useToken, log: () => {} })
+    hive = startSync({ relay, room, dir, name, kind: kind || 'ai', owner, token: useToken, log: () => {}, passive: !!passive })
   } catch (e) {
     if (e && e.code === 'EHIVELOCKED') {
       return text(
@@ -143,7 +143,7 @@ This is refused rather than fixed for you because renaming silently is worse: if
     }
     throw e
   }
-  session = { hive, room, relay, dir, name, owner, mailbox: null }
+  session = { hive, room, relay, dir, name, owner, kind: kind || 'ai', passive: !!passive, mailbox: null }
   persistSession({ dir, name, owner }) // survive MCP host restarts (see tryResumeSession)
   // Wait for the first sync so members/board/rules are ready.
   //
@@ -421,7 +421,7 @@ function waitForWork(timeoutMs, opts = {}) {
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join (or host) a Hivecode room for a project folder. Joins automatically as an AI participant. If a join link is given, uses it; else reads <dir>/.hive.json; else hosts a new room. Returns the room info and the HIVE_RULES you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'project folder to sync (default ./workspace)' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' }, token: { type: 'string', description: 'access token for a secured room (else uses $HIVE_TOKEN). Required only if the relay runs in auth-required mode.' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'project folder to sync (default ./workspace)' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' }, token: { type: 'string', description: 'access token for a secured room (else uses $HIVE_TOKEN). Required only if the relay runs in auth-required mode.' }, kind: { type: 'string', description: 'participant kind (ai or human)' }, passive: { type: 'boolean', description: 'true = this participant is a passive listener or bot daemon and does not take turns or answer questions' } } } },
   { name: 'hive_assign', description: 'Direct a task at another participant by name (e.g. ask another agent to work on a file). If the target is an AI with an owner, it stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name to assign to' }, text: { type: 'string', description: 'what to do' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Read tasks. Shows tasks directed at YOU (act only on accepted ones) and all pending tasks awaiting approval.',
@@ -638,58 +638,94 @@ async function dispatch(req) {
         // reply: it arrives before the sender starts waiting, and it costs the room no message.
         // This is the whole reason busy is state rather than an auto-reply (see hive-busy.js).
         const s = requireSession()
-        const present = new Set(s.hive.members().map((m) => String(m.name).toLowerCase()))
+        const members = s.hive.members()
+        const memberMap = new Map(members.map((m) => [String(m.name).toLowerCase(), m]))
+        const present = new Set(members.map((m) => String(m.name).toLowerCase()))
         const busyMap = s.hive.doc.getMap('busy')
         const notes = named
           .filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
           .map((n) => describeRecipient(n, findBusy(busyMap, n), present.has(n.toLowerCase())))
           .filter(Boolean)
         const to = mentionsAll(body) ? 'the whole room (@all)' : named.map((n) => '@' + n).join(', ')
-        // NEEDS REPLY. A question is recorded, not just spoken. One obligation per agent named,
-        // and `absent` is stamped NOW -- because "was anyone even there when I asked" is a fact
-        // about the past, and recomputing it later would let a question asked into an empty room
-        // start looking fine the moment somebody walks in. This is the 19 Sep 2026 failure
-        // exactly: one message to @Reviewer, who had never been in the room, then six hours of
-        // silence that no tool, log or process reported.
+        // NEEDS REPLY. A question is recorded, not just spoken. One obligation per agent named.
+        // HIV-P6: If the room knows nobody will answer, DO NOT record a debt.
+        //   1. Absent names: warned immediately, ZERO obligations opened.
+        //   2. Passive listeners (bot daemons, wake listeners): warned immediately, ZERO obligations opened.
+        //   3. Active participants: real debt opened, dischargeable ONLY by the asker.
+        //   4. @all broadcast: targets only active non-passive AI agents in the room.
         let obStr = ''
         if (args.needsReply) {
           const obMap = s.hive.doc.getMap('obligations')
-          // Floor in MILLISECONDS, not minutes. `Math.max(1, mins)` silently turned a caller's
-          // 0.05 into 1 -- a clamp that changes what was asked for and says nothing, which is the
-          // same shape as every other defect on this project. One second is enough to stop a
-          // zero-or-negative busy loop, and everything above it is honoured as written.
           const dueMs = Math.max(1000, (Number(args.replyWithinMinutes) || 10) * 60000)
-          const targets = mentionsAll(body)
-            ? s.hive.members().map((m) => String(m.name)).filter((n) => n.toLowerCase() !== s.name.toLowerCase())
-            : named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
-          // PRESENCE AND PROVENANCE ARE DIFFERENT FACTS AND THEY DECIDE DIFFERENT THINGS.
-          // `absent` decides the WARNING: nobody by that name is connected right now, so say so
-          // at once. `neverSeen` decides the LIFETIME: nobody by that name has ever joined or
-          // spoken here, so this is noise rather than a teammate who stepped out.
-          // Conflating them would expire a real debt: on 20 Sep an obligation against
-          // @DeepMind-Agent was stamped absent because it had dropped between turns, and it came
-          // back ninety minutes later and answered. A ten-minute timer would have deleted it, and
-          // the ledger would have been at its cleanest exactly while an agent was silent.
-          const everHere = new Set([...present])
+
+          const everHere = new Set(present)
           for (const m of s.hive.doc.getArray('chat').toArray()) {
             if (m && m.by) everHere.add(String(m.by).toLowerCase())
           }
-          const opened = targets.map((n) => OB.open(obMap, {
+
+          let activeTargets = []
+          let awayTargets = []
+          let neverSeenNames = []
+          let passiveNames = []
+
+          if (mentionsAll(body)) {
+            activeTargets = members
+              .filter((m) => String(m.name).toLowerCase() !== s.name.toLowerCase() && !m.passive && m.kind === 'ai')
+              .map((m) => String(m.name))
+          } else {
+            const candidateNames = named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+            const seen = new Set()
+            for (const n of candidateNames) {
+              const lc = n.toLowerCase()
+              if (seen.has(lc)) continue
+              seen.add(lc)
+              const mem = memberMap.get(lc)
+              if (mem) {
+                if (mem.passive) {
+                  passiveNames.push(mem.name || n)
+                } else {
+                  activeTargets.push(mem.name || n)
+                }
+              } else {
+                if (everHere.has(lc)) {
+                  awayTargets.push(n)
+                } else {
+                  neverSeenNames.push(n)
+                }
+              }
+            }
+          }
+
+          const openedActive = activeTargets.map((n) => OB.open(obMap, {
             from: s.name, to: n, text: body, dueMs,
-            absent: !present.has(n.toLowerCase()),
-            neverSeen: !everHere.has(n.toLowerCase()),
+            absent: false,
+            neverSeen: false,
           }))
+
+          const openedAway = awayTargets.map((n) => OB.open(obMap, {
+            from: s.name, to: n, text: body, dueMs,
+            absent: true,
+            neverSeen: false,
+          }))
+
+          const opened = [...openedActive, ...openedAway]
+
           if (opened.length) {
-            obStr = `\n\nYOU ARE OWED AN ANSWER — ${opened.map((o) => `${o.id} (${o.to})`).join(', ')}\n` +
+            obStr += `\n\nYOU ARE OWED AN ANSWER — ${opened.map((o) => `${o.id} (${o.to})`).join(', ')}\n` +
               `This stays open until YOU call hive_answered. The agent you asked cannot close it, and ` +
               `a reply does not close it either — you decide whether you were actually answered. If it ` +
               `is still open in ${Math.round(dueMs / 60000)} min you will be reminded on your next hive_wait.`
-            const ghosts = opened.filter((o) => o.absent)
-            if (ghosts.length) {
-              obStr += `\n\n⚠ ${ghosts.map((o) => '@' + o.to).join(', ')} — NOT IN THIS ROOM. Nobody by that ` +
-                `name is here, so nobody is going to answer. Call hive_members and re-address it now; ` +
-                `this is the one failure mode that otherwise costs you a whole shift.`
-            }
+          }
+          if (awayTargets.length) {
+            obStr += `\n\n⚠ ${awayTargets.map((n) => '@' + n).join(', ')} — AWAY RIGHT NOW. Not connected at the moment, but has worked here before; obligation recorded for when they return.`
+          }
+          if (neverSeenNames.length) {
+            obStr += `\n\n⚠ ${neverSeenNames.map((n) => '@' + n).join(', ')} — NOT IN THIS ROOM. Nobody by that ` +
+              `name is here, so nobody is going to answer. Call hive_members and re-address it now; ` +
+              `this is the one failure mode that otherwise costs you a whole shift.`
+          }
+          if (passiveNames.length) {
+            obStr += `\n\n⚠ ${passiveNames.map((n) => '@' + n).join(', ')} — PASSIVE LISTENER. This process does not take turns or answer questions; no obligation recorded.`
           }
         }
         return text(stamp(`sent to ${to}: ${body}`) + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
@@ -1043,7 +1079,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         const dropped = (r.coverage || []).filter((c) => !c.covered)
         return text(`✓ resolution LANDED in ${file} — validated by ICR (parses, no dangling refs), signed by you, synced to every peer.${dropped.length ? ` ⚠ Intent coverage: ${dropped.map((c) => `${c.name}'s changes (${c.missing.slice(0, 5).join(', ')}) did not survive`).join('; ')} — if that was not deliberate, submit a better reconciliation.` : ' Full intent coverage: every side\'s changes survived.'}`)
       }
-      case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
+      case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.passive ? ' [passive]' : ''}${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
       case 'hive_status': {
         const s = requireSession()
         // Connection state belongs here too, not only in hive_wait: this is the tool an

@@ -410,7 +410,7 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false }) {
   // BEFORE ANY DISK OR SOCKET WORK. A name outside the mention grammar joins successfully and is
   // then unreachable: its mail, its obligations and its wake-on-mention are all silently dead,
   // and the only symptom is other people being told "@X is NOT in the room" about someone who is
@@ -947,9 +947,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (lic) wsParams.license = lic
   if (name) wsParams.name = String(name).slice(0, 48)
   if (kind) wsParams.kind = kind
+  if (passive) wsParams.passive = 'true'
   const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, passive: !!passive }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -2032,7 +2033,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, passive: !!passive })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -2533,7 +2534,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         const u = s.user
         if (!u || !u.name) continue
         const prev = seen.get(u.name) || {}
-        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner })
+        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive) })
       }
       return [...seen.values()]
     },
