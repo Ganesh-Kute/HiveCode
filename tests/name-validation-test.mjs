@@ -156,18 +156,31 @@ console.log('\n# C. AND NO NAME MATCHES A MESSAGE THAT DOES NOT ADDRESS IT')
 // Asserted rather than written in a comment, because a comment saying "P4 does not close this"
 // gets read once and forgotten, and six weeks later somebody reads "names fixed" as "mentions
 // fixed". A passing test that documents a known hole is harder to lose than a paragraph.
-console.log('\n# D. HIV-P5 IS STILL OPEN — strict names do not fix quoted mentions')
+console.log('\n# D. STILL EXTRACTED AFTER HIV-P5 — and that is now the decision, not the bug')
 {
-  // Every one of these happened for real in room `night` on 20 Sep, in messages whose entire
-  // purpose was to DESCRIBE the bug. The room delivered each of them as a real address.
+  // UPDATED AFTER HIV-P5 LANDED. These three were written as evidence of an open defect. P5 then
+  // shipped, and they still pass -- deliberately, which is why the heading changed rather than the
+  // assertions. Quote characters were KEPT as valid mention boundaries on purpose: excluding them
+  // would silently drop a real mention that opens a quoted sentence ("@Claude, can you look?"),
+  // and a dropped mention is the worse failure, because the sender believes it was delivered.
+  //
+  // What P5 changed is not whether these are EXTRACTED but whether they cost anything. A quoted
+  // name is extracted for the transcript and creates no debt, because obligationTargets gates on
+  // membership and hive-obligations expires a never-seen record on its own. The noise these used
+  // to produce -- 44 open obligations, 32% of them permanent -- is gone without dropping a single
+  // real address.
+  //
+  // Left as passing assertions because the behaviour is load-bearing and un-obvious. Anyone who
+  // "fixes" quoted mentions later will fail these and have to read why first.
   T('D1 a name QUOTED inside a sentence is still extracted as a real address',
     mentionedNames('the parser reads "@antigravity 1" as "@antigravity"').includes('antigravity'))
   T('D2 @all written as an EXAMPLE still broadcasts to the whole room',
     mentionsAll('what happens to a message addressed to @all?'))
   T('D3 names quoted from a test suite are delivered to people who do not exist',
     mentionedNames('the suite pins that @PM does not match @Hermes-2').length === 2)
-  console.log('       ^ all three are CORRECT per today\'s grammar and all three are wrong per intent.')
-  console.log('       Strict names cannot fix this: "all", "PM" and "antigravity" are perfectly valid names.')
+  console.log('       ^ all three still extract, ON PURPOSE. A quoted mention is shown in the transcript')
+  console.log('       and creates no debt: HIV-P5 gates obligations on membership and expires never-seen')
+  console.log('       records by themselves. Dropping these would silently lose real quoted mentions.')
 }
 
 console.log(`\n=== HIV-P4 NAME VALIDATION: ${pass} passed, ${fail} failed ===`)

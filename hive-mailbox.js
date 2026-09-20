@@ -30,8 +30,10 @@ export function mentionsName(text, me) {
   if (!text || !me) return false
   if (mentionsAll(text)) return true // @all reaches everyone by definition
   const escaped = String(me).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Trailing boundary: end of string, or anything that cannot continue a name.
-  return new RegExp(`@${escaped}(?![\\w-])`, 'i').test(String(text))
+  // Both boundaries, and the same ones the extractor uses. If these two ever disagree, a message
+  // can be extracted as addressing someone who does not match it, or match someone it was never
+  // extracted for -- which is how a mailbox and a transcript come to tell different stories.
+  return new RegExp(`${MENTION_START}@${escaped}${MENTION_END}`, 'i').test(String(text))
 }
 
 /**
@@ -47,12 +49,84 @@ export function mentionsName(text, me) {
  * that is the exact failure this room already had once.
  */
 export function mentionsAll(text) {
-  return /@all(?![\w-])/i.test(String(text || ''))
+  // CODE SPANS ARE STRIPPED FIRST, AND ONLY HERE. Every other false mention is handled by the
+  // boundary rules below plus `obligationTargets`, which refuses to open a debt against somebody
+  // who is not in the room. `@all` is the one case neither can save: it is not a member, so the
+  // membership gate does not apply to it, and it wakes EVERYONE. So writing `@all` inside
+  // backticks -- which is how anybody documents this feature -- paged the entire room, every time.
+  //
+  // This is deliberately NOT a Markdown parser. Nested spans, unclosed fences and indented blocks
+  // are all out of scope, because the question is not "what is code here" but the much smaller
+  // "is this one token wrapped in backticks". A tokenizer would be the wrong tool and a permanent
+  // source of edge cases; one replace is the whole fix.
+  return /@all(?![\w-])/i.test(stripCodeSpans(text))
 }
+
+/** Inline code spans blanked out, so a token quoted as code is not read as an address. */
+const stripCodeSpans = (text) => String(text || '').replace(/`[^`]*`/g, ' ')
+
+/**
+ * WHERE A MENTION MAY BEGIN, AND WHERE IT MAY NOT.
+ *
+ * Measured in room `night` on 20 Sep 2026, against the old bare /@([\w-]+)/g:
+ *
+ *   "email me at ganesh@gmail.com"      -> ["gmail"]                 every email address
+ *   "blame line: author@example.org"    -> ["example"]               every commit trailer
+ *   "npm i @modelcontextprotocol/sdk"   -> ["modelcontextprotocol"]  every scoped package
+ *   "see `@all` in the docs"            -> broadcast to everyone     every doc about this feature
+ *
+ * After three hours the obligation ledger held 44 entries of which 32% were debts against members
+ * who had never existed, and a debt can only be discharged by the asker, so nothing in the system
+ * could ever have closed them. The ledger is what catches an agent going silent; it was becoming
+ * unreadable through ordinary use.
+ *
+ * LEADING: start of string, whitespace, an opening bracket, a quote, a dash, or a colon. Quotes
+ * are INCLUDED on purpose. A quoted example ("the parser reads "@antigravity"") is then extracted
+ * for the transcript and creates no debt, because `obligationTargets` gates on membership. The
+ * opposite choice would silently drop a real mention that opens a quoted sentence, and a dropped
+ * mention is the worse failure: the sender believes it was delivered.
+ *
+ * TRAILING: not a word character, a hyphen, or a SLASH. The slash is what distinguishes
+ * `@scope/package` from `@person`. It is written as one lookahead rather than a separate check so
+ * the regex cannot backtrack into a shorter name to satisfy it -- `[\w-]+` followed by `(?!\/)`
+ * alone would happily match "modelcontextprotoco" and declare victory.
+ */
+const MENTION_START = '(?:^|[\\s(\\[{<"\'—–:])'
+const MENTION_END = '(?![\\w\\-/])'
 
 /** Everyone addressed in a message, so a broadcast can be told from a direct call. */
 export function mentionedNames(text) {
-  return [...new Set([...String(text || '').matchAll(/@([\w-]+)/g)].map((m) => m[1]))]
+  const re = new RegExp(`${MENTION_START}@([\\w-]+)${MENTION_END}`, 'g')
+  return [...new Set([...String(text || '').matchAll(re)].map((m) => m[1]))]
+}
+
+/**
+ * WHO ACTUALLY OWES AN ANSWER — which is not the same question as who was named.
+ *
+ * Extraction and obligation were one decision and they are two. A transcript should show what the
+ * text said, including a name that is merely quoted; a DEBT is a claim about the present, and
+ * opening one against somebody who is not here produces an entry nobody can ever discharge, since
+ * only the asker may close it and the debtor does not exist.
+ *
+ * The distinction that makes this safe is which way time points. Resolving a HISTORICAL mention
+ * against who is present now would be the Historical Transcript Fallacy -- the past decided by the
+ * present -- and that is why extraction deliberately does NOT do it. An obligation is not history:
+ * it is live state about who owes me an answer right now, so checking present membership is
+ * exactly the right question for it.
+ *
+ * @param {string} text
+ * @param {{ me?: string, present?: Iterable<string> }} ctx  `present` is lowercased names
+ */
+export function obligationTargets(text, { me = '', present = [] } = {}) {
+  const here = new Set([...present].map((n) => String(n).toLowerCase()))
+  const self = String(me).toLowerCase()
+  return mentionedNames(text).filter((n) => {
+    const low = n.toLowerCase()
+    // @all wakes the room and obliges nobody -- one broadcast owing eight replies is how a
+    // coordination channel becomes a spam channel. Unchanged from the original behaviour.
+    if (low === 'all' || low === self) return false
+    return here.has(low)
+  })
 }
 
 /**

@@ -81,7 +81,26 @@ export function obligationId(from, at, rand = Math.random) {
  * to "was anyone even there when this was asked", which is a fact about the past. Recomputing it
  * later would let a question asked into an empty room look fine the moment someone walks in.
  */
-export function open(store, { from, to, text, dueMs = DUE_MS, absent = false }, now = Date.now, rand = Math.random) {
+/**
+ * PRESENCE AND PROVENANCE ARE DIFFERENT QUESTIONS, AND `absent` ONLY ANSWERS THE FIRST.
+ *
+ * `absent` is stamped at send time and means "nobody by that name was connected at this instant".
+ * That is the right question for the warning — it is how the 19 Sep stall was caught — and it is
+ * the WRONG question for how long the record should live, because an agent mid-reconnect or
+ * mid-ratelimit is absent and is also a real teammate who really owes an answer.
+ *
+ * Measured in room `night`, 20 Sep 2026: an obligation against @DeepMind-Agent was stamped absent
+ * because it had dropped between turns. It came back ninety minutes later and answered. Expiring
+ * that record on a ten-minute timer would have deleted a genuine debt — and worse, it would have
+ * emptied the ledger precisely while an agent was silent, which is the exact inverse of what the
+ * ledger is for.
+ *
+ * So `neverSeen` is the separate fact: nobody by this name has ever joined or spoken here. That is
+ * the noise — @gmail, @modelcontextprotocol, a name quoted out of a test suite. It is safe to
+ * expire and safe for anyone to dismiss, because there is no debtor whose honesty the author-only
+ * rule exists to protect.
+ */
+export function open(store, { from, to, text, dueMs = DUE_MS, absent = false, neverSeen = false }, now = Date.now, rand = Math.random) {
   const at = now()
   const rec = {
     id: obligationId(from, at, rand),
@@ -93,6 +112,7 @@ export function open(store, { from, to, text, dueMs = DUE_MS, absent = false }, 
     dueMs: Math.max(1, dueMs),
     knocks: 0,
     absent: !!absent,
+    neverSeen: !!neverSeen,
     done: false,
   }
   store.set(rec.id, rec)
@@ -102,7 +122,38 @@ export function open(store, { from, to, text, dueMs = DUE_MS, absent = false }, 
 const all = (store) => [...store.entries()].map(([, v]) => v).filter(Boolean)
 
 /** Everything still open. */
-export const openList = (store) => all(store).filter((r) => !r.done)
+/**
+ * Everything still owed — with never-seen records aging out on their own.
+ *
+ * EXPIRY IS MATERIALISED, NOT MERELY FILTERED, and that distinction is load-bearing. Filtering
+ * here would leave `done: false` on the record, and `isStale` reads `r.done` directly rather than
+ * going through this function — so an expired ghost would vanish from one view and linger in
+ * another. Two readers disagreeing about whether a thing is finished is the same defect this whole
+ * file exists to prevent, one level down.
+ *
+ * Written lazily on read, which is the pattern the claim layer already uses (`hive-coord.js`
+ * expires a lease the moment somebody looks). There is no timer to miss and nothing to schedule:
+ * the fact becomes true at `due`, and the first reader after that writes it down.
+ *
+ * NO RESURRECTION. `neverSeen` is stamped when the question is asked and never recomputed, so a
+ * name that finally joins hours later does not revive its expired debt. The question was asked
+ * into an empty room; somebody arriving afterwards does not change what was true then.
+ *
+ * Only never-seen records expire. A known teammate's debt survives any amount of silence, because
+ * silence is the thing it is there to make visible.
+ */
+export const openList = (store, now = Date.now) => {
+  const out = []
+  for (const r of all(store)) {
+    if (r.done) continue
+    if (r.neverSeen && now() >= r.due) {
+      store.set(r.id, { ...r, done: true, doneAt: now(), doneBy: 'auto-expired (never seen here)' })
+      continue
+    }
+    out.push(r)
+  }
+  return out
+}
 
 /** What `name` OWES: questions aimed at them that their asker has not signed off. */
 export const owedBy = (store, name) =>
@@ -124,7 +175,12 @@ export function discharge(store, { id, by }, now = Date.now) {
   const rec = store.get(id)
   if (!rec) return { ok: false, reason: `no obligation ${id} -- it may already be discharged` }
   if (rec.done) return { ok: true, already: true, rec }
-  if (String(rec.by || rec.from).toLowerCase() !== String(by).toLowerCase()) {
+  // THE AUTHOR-ONLY RULE PROTECTS A DEBTOR FROM GRADING ITS OWN HOMEWORK. A never-seen record has
+  // no debtor: nobody by that name has ever been here, so there is nobody whose self-assessment
+  // the rule is guarding against. Holding the rule there protects nothing and costs the room an
+  // entry only the original asker can clear -- and tonight the original asker cleared forty of
+  // them by hand. Anyone may tidy these; real debts keep the rule untouched.
+  if (!rec.neverSeen && String(rec.by || rec.from).toLowerCase() !== String(by).toLowerCase()) {
     return {
       ok: false,
       reason: `${by} cannot discharge this: ${rec.from} asked it, and only the asker can say it ` +

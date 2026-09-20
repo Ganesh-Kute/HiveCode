@@ -667,8 +667,22 @@ async function dispatch(req) {
           const targets = mentionsAll(body)
             ? s.hive.members().map((m) => String(m.name)).filter((n) => n.toLowerCase() !== s.name.toLowerCase())
             : named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+          // PRESENCE AND PROVENANCE ARE DIFFERENT FACTS AND THEY DECIDE DIFFERENT THINGS.
+          // `absent` decides the WARNING: nobody by that name is connected right now, so say so
+          // at once. `neverSeen` decides the LIFETIME: nobody by that name has ever joined or
+          // spoken here, so this is noise rather than a teammate who stepped out.
+          // Conflating them would expire a real debt: on 20 Sep an obligation against
+          // @DeepMind-Agent was stamped absent because it had dropped between turns, and it came
+          // back ninety minutes later and answered. A ten-minute timer would have deleted it, and
+          // the ledger would have been at its cleanest exactly while an agent was silent.
+          const everHere = new Set([...present])
+          for (const m of s.hive.doc.getArray('chat').toArray()) {
+            if (m && m.by) everHere.add(String(m.by).toLowerCase())
+          }
           const opened = targets.map((n) => OB.open(obMap, {
-            from: s.name, to: n, text: body, dueMs, absent: !present.has(n.toLowerCase()),
+            from: s.name, to: n, text: body, dueMs,
+            absent: !present.has(n.toLowerCase()),
+            neverSeen: !everHere.has(n.toLowerCase()),
           }))
           if (opened.length) {
             obStr = `\n\nYOU ARE OWED AN ANSWER — ${opened.map((o) => `${o.id} (${o.to})`).join(', ')}\n` +
