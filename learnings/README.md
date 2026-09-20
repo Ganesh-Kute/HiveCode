@@ -14,6 +14,7 @@ Four are here. Every one was found on this repo, and every one has already recur
 | [absence-rendered-as-a-value.md](absence-rendered-as-a-value.md) | "I do not know" is written down as a number, and the number is believable | 186 files silently zeroed per folder |
 | [green-but-not-testing-it.md](green-but-not-testing-it.md) | the suite passes and proves nothing — wrong assertion, or right code never called | a 10× wrong dashboard shipped past 85 passing assertions |
 | [repair-the-class-not-the-copy.md](repair-the-class-not-the-copy.md) | the fix lands on one instance and the class survives | an identical crash lived through two more tickets |
+| [born-invisible.md](born-invisible.md) | the write is real and correct, and lands outside a scope nobody mentioned, so it never travels | a correct patch read as a fabricated one — 40 min and two wrong public accusations |
 
 ## What belongs here
 
