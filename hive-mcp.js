@@ -662,10 +662,73 @@ async function dispatch(req) {
         const memberMap = new Map(members.map((m) => [String(m.name).toLowerCase(), m]))
         const present = new Set(members.map((m) => String(m.name).toLowerCase()))
         const busyMap = s.hive.doc.getMap('busy')
-        const notes = named
-          .filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
-          .map((n) => describeRecipient(n, findBusy(busyMap, n), present.has(n.toLowerCase())))
-          .filter(Boolean)
+        const act = activityMap()
+        const controls = s.hive.doc.getMap('controls')
+        const parkedAfter = ACT.parkedAfterMs()
+        const now = Date.now()
+
+        const everHere = new Set(present)
+        for (const m of s.hive.doc.getArray('chat').toArray()) {
+          if (m && m.by) everHere.add(String(m.by).toLowerCase())
+        }
+
+        // HIV-P11b. Send-time inspection of recipient state:
+        // Warns when addressing PARKED, PAUSED, PASSIVE, or GONE/AWAY agents.
+        function describeRecipientLiveness(n) {
+          const lc = n.toLowerCase()
+          const mem = memberMap.get(lc)
+          const isPresent = !!mem
+          const rec = act ? act.get(lc) : null
+          const c = controls.get(mem ? mem.name : n)
+          const isPaused = !!(c && c.state === 'paused')
+          const isPassive = !!(mem && mem.passive)
+          const d = ACT.describe(rec, {
+            present: isPresent,
+            paused: isPaused,
+            passive: isPassive,
+            now,
+            parkedAfter,
+          })
+          const displayName = mem ? mem.name : n
+
+          if (d.state === ACT.PARKED) {
+            const age = d.ageMs == null ? 'its whole session' : `${Math.round(d.ageMs / 60000)} min`
+            const tool = d.lastTool ? ` (${d.lastTool})` : ''
+            return `⚠ @${displayName} — PARKED: connected, but NOT inside hive_wait and silent for ${age}${tool}. ` +
+              `It will not wake on its own — anything you send it now will sit unread until a human prompts it.`
+          }
+          if (d.state === ACT.PAUSED) {
+            return `⚠ @${displayName} — PAUSED by a human. It is obeying a stop, not stalled. Do not reassign its work.`
+          }
+          if (d.state === ACT.PASSIVE) {
+            return `⚠ @${displayName} — PASSIVE LISTENER. This process does not take turns or answer questions; no obligation recorded.`
+          }
+          if (d.state === ACT.GONE) {
+            if (everHere.has(lc)) {
+              return `⚠ @${displayName} — AWAY RIGHT NOW. Not connected at the moment, but has worked here before; obligation recorded for when they return.`
+            } else {
+              return `⚠ @${displayName} — NOT IN THIS ROOM. Nobody by that name is here, so nobody is going to answer. Call hive_members and re-address it now; this is the one failure mode that otherwise costs you a whole shift.`
+            }
+          }
+          // d.state is WORKING or WAITING
+          const busy = findBusy(busyMap, n)
+          if (busy) {
+            return describeRecipient(displayName, busy, true, now)
+          }
+          return ''
+        }
+
+        const candidateNames = named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+        const seenCandidates = new Set()
+        const uniqueCandidates = []
+        for (const n of candidateNames) {
+          const lc = n.toLowerCase()
+          if (!seenCandidates.has(lc)) {
+            seenCandidates.add(lc)
+            uniqueCandidates.push(n)
+          }
+        }
+        const notes = uniqueCandidates.map(describeRecipientLiveness).filter(Boolean)
         const to = mentionsAll(body) ? 'the whole room (@all)' : named.map((n) => '@' + n).join(', ')
         // NEEDS REPLY. A question is recorded, not just spoken. One obligation per agent named.
         // HIV-P6: If the room knows nobody will answer, DO NOT record a debt.
@@ -678,11 +741,6 @@ async function dispatch(req) {
           const obMap = s.hive.doc.getMap('obligations')
           const dueMs = Math.max(1000, (Number(args.replyWithinMinutes) || 10) * 60000)
 
-          const everHere = new Set(present)
-          for (const m of s.hive.doc.getArray('chat').toArray()) {
-            if (m && m.by) everHere.add(String(m.by).toLowerCase())
-          }
-
           let activeTargets = []
           let awayTargets = []
           let neverSeenNames = []
@@ -693,12 +751,8 @@ async function dispatch(req) {
               .filter((m) => String(m.name).toLowerCase() !== s.name.toLowerCase() && !m.passive && m.kind === 'ai')
               .map((m) => String(m.name))
           } else {
-            const candidateNames = named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
-            const seen = new Set()
-            for (const n of candidateNames) {
+            for (const n of uniqueCandidates) {
               const lc = n.toLowerCase()
-              if (seen.has(lc)) continue
-              seen.add(lc)
               const mem = memberMap.get(lc)
               if (mem) {
                 if (mem.passive) {
@@ -735,17 +789,6 @@ async function dispatch(req) {
               `This stays open until YOU call hive_answered. The agent you asked cannot close it, and ` +
               `a reply does not close it either — you decide whether you were actually answered. If it ` +
               `is still open in ${Math.round(dueMs / 60000)} min you will be reminded on your next hive_wait.`
-          }
-          if (awayTargets.length) {
-            obStr += `\n\n⚠ ${awayTargets.map((n) => '@' + n).join(', ')} — AWAY RIGHT NOW. Not connected at the moment, but has worked here before; obligation recorded for when they return.`
-          }
-          if (neverSeenNames.length) {
-            obStr += `\n\n⚠ ${neverSeenNames.map((n) => '@' + n).join(', ')} — NOT IN THIS ROOM. Nobody by that ` +
-              `name is here, so nobody is going to answer. Call hive_members and re-address it now; ` +
-              `this is the one failure mode that otherwise costs you a whole shift.`
-          }
-          if (passiveNames.length) {
-            obStr += `\n\n⚠ ${passiveNames.map((n) => '@' + n).join(', ')} — PASSIVE LISTENER. This process does not take turns or answer questions; no obligation recorded.`
           }
         }
         return text(stamp(`sent to ${to}: ${body}`) + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
@@ -983,16 +1026,52 @@ async function dispatch(req) {
       case 'hive_owed': {
         const s2 = requireSession()
         const obMap = s2.hive.doc.getMap('obligations')
-        if (args.all) {
-          const b = OB.board(obMap)
-          if (!b.open) return text('Nothing outstanding in this room.')
-          return text(`${b.open} open, ${b.stale} stale:\n` + b.lines.map((l) => '  ' + l).join('\n'))
+        const act = activityMap()
+        const parkedAfter = ACT.parkedAfterMs()
+        const members = s2.hive.members()
+        const memberMap = new Map(members.map((m) => [String(m.name).toLowerCase(), m]))
+        const controls = s2.hive.doc.getMap('controls')
+        const now = Date.now()
+
+        // HIV-P11b. Dynamic reachability annotation for debts:
+        // Distinguishes actionable pending debts from debts owed by PARKED, GONE, or PAUSED agents.
+        function describeDebt(o) {
+          const base = OB.describe(o, () => now)
+          const lc = String(o.to || '').toLowerCase()
+          const mem = memberMap.get(lc)
+          const rec = act ? act.get(lc) : null
+          const c = controls.get(mem ? mem.name : o.to)
+          const d = ACT.describe(rec, {
+            present: !!mem,
+            paused: !!(c && c.state === 'paused'),
+            passive: !!(mem && mem.passive),
+            now,
+            parkedAfter,
+          })
+          if (d.state === ACT.PARKED) {
+            const age = d.ageMs == null ? 'its whole session' : `${Math.round(d.ageMs / 60000)} min`
+            return `${base}  [UNREACHABLE — @${mem ? mem.name : o.to} is PARKED: silent for ${age}, will not wake on its own]`
+          }
+          if (d.state === ACT.GONE) {
+            return `${base}  [UNREACHABLE — @${o.to} is GONE: not connected]`
+          }
+          if (d.state === ACT.PAUSED) {
+            return `${base}  [PAUSED by human — do not reassign]`
+          }
+          return base
         }
-        const mine = OB.owedBy(obMap, s2.name), theirs = OB.owedTo(obMap, s2.name)
+
+        if (args.all) {
+          const openList = OB.openList(obMap, () => now)
+          if (!openList.length) return text('Nothing outstanding in this room.')
+          const staleCount = openList.filter(OB.isStale).length
+          return text(`${openList.length} open, ${staleCount} stale:\n` + openList.map((o) => '  ' + describeDebt(o)).join('\n'))
+        }
+        const mine = OB.owedBy(obMap, s2.name, () => now), theirs = OB.owedTo(obMap, s2.name, () => now)
         if (!mine.length && !theirs.length) return text('You owe nothing and are owed nothing. (Pass all:true for the whole room.)')
         const parts = []
-        if (mine.length) parts.push(`YOU OWE ${mine.length} ANSWER(S) — answer in chat with @Name; the asker closes it:\n` + mine.map((o) => '  ' + OB.describe(o)).join('\n'))
-        if (theirs.length) parts.push(`YOU ARE OWED ${theirs.length} — close with hive_answered once you actually have what you needed:\n` + theirs.map((o) => '  ' + OB.describe(o)).join('\n'))
+        if (mine.length) parts.push(`YOU OWE ${mine.length} ANSWER(S) — answer in chat with @Name; the asker closes it:\n` + mine.map((o) => '  ' + describeDebt(o)).join('\n'))
+        if (theirs.length) parts.push(`YOU ARE OWED ${theirs.length} — close with hive_answered once you actually have what you needed:\n` + theirs.map((o) => '  ' + describeDebt(o)).join('\n'))
         return text(parts.join('\n\n'))
       }
       case 'hive_set_state': { requireSession().hive.setState(String(args.key), String(args.val)); return text(`Set global state [${args.key}] to [${args.val}]`) }
