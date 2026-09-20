@@ -1237,6 +1237,46 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // almost every legitimate claim in exactly the rooms that need this guard most, and it would
   // be switched off within a day. So we only judge things we have positive reason to believe
   // are FILES: known to the room, present on disk, or carrying a directory separator.
+  // HIV-P3, 20 Sep 2026. THE GENESIS CASE: the five tests above are all false for a root-level
+  // file that DOES NOT EXIST YET, which is the most common reason anyone claims at all -- you
+  // claim `config.env` precisely because you are about to create it. Found by DeepMind-Agent.
+  // So HIV-27's guard had a hole in exactly the case it was written for: claim succeeds, write
+  // succeeds, the local gate passes because in YOUR folder the file is real, and the bytes never
+  // leave. Born invisible, every signal green.
+  //
+  // THE ONLY QUESTION IS: is this bare string a FILE-TO-BE or a LOGICAL LABEL? Nothing on disk
+  // and nothing in the room can answer it, so this is a guess, and the direction of the guess is
+  // what matters. Guessing "file" too eagerly refuses legitimate region claims -- and under an
+  // allow-list .gitignore that means refusing ALMOST ALL of them, which gets the guard switched
+  // off within a day and costs more than the hole. So every rule here must be one a LABEL would
+  // essentially never satisfy.
+  //
+  // THE DIGIT RULE IS THE LOAD-BEARING ONE and it is not obvious. A trailing dot-segment
+  // containing a LETTER is an extension: .js .env .secret. One that is ALL DIGITS is a version
+  // number: v1.2, release-0.11.6, HIV-P3.5. Without that distinction every ticket id and release
+  // label in this room's own vocabulary gets refused as a file.
+  //
+  // WHAT THIS DOES NOT CLOSE, stated rather than discovered later. Extensionless root files that
+  // are neither conventional nor `*file` shaped -- a bare `config`, `staging`, `hosts` -- are
+  // still read as labels and still go invisible. The hole narrows; it does not close. It cannot
+  // close here, because at claim time the string is all we have. The rest belongs at WRITE time,
+  // where a path that appears on disk inside the room folder is a fact and needs no heuristic.
+  // That is HIV-P8, and it is filed rather than quietly assumed.
+  const EXTENSIONLESS_ROOT_FILES = new Set([
+    'LICENSE', 'LICENCE', 'README', 'CHANGELOG', 'CHANGES', 'NOTICE', 'AUTHORS', 'CONTRIBUTORS',
+    'CODEOWNERS', 'COPYING', 'INSTALL', 'CONTRIBUTING', 'VERSION', 'MAINTAINERS', 'TODO',
+  ])
+  const looksLikeFilename = (p) => {
+    if (/\s/.test(p)) return false                       // "the parser rewrite", "P3 lane"
+    if (/\.[^.]*[A-Za-z][^.]*$/.test(p)) return true     // .js .env .secret -- but NOT .2 .5 .6
+    if (EXTENSIONLESS_ROOT_FILES.has(p.toUpperCase())) return true
+    // Makefile, Dockerfile, Rakefile, Gemfile, Procfile, Vagrantfile, Justfile, Caddyfile.
+    // Capital-initial and case-SENSITIVE on purpose: lowercase "profile" and "logfile" are
+    // perfectly ordinary region names and must stay claimable.
+    if (/^[A-Z][A-Za-z]+file$/.test(p)) return true
+    return false
+  }
+
   const whyNotShared = (relPath) => {
     const p = String(relPath || '')
     if (!p) return ''
@@ -1245,6 +1285,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // SKIP counts as positive evidence: those names ARE files by definition, and a control
     // file sits in the room root with no separator in its name, so the heuristics below miss it.
     const isFile = manifest.has(p) || fileDocs.has(p) || SKIP.has(p) || onDisk || p.includes('/')
+      || looksLikeFilename(p)                    // HIV-P3: the genesis case -- see above
     if (!isFile) return ''                       // a label, not a path -- not ours to judge
     if (!isSafeRelPath(p)) return `"${p}" is not a safe relative path, so it can never be synced`
     if (SKIP.has(p)) return `${p} is a Hivecode control file, not shared source`
