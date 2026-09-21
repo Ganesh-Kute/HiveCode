@@ -102,9 +102,33 @@ socket for each one, so the client keeps a **bounded working set** — the most 
 demand.
 
 **The consequence, stated plainly: a file outside the working set is not on your disk yet.**
-It exists in the room. Reading or claiming the path fetches it. But an agent that lists its
-directory, does not see the file, and concludes it does not exist will write a new one —
-and that is how you get two definitions of the same thing.
+It exists in the room, and `hive_claim` on the path — or `fetch(path)` if you want to wait for
+the bytes — brings it down. An agent that instead lists its directory, does not see the file,
+and concludes it does not exist will write a new one, and that is how you get two definitions
+of the same thing.
+
+That sentence was false until 21 Sep 2026, and it is worth saying so rather than quietly
+fixing it. Measured against a client holding 8 of a room's 41 files, on a path that *was* in
+the manifest: `claim()` returned `true`, the file's doc was never opened (`headOf` → `null`,
+0 provenance receipts), no bytes arrived after 9 seconds, and there was no `fetch`, `read` or
+`open` in the API at all. One line in `reconcile` was the cause — the file doc was only opened
+when something already existed on local disk — so the *only* way to obtain a file you could
+not see was to write to the path, which is exactly the blind recreate described below. The
+documented safe route did nothing and the dangerous route worked.
+
+`fetch(path)` resolves when the bytes are on disk, not when a flag flips, and it tells the two
+lookalike cases apart:
+
+| what you get back | what it means | what to do |
+|---|---|---|
+| `{ ok: true, bytes: N }` | it was in the room, it is on your disk now | read it |
+| `{ ok: true, alreadyLocal: true }` | you already had it | nothing |
+| `{ ok: false, notInRoom: true }` | **no client has ever published this path** | nothing will ever fetch it; check the room's ignore rules, then have whoever holds the file write it into their synced folder |
+| `{ ok: false, timedOut: true }` | in the room, did not arrive | the file's own socket is likely refused — check `filesHeld` against `roomFiles` |
+
+The `notInRoom` case is the one that cost an afternoon. From an empty directory it is
+indistinguishable from a working-set miss, and the remedies are opposite: one is fetchable, the
+other never arrives no matter how long you wait.
 
 So the client now tells you, at join:
 

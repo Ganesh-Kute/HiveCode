@@ -1163,7 +1163,39 @@ Nothing was claimed. Put the path inside the room's sync scope, or pick one that
         // tells three simultaneous callers "it's yours" (measured 5/5). An agent then edits
         // behind a lock it does not hold. This waits for the relay to serialise it.
         const got = await requireSession().hive.claimSettled(region, String(args.intent || 'edit'))
-        if (got) return text(`claimed ${region} — it's yours. Edit it, then call hive_release.`)
+        if (got) {
+          // HIV-P18. "It's yours" was all this said, and for a file outside the working set that
+          // was the entire defect: the agent reads its directory, sees nothing, concludes the file
+          // does not exist, and CREATES it -- which is the blind recreate. Measured 21 Sep 2026:
+          // claim returned true, the file doc was never opened, no bytes arrived, and the agent
+          // was told it held something it could not see.
+          //
+          // sync.js now fetches on claim. This reports WHICH of three states the agent is in,
+          // because they demand different next actions and an empty directory cannot tell them
+          // apart. Awaited here rather than in claim(), whose contract is synchronous.
+          let fetched = null
+          try { fetched = await requireSession().hive.fetch(region) } catch { }
+          const head = `claimed ${region} — it's yours.`
+          if (fetched && fetched.notInRoom) {
+            return text(`${head}
+
+!! ${region} IS NOT IN THIS ROOM. No client has ever published it, so nothing will fetch it and it is NOT simply outside your working set. If you create it now you are creating a new file, not editing an existing one — which is correct only if that is what you intend. If you expected content here, the path is probably outside the room's sync scope: check that first, then ask whoever holds the file to write it into their synced folder.
+
+Edit it, then call hive_release.`)
+          }
+          if (fetched && fetched.ok === false) {
+            return text(`${head}
+
+!! ${region} IS IN THE ROOM BUT ITS CONTENT HAS NOT ARRIVED. ${fetched.reason || ''}
+DO NOT create it from scratch — the room's copy exists and writing over it unions two whole files. Retry, or check hive_status (filesHeld of roomFiles).
+
+Then call hive_release.`)
+          }
+          const note = fetched && fetched.ok && !fetched.alreadyLocal && !fetched.empty
+            ? ` Its content was not in this folder and has been fetched (${fetched.bytes} bytes) — read it before editing.`
+            : ''
+          return text(`claimed ${region} — it's yours.${note} Edit it, then call hive_release.`)
+        }
         const c = requireSession().hive.senseClaim(region)
         return text(`could NOT claim ${region}${c ? ` — held by ${c.by}${c.intent ? ` (${c.intent})` : ''}` : ''}. Work on something else; check hive_claims for open files.`)
       }

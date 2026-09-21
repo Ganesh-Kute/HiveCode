@@ -1120,6 +1120,77 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }, 4000)
     if (refusalTimer.unref) refusalTimer.unref()
   }
+  // HIV-P18. THE DOCUMENTED REMEDY DID NOT EXIST.
+  //
+  // The README told every user: "A file outside the working set is not on your disk yet. It
+  // exists in the room. Reading or claiming the path fetches it." Measured 21 Sep 2026 against
+  // a client holding 8 of a room's 41 files, on a path that WAS in the manifest:
+  //
+  //   whyNotShared(mod024.js) -> ""      (in scope; edits would reach the room)
+  //   claim(mod024.js)        -> true    ("it's yours")
+  //   after claim + 9s        -> on disk = false
+  //   after release + 9s      -> on disk = false
+  //   provenanceOf            -> 0 receipts,  headOf -> null   (doc never opened)
+  //   public fetch/read/open  -> undefined
+  //
+  // Nothing brought the bytes down. The cause is one line in reconcile: `if (disk === null)
+  // return` before openFile, plus a warm-up that only opens files already on local disk. A
+  // manifest entry with no local copy was never opened, so it could never arrive.
+  //
+  // The only thing that DID work was writing to the path -- which is precisely the blind
+  // recreate HIV-P14b guards. So the sole recovery route was the one dangerous action, reached
+  // by an agent that had been told "it's yours" and then saw an empty directory. That is
+  // HIV-P3's class arriving inbound: a claim granted over bytes that cannot move.
+  //
+  // This makes the sentence true. `fetch` opens the doc and RESOLVES WHEN THE CONTENT HAS
+  // LANDED, because an un-awaited open is the same false success one layer down: the caller
+  // reads the directory, sees nothing, and concludes the file is absent.
+  function fetchFile(relPath, { timeoutMs = 15000 } = {}) {
+    const r = String(relPath)
+    if (!canOpen(r)) return Promise.resolve({ ok: false, reason: `${r} is out of your scope` })
+    const full = path.join(ROOT, r)
+    // Already here: report it, and say so rather than implying we went and got it.
+    if (fs.existsSync(full)) return Promise.resolve({ ok: true, alreadyLocal: true, file: r })
+    // Not in the room either. This is the case @Hermes hit, and it is NOT the working-set
+    // case: nothing will ever arrive, so saying "fetching" would be a lie. The two look
+    // identical from an empty directory and have opposite remedies, so they get different
+    // answers here.
+    if (!manifest.has(r)) {
+      return Promise.resolve({
+        ok: false, notInRoom: true, file: r,
+        reason: `${r} is not in this room at all — no client has ever published it, so nothing ` +
+          `can fetch it. This is not a working-set miss. Check the room's .gitignore allow-list ` +
+          `covers the path, then have whoever holds the file write it into their synced folder.`,
+      })
+    }
+    const e = openFile(r)
+    if (!e) return Promise.resolve({ ok: false, reason: `could not open ${r}` })
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (res) => { if (done) return; done = true; clearInterval(iv); clearTimeout(to); resolve(res) }
+      const check = () => {
+        if (!e.synced) return
+        // reconcile() runs on the provider's own sync event and writes to disk. Wait for the
+        // BYTES, not for the flag -- the flag says the socket settled, which is not the claim
+        // being made to the caller.
+        if (fs.existsSync(full)) return finish({ ok: true, file: r, bytes: fs.statSync(full).size })
+        // Synced and still nothing: the room holds this path with empty content. Real, and a
+        // different answer from "not fetched yet".
+        if (e.text.toString() === '') return finish({ ok: true, file: r, empty: true, bytes: 0 })
+      }
+      const iv = setInterval(check, 250)
+      if (iv.unref) iv.unref()
+      const to = setTimeout(() => finish({
+        ok: false, file: r, timedOut: true,
+        reason: `${r} is in the room but did not arrive within ${timeoutMs}ms. The file's own ` +
+          `socket may be refused — hive_status reports filesHeld of roomFiles, and a refused ` +
+          `file doc is indistinguishable from an empty file.`,
+      }), timeoutMs)
+      if (to.unref) to.unref()
+      check()
+    })
+  }
+
   function openFile(relPath) {
     let e = fileDocs.get(relPath)
     if (e) return e
@@ -2588,7 +2659,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     isPaused,            // is a participant currently paused?
     controls,            // the live control map
     // --- hive coordination: claim a region BEFORE editing (collision prevention) ---
-    claim: (region, intent) => { const r = String(region), i = String(intent || 'edit'); myIntents.set(r, i); return coordinator.acquire(r, i) }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
+    // HIV-P18: a claim is a promise about BYTES, so granting one over bytes the claimer cannot
+    // see is the same false success we shut in the outbound direction (HIV-27: a claim whose
+    // writes could never leave). The claim itself is unchanged -- callers and every existing
+    // suite still get the same boolean -- but it now also starts the fetch the README has been
+    // promising, so an agent that claims a path it does not hold actually receives it instead of
+    // finding an empty directory and creating the file from scratch.
+    claim: (region, intent) => {
+      const r = String(region), i = String(intent || 'edit')
+      myIntents.set(r, i)
+      const held = coordinator.acquire(r, i)
+      // Fire-and-forget on purpose: claim's contract is synchronous and changing that would
+      // break every caller. Use fetch(path) directly when you need to WAIT for the bytes.
+      if (held) { try { fetchFile(r).catch(() => {}) } catch { } }
+      return held
+    }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
+    // HIV-P18: bring a file the room has but this folder does not. Resolves when the BYTES have
+    // landed, and distinguishes "outside the working set" (fetchable) from "not in the room at
+    // all" (nothing will ever arrive) -- two states that look identical from an empty directory
+    // and have opposite remedies.
+    fetch: fetchFile,
     // RELEASE IS A HANDOFF, AND A HANDOFF CAN BE REFUSED.
     //
     // Until the room sets `gate:cmd`, this behaves exactly as it always did and returns

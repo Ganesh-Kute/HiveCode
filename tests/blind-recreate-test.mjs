@@ -173,6 +173,54 @@ try {
   // "Known limits"; NOT asserted as correct here, because pinning it would endorse it.
   T('E4 whichever path it took, neither author silently lost their work',
     /alpha/.test(rB) && /beta/.test(rB), JSON.stringify(rB).slice(0, 110))
+
+  // ─── F. HIV-P18: THE DOCUMENTED REMEDY, WHICH DID NOT EXIST ───────────────────────────────
+  // The README told every user a file outside the working set is fetched by reading or claiming
+  // the path. Measured: claim returned TRUE, the doc was never opened, and the bytes never came.
+  // The only thing that worked was writing the path -- the blind recreate this suite guards.
+  // Section F pins the fetch that now makes the sentence true, and pins the DISTINCTION that
+  // cost @Hermes an afternoon: outside-the-working-set is fetchable, not-in-the-room is not,
+  // and from an empty directory they look identical.
+  console.log('\n# F. fetching a file the room has and this folder does not')
+  const onDiskB = new Set(fs.readdirSync(dirB))
+  const absent = [...B.doc.getMap('manifest').keys()].filter((r) => r.endsWith('.js') && !onDiskB.has(r))
+  const FETCH = absent[Math.floor(absent.length / 2)]
+  T('F1 precondition: a path in the room manifest that is NOT on this disk', !!FETCH,
+    `${absent.length} absent of ${B.doc.getMap('manifest').size} in manifest`)
+  if (FETCH) {
+    const before = fs.existsSync(path.join(dirB, FETCH))
+    const res = await B.fetch(FETCH)
+    const after = fs.existsSync(path.join(dirB, FETCH))
+    T('F2 fetch() REPORTS success', !!(res && res.ok), JSON.stringify(res).slice(0, 120))
+    T('F3 and the BYTES are on disk afterwards — not a flag, the file', !before && after,
+      `before=${before} after=${after}`)
+    if (after) {
+      const want = body(Number(FETCH.replace(/\D/g, '')))
+      T('F4 and they are the room\'s actual content, byte for byte',
+        fs.readFileSync(path.join(dirB, FETCH), 'utf8') === want,
+        JSON.stringify(fs.readFileSync(path.join(dirB, FETCH), 'utf8')).slice(0, 60))
+    }
+    // ANTI-VACUITY: if F2/F3 passed because the file happened to be there already, this would
+    // report alreadyLocal on a path that was genuinely absent a moment ago.
+    const again = await B.fetch(FETCH)
+    T('F5 a second fetch says alreadyLocal rather than claiming it fetched again',
+      !!(again && again.ok && again.alreadyLocal), JSON.stringify(again).slice(0, 90))
+  }
+  // THE DISTINCTION. This is the case that is NOT fixable by fetching, and answering it the
+  // same way as F2 would send the reader looking for bytes that do not exist.
+  const ghost = await B.fetch('never-published-anywhere.js')
+  T('F6 a path the ROOM does not have is refused, not silently awaited',
+    !!(ghost && ghost.ok === false && ghost.notInRoom), JSON.stringify(ghost).slice(0, 100))
+  T('F7 and the refusal says it is NOT a working-set miss, because the remedies differ',
+    !!(ghost && /not a working-set miss/i.test(String(ghost.reason || ''))))
+  // The README's actual sentence: claiming the path fetches it.
+  const CLAIMED = absent.filter((r) => r !== FETCH)[0]
+  if (CLAIMED) {
+    B.claim(CLAIMED, 'reading it')
+    await sleep(9000)
+    T('F8 CLAIMING a path also lands it — the sentence the README has been making',
+      fs.existsSync(path.join(dirB, CLAIMED)), CLAIMED)
+  }
 } catch (e) {
   T('the suite ran', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {
