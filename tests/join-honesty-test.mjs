@@ -25,6 +25,7 @@ import crypto from 'crypto'
 // moment. A fixed port means one fails to bind and the gate refuses a handoff for a
 // reason that has nothing to do with the code under test.
 const PORT = Number(process.env.HIVE_TEST_PORT) || (20000 + (process.pid % 20000))
+const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0
 const T = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); c ? pass++ : fail++ }
@@ -84,5 +85,37 @@ T('B3 with no false alarm', !/NOT JOINED/.test(ok))
 
 try { await _test.callTool('hive_leave', {}) } catch { }
 relay.kill()
+
+// ── C. per-room cap (Q431): names HIVE_SEATS and Q431 authoritatively ────────────────────
+console.log('\n# C. per-room ceiling refusal (Q431)')
+{
+  const PORT_C = PORT + 1
+  const relayC = await new Promise((res) => {
+    const p = spawn(process.execPath, ['server.js'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(PORT_C), HIVE_FREE_MAX_CONNS_PER_ROOM: '1', HIVE_PERSIST_DIR: 'off' },
+    })
+    p.stderr.on('data', (d) => { if (process.env.HIVE_DEBUG) process.stderr.write(d) })
+    p.stdout.on('data', (d) => { if (/listening on/.test(d)) res(p) })
+  })
+  const wsUrlC = `ws://localhost:${PORT_C}`
+  const roomC = 'room-cap-' + crypto.randomBytes(6).toString('hex')
+  const squatterC = new WebsocketProvider(wsUrlC, roomC, new Y.Doc(), { WebSocketPolyfill: WebSocket, connect: true })
+  await sleep(2500)
+
+  const refusedC = textOf(await _test.callTool('hive_join', {
+    link: `${wsUrlC}|${roomC}`, dir, name: 'ProbeC', owner: 'test',
+  }))
+
+  T('C1 Q431 join says NOT JOINED', /NOT JOINED/.test(refusedC))
+  T('C2 Q431 join names Q431', /Q431/.test(refusedC))
+  T('C3 Q431 join names HIVE_SEATS', /HIVE_SEATS/.test(refusedC))
+  T('C4 Q431 join does not hand over rules', !/FOLLOW THESE RULES/.test(refusedC))
+
+  try { squatterC.destroy() } catch { }
+  try { await _test.callTool('hive_leave', {}) } catch { }
+  relayC.kill()
+}
+
 console.log(`\n=== JOIN HONESTY: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

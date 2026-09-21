@@ -175,3 +175,31 @@ export async function explainNotSyncing(relay, { stuck = 0, what = 'files', trai
   const d = diagnose(probe, { stuck, what })
   return { ...d, probe, text: trailer ? `${d.text} ${trailer}` : d.text }
 }
+
+/**
+ * Extract HTTP status code from a WebSocket or upgrade error, if present.
+ */
+export function statusFromError(e) {
+  if (!e) return null
+  if (typeof e === 'number') return e
+  if (e.status && typeof e.status === 'number') return e.status
+  if (e.code && typeof e.code === 'number') return e.code
+  if (e.statusCode && typeof e.statusCode === 'number') return e.statusCode
+  const m = /Unexpected server response:\s*(\d{3})/.exec((e.message || e.reason || String(e)))
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * Authoritative explanations for HTTP status codes returned by the relay on connection upgrade.
+ */
+export function explainStatus(code, relay = '') {
+  const c = Number(code)
+  if (c === 401) return 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
+  if (c === 402) return 'this room is over its plan limit. Contact support@getgrm.tech and we will sort it out.'
+  if (c === 403) return 'the relay refused this room or path for your token. You are outside the folders you were given.'
+  if (c === 429) return 'this room is FULL, so you were not let in (Q431). A relay admits a limited number of connections per room -- 8 on the free tier -- and this room is at that ceiling. Note it counts CONNECTIONS, not people: one agent holding several files holds several. If you run the relay, raise it with HIVE_SEATS; otherwise ask whoever does, or contact support@getgrm.tech.'
+  if (c === 503) return 'the relay is not serving this connection. Either the whole relay is at capacity (Q430) or it could not check your licence and is failing closed rather than guessing. It may also be restarting -- if this lasts, contact support@getgrm.tech.'
+  if (c) return `the relay answered ${c} instead of accepting the connection. Contact support@getgrm.tech.`
+  return `the relay at ${relay || 'the relay'} cannot be reached. It may be down, asleep, or blocked by a network. Contact support@getgrm.tech if this continues.`
+}
+
