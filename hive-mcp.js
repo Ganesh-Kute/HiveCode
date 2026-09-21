@@ -38,6 +38,7 @@ import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
+import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
 import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
@@ -171,6 +172,14 @@ This is refused rather than fixed for you because renaming silently is worse: if
   })
   if (!synced) {
     const why = connErr || 'no sync within 8s -- the relay did not answer'
+    // HIV-P13. This used to hand-write its own capacity guess, and sync.js hand-wrote a second
+    // one. Both printed the literal "<relay-http>" while holding `relay` right here, and both
+    // named only Q430/maxConnsTotal when limits.js also refuses with Q431 on a per-room cap that
+    // HIVE_MAX_CONNS_TOTAL cannot fix. They had already drifted -- this copy listed three
+    // candidate causes, the other asserted one. hive-relay-health.js is now the single producer,
+    // and it ASKS the relay instead of guessing: tests/relay-diagnosis-test.mjs counts producers
+    // so a third copy fails a test rather than shipping.
+    const diag = await RH.explainNotSyncing(relay, { what: 'join' })
     return [
       `NOT JOINED -- ${why}.`,
       `room: ${room}`,
@@ -181,10 +190,9 @@ This is refused rather than fixed for you because renaming silently is worse: if
       'claim you make binds anyone else, and the files in this folder are NOT shared. Any work',
       'you do now is invisible to the team and can be silently overwritten later.',
       '',
-      'Most likely causes, in the order worth checking:',
-      '  - the relay is at capacity (Q430). Hivecode opens one socket PER FILE, so a large',
-      '    folder can exhaust it by itself. Check <relay-http>/health: connections vs',
-      '    limits.maxConnsTotal. Raise HIVE_MAX_CONNS_TOTAL, or narrow what syncs via .gitignore.',
+      diag.text,
+      '',
+      'Two causes the relay cannot tell you about, worth checking if the above says capacity is fine:',
       '  - the relay is not running, or the port/room in the link is wrong.',
       '  - the room is secured and this link carries no token (Q4xx on connect).',
       '',

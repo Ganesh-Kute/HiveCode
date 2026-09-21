@@ -36,6 +36,8 @@
     "hive-throttle.js",
     "hive-instructions.js",
     "hive-activity.js",
+    "hive-relay-health.js",
+    "reconcile.cjs",
     "hive-busy.js",
     "hive-stop-hook.js",
     "hive-hook-install.js",

@@ -40,6 +40,7 @@ import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from '.
 // HIV-P8. The map key MUST be the string 'obligations' — hive-mcp.js:656 reads that exact key, and
 // a debt written anywhere else would be invisible to hive_owed: a warning nobody can see, which is
 // the defect this ticket is about, one level down.
+import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
 import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
@@ -1059,12 +1060,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // usually a whole-relay problem rather than a per-file one, so one message naming the
   // count is the useful shape -- one per file would be 800 lines of chat.
   const refusedFiles = new Map() // relPath -> consecutive connection errors, cleared on sync
+  const refusedCodes = new Map() // relPath -> the HTTP status the relay refused with, when it gave one
   let refusalSaidAt = 0
   let refusalTimer = null
+
   function noteRefusals() {
     if (refusalTimer) return
     // Debounced: a full relay refuses every file at once, and we want the total, not the first.
-    refusalTimer = setTimeout(() => {
+    refusalTimer = setTimeout(async () => {
       refusalTimer = null
       const stuck = [...refusedFiles.keys()].filter((r) => { const e = fileDocs.get(r); return e && !e.synced })
       // One transient error on one file is a blip, not an outage. Two or more files stuck, or
@@ -1074,12 +1077,44 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const now = Date.now()
       if (now - refusalSaidAt < 300000) return // at most once every 5 minutes
       refusalSaidAt = now
-      const msg =
-        `${stuck.length} file(s) cannot connect to the relay and are NOT syncing. ` +
-        `They will read as empty until this clears. The usual cause is the relay being full ` +
-        `(Q430): Hivecode opens one socket PER FILE, so a large folder can exhaust it alone. ` +
-        `Check <relay-http>/health -- connections against limits.maxConnsTotal -- then raise ` +
-        `HIVE_MAX_CONNS_TOTAL or narrow what syncs. Do not trust this folder's contents meanwhile.`
+      // HIV-P13. THIS MESSAGE USED TO NAME A CAUSE IT HAD NOT MEASURED.
+      //
+      // It said "the usual cause is the relay being full (Q430)" on the strength of having
+      // observed only that N file docs have synced=false. Measured 21 Sep 2026, at the moment a
+      // third agent printed it for 49 files: the relay reported 56 connections of 512, and
+      // limits.js keys its per-room count on the FILE-room, so any one file held three
+      // connections against a cap of 64. Q430 needed 512 and had 56; Q431 needed 64 and had 3.
+      // Neither refusal could have fired. The real event was the relay dropping its room state
+      // -- /health went rooms 44 -> 0 -> 29 -> 44 over a few minutes -- and every client
+      // reconnecting one socket per file.
+      //
+      // "The relay is full" and "the relay just dropped everyone and we are all reconnecting"
+      // produce an identical symptom and need OPPOSITE responses: a config change, or thirty
+      // seconds of patience. Telling an operator to raise a limit that is 89% free is worse
+      // than saying nothing, because they will do it, see no change, and conclude the product
+      // is broken -- correctly, on the evidence they were given.
+      //
+      // So the client asks the relay instead of guessing, and reports what came back. It also
+      // stops printing the literal string "<relay-http>", which it did for three weeks while
+      // holding the relay URL in scope.
+      // EVIDENCE BEFORE INFERENCE. If the relay actually refused us it said so with a status,
+      // and explain() maps those to the right cause and the right knob -- Q431 to HIVE_SEATS,
+      // Q430 to capacity, 401/403 to the token, 402 to the plan. That is a fact from the relay.
+      // Only when nothing refused us -- the sockets simply never came up, which is what a
+      // dropped-and-reconnecting relay looks like -- is there anything left to infer, and then
+      // we go and ASK rather than assert.
+      const coded = stuck.map((r) => refusedCodes.get(r)).filter(Boolean)
+      const code = coded.length ? coded.sort((a, b) => coded.filter((c) => c === b).length - coded.filter((c) => c === a).length)[0] : null
+      const msg = code
+        ? `${stuck.length} file(s) are not synced and will READ AS EMPTY until this clears. ` +
+          `The relay refused ${coded.length} of them with ${code}: ${explain(code)} ` +
+          `Do not trust this folder's contents meanwhile.`
+        : (await RH.explainNotSyncing(relay, {
+            stuck: stuck.length, what: 'files',
+            trailer: `Nothing refused these connections with a status code, so the cause above is ` +
+              `inferred from the relay's own counters rather than reported by it. ` +
+              `Do not trust this folder's contents meanwhile.`,
+          })).text
       log(`[${name}] !! ${msg}`)
       try { say(`[!] @all ${msg}`) } catch { /* chat may itself be unreachable — the log still carries it */ }
     }, 4000)
@@ -1131,9 +1166,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // A refused upgrade lands here. The provider will keep retrying by itself, which is the
     // right behaviour and exactly why nothing surfaces it — so count it and let noteRefusals
     // decide whether this is a blip or a relay that will not take us.
-    fprovider.on('connection-error', () => {
+    fprovider.on('connection-error', (ev) => {
       if (e.synced) return // already have the content; a later blip is the provider's business
       refusedFiles.set(relPath, (refusedFiles.get(relPath) || 0) + 1)
+      // HIV-P13. THE STATUS CODE WAS THROWN AWAY HERE, and it is the only authoritative evidence
+      // in the whole path. joinRoom in hive-mcp.js already captured it from this same event; this
+      // handler took no argument at all, so noteRefusals had nothing but "N files are quiet" and
+      // had to INFER a cause -- which is how it came to announce Q430 on 21 Sep while the relay
+      // sat at 56 of 512. explain() above maps these codes correctly and has done since 5 Sep.
+      const code = ev && (ev.code || ev.status)
+      if (code) refusedCodes.set(relPath, code)
       noteRefusals()
     })
     // Newly opened counts as used, and opening is the moment the working set can go over
