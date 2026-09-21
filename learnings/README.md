@@ -6,7 +6,7 @@ A bug report says what broke. A learning says what *kind* of thing broke, why it
 review, why the obvious fix makes it worse, and how to spot the next one — which is the only part
 that pays for itself, because the next one will be in different code and will not look the same.
 
-Four are here. Every one was found on this repo, and every one has already recurred at least once.
+Seven are here. Every one was found on this repo, and every one has already recurred at least once.
 
 | | what it is | first cost |
 |---|---|---|
@@ -16,6 +16,7 @@ Four are here. Every one was found on this repo, and every one has already recur
 | [repair-the-class-not-the-copy.md](repair-the-class-not-the-copy.md) | the fix lands on one instance and the class survives | an identical crash lived through two more tickets |
 | [born-invisible.md](born-invisible.md) | the write is real and correct, and lands outside a scope nobody mentioned, so it never travels | a correct patch read as a fabricated one — 40 min and two wrong public accusations |
 | [testing-the-consumer-instead-of-the-derivation.md](testing-the-consumer-instead-of-the-derivation.md) | the test constructs the input it is testing the derivation of | a deleted provenance check stayed green across 31 passing assertions |
+| [a-negative-from-an-unproven-probe.md](a-negative-from-an-unproven-probe.md) | the check reads a different channel than the product writes, and its negative is believed | a working fix deleted on a clean, wrong "did not fire" |
 
 ## What belongs here
 
@@ -39,7 +40,7 @@ A class earns a file when **all four** are true:
 
 ## How to write one
 
-Follow the shape of the existing four. The two sections that make it more than a bug report are
+Follow the shape of the ones already here. The two sections that make it more than a bug report are
 **"Why the obvious fix makes it worse"** and **"What it is not"** — the first stops the class
 recurring under a new name, and the second stops the lesson being over-applied by someone who
 just read it and is now seeing it everywhere.

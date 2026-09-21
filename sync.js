@@ -1349,6 +1349,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // files" (adopt the room's copy) and "this file was created during the session"
   // (a creation race -- merge, never adopt). Populated once, on the first scan.
   const preexisting = new Set()
+  // HIV-P14b. Manifest keys as of our first sync: what the ROOM held before we arrived.
+  // `preexisting` records our DISK, which structurally cannot distinguish "nobody had this file"
+  // from "the room had it all along and we never fetched it". null until the first sync, and null
+  // must never be read as "the room was empty" -- that would classify every joiner's first
+  // creation as a race, which is the bug this exists to fix.
+  let roomAtJoin = null
   let firstScanDone = false
   const shadow = new Map()     // relPath -> exact bytes THIS ENGINE last wrote/captured (source-level edit capture)
   // THE SAME THING, FROM THE PREVIOUS SESSION, and the reason it exists:
@@ -1543,10 +1549,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // A genuine emptying of a file we HAVE synced still has an ancestor, so it falls through
     // to the merge below and still lands.
     const noHistory = !bases.has(relPath) && !priorShadow.has(relPath)
+    // HIV-P14b tracing, env-gated. Which branch a blind recreate actually takes was guessed
+    // wrong twice from reading the code; this answers it from the running product.
+    if (process.env.HIVE_P14_DEBUG && new RegExp(process.env.HIVE_P14_DEBUG).test(relPath)) {
+      log(`[P14] ${relPath} origin=${origin} synced=${fe.synced} docLen=${docText.length} ` +
+        `diskLen=${disk === null ? 'null' : disk.length} hasBase=${bases.has(relPath)} ` +
+        `priorShadow=${priorShadow.has(relPath)} inManifest=${manifest.has(relPath)} ` +
+        `preexisting=${preexisting.has(relPath)}`)
+    }
     if (docText === '' && (!manifest.has(relPath) || (disk && noHistory))) {
       // the relay has no usable copy of this path -> publish ours (a genuinely new file,
       // or one whose registration outlived the join that promised it)
       if (disk === null) return
+      if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=genesis-publish ${relPath}`)
       fe.doc.transact(() => applyDiff(fe.text, disk))
       stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)
       manifest.set(relPath, 1)
@@ -1614,6 +1629,52 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // with the count and the remedy. An agent told "33 files exist here that you do not have,
       // reading the path fetches it" will not recreate them. That removes the cause; the guard
       // is the belt for when it happens anyway, and it lands when it is proven to fire.
+      if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=no-base-block ${relPath} preexisting=${preexisting.has(relPath)}`)
+      // HIV-P14b. A BLIND RECREATE IS NOT A RACE, and the empty-base merge below corrupts it.
+      //
+      // The dichotomy above has a third case: the path appeared on OUR disk after we started AND
+      // the room already had it before we joined. The working set is bounded, nothing touched
+      // that file, so the agent could not see it, concluded it did not exist, and wrote one.
+      //
+      // Measured 21 Sep 2026, traced through the running product. Agent B, holding 8 of a room's
+      // 41 files, wrote mod039.js:
+      //   mod039.js origin=remote synced=true docLen=22 diskLen=39 hasBase=false
+      //             inManifest=true preexisting=false   -> BRANCH=no-base-block
+      // It lands exactly here, `preexisting` is false, and the empty-base merge unions two whole
+      // files into agent A's copy:
+      //   export const v39 = 39
+      //   export const v39 = "FROM SCRATCH BY B"
+      // Two const declarations of the same name. Invalid code, in someone else's folder, from B
+      // doing the only thing available to it.
+      //
+      // The union is right for what the comment above describes -- two authors adding DIFFERENT
+      // blocks to a file they both just created. It is wrong for two independent whole-file
+      // creations of the same module, which is what a blind recreate always is.
+      //
+      // `roomAtJoin` is the discriminator `preexisting` cannot be: a path in it existed in the
+      // ROOM before we did, however new it is on our disk. The `roomAtJoin &&` guard is
+      // load-bearing -- before first sync it is null, and treating null as an empty room would
+      // classify every joiner's first creation as a race.
+      //
+      // Adopt the room's copy, because it is the real file and the agent needs it to work from,
+      // and snapshot the local draft so nothing the agent wrote is lost. Then say so loudly: the
+      // entire failure was the agent not knowing the file was already there.
+      if (roomAtJoin && roomAtJoin.has(relPath) && !preexisting.has(relPath)) {
+        captureSnapshot(relPath, disk, name, {
+          force: true, kind: 'manual',
+          label: `local draft preserved — ${relPath} already existed in the room before this client joined`,
+        })
+        bases.set(relPath, docText); forkBases.set(relPath, docText); shadow.set(relPath, docText)
+        if (docText !== disk) writeToDisk(relPath, docText)
+        try {
+          say(`⚠ ${relPath} ALREADY EXISTED IN THE ROOM before I joined — I had not fetched it, so it was ` +
+            `written here from scratch. The room's copy is now on disk and my draft was snapshotted. ` +
+            `This folder holds a bounded working set: a file you cannot see may still exist, so read or ` +
+            `claim the path before creating it. hive_status reports filesHeld of roomFiles.`)
+        } catch { }
+        if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=blind-recreate-refused ${relPath}`)
+        return
+      }
       if (!preexisting.has(relPath)) {
         // Terminate both sides before merging. With an empty base there is no shared
         // trailing context, so a side whose last line lacks a newline gets its final
@@ -2356,6 +2417,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   provider.on('sync', (s) => {
     if (!s || !syncFiles) return
+    // HIV-P14b. Snapshot what the room already had, once. Measured: the manifest IS populated at
+    // this point -- a fresh joiner's observer fires with 13 of 13 entries before the sync event,
+    // so reading it here is sound. (That was checked because the first version of this guard was
+    // wrongly assumed to be failing for this reason.)
+    if (!roomAtJoin) {
+      roomAtJoin = new Set()
+      try { for (const k of manifest.keys()) roomAtJoin.add(k) } catch { }
+    }
     writeToDisk(RULES_FILE, HIVE_RULES_TEXT) // the law is always present in the room
     writeToDisk(AGENTS_FILE, AGENT_MANUAL_TEXT) // so an agent opening this folder learns how to join + behave
     // Connect to every file I'm granted AND have not excluded; each file-room's sync pulls
