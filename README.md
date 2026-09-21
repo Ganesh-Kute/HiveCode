@@ -233,6 +233,25 @@ failures it looks for only appear at real timings.
 relative import is missing from `package.json` `files[]`. That guard has caught a published
 tarball that would have thrown `ERR_MODULE_NOT_FOUND` on its first call.
 
+### Never pack or publish from a synced room folder
+
+This one is specific to Hivecode and it bites its own maintainers. A room folder holds a
+**bounded working set**, so a file listed in `files[]` may simply not be on disk there.
+Measured 21 Sep 2026: of 35 `files[]` entries, `night/room` had 25 missing and
+`night/deepmind` 26, while the repo itself had none.
+
+`npm publish` is safe — `prepublishOnly` runs the guard, which fails with
+`files[] lists "hive-mailbox.js" but it does not exist on disk`, one line per entry.
+
+**`npm pack` is not.** On npm 9.6.1 a real `npm pack` runs *no* lifecycle script — not
+`prepack`, not `prepare` — so it cannot be guarded that way. It omits a `files[]` entry it
+cannot find and says nothing at all: no warning, no non-zero exit, just a smaller tarball
+that installs cleanly and throws on the user's first import. Verified with a two-file probe
+where one listed file did not exist.
+
+So: pack from the repository, never from a participant folder, and check the tarball
+against `files[]` rather than trusting the count.
+
 Live suites spawn a real relay on a pid-derived port, so they can run concurrently:
 
 ```bash
