@@ -73,16 +73,122 @@ npx hivecode-mcp        # the live medium, as MCP tools for any agent
 
 ---
 
+## Running this with a team
+
+This section exists because the failures that cost real time are not merge failures.
+They are setup failures that report success. Each item below was measured, not guessed.
+
+### One folder per participant. Always.
+
+Two agents pointed at the same directory coordinate through the filesystem, and every
+`hive_*` call still returns success. It looks like multiplayer and it is not — nothing is
+being tested, and the collision handling you came to evaluate never runs.
+
+```
+alice/   <- her agent syncs here
+bob/     <- his agent syncs here
+```
+
+Same room, different folders. `hive_members` should list every participant; if it doesn't,
+they are not actually in the room together.
+
+### One WebSocket is opened per file
+
+This is the most important operational fact about Hivecode and the one that surprises
+people. A relay admits a bounded number of connections (`maxConnsTotal`, default 512;
+per-room default 8 on the free tier). A repository with more files than that cannot open a
+socket for each one, so the client keeps a **bounded working set** — the most recently used
+`HIVE_MAX_OPEN_FILES` (default 128) stay connected and the rest are closed and reopened on
+demand.
+
+**The consequence, stated plainly: a file outside the working set is not on your disk yet.**
+It exists in the room. Reading or claiming the path fetches it. But an agent that lists its
+directory, does not see the file, and concludes it does not exist will write a new one —
+and that is how you get two definitions of the same thing.
+
+So the client now tells you, at join:
+
+```
+!! THIS FOLDER IS INCOMPLETE ON PURPOSE. The room has 41 files; 8 are on disk
+   here and 33 are NOT. ... A missing file EXISTS — it simply has not been
+   fetched. Do not treat it as absent and do not create it.
+```
+
+And `hive_status` reports `filesHeld` against `roomFiles`, not a self-satisfied total.
+If those two numbers differ, that is expected — not a fault.
+
+### Sizing a relay for N participants
+
+Budget `HIVE_MAX_OPEN_FILES × participants` against the relay's `maxConnsTotal`, and
+remember the relay is shared with every other room on it. At defaults, five participants
+want 640 connections against 512 — so either raise the cap, set `HIVE_SEATS`, or lower
+`HIVE_MAX_OPEN_FILES`. Check headroom before you start:
+
+```bash
+curl -s https://your-relay/health
+```
+
+Two different refusals with two different fixes, which is worth knowing before you debug
+the wrong one:
+
+| Code | Meaning | What actually fixes it |
+|---|---|---|
+| `Q430` | whole relay at `maxConnsTotal` | raise `HIVE_MAX_CONNS_TOTAL`, or sync fewer files |
+| `Q431` | one room past its per-room cap | set `HIVE_SEATS` — raising the total will **not** help |
+
+If files stop syncing, the client fetches `/health` itself and tells you which of these it
+is, or says plainly that capacity is not the cause. It will not guess.
+
+### When an agent goes quiet
+
+An agent whose turn has ended is still connected, so "is it online" is the wrong question.
+The room answers the one that is decidable — is it inside a blocking `hive_wait` right now:
+
+```
+Alice  (ai) — WORKING: last action 2 min ago (hive_claim). Reachable.
+Bob    (ai) — WAITING: blocked in hive_wait, wakes the moment anything arrives. Reachable.
+Carol  (ai) — PARKED: connected, but NOT inside hive_wait and silent for 22 min.
+               It will not wake on its own — anything you send it now will sit
+               unread until a human prompts it.
+Dave   (ai) — GONE: not connected. Last action 41 min ago (hive_say).
+```
+
+`hive_say` warns you at send time if you address a PARKED or GONE agent, and `hive_owed`
+marks a debt owed by one as `[UNREACHABLE]` rather than pending.
+
+### Known limits
+
+- **Marketplace extension**: loses offline edits on rejoin. Not fixed — it needs a real
+  VS Code host to verify, and we will not claim it without one. The `sync.js` engine is
+  covered; the extension is not.
+- **Bounded working set**: described above. A real behaviour change, deliberately taken.
+- **`git`-vs-room drift**: a room checkout and a git branch can diverge.
+  `scripts/check-drift.mjs` reports it.
+- **Relay deploy**: pushing this repo does not redeploy a hosted relay unless auto-deploy
+  is on. Check `/health` uptime against your last deploy.
+
+---
+
 ## Documentation
 
-To keep this README clean, we've modularized the documentation into separate files. Click below to read more about each specific topic:
+- **[🔌 Connecting & Hosting Rooms](docs/CONNECTING_ROOMS.md)** — how humans join rooms, how to host your own relay, and the self-certifying security model.
+- **[🤖 AI Agent Manual](docs/AI_AGENT_MANUAL.md)** — written for agents: download the MCP server, join a room, behave in the hive.
+- **[🏛️ Hivecode Explained, end to end](docs/HIVECODE_EXPLAINED.md)** — the full course: CRDT internals, the ICR pipeline, provenance, the benchmarks.
+- **[🧠 ICR (Intent-aware Code Replication)](docs/ICR_EXPLAINED.md)** — how the AST-aware merge guarantees no lines are lost in a multi-agent collision.
+- **[🔐 DCO (Deterministic Context Override)](docs/DCO_EXPLAINED.md)** — tools locked by CRDT state, structurally preventing drift.
+- **[🔗 The Substrate](docs/SUBSTRATE.md)** — a governed *medium*: every change a signed `(intent, patch, provenance)` triple, enforced by the relay, with no controller.
+- **[🏗️ Architecture](docs/ARCHITECTURE.md)** · **[🚀 Self-hosting](docs/SELF_HOSTING.md)** · **[⚙️ Setup](docs/SETUP.md)**
 
-- **[🔌 Connecting & Hosting Rooms](docs/CONNECTING_ROOMS.md)** - Learn how humans join rooms, how to host your own relay server, and how the self-certifying security model works.
-- **[🤖 AI Agent Manual](docs/AI_AGENT_MANUAL.md)** - A guide written specifically for AI agents on how to download the MCP server, join a room, and behave within the hive.
-- **[🏛️ Hivecode Explained, end to end](HIVECODE_EXPLAINED.md)** - The full course: every mechanism motivated, explained, and shown with worked examples and runnable code — CRDT internals, the ICR pipeline, provenance, the benchmarks.
-- **[🧠 ICR (Intent-aware Code Replication)](docs/ICR_EXPLAINED.md)** - How our semantic AST-aware merge algorithm guarantees no lines are lost during multi-agent collisions.
-- **[🔐 DCO (Deterministic Context Override)](docs/DCO_EXPLAINED.md)** - The core breakthrough paradigm that physically locks tools based on CRDT state, structurally preventing agent hallucination and drift. Includes our End-to-End Test Report.
-- **[🔗 The Substrate](docs/SUBSTRATE.md)** - A governed *medium* (not a channel) for multi-agent code: every change is a signed `(intent, patch, provenance)` triple, and the medium guarantees it converges, never regresses, and is provenance-verified — enforced by the relay, with no controller. Runnable + testable in one command.
+### `learnings/` — read this one if you read nothing else
+
+Seven defect classes, every one found on this repo, every one having already recurred at
+least once. They are written as classes rather than bug reports, and
+[`tests/learnings-test.mjs`](tests/learnings-test.mjs) fails if a document cites a file that
+has moved — a stale learning is worse than none, because it is read with the authority of
+something that was once checked.
+
+The recurring shape is **false success**: nothing crashes, every signal is green, the result
+is wrong. [`learnings/false-success.md`](learnings/false-success.md) is the index into it.
 
 ---
 
@@ -90,15 +196,34 @@ To keep this README clean, we've modularized the documentation into separate fil
 
 ```bash
 npm install
-node tests/test.js     # unit tests
-node hive-edge-test.js # adversarial / edge-case live tests
-
-npm run test:substrate:all   # the substrate: 4 suites (core + live + enforcement + content authority)
+npm test                  # unit + property suites; pretest runs the packaging and deploy guards
 ```
 
-Other live suites: `hive-secure-test.js`, `hive-scope-test.js`, `hive-auth-test.js`,
-`hive-readonly-test.js`, `hive-resume-test.js`, `hive-control-test.js`,
-`hive-durable-revoke-test.js`, `hive-relay-robust-test.js`.
+`pretest` is not optional and is worth understanding: it runs
+[`scripts/check-files.mjs`](scripts/check-files.mjs), which refuses the package if any
+relative import is missing from `package.json` `files[]`. That guard has caught a published
+tarball that would have thrown `ERR_MODULE_NOT_FOUND` on its first call.
+
+Live suites spawn a real relay on a pid-derived port, so they can run concurrently:
+
+```bash
+node tests/agent-liveness-test.mjs        # WORKING / WAITING / PARKED / GONE, real dispatch
+node tests/relay-diagnosis-test.mjs       # a real relay made genuinely full, and the advice it gets
+node tests/unreachable-recipient-test.mjs # send-time warnings for unreachable recipients
+node tests/open-file-cap-test.mjs         # the bounded working set, and the trade it makes
+node tests/ceiling-no-data-loss-test.mjs  # a full relay must not cost you your files
+node tests/first-contact-refusal-test.mjs # clone-then-join must not clobber local work
+node tests/genesis-claim-test.mjs         # a claim whose bytes could never leave is refused
+node tests/mention-boundary-test.mjs      # who owes an answer, and who cannot be asked
+node tests/coordination-test.mjs          # claims, leases, flow-around under contention
+
+npm run test:ceiling · test:gate · test:learnings · test:features · test:coordination
+```
+
+Everything under [`tests/`](tests/) is runnable directly with `node`. Suites assert on
+observable behaviour — bytes on disk, tool output, relay refusals — rather than on source
+text, for the reason set out in
+[`learnings/testing-the-consumer-instead-of-the-derivation.md`](learnings/testing-the-consumer-instead-of-the-derivation.md).
 
 The extension source is in [`extension/`](extension/).
 

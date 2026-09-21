@@ -1594,6 +1594,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // disjoint additions union (the normal case -- each author added their own
       // block), and a real overlap raises conflict markers for a human to settle
       // instead of the engine quietly picking a winner on arrival order.
+      // HIV-P14b, OPEN AND DELIBERATELY NOT IMPLEMENTED HERE YET.
+      //
+      // There is a third case this dichotomy misses: the path appeared on OUR disk after we
+      // started AND the room already had it before we joined. That is not a race -- the agent
+      // could not see the file (bounded working set, nothing touched it), believed it did not
+      // exist, and wrote one. Measured 21 Sep 2026: agent B recreated mod039.js and agent A's
+      // copy ended up with two const declarations of the same name.
+      //
+      // `preexisting` records our DISK, so it structurally cannot tell those apart; the manifest
+      // as of first sync can. A guard on that was written and REMOVED before shipping, because
+      // the probe showed it never firing -- most likely the manifest is not yet populated at the
+      // instant the base provider reports sync, so the snapshot came back empty. A refusal path
+      // that silently never runs is worse than none: it reads as protection in review and does
+      // nothing in production, which is the defect class this repo keeps hitting.
+      //
+      // What ships instead is the reporting half, which is verified: status() now exposes
+      // filesHeld/roomFiles/filesMissing instead of a full house, and the join announces the gap
+      // with the count and the remedy. An agent told "33 files exist here that you do not have,
+      // reading the path fetches it" will not recreate them. That removes the cause; the guard
+      // is the belt for when it happens anyway, and it lands when it is proven to fire.
       if (!preexisting.has(relPath)) {
         // Terminate both sides before merging. With an empty base there is no shared
         // trailing context, so a side whose last line lacks a newline gets its final
@@ -2371,6 +2391,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     renderClaims() // unconditional: "nothing is claimed" is the answer an arriving agent needs most
     scan()
     log(`[${name}] folder sync active on ${ROOT} (room "${room}") as ${kind}. ${manifest.size} files.`)
+    // HIV-P14. SAY THE GAP OUT LOUD, ONCE, AT JOIN.
+    //
+    // The working set is bounded on purpose, and the documented trade is that "a file outside it
+    // does not arrive until something touches it". For a human reading a folder that is fine. For
+    // an AI agent it is not, because an agent decides what exists by listing its directory: a
+    // file it cannot see is a file it believes does not exist, and it writes one. Measured 21 Sep
+    // 2026, a 40-file room and MAX_OPEN=8: the joiner held 7 files, reported "filesSynced 8/8",
+    // said nothing, and its agent recreated a file the room already had.
+    //
+    // Nothing here changes the cap. It tells the agent the number it needs in order to ASK,
+    // which is the one thing that makes "until something touches it" true.
+    setTimeout(() => {
+      try {
+        const want = [...manifest.keys()].filter((r) => canOpen(r) && !SKIP.has(r))
+        const have = want.filter((r) => fs.existsSync(path.join(ROOT, r)))
+        const short = want.length - have.length
+        if (short <= 0) return
+        log(`[${name}] !! THIS FOLDER IS INCOMPLETE ON PURPOSE. The room has ${want.length} files; ` +
+          `${have.length} are on disk here and ${short} are NOT. The working set is bounded to ` +
+          `${MAX_OPEN} open files (HIVE_MAX_OPEN_FILES), because one socket is opened per file and a ` +
+          `relay admits a limited number. A missing file EXISTS — it simply has not been fetched. ` +
+          `Do not treat it as absent and do not create it: reading or claiming the path fetches it. ` +
+          `hive_status reports filesHeld of roomFiles, and hive_read_board lists what the room holds.`)
+      } catch { }
+    }, 4000).unref?.()
     if (!scanTimer) {
       startWatch()
       scanTimer = setInterval(scan, watcher ? 2000 : 400) // watch handles fast path; scan is the net
@@ -2595,11 +2640,42 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // whose own socket the relay refused. They are not slow, they are not arriving, and
       // until they do they read as empty. filesSynced alone shows a shortfall but not a cause.
       const notSyncing = [...refusedFiles.keys()].filter((r) => { const e = fileDocs.get(r); return e && !e.synced })
+      // HIV-P14. THE FULL-HOUSE LIE.
+      //
+      // `files` and `filesSynced` both counted OPEN docs, so a client holding eight of the
+      // room's forty files reported "filesSynced 8/8" -- a complete set. Measured 21 Sep 2026:
+      // a second agent joined a 40-file room, received 7, stayed at 7 for a full minute, and
+      // reported 8/8. Its manifest listed all forty the whole time.
+      //
+      // The bounded working set is deliberate and correct -- one socket per file against a 512
+      // ceiling is the wall, and tests/open-file-cap-test.mjs documents the trade rather than
+      // hiding it: "a file outside the working set does not arrive until something touches it."
+      // What that header does not cover is that FOR AN AGENT, NOTHING EVER TOUCHES IT. An agent
+      // decides what exists by reading its folder; a file it cannot see is a file it believes
+      // does not exist, so it writes one from scratch. Measured consequence, same probe: agent B
+      // created mod039.js, and agent A's copy ended up holding two const declarations of the
+      // same name -- invalid code, in someone else's folder, from B doing the only reasonable
+      // thing available to it.
+      //
+      // So the trade stays and the reporting changes. `files` keeps meaning open docs, because
+      // tests/open-file-cap-test.mjs:71 pins it as the proof the cap is respected. What is added
+      // is the pair that was missing: what the ROOM has, and what this client actually HOLDS.
+      const roomFiles = (() => { try { return [...manifest.keys()].filter((r) => canOpen(r)).length } catch { return 0 } })()
+      const held = (() => {
+        let n = 0
+        try { for (const r of manifest.keys()) { if (canOpen(r) && fs.existsSync(path.join(ROOT, r))) n++ } } catch { }
+        return n
+      })()
       return {
         connected: !!provider.wsconnected,
         connecting: !!provider.wsconnecting,
         files: fileDocs.size,
         filesSynced: synced,
+        // The honest pair. `filesHeld` of `roomFiles` is the number a joiner needs, and the one
+        // that says 7 of 40 where filesSynced said 8 of 8.
+        roomFiles,
+        filesHeld: held,
+        filesMissing: Math.max(0, roomFiles - held),
         notSyncing: notSyncing.length,
         notSyncingFiles: notSyncing.slice(0, 20),
         // The working set and its bound. `openCap` x agents must stay under the relay's
