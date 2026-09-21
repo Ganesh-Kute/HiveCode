@@ -68,6 +68,17 @@ export const GONE = 'GONE'
 export const PAUSED = 'PAUSED'
 /** Declared passive: this process does not take turns. Silence is correct, not a fault. */
 export const PASSIVE = 'PASSIVE'
+/**
+ * A human, present. Every state below is about whether an AGENT will act again without being
+ * prompted, which is not a question you can ask about a person.
+ *
+ * Antigravity1 called this in the P11 design review -- "kind === 'human' must never be
+ * classified as PARKED" -- and it was not implemented. The result was visible in the live room
+ * an hour later: `Ganesh (human) — PARKED: ... anything you send it now will sit unread until a
+ * human prompts it`, said about the human. Nonsense, and worse than nonsense, because it teaches
+ * a reader that PARKED is noise.
+ */
+export const PRESENT = 'PRESENT'
 
 /**
  * How long a present, non-waiting agent may be silent before it reads as PARKED.
@@ -98,6 +109,21 @@ export const DEFAULT_PARKED_AFTER_MS = 15 * 60 * 1000
  */
 export const MAX_PARKED_AFTER_MS = 6 * 60 * 60 * 1000
 
+/**
+ * A FLOOR, and it is not symmetry with the ceiling -- it is a correctness bound.
+ *
+ * The stamp is written when a tool call BEGINS, so the age of the record includes however long
+ * that call is still running. A window shorter than one tool call therefore reports an agent as
+ * PARKED while it is mid-call: the most active state there is, labelled unreachable.
+ *
+ * Found by the suite rather than reasoned about. tests/agent-liveness-test.mjs ran with a 2500ms
+ * window; adding a fifth client made hive_say take longer than that, and A1 went red with
+ * "PARKED: ... silent for 0 min (hive_say)" -- parked, zero minutes ago, naming the tool it was
+ * inside. Five seconds clears a real tool call with room to spare and is still short enough to
+ * exercise the state in a test.
+ */
+export const MIN_PARKED_AFTER_MS = 5000
+
 /** Rows are keyed by member name, so the map grows with distinct names, not with time. */
 const PRUNE_AFTER_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -107,7 +133,7 @@ const lc = (n) => String(n || '').toLowerCase()
 export function parkedAfterMs(env = (typeof process !== 'undefined' ? process.env : {})) {
   const raw = Number((env && env.HIVE_PARKED_AFTER_MIN) || 0)
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PARKED_AFTER_MS
-  return Math.min(raw * 60 * 1000, MAX_PARKED_AFTER_MS)
+  return Math.min(Math.max(raw * 60 * 1000, MIN_PARKED_AFTER_MS), MAX_PARKED_AFTER_MS)
 }
 
 /**
@@ -187,8 +213,12 @@ export function forget(store, name) {
  * @param {boolean} opts.paused   controls map says a human paused it
  * @param {boolean} opts.passive  declared passive at join
  */
-export function stateOf(rec, { present, paused = false, passive = false, now = Date.now(), parkedAfter = DEFAULT_PARKED_AFTER_MS } = {}) {
+export function stateOf(rec, { present, paused = false, passive = false, human = false, now = Date.now(), parkedAfter = DEFAULT_PARKED_AFTER_MS } = {}) {
   if (!present) return GONE
+  // A human is exempt from the whole taxonomy below, which asks whether an AGENT will act again
+  // unprompted. Checked before `paused` and `passive` because those describe agent mechanics too;
+  // checked after `!present` because a departed human is still departed.
+  if (human) return PRESENT
   if (passive) return PASSIVE
   if (paused) return PAUSED
   if (rec && rec.waitingSince) return WAITING
@@ -244,6 +274,9 @@ export function line(name, rec, opts = {}) {
       return `${name} — PAUSED by a human. It is obeying a stop, not stalled. Do not reassign its work.`
     case PASSIVE:
       return `${name} — PASSIVE LISTENER: does not take turns. Its silence is correct.`
+    case PRESENT:
+      return `${name} — PRESENT${age == null ? '' : `, last action ${age} min ago${tool}`}. A person; ` +
+        `reachable whenever they are at the keyboard.`
     case GONE:
       return `${name} — GONE: not connected.${age == null ? '' : ` Last action ${age} min ago${tool}.`}`
     case PARKED:

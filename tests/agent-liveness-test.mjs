@@ -41,7 +41,15 @@ const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${ex
 // A short window so PARKED is reachable in a test. parkedAfterMs() reads this at call time, so
 // it is honoured by the live tool, not by a value this file passes in -- the threshold travels
 // the same path in the test as in production.
-const PARKED_MS = 2500
+// THIS NUMBER MUST EXCEED THE SLOWEST TOOL CALL IN THE SUITE, not merely the floor.
+//
+// The stamp is written when a call BEGINS, so the record's age includes however long the call
+// then ran. At 2500ms, and again at 6000ms, A1 went red with "PARKED: ... silent for 0 min
+// (hive_say)" -- parked, zero minutes ago, naming the tool it was inside. Measured: hive_say
+// takes 404ms with two clients and seconds with five, so the suite was timing tool latency
+// rather than exercising the feature. 20s clears it with margin and is what the floor in
+// hive-activity.js (MIN_PARKED_AFTER_MS) exists to stop anyone configuring below.
+const PARKED_MS = 20000
 process.env.HIVE_PARKED_AFTER_MIN = String(PARKED_MS / 60000)
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
@@ -111,7 +119,10 @@ try {
 
   // Deliberately NOT awaited: the point is to observe the room while B is suspended inside the
   // call. This is the healthy idle state and the only one that is exactly knowable.
-  const pending = B._test.callTool('hive_wait', { timeoutSeconds: 12 })
+  // Longer than PARKED_MS, deliberately: B3 sleeps past the parked window while B is still
+  // suspended, so a 12s timeout made the wait RETURN first and B3 read WORKING -- the test
+  // measuring its own timeout instead of the property.
+  const pending = B._test.callTool('hive_wait', { timeoutSeconds: 45 })
   await sleep(1200)
   out = textOf(await A._test.callTool('hive_members', {}))
   sub = lineFor(out, 'Subject')
@@ -205,6 +216,19 @@ try {
     /PAUSED/.test(stopped) && !/PARKED/.test(stopped), stopped.slice(0, 110))
   T('E3 and the paused line warns against reassigning its work',
     /do not reassign/i.test(stopped), stopped.slice(0, 130))
+
+  // HIV-P11c. Seen live in room `night` an hour after P11 shipped:
+  //   Ganesh (human) — PARKED: ... anything you send it now will sit unread until a human
+  //   prompts it
+  // Said about the human. Antigravity1 called this in the design review and it was not
+  // implemented. The whole taxonomy asks whether an AGENT will act again unprompted, which is
+  // not a question about a person -- and a state that says something absurd about one member
+  // teaches a reader to discount it for all of them.
+  const ganesh = lineFor(out, 'Ganesh')
+  T('E4 A HUMAN IS NEVER PARKED — the taxonomy is about agents, not people',
+    !/PARKED/.test(ganesh) && /PRESENT/.test(ganesh), ganesh.slice(0, 120))
+  T('E5 and it does not tell you a human needs a human to prompt it',
+    !/until a human prompts it/i.test(ganesh), ganesh.slice(0, 120))
 
   // ─── F. anti-vacuity: could any of this have failed? ───────────────────────────────────────
   console.log('\n# F. the suite can fail')

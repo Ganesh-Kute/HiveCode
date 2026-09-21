@@ -158,6 +158,7 @@ This is refused rather than fixed for you because renaming silently is worse: if
   // here, at the moment we know whether the socket came up.
   let synced = false
   let connErr = ''
+  let refusedCode = null
   await new Promise((resolve) => {
     let done = false
     const finish = () => { if (!done) { done = true; resolve() } }
@@ -165,20 +166,34 @@ This is refused rather than fixed for you because renaming silently is worse: if
     // A refusal arrives as a failed upgrade: the relay writes an HTTP status line carrying the
     // Q-code and destroys the socket, so this event is the only place the reason is visible.
     hive.provider.on('connection-error', (ev) => {
-      const code = ev && (ev.code || ev.status || ev.type)
+      const code = RH.statusFromError(ev) || (ev && (ev.code || ev.status || ev.type))
+      if (code && typeof code === 'number') refusedCode = code
       if (!connErr) connErr = `the relay refused the connection${code ? ` (${code})` : ''}`
     })
     setTimeout(finish, 8000) // don't hang if the relay is cold
   })
   if (!synced) {
+    // HIV-P12. EVIDENCE BEFORE INFERENCE.
+    // If the relay actually refused us with an HTTP status, explainStatus() maps it to the
+    // authoritative cause (Q430 -> capacity, Q431 -> HIVE_SEATS, 401/403 -> token).
+    // Only when nothing refused us with a code do we query /health to infer whether it was capacity.
+    if (refusedCode) {
+      const explanation = RH.explainStatus(refusedCode, relay)
+      return [
+        `NOT JOINED -- the relay refused the connection (${refusedCode}): ${explanation}`,
+        `room: ${room}`,
+        `relay: ${relay}`,
+        `folder: ${ROOT}`,
+        '',
+        'DO NOT START WORK. You are not in this room. Nothing you write will reach anyone, no',
+        'claim you make binds anyone else, and the files in this folder are NOT shared. Any work',
+        'you do now is invisible to the team and can be silently overwritten later.',
+        '',
+        'Tell whoever is running the relay, then retry hive_join. Call hive_status to re-check:',
+        'it reports `connected` and `filesSynced`, and both are authoritative.',
+      ].join('\n')
+    }
     const why = connErr || 'no sync within 8s -- the relay did not answer'
-    // HIV-P13. This used to hand-write its own capacity guess, and sync.js hand-wrote a second
-    // one. Both printed the literal "<relay-http>" while holding `relay` right here, and both
-    // named only Q430/maxConnsTotal when limits.js also refuses with Q431 on a per-room cap that
-    // HIVE_MAX_CONNS_TOTAL cannot fix. They had already drifted -- this copy listed three
-    // candidate causes, the other asserted one. hive-relay-health.js is now the single producer,
-    // and it ASKS the relay instead of guessing: tests/relay-diagnosis-test.mjs counts producers
-    // so a third copy fails a test rather than shipping.
     const diag = await RH.explainNotSyncing(relay, { what: 'join' })
     return [
       `NOT JOINED -- ${why}.`,
@@ -1216,6 +1231,9 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           return ACT.line(`${m.name} (${m.kind})`, rec, {
             present: true, passive: !!m.passive,
             paused: !!(c && c.state === 'paused'),
+            // HIV-P11c. Without this the room said `Ganesh (human) — PARKED: ... anything you
+            // send it now will sit unread until a human prompts it` about the human.
+            human: String(m.kind || '').toLowerCase() === 'human',
             now, parkedAfter,
           }) + editing
         })
