@@ -119,10 +119,19 @@ If those two numbers differ, that is expected — not a fault.
 
 ### Sizing a relay for N participants
 
-Budget `HIVE_MAX_OPEN_FILES × participants` against the relay's `maxConnsTotal`, and
-remember the relay is shared with every other room on it. At defaults, five participants
-want 640 connections against 512 — so either raise the cap, set `HIVE_SEATS`, or lower
-`HIVE_MAX_OPEN_FILES`. Check headroom before you start:
+Each participant opens **one connection for the room plus one per open file**, so budget
+`participants × (1 + HIVE_MAX_OPEN_FILES)` against the relay's `maxConnsTotal`, and remember
+the relay is shared with every other room on it. At defaults, five participants want
+5 × (1 + 128) = **645 connections against 512**.
+
+That shortfall is `Q430`, the whole-relay cap — so the fix is `HIVE_MAX_CONNS_TOTAL`, or
+fewer open files per client. **`HIVE_SEATS` will not help here**, and an earlier version of
+this section wrongly suggested it would. Verified in `limits.js`: `limitsFor()` returns no
+`maxConnsTotal` at all, and the refusal at `limits.js:166` reads the module-level
+`LIMITS.maxConnsTotal`, so seats never touch the total. Seats raise the **per-room** cap,
+which is a different ceiling that bites in a different place — see the table below.
+
+Check headroom before you start:
 
 ```bash
 curl -s https://your-relay/health
@@ -135,6 +144,13 @@ the wrong one:
 |---|---|---|
 | `Q430` | whole relay at `maxConnsTotal` | raise `HIVE_MAX_CONNS_TOTAL`, or sync fewer files |
 | `Q431` | one room past its per-room cap | set `HIVE_SEATS` — raising the total will **not** help |
+
+`roomConns` is keyed on the **file**-room (`baseRoom + FILE_SEP + relPath`), so a room's
+per-room count is *how many participants have that one file open*, not how many files the
+folder has. Five participants sharing a file is 5 against a free-tier 8. `Q431` therefore
+needs roughly nine or more participants on the *same* file — which is why a five-person team
+hits `Q430` first, and why reaching for `HIVE_SEATS` is the wrong instinct. Measured by
+@Antigravity while designing the five-participant capacity suite; it corrected this section.
 
 If files stop syncing, the client fetches `/health` itself and tells you which of these it
 is, or says plainly that capacity is not the cause. It will not guess.
