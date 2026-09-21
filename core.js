@@ -2,20 +2,20 @@
 // in test.js. Keeping these here (instead of copy-pasted) means a fix in one
 // place fixes everywhere, and the tests exercise the REAL code.
 
-// Minimal text diff: replace only the changed middle, preserving the common
-// prefix/suffix. Applied to a Y.Text so edits stay small (good for CRDT churn).
-export function applyDiff(ytext, next) {
-  const cur = ytext.toString()
-  if (cur === next) return false
-  let p = 0
-  while (p < cur.length && p < next.length && cur[p] === next[p]) p++
-  let s = 0
-  while (s < cur.length - p && s < next.length - p && cur[cur.length - 1 - s] === next[next.length - 1 - s]) s++
-  if (cur.length - p - s > 0) ytext.delete(p, cur.length - p - s)
-  const ins = next.slice(p, next.length - s)
-  if (ins) ytext.insert(p, ins)
-  return true
-}
+import reconcilePkg from './reconcile.cjs'
+
+export const {
+  applyDiff,
+  hasConflictMarkers,
+  stripConflictMarkers,
+  merge3,
+  summarizeChange,
+  changedRange,
+  symbolsIn,
+  icrMerge3,
+  createReconciler,
+  reconcile
+} = reconcilePkg
 
 // Optimistic concurrency: is a write based on `expected` still safe to apply?
 // Returns the new version on success, or { stale, current } if the region moved.
@@ -89,135 +89,3 @@ export function mergeEdit(base, mine, current) {
   return { conflict: true } // same lines changed two ways -> re-reason on `current`
 }
 
-// Detect REAL git-style conflict markers in a file. Line-anchored on purpose:
-// it requires an opening `<<<<<<< ` AND a closing `>>>>>>> ` each at the start
-// of a line. This is what merge3 emits. A naive `text.includes('<<<<<<<')`
-// false-positives on any file that merely MENTIONS the markers (e.g. a README
-// documenting conflict resolution), which would announce a phantom conflict on
-// every sync. (Found by a live two-agent test, 2026-06-19.)
-export function hasConflictMarkers(text) {
-  return /^<<<<<<< /m.test(text || '') && /^>>>>>>> /m.test(text || '')
-}
-
-// Strip and de-nest conflict markers to prevent exponential 2^N code ballooning
-export function stripConflictMarkers(text, prefer = 'local') {
-  if (!text || !hasConflictMarkers(text)) return text || ''
-  const lines = text.split('\n')
-  const out = []
-  let inConflict = false
-  let inTheirs = false
-  const localBlock = []
-  const theirsBlock = []
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (/^<<<<<<< /.test(line)) {
-      inConflict = true
-      inTheirs = false
-      localBlock.length = 0
-      theirsBlock.length = 0
-      continue
-    }
-    if (/^=======$/.test(line) && inConflict) {
-      inTheirs = true
-      continue
-    }
-    if (/^>>>>>>> /.test(line) && inConflict) {
-      inConflict = false
-      out.push(...(prefer === 'theirs' ? theirsBlock : localBlock))
-      continue
-    }
-    if (inConflict) {
-      if (inTheirs) theirsBlock.push(line)
-      else localBlock.push(line)
-    } else {
-      out.push(line)
-    }
-  }
-  return out.join('\n')
-}
-
-// --- 3-way merge for the SYNC layer (disk <-> shared doc) ---
-// Same idea as mergeEdit, but instead of bailing with { conflict } it always
-// returns text: disjoint edits merge cleanly; overlapping edits are wrapped in
-// git-style conflict markers so BOTH versions survive and a human/AI resolves.
-// De-nests existing conflict blocks to prevent exponential duplication.
-//   merge3(base, mine, theirs) -> { text, conflict }
-export function merge3(base, mine, theirs) {
-  if (mine === theirs) return { text: mine, conflict: false }
-  if (base === theirs) return { text: mine, conflict: false }  // only I changed
-  if (base === mine) return { text: theirs, conflict: false }  // only they changed
-
-  // De-nest stale conflict markers so conflict blocks never wrap exponentially
-  const cleanBase = hasConflictMarkers(base) ? stripConflictMarkers(base, 'local') : (base || '')
-  const cleanMine = hasConflictMarkers(mine) ? stripConflictMarkers(mine, 'local') : (mine || '')
-  const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, 'theirs') : (theirs || '')
-
-  if (cleanMine === cleanTheirs) return { text: cleanMine, conflict: false }
-  if (cleanBase === cleanTheirs) return { text: cleanMine, conflict: false }
-  if (cleanBase === cleanMine) return { text: cleanTheirs, conflict: false }
-
-  const b = cleanBase.split('\n')
-  const mr = changedRange(b, cleanMine.split('\n'))
-  const tr = changedRange(b, cleanTheirs.split('\n'))
-  if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
-    const out = b.slice()
-    for (const e of [mr, tr].sort((x, y) => y.startBase - x.startBase)) {
-      out.splice(e.startBase, e.endBase - e.startBase, ...e.newLines)
-    }
-    return { text: out.join('\n'), conflict: false }
-  }
-  // Overlap: reconstruct each side's lines over the union region [start,end).
-  const start = Math.min(mr.startBase, tr.startBase)
-  const end = Math.max(mr.endBase, tr.endBase)
-  const mineBlock = [...b.slice(start, mr.startBase), ...mr.newLines, ...b.slice(mr.endBase, end)]
-  const theirsBlock = [...b.slice(start, tr.startBase), ...tr.newLines, ...b.slice(tr.endBase, end)]
-  const out = [
-    ...b.slice(0, start),
-    '<<<<<<< local (yours)',
-    ...mineBlock,
-    '=======',
-    ...theirsBlock,
-    '>>>>>>> incoming (theirs)',
-    ...b.slice(end),
-  ]
-  return { text: out.join('\n'), conflict: true }
-}
-
-// --- Rewrite detection for the auto-board ---
-// Classify a change as a small PATCH (grep-and-edit, the common case) vs a
-// wholesale REWRITE, and pull out the symbol names the new version defines in
-// the changed region. The sync layer uses this to AUTO-record what an agent did
-// on a rewrite — so other agents learn of it even when the agent forgets to say.
-//   summarizeChange(base, next) -> { isRewrite, changedLines, totalLines, symbols }
-export function summarizeChange(base, next) {
-  const b = (base || '').split('\n')
-  const n = (next || '').split('\n')
-  if (!base) return { isRewrite: false, changedLines: n.length, totalLines: n.length, symbols: symbolsIn(next || '') }
-  const r = changedRange(b, n)
-  const churn = Math.max(r.endBase - r.startBase, r.newLines.length) // lines replaced or added
-  const total = Math.max(b.length, n.length)
-  // a rewrite = at least half the file churned (and more than a couple of lines)
-  const isRewrite = total > 0 && churn >= 4 && churn / total >= 0.5
-  return { isRewrite, changedLines: churn, totalLines: total, symbols: symbolsIn(r.newLines.join('\n')) }
-}
-
-// Best-effort "what was defined here" across common languages — for the board.
-function symbolsIn(text) {
-  const names = new Set()
-  const add = (re) => { let m; while ((m = re.exec(text)) && names.size < 8) names.add(m[1]) }
-  add(/\bfunction\s+(\w+)/g)        // function foo
-  add(/\bclass\s+(\w+)/g)           // class Foo
-  add(/\bdef\s+(\w+)/g)             // def foo (python)
-  add(/\b(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=/g) // const foo =
-  return [...names].slice(0, 8)
-}
-
-// Which base line-range an edit replaced, and the replacement lines.
-export function changedRange(base, other) {
-  let p = 0
-  while (p < base.length && p < other.length && base[p] === other[p]) p++
-  let s = 0
-  while (s < base.length - p && s < other.length - p && base[base.length - 1 - s] === other[other.length - 1 - s]) s++
-  return { startBase: p, endBase: base.length - s, newLines: other.slice(p, other.length - s) }
-}
