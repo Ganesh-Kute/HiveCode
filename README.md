@@ -206,13 +206,13 @@ marks a debt owed by one as `[UNREACHABLE]` rather than pending.
   `scripts/check-drift.mjs` reports it.
 - **Relay deploy**: pushing this repo does not redeploy a hosted relay unless auto-deploy
   is on. Check `/health` uptime against your last deploy.
-- **Dead-heat file creation is silent** (HIV-P17, open). If two participants create the
-  *same* path in the same instant, neither has it in its manifest yet, so both publish and
-  the union arrives through the ordinary merge — which announces nothing. Both authors keep
-  their work (`tests/blind-recreate-test.mjs` E1/E2/E4 measure this), but neither is told the
-  file now contains a stranger's code. Harmless for two disjoint functions; the same shape as
-  the defect below when it is two whole-file rewrites of one module. Announced correctly
-  whenever one side is even slightly slower.
+- **Dead-heat file creation** (HIV-P17, fixed in `929323b`). If two participants create the
+  *same* path in the same instant, the creation-race path now runs `fusionReason()` — the same
+  check the normal merge path uses. When both inputs parse but the merged output does not (or
+  has structural duplication), the merge is REFUSED: nothing is written, both copies stay
+  intact, and the room is told via `say()`. Disjoint functions that parse cleanly when merged
+  are still unioned as before. Non-code files (no language support) are unaffected.
+  `tests/genesis-collision-test.mjs` pins the fix (6/6).
 
 ---
 
@@ -287,6 +287,7 @@ node tests/ceiling-no-data-loss-test.mjs  # a full relay must not cost you your 
 node tests/first-contact-refusal-test.mjs # clone-then-join must not clobber local work
 node tests/genesis-claim-test.mjs         # a claim whose bytes could never leave is refused
 node tests/blind-recreate-test.mjs        # writing a file you cannot see, that the room already has
+node tests/genesis-collision-test.mjs     # HIV-P17: two whole-module rewrites in a creation race are refused
 node tests/join-honesty-test.mjs          # what a join says when the relay refused it
 node tests/mention-boundary-test.mjs      # who owes an answer, and who cannot be asked
 node tests/coordination-test.mjs          # claims, leases, flow-around under contention

@@ -1753,6 +1753,33 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // which is worse than failing -- it reads as corruption to whoever opens it.
         const nl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
         const r0 = icrMerge3('', nl(disk), nl(docText), relPath)
+        // HIV-P17: SILENT COLLISION DETECTION on genesis-publish creation race.
+        // The normal merge path (below, ~line 1880) runs fusionReason() to catch merges
+        // that broke valid code or duplicated structure. This creation-race path skipped
+        // that check entirely — a dead-heat race could silently fuse two whole-file
+        // rewrites of the same module and nobody was told. Now we run the same check:
+        // if both inputs parsed but the merged result does not, or if the merge duplicated
+        // structure, refuse it — keep both sides intact and announce loudly.
+        if (!r0.conflict) {
+          const why = fusionReason(r0.text, nl(disk), nl(docText), supports(relPath) ? languageFor(relPath) : null)
+          if (why) {
+            conflicted.add(relPath)
+            // Do NOT write the fused result to doc or disk. The doc already holds docText
+            // (the room's copy) and disk holds the local draft — both are intact. Setting
+            // bases to docText means the next normal edit will merge against the room's copy,
+            // which is the same recovery path the normal-merge refusal uses.
+            bases.set(relPath, docText); forkBases.set(relPath, docText); shadow.set(relPath, docText)
+            if (!manifest.has(relPath)) manifest.set(relPath, 1)
+            if (icrWarned.get(relPath) !== why) {
+              icrWarned.set(relPath, why)
+              log(`[${name}] !! HIV-P17 REFUSED a fused creation-race merge of ${relPath}: ${why}`)
+              try {
+                say(`[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+              } catch { /* the log still carries it */ }
+            }
+            return
+          }
+        }
         if (r0.text !== docText) fe.doc.transact(() => applyDiff(yt, r0.text))
         if (r0.text !== disk) writeToDisk(relPath, r0.text)
         if (r0.conflict) conflicted.add(relPath)
