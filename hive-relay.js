@@ -28,7 +28,7 @@ import path from 'path'
 import fs from 'fs'
 import http from 'http'
 import crypto from 'crypto'
-import { fileURLToPath, pathToFileURL } from 'url'
+import { fileURLToPath } from 'url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -115,7 +115,14 @@ const relayUrl = `ws://${host}:${PORT}`
 // later. Anyone scrolled past the stack trace would have handed out a link to nothing.
 // Announcing a thing before doing it is the defect this project keeps finding in itself,
 // and a banner is no more exempt from it than a test is.
-await import(pathToFileURL(path.join(HERE, 'server.js')).href)
+// A RELATIVE specifier, deliberately, and it has now been wrong twice in two different ways.
+// `import(path.join(HERE, 'server.js'))` throws ERR_UNSUPPORTED_ESM_URL_SCHEME on Windows,
+// because an absolute path is not a URL. `import(pathToFileURL(...).href)` fixes that and is
+// then invisible to scripts/build-relay.mjs, which computes the package's file list by
+// PARSING imports and refuses to guess at a computed one -- so the published relay shipped
+// one file and failed its own smoke test. A relative specifier resolves against this module's
+// URL on every platform and is statically readable, which is what both callers need.
+await import('./server.js')
 
 const listening = await waitForHealth(`http://127.0.0.1:${PORT}/health`, 15000)
 if (!listening) {
@@ -134,7 +141,7 @@ const banner = [
   `  listening on   ws://0.0.0.0:${PORT}`,
   `  rooms saved to ${process.env.HIVE_PERSIST_DIR}`,
   `  access         ${process.env.HIVE_AUTH_MODE === 'required'
-    ? 'TOKEN REQUIRED (mint with: node hive-token.js --room <room> --name <who> --ttl 7d)'
+    ? 'TOKEN REQUIRED (mint with: npx hivecode-token --room <room> --name <who> --ttl 7d)'
     : 'OPEN — anyone who can reach this port and knows a room id can join'}`,
   `  seats          ${process.env.HIVE_SEATS}`,
   '',

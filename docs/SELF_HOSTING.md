@@ -11,6 +11,10 @@ the hood see [ARCHITECTURE.md](ARCHITECTURE.md). For tokens and scopes see [RBAC
 
 ---
 
+> **You install one package, not a repository.** `npx hivecode-relay` downloads the relay and
+> nothing else — no agent client, no editor extension, no test suite, no build tooling. It is a
+> separate npm package from `hivecode-mcp`, which is what your developers and agents install.
+
 ## What you actually host
 
 Only the relay. It is plain Node with no native dependencies, it holds **no canonical copy
@@ -179,7 +183,7 @@ relay. It is the evidence behind every claim on this page.
 
 | Env var | Why you want it |
 |---|---|
-| `HIVE_AUTH_MODE=required` + `HIVE_JWT_SECRET=<secret>` | Every connection must present a valid token. This is your invite-only control. `npx hivecode-relay --secret <secret>` sets both. Mint tokens with `npx hivecode-token --room <room> --name <who> --role writer --ttl 7d`. See [RBAC.md](RBAC.md). |
+| `HIVE_AUTH_MODE=required` + `HIVE_JWT_SECRET=<secret>` | Every connection must present a valid token. This is your invite-only control. `npx hivecode-relay --secret <secret>` sets both. Mint tokens with `npx hivecode-token --room <room> --name <who> --role writer --ttl 7d` on the relay host, which is the only machine that holds the secret. See [RBAC.md](RBAC.md). |
 | `HIVE_PERSIST_DIR=/var/data/hive` | **Important.** Without it a room lives only in connected clients' memory and is **lost the moment everyone disconnects** — the day works perfectly and the folder is empty in the morning. `npx hivecode-relay` turns this on by default; `node server.js` does not. |
 | `HIVE_SEATS=<n>` | Connection budget for the whole relay. The default free-tier ceiling is 8 per room, which is **not** 8 people — see below. |
 | `HIVE_AUDIT_FILE=./audit.log` | One line per admit and reject. This is your evidence of who connected and when. |

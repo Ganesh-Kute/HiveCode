@@ -79,7 +79,14 @@ function walk(rel) {
     }
   }
 }
-walk('server.js')
+// THE ENTRY IS hive-relay.js, NOT server.js, and the difference is the whole point of the
+// package. `node server.js` starts a relay with persistence OFF and says nothing about which
+// relay anyone is on. hive-relay.js sets the defaults a team needs, waits for /health before
+// claiming to be listening, and prints the exact settings each teammate pastes -- including
+// HIVE_RELAY_PIN, without which one stale link puts a teammate back on the public relay.
+// server.js comes along automatically because hive-relay.js imports it, which is the property
+// this walk exists to guarantee.
+walk('hive-relay.js')
 
 // Node builtins are imported without the `node:` prefix all over this codebase, and treating one
 // as an npm package would put `fs` in the dependency list.
@@ -108,6 +115,15 @@ for (const d of [...bare].sort()) {
 // homepage and the demo videos are deliberately left out: nobody self-hosting a relay wants to
 // download 20 MB of mp4 to run a WebSocket server.
 const ASSETS = ['control.html', 'map.html', 'app.js', 'hive-crdt.js', 'favicon-32.png']
+
+// TOOLS NOTHING IMPORTS, THAT THE OPERATOR IS TOLD TO RUN. The closure walk finds everything
+// the relay needs to SERVE, and by construction misses anything nobody imports -- which is
+// exactly what a CLI is. hive-token.js is the one that matters: the relay's own banner and
+// docs/SELF_HOSTING.md both tell an operator to mint tokens with it, and the first build from
+// hive-relay.js shipped without it. Minting belongs on the relay host anyway, because that is
+// the only machine that holds HIVE_JWT_SECRET.
+const TOOLS = ['hive-token.js']
+for (const t of TOOLS) walk(t)
 
 fs.rmSync(OUT, { recursive: true, force: true })
 fs.mkdirSync(path.join(OUT, 'public'), { recursive: true })
@@ -138,7 +154,7 @@ const pkg = {
   version: process.env.RELAY_VERSION || '0.1.0',
   description: 'Self-hostable Hivecode relay — the server that refuses a write when someone else holds the file.',
   type: 'module',
-  bin: { 'hivecode-relay': 'server.js' },
+  bin: { 'hivecode-relay': 'hive-relay.js', 'hivecode-token': 'hive-token.js' },
   main: 'server.js',
   scripts: { start: 'node server.js' },
   engines: { node: '>=18' },

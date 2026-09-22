@@ -235,11 +235,32 @@ sec('F  the suite is measuring something')
   // server.js is what hive-relay.js starts. If it ever stops being shipped, `npx
   // hivecode-relay` becomes a command that cannot run, which is the defect the whole
   // self-host story died of last time: a document naming a file the package omits.
+  // THE RELAY IS ITS OWN PACKAGE, and the client must not ship it.
+  //
+  // The first version of this asserted server.js was in hivecode-mcp's files[] -- which made
+  // `npx hivecode-relay` work, and also handed every client install the relay, the metering,
+  // the licence check and the remote-MCP endpoint. A team that wants to run a relay should
+  // get a relay; a developer installing the agent client should not receive the server side
+  // of the product as a side effect. scripts/build-relay.mjs already existed for exactly
+  // this and derives the package from server.js's import closure, so there is still only one
+  // copy of every source file.
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
-  T('F4 package.json ships server.js, so `npx hivecode-relay` has a relay to start',
-    (pkg.files || []).includes('server.js'), (pkg.files || []).includes('server.js') ? '' : 'server.js NOT in files[]')
-  T('F5 package.json exposes the hivecode-relay bin',
-    !!(pkg.bin && pkg.bin['hivecode-relay']), JSON.stringify(pkg.bin || {}))
+  const relayFiles = ['server.js', 'remote-mcp.js', 'usage-meter.js', 'license-check.js', 'governor.js']
+  const leaked = relayFiles.filter((f) => (pkg.files || []).includes(f))
+  T('F4 the CLIENT package does not ship the relay', leaked.length === 0, leaked.join(', '))
+  T('F5 ... and does not claim the hivecode-relay bin, which belongs to the relay package',
+    !(pkg.bin && pkg.bin['hivecode-relay']), JSON.stringify(pkg.bin || {}))
+
+  const builder = fs.readFileSync(path.join(ROOT, 'scripts', 'build-relay.mjs'), 'utf8')
+  T('F6 the relay package is built from hive-relay.js, so `npx hivecode-relay` gets the banner',
+    /walk\('hive-relay\.js'\)/.test(builder))
+  T('F7 ... and declares that as its bin',
+    /'hivecode-relay':\s*'hive-relay\.js'/.test(builder))
+  // The banner and the guide both tell an operator to mint tokens. Nothing imports that CLI,
+  // so the closure walk cannot find it -- the first build from hive-relay.js left it out while
+  // still instructing people to run it. A tool named in output must be a tool that ships.
+  T('F8 the token CLI the banner names is staged and exposed',
+    /TOOLS = \[[^\]]*'hive-token\.js'/.test(builder) && /'hivecode-token':\s*'hive-token\.js'/.test(builder))
 }
 
 // --------------------------------------- G: the guide is an API surface with a test now
@@ -267,10 +288,19 @@ sec('G  docs/SELF_HOSTING.md promises only things that exist')
   T('G3 every HIVE_* var the guide names is actually read by the code', unread.length === 0, unread.join(', '))
   T('G4 ... and there were vars to check (anti-vacuity)', vars.length >= 6, `${vars.length}: ${vars.join(', ')}`)
 
-  // Every npx command it tells people to run must be a bin this package declares.
+  // Every npx command it tells people to run must be a bin SOMETHING declares. Two packages
+  // now: hivecode-mcp (the client) and hivecode-relay (built by scripts/build-relay.mjs).
+  // A command belonging to neither is the class this whole section exists for -- the guide
+  // telling a team to run something that does not exist.
+  const builderSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'build-relay.mjs'), 'utf8')
+  const declared = new Set([
+    ...Object.keys(pkg.bin || {}),
+    ...[...builderSrc.matchAll(/'(hivecode-[a-z]+)':\s*'[^']+'/g)].map((m) => m[1]),
+  ])
   const cmds = [...new Set([...DOC.matchAll(/npx (?:-y )?(hivecode-[a-z]+)/g)].map((m) => m[1]))]
-  const missingBins = cmds.filter((c) => !(pkg.bin && pkg.bin[c]))
-  T('G5 every `npx hivecode-*` command in the guide is a declared bin', missingBins.length === 0, missingBins.join(', '))
+  const missingBins = cmds.filter((c) => !declared.has(c))
+  T('G5 every `npx hivecode-*` command in the guide is a bin one of the packages declares',
+    missingBins.length === 0, `${missingBins.join(', ')} | declared: ${[...declared].join(', ')}`)
   T('G6 ... and there were commands to check (anti-vacuity)', cmds.length >= 2, cmds.join(', '))
 
   // The verdict strings it quotes must be the ones the code actually emits. A guide that

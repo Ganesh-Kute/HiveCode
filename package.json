@@ -24,9 +24,7 @@
   ],
   "bin": {
     "hivecode-mcp": "hive-mcp.js",
-    "hivecode-hook": "hive-hook-install.js",
-    "hivecode-relay": "hive-relay.js",
-    "hivecode-token": "hive-token.js"
+    "hivecode-hook": "hive-hook-install.js"
   },
   "files": [
     "hive-mcp.js",
@@ -40,14 +38,6 @@
     "hive-activity.js",
     "hive-relay-health.js",
     "hive-privacy.js",
-    "hive-relay.js",
-    "hive-token.js",
-    "server.js",
-    "remote-mcp.js",
-    "license-check.js",
-    "usage-meter.js",
-    "governor.js",
-    "shared/license.js",
     "docs/SELF_HOSTING.md",
     "reconcile.cjs",
     "hive-busy.js",
