@@ -30,8 +30,10 @@ export function mentionsName(text, me) {
   if (!text || !me) return false
   if (mentionsAll(text)) return true // @all reaches everyone by definition
   const escaped = String(me).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Trailing boundary: end of string, or anything that cannot continue a name.
-  return new RegExp(`@${escaped}(?![\\w-])`, 'i').test(String(text))
+  // Both boundaries, and the same ones the extractor uses. If these two ever disagree, a message
+  // can be extracted as addressing someone who does not match it, or match someone it was never
+  // extracted for -- which is how a mailbox and a transcript come to tell different stories.
+  return new RegExp(`${MENTION_START}@${escaped}${MENTION_END}`, 'i').test(String(text))
 }
 
 /**
@@ -47,12 +49,161 @@ export function mentionsName(text, me) {
  * that is the exact failure this room already had once.
  */
 export function mentionsAll(text) {
-  return /@all(?![\w-])/i.test(String(text || ''))
+  // CODE SPANS ARE STRIPPED FIRST, AND ONLY HERE. Every other false mention is handled by the
+  // boundary rules below plus `obligationTargets`, which refuses to open a debt against somebody
+  // who is not in the room. `@all` is the one case neither can save: it is not a member, so the
+  // membership gate does not apply to it, and it wakes EVERYONE. So writing `@all` inside
+  // backticks -- which is how anybody documents this feature -- paged the entire room, every time.
+  //
+  // This is deliberately NOT a Markdown parser. Nested spans, unclosed fences and indented blocks
+  // are all out of scope, because the question is not "what is code here" but the much smaller
+  // "is this one token wrapped in backticks". A tokenizer would be the wrong tool and a permanent
+  // source of edge cases; one replace is the whole fix.
+  return /@all(?![\w-])/i.test(stripCodeSpans(text))
 }
+
+/** Inline code spans blanked out, so a token quoted as code is not read as an address. */
+const stripCodeSpans = (text) => String(text || '').replace(/`[^`]*`/g, ' ')
+
+/**
+ * WHERE A MENTION MAY BEGIN, AND WHERE IT MAY NOT.
+ *
+ * Measured in room `night` on 20 Sep 2026, against the old bare /@([\w-]+)/g:
+ *
+ *   "email me at ganesh@gmail.com"      -> ["gmail"]                 every email address
+ *   "blame line: author@example.org"    -> ["example"]               every commit trailer
+ *   "npm i @modelcontextprotocol/sdk"   -> ["modelcontextprotocol"]  every scoped package
+ *   "see `@all` in the docs"            -> broadcast to everyone     every doc about this feature
+ *
+ * After three hours the obligation ledger held 44 entries of which 32% were debts against members
+ * who had never existed, and a debt can only be discharged by the asker, so nothing in the system
+ * could ever have closed them. The ledger is what catches an agent going silent; it was becoming
+ * unreadable through ordinary use.
+ *
+ * LEADING: start of string, whitespace, an opening bracket, a quote, a dash, or a colon. Quotes
+ * are INCLUDED on purpose. A quoted example ("the parser reads "@antigravity"") is then extracted
+ * for the transcript and creates no debt, because `obligationTargets` gates on membership. The
+ * opposite choice would silently drop a real mention that opens a quoted sentence, and a dropped
+ * mention is the worse failure: the sender believes it was delivered.
+ *
+ * TRAILING: not a word character, a hyphen, or a SLASH. The slash is what distinguishes
+ * `@scope/package` from `@person`. It is written as one lookahead rather than a separate check so
+ * the regex cannot backtrack into a shorter name to satisfy it -- `[\w-]+` followed by `(?!\/)`
+ * alone would happily match "modelcontextprotoco" and declare victory.
+ */
+const MENTION_START = '(?:^|[\\s(\\[{<"\'—–:])'
+const MENTION_END = '(?![\\w\\-/])'
 
 /** Everyone addressed in a message, so a broadcast can be told from a direct call. */
 export function mentionedNames(text) {
-  return [...new Set([...String(text || '').matchAll(/@([\w-]+)/g)].map((m) => m[1]))]
+  const re = new RegExp(`${MENTION_START}@([\\w-]+)${MENTION_END}`, 'g')
+  return [...new Set([...String(text || '').matchAll(re)].map((m) => m[1]))]
+}
+
+/**
+ * WHO ACTUALLY OWES AN ANSWER — which is not the same question as who was named.
+ *
+ * Extraction and obligation were one decision and they are two. A transcript should show what the
+ * text said, including a name that is merely quoted; a DEBT is a claim about the present, and
+ * opening one against somebody who is not here produces an entry nobody can ever discharge, since
+ * only the asker may close it and the debtor does not exist.
+ *
+ * The distinction that makes this safe is which way time points. Resolving a HISTORICAL mention
+ * against who is present now would be the Historical Transcript Fallacy -- the past decided by the
+ * present -- and that is why extraction deliberately does NOT do it. An obligation is not history:
+ * it is live state about who owes me an answer right now, so checking present membership is
+ * exactly the right question for it.
+ *
+ * @param {string} text
+ * @param {{ me?: string, present?: Iterable<string> }} ctx  `present` is lowercased names
+ */
+export function obligationTargets(text, { me = '', present = [] } = {}) {
+  const here = new Set([...present].map((n) => String(n).toLowerCase()))
+  const self = String(me).toLowerCase()
+  return mentionedNames(text).filter((n) => {
+    const low = n.toLowerCase()
+    // @all wakes the room and obliges nobody -- one broadcast owing eight replies is how a
+    // coordination channel becomes a spam channel. Unchanged from the original behaviour.
+    if (low === 'all' || low === self) return false
+    return here.has(low)
+  })
+}
+
+/**
+ * A NAME THAT CANNOT BE ADDRESSED IS NOT A NAME. Refuse it at the door.
+ *
+ * On 20 Sep 2026 an agent joined room `night` as "antigravity 1". `mentionedNames` above splits
+ * on /@([\w-]+)/g, so "@antigravity 1" reads as "@antigravity", and no such member existed. Its
+ * mail, its obligations and its wake-on-mention were all silently dead for an hour. It saw
+ * messages only because it happened to be tailing the chat log. Nothing errored; the room said
+ * "@antigravity is NOT in the room", which was true and useless, because the member WAS present
+ * under a name this parser cannot produce.
+ *
+ * WHY REFUSE RATHER THAN NORMALISE. Silently rewriting "coder 1" to "coder-1" collides with a
+ * real "coder-1" and merges two processes into one participant — one awareness entry, one cursor,
+ * one mailbox — with neither told. And the agent's own prompt still says its name is the original,
+ * so it stops recognising messages about itself.
+ *
+ * WHY REFUSE RATHER THAN RESOLVE @mentions AGAINST THE MEMBER LIST. That would make a departed
+ * member break the historical record: a fact about the past decided by who happens to be present
+ * now. Same defect as the receipts work in HIV-P2.
+ *
+ * WHY THIS CHARSET AND NOT A NICER ONE. It is not taste, it is arithmetic. The extractor above
+ * only recognises [\w-]. A name outside that set CANNOT be produced by it, however carefully the
+ * sender types. Constraining names to the charset the parser already uses makes the two
+ * consistent by construction instead of by coincidence.
+ *
+ * KNOWN LIMIT, stated because it is a product decision and not an oversight: `\w` is ASCII, so a
+ * name in Devanagari, Han or Cyrillic is refused. That is honest rather than good — those names
+ * are equally unaddressable today, and refusing at least says so out loud. Widening it means
+ * widening the extractor first; the two move together or not at all.
+ *
+ * @param {any} name
+ * @returns {{ ok: boolean, error?: string, suggested?: string }}
+ */
+export function validateMemberName(name) {
+  if (name == null || typeof name !== 'string' || name.length === 0) {
+    return {
+      ok: false,
+      error: 'Member name must be a non-empty string so that the participant can be addressed via @mentions.',
+      suggested: 'agent-1',
+    }
+  }
+  // Whitespace is checked BEFORE the charset so the message names the actual problem. "contains
+  // whitespace" tells you what to do; "contains invalid characters" makes you hunt for which one.
+  if (/\s/.test(name)) {
+    return {
+      ok: false,
+      error: `Member name "${name}" contains whitespace. Names with spaces cannot be addressed via @mentions, breaking message routing, mailboxes, and delivery receipts.`,
+      suggested: suggestMemberName(name),
+    }
+  }
+  if (!/^[\w-]+$/.test(name)) {
+    return {
+      ok: false,
+      error: `Member name "${name}" contains invalid characters. Names must contain only letters, numbers, underscores, and hyphens so that @mentions can route mail to you.`,
+      suggested: suggestMemberName(name),
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * A refusal nobody can act on gets worked around, so every refusal above carries one of these.
+ *
+ * It deliberately validates its own output before returning it: a suggestion that is itself
+ * invalid is worse than no suggestion, because the caller retries, fails again, and now distrusts
+ * the error message. Whitespace-only and non-ASCII names both collapse to nothing here, which is
+ * why the fallback exists rather than being defensive padding.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function suggestMemberName(name) {
+  if (!name || typeof name !== 'string') return 'agent-1'
+  let s = name.replace(/[\s]+/g, '-').replace(/[^\w-]+/g, '-')
+  s = s.replace(/-+/g, '-').replace(/^[-_]+|[-_]+$/g, '')
+  return /^[\w-]+$/.test(s) ? s : 'agent-1'
 }
 
 /**

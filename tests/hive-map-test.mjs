@@ -152,7 +152,12 @@ section('map.html — the loading rules that made /control deaf')
   // Comments are stripped first. The first version of this assertion failed against a COMMENT that
   // explained why Math.random is not used -- a test that reads prose as code, which is exactly the
   // silent-failure shape these checks exist to catch.
-  const code = html.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n')
+  // CR IS STRIPPED FIRST, and that is not cosmetic. `.` does not match \r, so on a CRLF
+  // checkout `^\s*//.*$` never matches a whole line, NO comment is ever removed, and the
+  // assertion below then read the comment EXPLAINING why Math.random is not used -- failing for
+  // precisely the reason that comment describes. Second time this test has read prose as code.
+  const code = html.replace(/\r/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n')
   T('layout seeding is deterministic, not random', /function seedPos/.test(code) && !/Math\.random\(\)/.test(code))
 
   const bundle = path.join(root, 'public', 'hive-crdt.js')
@@ -208,8 +213,32 @@ section('edge kinds: needs vs then')
   // A step in a process and a dependency are different claims about the world. Drawn the same way
   // a workflow renders as a dependency web and reads as neither.
   T('the renderer tells a flow edge from a dependency', /const flow = e\.ekind === 'then'/.test(html))
-  T('flow edges are drawn differently', /flow \?[\s\S]{0,90}rgba\(120,200,255/.test(html))
+  // Asserted as a PROPERTY, not as a literal colour. It used to pin the exact rgba() of the flow
+  // edge, so recolouring edges by group — a deliberate change — failed a test whose real subject
+  // (a step must not look like a dependency) was still perfectly true. A test that breaks when the
+  // implementation changes but the guarantee does not is a test that gets deleted in a hurry.
+  // The optional `(` matters: the alphas are now scaled by a hop-distance factor, so the
+  // expression reads `${(0.22 + 0.30 * depth) * hd}`. That is a change to HOW the number is
+  // computed, not to the guarantee being tested -- a reader pinned to the old spelling would
+  // fail on a correct implementation, which is the failure this block already warns about.
+  const flowAlpha = html.match(/flow \? `rgba\(\$\{c\[0\]\},\$\{c\[1\]\},\$\{c\[2\]\},\$\{\(?([\d.]+) \+ ([\d.]+)/)
+  const depAlpha = html.match(/: `rgba\(\$\{c\[0\]\},\$\{c\[1\]\},\$\{c\[2\]\},\$\{\(?([\d.]+) \+ ([\d.]+)/)
+  T('a flow edge is drawn more strongly than a dependency',
+    !!flowAlpha && !!depAlpha && Number(flowAlpha[1]) > Number(depAlpha[1]))
+  T('a dependency edge is quiet enough that 100+ of them do not bury the nodes',
+    !!depAlpha && Number(depAlpha[1]) + Number(depAlpha[2]) < 0.35)
   T('flow edges animate, so direction is readable without tracing', /lineDashOffset = -\(Date\.now\(\)/.test(html))
+}
+
+
+// ---------------------------------------------------------------------------
+section('clear')
+{
+  const g = fresh()
+  run(g, 'add', ['a']); run(g, 'add', ['b']); run(g, 'link', ['a', 'b'])
+  T('clear without confirmation is refused', run(g, 'clear').code === 'Q473')
+  T('the map survives a refused clear', readGraph(g).nodes.length === 2)
+  T('clear yes wipes nodes and edges', run(g, 'clear', ['yes']).ok && readGraph(g).nodes.length === 0 && readGraph(g).edges.length === 0)
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)

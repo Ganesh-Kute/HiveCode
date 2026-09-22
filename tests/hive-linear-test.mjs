@@ -1,0 +1,311 @@
+// hive-linear end to end: Linear issues become real room tasks, exactly once.
+//
+//   node tests/hive-linear-test.mjs
+//
+// Linear is faked -- a local MCP server that speaks the same Streamable HTTP, answers SSE (which
+// is what a hosted server actually does and what a naive client gets wrong), and records every
+// call. What is REAL is the relay, the CRDT, the agents and the task board.
+//
+// The claim that matters is not "we can read Linear". It is that polling a ticket system, over
+// and over, from a bridge that may restart, produces each piece of work ONCE. A duplicate ticket
+// on the board means two agents doing the same job overnight and finding out in the morning.
+
+import fs from 'fs'
+import os from 'os'
+import http from 'http'
+import path from 'path'
+import { spawn } from 'child_process'
+import { fileURLToPath } from 'url'
+import { startSync } from '../sync.js'
+import { mcpClient, makeBridge, pickIssues, taskTextOf, chooseAssignee, unwrap, statusOf, idOf } from '../hive-linear.js'
+
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+const PORT = 1287, LINEAR_PORT = 1288
+const ROOM = 'linear-test-' + process.pid
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+let pass = 0, fail = 0
+const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
+
+// ---- pure: the filter and the mapping ------------------------------------------------------
+console.log('\n# what becomes work')
+{
+  // THE REAL SHAPE, copied from a live mcp.linear.app response: `id` is the human identifier,
+  // `uuid` is the database id, and the status is a flat string with a separate statusType. The
+  // first version of this fixture invented `identifier` and `state.name`, so the suite went green
+  // against code that matched nothing in a real workspace.
+  const issues = [
+    { id: 'ENG-1', uuid: 'u-1', title: 'fix the parser', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' },
+    { id: 'ENG-2', uuid: 'u-2', title: 'redesign the logo', labels: [{ name: 'design' }], status: 'Todo', statusType: 'unstarted' },
+    { id: 'ENG-3', uuid: 'u-3', title: 'already shipped', labels: [{ name: 'hivecode' }], status: 'Done', statusType: 'completed' },
+    { id: 'ENG-4', uuid: 'u-4', title: 'in flight', labels: [{ name: 'hivecode' }], status: 'In Progress', statusType: 'started' },
+  ]
+  T('status is read from the flat field the server actually sends', statusOf(issues[0]) === 'Todo')
+  T('the stable key is the uuid, not the human identifier', idOf(issues[0]) === 'u-1')
+  // A team that renames "Todo" to "Up Next" must not silently get zero work.
+  T('a renamed column still matches on status TYPE',
+    pickIssues([{ id: 'X-1', uuid: 'u-x', labels: [{ name: 'hivecode' }], status: 'Up Next', statusType: 'unstarted' }]).length === 1)
+  T('the old nested shape still works if Linear ever sends it',
+    pickIssues([{ id: 'Y-1', uuid: 'u-y', labels: [{ name: 'hivecode' }], state: { name: 'Todo' } }], { states: ['Todo'] }).length === 1)
+  const picked = pickIssues(issues)
+  T('only labelled issues are taken', !picked.some((i) => i.identifier === 'ENG-2'))
+  T('a finished issue is not re-opened as work', !picked.some((i) => i.identifier === 'ENG-3'))
+  T('Todo and In Progress both qualify', picked.length === 2, picked.map((i) => i.identifier).join(','))
+  T('a malformed issue is dropped, not crashed on', pickIssues([null, {}, { id: 'x' }]).length === 0)
+
+  T('the ticket id leads the task text', /^ENG-1:/.test(taskTextOf(issues[0])))
+  T('a long description is trimmed, not pasted whole',
+    taskTextOf({ id: 'E', title: 't', description: 'x'.repeat(900) }).length < 260)
+
+  // Spread, so one agent does not silently take the whole backlog.
+  const counts = { A: 3, B: 0 }
+  T('work goes to the least loaded agent',
+    chooseAssignee({ id: '1' }, { agents: ['A', 'B'], openCount: (n) => counts[n] }) === 'B')
+  T('an explicit identity map wins over load',
+    chooseAssignee({ assignee: { email: 'g@x.com' } }, { agents: ['A', 'B'], identity: { 'g@x.com': 'A' }, openCount: (n) => counts[n] }) === 'A')
+  T('with nobody in the room it assigns to nobody', chooseAssignee({ id: '1' }, { agents: [] }) === null)
+
+  T('a prose answer does not become a fake issue list', unwrap({ content: [{ type: 'text', text: 'sorry, no' }] }) === null)
+}
+
+// ---- end to end ----------------------------------------------------------------------------
+console.log('\n# fake Linear -> real room')
+let relay = null, linearSrv = null
+const clients = []
+const calls = []
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-linear-t-'))
+
+// The fake speaks SSE and demands its session id back, exactly like a hosted server.
+let ISSUES = [
+  { id: 'ENG-1', uuid: 'u-i1', title: 'fix the parser', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' },
+  { id: 'ENG-2', uuid: 'u-i2', title: 'ship the docs', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' },
+  { id: 'ENG-3', uuid: 'u-i3', title: 'not ours', labels: [{ name: 'design' }], status: 'Todo', statusType: 'unstarted' },
+]
+let badSession = false
+let paginateLinearSrv = false
+linearSrv = http.createServer((req, res) => {
+  let body = ''
+  req.on('data', (d) => { body += d })
+  req.on('end', () => {
+    const msg = JSON.parse(body || '{}')
+    calls.push({ method: msg.method, name: (msg.params || {}).name, args: (msg.params || {}).arguments, session: req.headers['mcp-session-id'] })
+    let result = {}
+    if (msg.method === 'initialize') result = { protocolVersion: '2025-06-18', serverInfo: { name: 'linear-fake' } }
+    else if (msg.method === 'tools/list') result = { tools: [{ name: 'list_issues' }, { name: 'save_comment' }] }
+    else if ((msg.params || {}).name === 'list_issues') {
+      if (!req.headers['mcp-session-id']) badSession = true
+      const args = (msg.params || {}).arguments || {}
+      if (paginateLinearSrv) {
+        if (!args.cursor) {
+          result = { content: [{ type: 'text', text: JSON.stringify({
+            issues: [
+              { id: 'MULTI-1', uuid: 'u-m1', title: 'multi 1', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' },
+              { id: 'MULTI-2', uuid: 'u-m2', title: 'multi 2 (design)', labels: [{ name: 'design' }], status: 'Todo', statusType: 'unstarted' },
+            ],
+            hasNextPage: true,
+            cursor: 'page-2'
+          }) }] }
+        } else if (args.cursor === 'page-2') {
+          result = { content: [{ type: 'text', text: JSON.stringify({
+            issues: [
+              { id: 'MULTI-3', uuid: 'u-m3', title: 'multi 3', labels: [{ name: 'hivecode' }], status: 'In Progress', statusType: 'started' }
+            ],
+            hasNextPage: false,
+            cursor: null
+          }) }] }
+        } else {
+          result = { content: [{ type: 'text', text: JSON.stringify({ issues: [], hasNextPage: false }) }] }
+        }
+      } else {
+        result = { content: [{ type: 'text', text: JSON.stringify({ issues: ISSUES }) }] }
+      }
+    } else if ((msg.params || {}).name === 'save_comment') result = { content: [{ type: 'text', text: '{"ok":true}' }] }
+    else if (/^create_(comment|issue)$/.test((msg.params || {}).name || '')) {
+      // The real server has NO create_* write tools -- it uses save_* upsert naming. The fake
+      // refuses them so the adapter can never quietly go back to a name that does not exist.
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Mcp-Session-Id': 'sess-123' })
+      res.end(`event: message
+data: ${JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: 'unknown tool' } })}
+
+`)
+      return
+    }
+    const payload = JSON.stringify({ jsonrpc: '2.0', id: msg.id, result })
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Mcp-Session-Id': 'sess-123' })
+    res.end(`event: message\ndata: ${payload}\n\n`)
+  })
+})
+await new Promise((r) => linearSrv.listen(LINEAR_PORT, '127.0.0.1', r))
+
+try {
+  relay = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off' } })
+  relay.stderr.on('data', () => {})
+  await new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('relay did not start')), 15000)
+    relay.stdout.on('data', (d) => { if (/listening on/.test(String(d))) { clearTimeout(t); res() } })
+  })
+
+  const mk = (name, kind) => startSync({
+    relay: `ws://127.0.0.1:${PORT}`, room: ROOM, dir: fs.mkdtempSync(path.join(tmp, name)),
+    name, kind, syncFiles: false, log: () => {},
+  })
+  const board = mk('Linear', 'human'); clients.push(board)
+  const A = mk('AgentA', 'ai'); clients.push(A)
+  const B = mk('AgentB', 'ai'); clients.push(B)
+  await sleep(2500)
+
+  const linear = mcpClient({ url: `http://127.0.0.1:${LINEAR_PORT}/mcp`, token: 'lin_test' })
+  const info = await linear.init()
+  T('the client can talk to an SSE-only MCP server', info.serverInfo.name === 'linear-fake')
+  T('it kept the session id the server handed back', linear.sessionId() === 'sess-123')
+
+  const bridge = makeBridge({ hive: board, linear, room: ROOM, assignAs: 'Linear' })
+  const first = await bridge.pull()
+  await sleep(1200)
+  T('only the labelled issues became work', first.created.length === 2, JSON.stringify(first.created.map((c) => c.issue)))
+  T('the unlabelled one was left in Linear', !first.created.some((c) => c.issue === 'ENG-3'))
+  T('later calls carried the session id', !badSession)
+
+  const taskList = () => [...board.doc.getMap('tasks').values()]
+  T('the tasks are on the real board', taskList().length === 2, taskList().map((t) => t.text).join(' | '))
+  T('the ticket id travels with the task', taskList().every((t) => /^ENG-\d/.test(t.text)))
+  T('the work was split, not dumped on one agent',
+    new Set(taskList().map((t) => t.to)).size === 2, taskList().map((t) => `${t.to}`).join(','))
+  T('AgentA can see its own task from its own client',
+    A.myTasks().length === 1, JSON.stringify(A.myTasks().map((t) => t.text)))
+
+  // THE ONE THAT MATTERS: poll again, and again, with a NEW bridge object in between.
+  const second = await bridge.pull()
+  const fresh = makeBridge({ hive: board, linear, room: ROOM, assignAs: 'Linear' })   // as if the process restarted
+  const third = await fresh.pull()
+  await sleep(1200)
+  T('a second poll creates nothing', second.created.length === 0)
+  T('a RESTARTED bridge creates nothing either', third.created.length === 0, JSON.stringify(third.created))
+  T('the board still holds exactly two tasks', taskList().length === 2, `${taskList().length}`)
+
+  // A new ticket appears in Linear while everything is running.
+  ISSUES = ISSUES.concat([{ id: 'ENG-9', uuid: 'u-i4', title: 'new overnight ticket', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' }])
+  const fourth = await bridge.pull()
+  await sleep(1200)
+  T('a newly filed ticket is picked up', fourth.created.length === 1 && fourth.created[0].issue === 'ENG-9')
+  T('and the old ones were still not duplicated', taskList().length === 3)
+
+  // Write-back: finishing in the room comments on the ticket. It must NOT close it.
+  const mine = A.myTasks()[0]
+  bridge.watch()
+  A.complete(mine.id, 'gate passed')
+  await sleep(1500)
+  const comment = calls.filter((c) => c.name === 'save_comment').pop()
+  T('finishing the work comments on the ticket', !!comment, `${calls.filter((c) => c.name === 'save_comment').length} comment(s)`)
+  T('the comment names the agent that did it', comment && /AgentA|AgentB/.test(comment.args.body), comment && comment.args.body)
+  T('the ticket was NOT closed by us', !calls.some((c) => /update_issue|close/.test(String(c.name))))
+
+  // A silent zero is this integration's worst failure: a misspelled label and a genuinely empty
+  // backlog look identical. The pull must say WHICH, and name what it actually saw.
+  const nolabel = makeBridge({ hive: board, linear, room: ROOM, label: 'typo-label', assignAs: 'Linear' })
+  const empty = await nolabel.pull()
+  T('a zero result explains itself', empty.created.length === 0 && /none matched/.test(empty.why || ''), empty.why)
+  T('and it names the labels that DO exist', /hivecode/.test(empty.why || ''), empty.why)
+  // Caught by reading the output, not by an assertion: hive.room does not exist, so this posted
+  // "in room `undefined`" onto a real ticket. Nothing we write into somebody else's system may
+  // contain the word undefined.
+  T('the comment names the real room', comment && comment.args.body.includes(ROOM), comment && comment.args.body)
+  T('nothing undefined was posted to the ticket', comment && !/undefined/.test(comment.args.body))
+
+  // HIV-14: multi-page pagination and team filter against the live fake Linear server
+  paginateLinearSrv = true
+  const multiBridge = makeBridge({ hive: board, linear, room: ROOM, team: 'Eng', assignAs: 'Linear' })
+  const multiRes = await multiBridge.pull()
+  await sleep(1200)
+
+  const multiCalls = calls.filter((c) => c.name === 'list_issues').slice(-2)
+  T('follows cursor across multiple pages until exhausted', multiCalls.length === 2)
+  T('first call has no cursor and second call carries nextCursor',
+    multiCalls[0].args.cursor === undefined && multiCalls[1].args.cursor === 'page-2')
+  T('passes server-side team filter to all page calls',
+    multiCalls.every((c) => c.args.team === 'Eng'))
+  T('collects all eligible issues across multiple pages',
+    multiRes.considered === 3 && multiRes.eligible === 2, `considered=${multiRes.considered}, eligible=${multiRes.eligible}`)
+  T('creates tasks on the room board from later pages',
+    taskList().some((t) => /^MULTI-3/.test(t.text)))
+
+  // Page cap stops pagination
+  let infiniteCount = 0
+  const infiniteLinear = {
+    call: async (name, args) => {
+      infiniteCount++
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            issues: [{ id: `INF-${infiniteCount}`, uuid: `u-inf-${infiniteCount}`, title: 'inf', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' }],
+            hasNextPage: true,
+            cursor: `cur-${infiniteCount}`,
+          })
+        }]
+      }
+    }
+  }
+  const capBridge = makeBridge({ hive: board, linear: infiniteLinear, room: ROOM, maxPages: 3, assignAs: 'Linear' })
+  const capRes = await capBridge.pull()
+  T('respects sane page cap and does not loop forever', infiniteCount === 3)
+  T('issues up to page cap are collected', capRes.considered === 3)
+
+  // Multi-page diagnosis when nothing matches
+  const mismatchBridge = makeBridge({ hive: board, linear, room: ROOM, label: 'nonexistent-label', assignAs: 'Linear' })
+  const diagRes = await mismatchBridge.pull()
+  T('multi-page diagnosis reports total issues and seen statuses/labels',
+    diagRes.eligible === 0 && diagRes.why.includes('3 issue(s) seen, none matched label "nonexistent-label"') &&
+    diagRes.why.includes('Todo') && diagRes.why.includes('hivecode, design'),
+    diagRes.why)
+
+  // A page that FAILED must not read as a page that was EMPTY (HIV-14 follow-up).
+  //
+  // Linear answers a bad or expired cursor with {error,message,status,requestId} rather than
+  // throwing -- confirmed against the live API, not assumed. unwrap() hands that object back,
+  // payload.issues is undefined, pageIssues comes out [], and the loop breaks on "no more
+  // pages". pull() then reported whatever it had collected as the ENTIRE backlog, with why:''.
+  //
+  // Pagination made this worse than the single-page read it replaced. Before, you always got
+  // exactly one page and you knew it. After, you get somewhere between one page and all of
+  // them and nothing tells you which, so a partial backlog is indistinguishable from a
+  // complete one and the board silently holds less work than the workspace does.
+  let failPage = 0
+  const failingLinear = {
+    call: async () => {
+      failPage++
+      if (failPage === 1) {
+        return { content: [{ type: 'text', text: JSON.stringify({
+          issues: [{ id: 'PART-1', uuid: 'u-part-1', title: 'p', labels: [{ name: 'hivecode' }], status: 'Todo', statusType: 'unstarted' }],
+          hasNextPage: true, cursor: 'CUR-2',
+        }) }] }
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'invalid_cursor', message: 'cursor expired', status: 400, requestId: 'r1' }) }] }
+    },
+  }
+  const failBridge = makeBridge({ hive: board, linear: failingLinear, room: ROOM, assignAs: 'Linear' })
+  const failRes = await failBridge.pull()
+  T('a page that errors mid-pagination is reported, not swallowed', failRes.truncated === true, String(failRes.why))
+  T('the truncation names its Q-code and how much was read', /Q443/.test(failRes.why) && /1 ticket/.test(failRes.why), String(failRes.why))
+  T('tickets read BEFORE the failure are still delivered, not discarded', failRes.considered === 1)
+
+  // Stopping at the page cap is deliberate, but it is still a partial answer and must say so.
+  T('stopping at the page cap is also reported as incomplete',
+    capRes.truncated === true && /Q443/.test(capRes.why), String(capRes.why))
+
+  // ...and the false-positive direction, which is what makes the signal worth anything: a
+  // COMPLETE read must never claim truncation, or everyone learns to ignore the flag.
+  T('a complete multi-page read is NOT flagged as truncated',
+    multiRes.truncated === false && !/Q443/.test(String(multiRes.why || '')), String(multiRes.why))
+
+} catch (e) {
+  T('end to end ran', false, e.message)
+} finally {
+  for (const c of clients) { try { c.stop() } catch { /* going away */ } }
+  try { relay && relay.kill() } catch { /* already gone */ }
+  await new Promise((r) => linearSrv.close(r))
+  try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* best effort */ }
+}
+
+console.log(`\n${pass}/${pass + fail} passed`)
+process.exit(fail ? 1 : 0)

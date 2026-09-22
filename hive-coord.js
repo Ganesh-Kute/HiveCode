@@ -63,9 +63,20 @@ export function makeCoordinator(shared, self, opts = {}) {
   }
   const release = (region) => { const c = shared.get(region); if (c && c.by === self) shared.delete(region) }
 
-  // ACQUIRE one region: sense → claim → verify. Returns true iff I now hold it.
-  // The verify step is the collision-detector: if a concurrent writer won the region,
-  // I see their id on re-read and concede.
+  // ACQUIRE one region: sense → claim → verify. Returns true iff I now hold it *as far as this
+  // replica can tell*, which is a weaker statement than it looks and the caller must know it.
+  //
+  // THE VERIFY IS LOCAL, AND THAT IS ITS LIMIT. `claim()` writes into this replica's copy of the
+  // map and the re-read below sees that write immediately -- before it has reached the relay or
+  // any peer. So the check catches only a claim that had ALREADY propagated when I wrote. Fire
+  // three agents at one region in the same tick and all three are told yes; the CRDT then
+  // converges to a single winner a moment later, by which time all three have started editing.
+  // Measured 5/5 trials, three agents, every one of them granted.
+  //
+  // That is not a bug in this function -- a synchronous call cannot wait for a network -- but a
+  // lock that says yes to three callers is not a lock, so anything that is about to WRITE must
+  // use `claimSettled()` in sync.js, which re-reads the holder after the claim has round-tripped
+  // through the relay. This stays as the optimistic fast path for sensing and for flow.
   const acquire = (region, intent) => {
     const c = shared.get(region)
     if (c && !expired(c) && c.by !== self) return false // sensed an owner → defer

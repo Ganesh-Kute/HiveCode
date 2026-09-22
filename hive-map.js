@@ -16,6 +16,7 @@
 //   node hive-map.js "<link>" <YourName> note  <id> "<text>"
 //   node hive-map.js "<link>" <YourName> rm    <id>
 //   node hive-map.js "<link>" <YourName> unlink <from> <to>
+//   node hive-map.js "<link>" <YourName> clear yes
 //   node hive-map.js "<link>" <YourName> list
 //
 // STATES, and they mean exactly this:
@@ -91,6 +92,11 @@ export function applyCommand(graph, name, action, pos, flags) {
       label: flags.label || prev.label || id,
       kind: flags.kind || prev.kind || 'component',
       state,
+      // GROUP is what a reader uses to see structure; KIND is what a thing is. They are different
+      // questions and collapsing them is why a 90-node map reads as one undifferentiated cloud:
+      // `kind` says "service", which every second node also is, so it separates nothing. `group`
+      // says which subsystem this belongs to, which is the only cut that makes the shape visible.
+      group: flags.group || prev.group || '',
       file: flags.file || prev.file || '',
       note: flags.note || prev.note || '',
       ...stamp,
@@ -154,6 +160,17 @@ export function applyCommand(graph, name, action, pos, flags) {
     if (!graph.has(edgeKey(from, to))) return { ok: false, code: 'Q468', msg: `no edge ${from} -> ${to}` }
     graph.delete(edgeKey(from, to))
     return { ok: true, msg: `unlinked ${from} -> ${to}` }
+  }
+
+  if (action === 'clear') {
+    // Starting over is a real move, so it gets a real command rather than 23 rm calls -- but it is
+    // also the only destructive one here, so it will not fire by accident.
+    if (pos[0] !== 'yes') return { ok: false, code: 'Q473', msg: 'clear wipes the whole map; run: clear yes' }
+    const keys = []
+    graph.forEach((_v, k) => keys.push(k))
+    let n = 0
+    for (const k of keys) if (isNodeKey(k) || isEdgeKey(k)) { graph.delete(k); n++ }
+    return { ok: true, msg: `cleared ${n} entries` }
   }
 
   if (action === 'list') {

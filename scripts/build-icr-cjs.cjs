@@ -62,7 +62,12 @@ ${eng}
 module.exports = ICR
 `
 
-const dest = path.join(ROOT, 'extension', 'icr.cjs')
+// An optional output path, so a TEST can generate into a temp file and compare without mutating
+// the repo. The header of this file says "Re-run this whenever a source changes", and that
+// sentence is a human instruction, not a mechanism -- it was followed for the last time before
+// 28 Aug 2026, and by 19 Sep the shipped bundle was 373 lines behind its own sources, inside a
+// published extension. tests/extension-parity-test.mjs now checks it on every run.
+const dest = process.argv[2] ? path.resolve(process.argv[2]) : path.join(ROOT, 'extension', 'icr.cjs')
 fs.writeFileSync(dest, out)
 
 // FAIL THE BUILD IF THE BUNDLE DOES NOT LOAD. Writing a syntactically broken bundle used to

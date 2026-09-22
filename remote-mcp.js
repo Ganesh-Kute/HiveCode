@@ -1,3 +1,4 @@
+import fs from 'fs';
 import http from 'http';
 import { spawn } from 'child_process';
 import crypto from 'crypto';
@@ -6,6 +7,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { VERSION } from "./hive-version.js";
 const HIVE_MCP_SCRIPT = path.join(__dirname, 'hive-mcp.js');
 const HIVE_AGENT_SCRIPT = path.join(__dirname, 'hive-agent.js');
 
@@ -384,7 +386,7 @@ export function handleMcpRequest(req, res, { port }) {
               },
               serverInfo: {
                 name: 'hivecode-mcp',
-                version: '0.11.5',
+                version: VERSION,
               },
             },
           })

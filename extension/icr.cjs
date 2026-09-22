@@ -683,6 +683,10 @@ function scannerAt(src, strings) {
 
 const isWS = (c) => c === ' ' || c === '\t' || c === '\r' || c === '\n'
 
+// Tokens that CONTINUE a declaration onto the next line and can never begin a new top-level
+// one. Used by topUnits to avoid cutting a declaration in half at a newline.
+const CONT = /^(?:__attribute__|__asm__|__asm|__declspec|noexcept|throw\s*\(|->)/
+
 // Extract top-level units [{start,end}] from src[from..to]. A unit is a maximal
 // declaration/statement at bracket depth 0: either a block (signature + balanced
 // {…}) or a statement ending at ';' or end-of-line.
@@ -704,7 +708,36 @@ function topUnits(src, strings, from = 0, to = src.length) {
       if (CLOSE[c]) { depth--; i++; if (depth <= 0 && sawBrace) { while (i < to && (src[i] === ' ' || src[i] === '\t')) i++; if (src[i] === ';') i++; break } continue }
       if (depth === 0) {
         if (c === ';') { i++; break }
-        if (c === '\n' && !sawBrace) break
+        if (c === '\n' && !sawBrace) {
+          // K&R / Allman / kernel style: the body's opening brace sits on the NEXT line, so
+          // this newline is INSIDE a declaration, not the end of one. Breaking here split
+          // every such function into two units — `stmt:<signature>` and `stmt:{` — with
+          // POSITIONAL keys, so any insertion elsewhere shifted the indices and re-paired
+          // body #N with signature #N+1. That silently produced code whose function bodies
+          // belonged to other functions, while braces stayed balanced so the parse gate
+          // passed. Measured at ~34% of real C merges before this fix.
+          // Look ahead past whitespace and comments: if a block follows, it belongs to us.
+          let k = i + 1
+          for (;;) {
+            while (k < to && isWS(src[k])) k++
+            const s2 = at(k)
+            if (s2 > k && (src[k] === '/' || src[k] === '#')) { k = s2; continue } // comment
+            break
+          }
+          if (k < to && src[k] === '{') { i++; continue } // keep scanning; the block joins this unit
+          // A declaration can also continue onto the next line WITHOUT a brace, e.g.
+          //     void addReplyErrorFormat(client *c, const char *fmt, ...)
+          //         __attribute__((format(printf, 2, 3)));
+          // Splitting there produced an orphan `__attribute__…;` unit whose text is IDENTICAL
+          // across many prototypes in a header, so the keys became positional (#2, #3, …) and
+          // shifted exactly like the signature/body case — orphaning attributes onto the wrong
+          // prototypes. Only tokens that can never BEGIN a new top-level declaration are listed
+          // here: `const`/`override`/`final` are deliberately excluded because in TS/Rust they
+          // legitimately start the next statement (the C++ uses of those end in `{`, which the
+          // brace lookahead above already handles).
+          if (k < to && CONT.test(src.slice(k, k + 16))) { i++; continue }
+          break
+        }
       }
       i++
     }
@@ -719,15 +752,33 @@ const VARD = /\b(const|let|var|val|static|final)\s+([A-Za-z_$][\w$]*)/
 // void main(String[] a)`, `std::string name()`): optional decorators + any number of
 // modifiers + an optional return-type token, then NAME(args){. The captured name is
 // the identifier directly before `(`.
-const METH = /^(?:@[\w.()]+\s+)*(?:(?:public|private|protected|internal|static|async|final|override|open|pub|suspend|inline|virtual|export|default|abstract|sealed|unsafe|extern|synchronized|native|constexpr)\s+)*(?:(?:function|fn|func|fun)\s+)?(?:[A-Za-z_$][\w$<>\[\].,:&*\s]*?\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^;{]*\)\s*(?:->[^{]+|:[^={]+)?\s*\{/
+// The return-type group ends with `[\s*&]+` rather than `\s+` so a pointer return type whose
+// star is attached to the NAME still parses: `struct sk_buff *alloc_skb(int n)` must key as
+// `alloc_skb`, not fall through to DECL and key as the return type `sk_buff`.
+// The `Class::` group makes C++ out-of-line member definitions keyable — `int Widget::render(…)`
+// keys as `render`. Without it every C++ method definition fell through to an unkeyed `stmt:`.
+const METH = /^(?:@[\w.()]+\s+)*(?:(?:public|private|protected|internal|static|async|final|override|open|pub|suspend|inline|virtual|export|default|abstract|sealed|unsafe|extern|synchronized|native|constexpr)\s+)*(?:(?:function|fn|func|fun)\s+)?(?:[A-Za-z_$][\w$<>\[\].,:&*\s]*?[\s*&]+)?(?:[A-Za-z_$][\w$]*\s*::\s*)*([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^;{]*\)(?:\s*(?:const|noexcept|override|final|volatile|mutable|&&?|throw\s*\([^){]*\)))*\s*(?:->[^{]+|:[^={]+)?\s*\{/
 // control-flow headers also look like `name (…) {` — never key them as methods
 const CTRL = new Set(['if', 'for', 'while', 'switch', 'catch', 'do', 'else', 'try', 'return', 'new', 'throw', 'match', 'select', 'when', 'until', 'lock', 'using', 'foreach', 'with'])
 
 function keyOf(text) {
   const head = text.replace(/^\s+/, '')
-  let m = head.match(DECL); if (m) return m[1] + ':' + m[2]
-  m = head.match(METH); if (m && !CTRL.has(m[1])) return 'method:' + m[1]
-  m = head.match(VARD); if (m) return 'var:' + m[2]
+  // DECL and METH can both match one declaration, and which is RIGHT depends on whether they
+  // agree on the name:
+  //   `function a() {`              -> both say "a"        -> keep DECL's richer `function:a`
+  //   `struct sk_buff *alloc_skb(`  -> DECL says "sk_buff",
+  //                                    METH says "alloc_skb" -> DECL matched the RETURN TYPE,
+  //                                    so METH wins and the key names the function.
+  // Preferring DECL unconditionally (the original order) meant every pointer-returning C
+  // function was keyed by its return type, feeding the rename/dangling logic wrong names.
+  const meth = head.match(METH)
+  const decl = head.match(DECL)
+  if (meth && !CTRL.has(meth[1])) {
+    if (decl && decl[2] === meth[1]) return decl[1] + ':' + decl[2]
+    return 'method:' + meth[1]
+  }
+  if (decl) return decl[1] + ':' + decl[2]
+  const m = head.match(VARD); if (m) return 'var:' + m[2]
   return 'stmt:' + head.split('\n')[0].trim().replace(/\s+/g, ' ')
 }
 
@@ -782,16 +833,30 @@ function isRefToken(src, t) {
 function balanced(src, strings) {
   const at = scannerAt(src, strings)
   const stack = []
+  let cpp = 0            // #if/#ifdef/#ifndef nesting depth
+  let lineStart = true   // only whitespace seen so far on this line
   let i = 0
   while (i < src.length) {
     const s = at(i)
-    if (s > i) { if (s > src.length) return false; i = s; continue }
+    if (s > i) { if (s > src.length) return false; i = s; lineStart = false; continue }
     const c = src[i]
     if (OPEN[c]) stack.push(c)
     else if (CLOSE[c]) { if (stack.pop() !== CLOSE[c]) return false }
+    // PREPROCESSOR NESTING. Brace balance alone cannot see a dropped `#endif`: the merged
+    // text stays perfectly brace-balanced while the conditional structure is broken, so the
+    // gate passed and invalid C shipped as clean. Directives are matched only at the start
+    // of a line, so `#[derive]`, `#region` and `#` inside strings/comments are unaffected
+    // (strings and comments are skipped by the scanner above).
+    else if (c === '#' && lineStart) {
+      const rest = src.slice(i + 1, i + 12).replace(/^\s+/, '')
+      if (/^(ifdef|ifndef|if)\b/.test(rest)) cpp++
+      else if (/^endif\b/.test(rest)) { cpp--; if (cpp < 0) return false }
+    }
+    if (c === '\n') lineStart = true
+    else if (c !== ' ' && c !== '\t' && c !== '\r') lineStart = false
     i++
   }
-  return stack.length === 0
+  return stack.length === 0 && cpp === 0
 }
 
 function makeBraceLanguage({ id, exts, strings = ['"', "'", '`'] }) {
@@ -1161,6 +1226,224 @@ function isRefToken(src, t) {
   return !(p >= 0 && src[p] === '.')
 }
 
+// --- scope-aware reference analysis ---------------------------------------------
+//
+// WHY THIS IS EXACT AND NOT ANOTHER HEURISTIC. Python binds by assignment: a name
+// assigned anywhere in a function body is local to that function for the WHOLE body, and
+// reading it before the assignment is an UnboundLocalError rather than a global read. So
+// a function that assigns `helper` cannot also be referring to a module-level `helper` —
+// the language forbids the mixed case. That is what makes subtracting local bindings safe
+// here, where a plain "does this name appear anywhere" check has to stay over-cautious.
+//
+// WHAT IT FIXES. usedIdentifiers reports every name it sees, so deleting a top-level
+// `helper` while some unrelated function happens to have a local named `helper` was
+// reported as ref:helper — a merge refused that was perfectly safe, falling back to line
+// merge with conflict markers. Common names (config, data, result, helper) trip this
+// constantly. Reproduced in test/scope-repro.mjs before this existed.
+//
+// THE DIRECTION THAT MATTERS. Missing a REAL reference would let ICR delete something
+// still in use — the one failure this library promises never to have — so every rule
+// below fails towards "still referenced":
+//   • module scope subtracts nothing, so top-level rebinding never hides a reference;
+//   • a nested def is its own scope, never folded into its parent's bindings;
+//   • a class body contributes no bindings at all (its names are attributes, invisible
+//     to methods), so they stay free;
+//   • `global`/`nonlocal` remove a name from the local set;
+//   • subscript and attribute targets (`a[i] = `, `a.b = `) bind nothing — `a` must
+//     already exist, so it stays a reference;
+//   • anything unrecognised is left free.
+const PY_KW = new Set(['False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await',
+  'break', 'class', 'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for',
+  'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal', 'not', 'or', 'pass',
+  'raise', 'return', 'try', 'while', 'with', 'yield'])
+
+const isName = (k) => /^[A-Za-z_]\w*$/.test(k) && !PY_KW.has(k)
+const OPEN = new Set(['(', '[', '{'])
+const CLOSE = new Set([')', ']', '}'])
+
+// A target position binds only a bare name. `a[i] = x` and `a.b = x` require `a` to exist
+// already, so they are reads, not bindings.
+function bareTargets(toks, from, to, out) {
+  for (let i = from; i < to; i++) {
+    const t = toks[i]
+    if (!isName(t.k)) continue
+    const prev = toks[i - 1] && toks[i - 1].k
+    const next = toks[i + 1] && toks[i + 1].k
+    if (prev === '.' || next === '.' || next === '[' || next === '(') continue
+    out.add(t.k)
+  }
+}
+
+// Names this statement binds in its own scope, and names it explicitly disowns.
+function stmtBindings(text) {
+  const bind = new Set(), disown = new Set()
+  const toks = lexTokens(text).filter((t) => t.k.trim() !== '')
+  const kw = toks.length ? toks[0].k : ''
+
+  if (kw === 'global' || kw === 'nonlocal') {
+    for (const t of toks.slice(1)) if (isName(t.k)) disown.add(t.k)
+    return { bind, disown }
+  }
+
+  if (kw === 'import' || kw === 'from') {
+    // `import a.b as c` binds c; `import a.b` binds a; `from m import x, y as z`.
+    const start = kw === 'from' ? toks.findIndex((t) => t.k === 'import') : 0
+    if (start >= 0) {
+      for (let i = start + 1; i < toks.length; i++) {
+        if (toks[i].k === 'as' && isName((toks[i + 1] || {}).k)) { bind.add(toks[i + 1].k); i++; continue }
+        // first segment of a dotted path, and only when not renamed by a later `as`
+        if (isName(toks[i].k) && (toks[i - 1] || {}).k !== '.' &&
+            (toks[i + 1] || {}).k !== '.' && (toks[i + 1] || {}).k !== 'as') bind.add(toks[i].k)
+        else if (isName(toks[i].k) && (toks[i + 1] || {}).k === '.' && kw === 'import') bind.add(toks[i].k)
+      }
+    }
+    return { bind, disown }
+  }
+
+  let depth = 0
+  for (let i = 0; i < toks.length; i++) {
+    const k = toks[i].k
+    if (OPEN.has(k)) { depth++; continue }
+    if (CLOSE.has(k)) { depth--; continue }
+
+    // `for <targets> in` — at any depth, so comprehensions bind too.
+    if (k === 'for') {
+      let j = i + 1
+      while (j < toks.length && toks[j].k !== 'in') j++
+      bareTargets(toks, i + 1, j, bind)
+      i = j
+      continue
+    }
+    // `with x as name`, `except E as name`
+    if (k === 'as' && isName((toks[i + 1] || {}).k)) { bind.add(toks[i + 1].k); i++; continue }
+
+    if (k !== '=') continue
+    const prev = (toks[i - 1] || {}).k
+    const next = (toks[i + 1] || {}).k
+    if (next === '=') { i++; continue }                       // ==
+    if (prev === '=' || prev === '!' || prev === '<' || prev === '>') continue
+    if (depth > 0) {
+      // Inside brackets `=` is a keyword argument, except for the walrus `:=`.
+      if (prev === ':' && isName((toks[i - 2] || {}).k)) bind.add(toks[i - 2].k)
+      continue
+    }
+    // Statement-level assignment: simple, augmented (`+=`, prev is an operator), or
+    // annotated (`x: int = 1`). Everything left of it is the target list.
+    bareTargets(toks, 0, i, bind)
+    break
+  }
+  return { bind, disown }
+}
+
+function refsIn(text, emit) {
+  for (const t of lexTokens(text)) if (isName(t.k) && isRefToken(text, t)) emit(t.k)
+}
+
+// Parameter names of a def header — used as bindings of the CHILD scope, and excluded
+// from the header's own references so a parameter is never mistaken for a free name.
+function defParams(header) {
+  const toks = lexTokens(header).filter((t) => t.k.trim() !== '')
+  const open = toks.findIndex((t) => t.k === '(')
+  if (open < 0) return new Set()
+  const params = new Set()
+  let depth = 0
+  for (let i = open; i < toks.length; i++) {
+    const k = toks[i].k
+    if (OPEN.has(k)) { depth++; continue }
+    if (CLOSE.has(k)) { depth--; if (depth === 0) break; continue }
+    if (depth !== 1 || !isName(k)) continue
+    const prev = (toks[i - 1] || {}).k
+    if (prev === '(' || prev === ',' || prev === '*' || prev === '**') params.add(k)
+  }
+  return params
+}
+
+// Split a def/class unit into the part evaluated in the ENCLOSING scope (decorators and
+// the header line — where default values and base classes live) and the body, which is
+// its own scope.
+function splitDeclUnit(text) {
+  const L = lines(text)
+  let h = 0
+  while (h < L.length && (L[h].blank || /^\s*@/.test(L[h].text))) h++
+  if (h >= L.length) return null
+  const head = L[h]
+  const isDef = HEAD.test(head.text), isCls = CLS.test(head.text)
+  if (!isDef && !isCls) return null
+  // A signature can span lines while its brackets are open.
+  let e = h
+  let depth = 0
+  do {
+    for (const ch of L[e].text) { if (OPEN.has(ch)) depth++; else if (CLOSE.has(ch)) depth-- }
+    e++
+  } while (e < L.length && depth > 0)
+  const header = text.slice(0, L[e - 1].end)
+  let b = e
+  while (b < L.length && L[b].blank) b++
+  const body = b < L.length ? text.slice(L[b].start) : ''
+  return { isDef, header, body, bodyIndent: b < L.length ? L[b].indent : 0 }
+}
+
+// Walk one scope's statements, descending through compound bodies (same scope) but
+// stopping at def/class (new scope).
+function scopeParts(code, base, onStmt, onDecl) {
+  for (const u of blocks(code, base)) {
+    const text = code.slice(u.start, u.end)
+    if (splitDeclUnit(text)) { onDecl(text); continue }
+    const L = lines(text)
+    let b = 1
+    while (b < L.length && L[b].blank) b++
+    if (b < L.length && L[b].indent > base) {
+      onStmt(text.slice(0, L[b].start))                    // the `if ...:` / `for ...:` head
+      scopeParts(text.slice(L[b].start), L[b].indent, onStmt, onDecl)
+    } else onStmt(text)
+  }
+}
+
+// `subtract` is false at module scope: a module-level rebinding must never hide a
+// reference to the declaration being deleted.
+function scopeFree(code, base, enclosing, free, subtract) {
+  const stmts = [], decls = []
+  scopeParts(code, base, (t) => stmts.push(t), (t) => decls.push(t))
+
+  const local = new Set(), disowned = new Set()
+  for (const t of stmts) {
+    const { bind, disown } = stmtBindings(t)
+    for (const n of bind) local.add(n)
+    for (const n of disown) disowned.add(n)
+  }
+  for (const t of decls) {
+    const s = splitDeclUnit(t)
+    const m = s && (s.header.match(HEAD) || s.header.match(CLS))
+    if (m) local.add(m[1])
+  }
+  for (const n of disowned) local.delete(n)
+
+  const bound = subtract ? new Set([...enclosing, ...local]) : new Set(enclosing)
+  for (const t of stmts) refsIn(t, (n) => { if (!bound.has(n)) free.add(n) })
+
+  for (const t of decls) {
+    const s = splitDeclUnit(t)
+    if (!s) continue
+    const params = s.isDef ? defParams(s.header) : new Set()
+    const declName = (s.header.match(HEAD) || s.header.match(CLS) || [])[1]
+    // Decorators, annotations and default values run in THIS scope.
+    refsIn(s.header, (n) => {
+      if (n === declName || params.has(n) || bound.has(n)) return
+      free.add(n)
+    })
+    if (!s.body) continue
+    // A class body contributes no bindings to anything nested inside it, so its methods
+    // are analysed against the enclosing scope only. `subtract: s.isDef` is the whole of
+    // that rule and it is load-bearing: with subtraction left on for a class, `helper = 9`
+    // at class level became a binding the methods inherited, and a real `helper()` call
+    // inside a method stopped being reported — a merge shipped with a dangling reference,
+    // caught by the safety case in test/scope-repro.mjs. Class attributes are reached as
+    // `self.helper` or `C.helper`, never as a bare name, so they must never shadow.
+    scopeFree(s.body, s.bodyIndent,
+              s.isDef ? new Set([...bound, ...params]) : bound, free, s.isDef)
+  }
+}
+
 // PER-STATEMENT bracket nesting — the soundness backstop the whole-file `balanced()`
 // (global) and `indentsOk()` (indentation) both miss. A token merge can splice a result
 // that is GLOBALLY balanced yet LOCALLY mis-nested: side A reformats `f(x)` to span lines
@@ -1204,6 +1487,16 @@ const python = {
     const used = new Set()
     for (const t of lexTokens(src)) if (isRefToken(src, t)) used.add(t.k)
     return used
+  },
+  // Scope-aware upgrade of the above — the engine prefers this for the dangling-reference
+  // check (icr.js). Names that resolve to a LOCAL binding are not reported, so a deleted
+  // top-level `helper` is no longer held hostage by an unrelated local of the same name.
+  // Kept alongside usedIdentifiers rather than replacing it: the approximate version is
+  // still the honest answer for anything this cannot resolve.
+  referencedFreeNames: (src) => {
+    const free = new Set()
+    scopeFree(String(src), 0, new Set(), free, false)
+    return free
   },
   // The def/class text with its own name excluded, so renamed twins compare equal.
   // trimEnd(): a unit owns its trailing blank lines, and splicing can change how many
@@ -1579,6 +1872,34 @@ function mergeArray(base, a, b) {
   return out
 }
 
+// SYMMETRY. The merged object is re-serialized with JSON.stringify, which emits keys in
+// INSERTION order — so the order we walk the key union IS the output byte order. The
+// obvious union, `[...keys(base), ...keys(a), ...keys(b)]`, is side-ordered: ours's new
+// keys always precede theirs's, so merge(base,a,b) and merge(base,b,a) produce clean
+// 'auto' results that differ byte-for-byte. Measured at 43/167 auto merges (26%) by
+// test/icr-data-torture-test.js. Semantically identical, but P2 SYMMETRY is asserted
+// byte-wise for every other language (icr-torture-test.js), and byte-inequality is
+// precisely what a CRDT peer and a git blob hash react to — the two consumers the README
+// names. So the union order must not depend on which side is called `a`:
+//   • keys present in base keep BASE's order (unchanged behaviour, minimal diffs);
+//   • keys added by either side follow, ordered by where their own author put them
+//     (min index across the sides that have it), ties broken by key name.
+// Both rules are symmetric in a/b, so swapping the sides cannot change the output.
+function unionKeys(base, a, b) {
+  const rank = new Map()
+  for (const obj of [a, b]) {
+    const ks = Object.keys(obj)
+    for (let i = 0; i < ks.length; i++) {
+      const k = ks[i]
+      if (k in base) continue
+      const prev = rank.get(k)
+      if (prev === undefined || i < prev) rank.set(k, i)
+    }
+  }
+  const added = [...rank.keys()].sort((x, y) => (rank.get(x) - rank.get(y)) || (x < y ? -1 : x > y ? 1 : 0))
+  return [...Object.keys(base), ...added]
+}
+
 // Value-wise 3-way merge. Fills `conflicts` (path strings) and `resolvable`
 // ({key, base, ours, theirs} with pretty-printed values) on same-path clashes;
 // the merged value keeps BASE at conflicted paths (the engine refuses the whole
@@ -1589,8 +1910,7 @@ function mergeVal(base, a, b, path, conflicts, resolvable) {
   if (eq(b, base)) return a
   if (isObj(base) && isObj(a) && isObj(b)) {
     const out = {}
-    const keys = [...new Set([...Object.keys(base), ...Object.keys(a), ...Object.keys(b)])]
-    for (const k of keys) {
+    for (const k of unionKeys(base, a, b)) {
       const p = path ? path + '.' + k : k
       const inB = k in base, inA = k in a, inBb = k in b
       if (inB && !inA && !inBb) continue                                     // deleted on both sides
@@ -1725,13 +2045,44 @@ function lines(src) {
   return out
 }
 
-const KEY = /^([^:#\s][^:#]*?):(\s|$)/     // `key:` or `key: value`
+// KEY SHAPES. A YAML key may be QUOTED, and a quoted key legally contains ':' and '#';
+// a plain key may contain '#' too ('#' only opens a comment at line start or after a
+// space). The original class excluded both characters from the key body, so any such key
+// failed KEY and fell through to `'stmt:' + <whole head line>` — a unit key that contains
+// the VALUE. Two sides editing that ONE key then produced two DIFFERENT unit keys, so the
+// engine saw unrelated add/deletes, unioned them, and emitted the key TWICE while
+// reporting the merge 'auto' and clean. Duplicate mapping keys are invalid YAML and every
+// loader keeps the last, so one side's edit was silently discarded — no-silent-loss
+// failing exactly as it did for type-first method signatures in lang-brace.js.
+// Measured before the fix (both top level and nested): "a:b", 'a:b', foo#bar, "a#b" all
+// auto-merged into a duplicated key; plain keys conflicted correctly.
+const QKEY = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')\s*:(\s|$)/  // "quoted key": / 'quoted key':
+const KEY = /^([^:#\s][^:]*?):(\s|$)/     // `key:` or `key: value` (body may contain '#')
 const DASH = /^-(\s|$)/                    // list item
 
+// Cut a trailing ` #comment` that is not inside quotes, so it never lands in a key.
+function stripComment(line) {
+  const at = scannerAt(line)
+  let i = 0
+  while (i < line.length) {
+    if (line[i] === '#' && i > 0 && /\s/.test(line[i - 1])) return line.slice(0, i)
+    const j = at(i)
+    if (j > i && line[i] !== '#') { i = j; continue }
+    i++
+  }
+  return line
+}
+
+// `"a"` and `a` name the SAME key in YAML, so they must key the same — otherwise the
+// pair is the very ambiguity this function exists to remove.
+const unquote = (k) => (/^"(?:[^"\\]|\\.)*"$/.test(k) || /^'(?:[^']|'')*'$/.test(k)) ? k.slice(1, -1) : k
+
 function keyOf(text) {
-  const t = text.trim()
-  const m = t.match(KEY)
-  if (m) return 'key:' + m[1].trim()
+  const t = stripComment(text.trim()).trim()
+  let m = t.match(QKEY)
+  if (m) return 'key:' + unquote(m[1])
+  m = t.match(KEY)
+  if (m) return 'key:' + unquote(m[1].trim())
   if (t === '---' || t === '...') return 'doc:' + t
   return 'stmt:' + t.replace(/\s+/g, ' ')
 }
@@ -1765,10 +2116,11 @@ function keyed(raw, src) {
     const text = src.slice(u.start, u.end)
     // key by the HEAD line (skipping attached leading comments)
     const head = text.split('\n').find((l) => l.trim() && !l.trim().startsWith('#')) || text
-    let k = keyOf(head)
+    const baseKey = keyOf(head)
+    let k = baseKey
     const c = (seen.get(k) || 0) + 1; seen.set(k, c)
     if (c > 1) k += '#' + c
-    out.push({ key: k, text, start: u.start, end: u.end })
+    out.push({ key: k, baseKey, text, start: u.start, end: u.end })
   }
   return out
 }
@@ -2522,6 +2874,11 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
     out += baseText.slice(cursor, to)
   }
 
+  // A KEY REPEATED IN `order` USED TO EMIT ITS UNIT AGAIN. `order` is assembled from both
+  // sides' unit lists, so any key present in both can appear twice, and each appearance
+  // wrote the declaration out. On a whole-file rewrite that is every declaration in the
+  // file, which is how a merge silently doubled a source file instead of merging it.
+  // Emit each unit exactly once, at its first ordered position.
   const seenKeys = new Set()
   for (const k of order) {
     if (seenKeys.has(k)) continue
@@ -2532,6 +2889,7 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
         emitGap(pos, u.start)
         pos = u.end
       }
+      // A missing key used to concatenate the string "undefined" into the source.
       const val = textByKey.get(k)
       if (val != null) out += val
     } else {

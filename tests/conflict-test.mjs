@@ -5,7 +5,7 @@ import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
 import { startSync } from '../sync.js'
 
-const PORT = 1302
+const PORT = Number(process.env.HIVE_TEST_PORT) || (20000 + (process.pid % 20000))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0; const T = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); c ? pass++ : fail++ }
 const startRelay = (port, env) => { const p = spawn(process.execPath, ['server.js'], { env: { ...process.env, PORT: String(port), ...env } }); p.stderr.on('data', (d) => { if (process.env.HIVE_DEBUG) process.stderr.write(d) }); return new Promise((res) => p.stdout.on('data', (d) => /listening on/.test(d) && res(p))) }

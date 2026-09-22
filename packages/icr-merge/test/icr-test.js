@@ -1,4 +1,4 @@
-﻿// Proves ICR v1 â€” the foundational claim CRDTs can't make:
+// Proves ICR v1 â€” the foundational claim CRDTs can't make:
 //   - two agents editing DIFFERENT functions merge cleanly (structure-aware)
 //   - two agents editing the SAME function are flagged as a real semantic conflict,
 //     not silently fused into garbage
@@ -524,6 +524,21 @@ function run(x = fallback()) { return x }
   const r = structuralMerge(refBase, a, b)
   assert('caught as semantic-conflict (default value is a real reference)', r.status === 'semantic-conflict')
   assert('names the dangling reference (ref:fallback)', r.conflicts.includes('ref:fallback'))
+}
+
+console.log('\n# DESTRUCTURING: destructured exports are recognized declarations, not dangling refs')
+{
+  const refBase = `export function helper() { return 42 }
+export function main() { return helper() }
+`
+  const a = `import pkg from './pkg.cjs'
+export const { helper } = pkg
+export function main() { return helper() }
+`
+  const b = refBase
+  const r = structuralMerge(refBase, a, b)
+  assert('destructured export is recognized (no false dangling ref)', r.status === 'auto')
+  assert('merged output parses cleanly', parses(r.text || ''))
 }
 
 console.log('\n# Refuses unparseable input rather than crashing or emitting garbage')

@@ -136,6 +136,19 @@ You are in a Hivecode room: humans and AI agents edit ONE project together live.
 These rules keep anyone from destroying another's work. The sync layer enforces
 the hard parts automatically; you do the rest.
 
+## DESIGN BEFORE YOU WRITE — mandatory (Ganesh, 19 Sep 2026)
+Before you build any new feature, post in the room, BEFORE your first edit:
+1. WHO uses it, and when — name the person or agent and the moment they reach for it.
+2. WHAT IT COSTS when it is wrong — one sentence someone who did not write it can act on at 3am.
+3. EVERY EDGE CASE you can name — empty, missing, offline, refused, concurrent, already-done,
+   called twice, called by the wrong person.
+Then build it.
+This is not process for its own sake. Every defect this project has produced has been a FALSE
+SUCCESS — nothing crashed, every signal was green, the result was wrong. That class is never
+caught by testing the happy path afterwards; it is caught by asking first what "wrong but green"
+would look like for this particular feature. If you cannot say what breaks, you do not understand
+it well enough to write it — say so in the room and ask. That is a complete answer.
+
 ## Before you touch a file
 1. Read HIVE_CHAT.md — what is everyone doing right now.
 2. Read HIVE_BOARD.md — which files were just rewritten.
@@ -1174,7 +1187,13 @@ function start(root, room, relay, linkToken) {
     if (!fe) { if (disk === null) return; openFile(r); return }
     if (!fe.synced) return
     const docText = fe.text.toString()
-    if (docText === '' && !manifest.has(r)) {
+    // An empty shared doc is authoritative ONLY if we have history for this path. A file's
+    // NAME lives in the parent doc and its CONTENT in the file's own doc, on two separate
+    // connections with no atomicity between them — a client that dies mid-join leaves paths
+    // registered with nothing behind them. With no ancestor and real bytes on disk, "" means
+    // the publisher never finished, and adopting it silently empties the user's file.
+    // Mirrors the same fix in sync.js reconcile(); this copy is what a human in VS Code runs.
+    if (docText === '' && (!manifest.has(r) || (disk && !bases.has(r)))) {
       if (disk === null) return
       fe.doc.transact(() => applyDiff(fe.text, disk))
       manifest.set(r, 1)

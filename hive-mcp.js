@@ -34,14 +34,32 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest } from './hive-mailbox.js'
+import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
+import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
+import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
+import * as OB from './hive-obligations.js'
+import * as RC from './hive-receipts.js'
+import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
 let session = null // { hive, room, relay, dir, name, mailbox }
 
-const text = (s) => ({ content: [{ type: 'text', text: typeof s === 'string' ? s : JSON.stringify(s, null, 2) }] })
+// ONE THROTTLE PER SERVER PROCESS, which is one agent. It deliberately does NOT live on the
+// session: a rejoin does not empty the agent's context, so resetting the throttle there would
+// re-send everything the agent can still see -- the exact waste this removes.
+const throttle = makeThrottle()
+
+const text = (s) => {
+  const body = typeof s === 'string' ? s : JSON.stringify(s, null, 2)
+  // THE METER. Every tool result leaves through here, so this count is exact rather than
+  // sampled -- it is the local equivalent of the PTY output bytes Agent Relay's broker measures,
+  // and it is the only evidence available that an agent has done enough since it last saw a
+  // block for that block to have been compacted away.
+  try { throttle.note(body.length) } catch { /* the meter must never break a tool result */ }
+  return { content: [{ type: 'text', text: body }] }
+}
 const err = (s) => ({ content: [{ type: 'text', text: s }], isError: true })
 
 function resolveRoom(link, dir) {
@@ -71,6 +89,12 @@ function readSessionFile() {
 function persistCursor() {
   if (!session || !session.mailbox) return
   persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor })
+  // AND PUBLISH IT INTO THE ROOM. The file above is for resuming THIS session; the room copy is
+  // what makes "did they actually read it" answerable by anybody other than me. The cursor only
+  // advances inside box.take(), which is the call that hands messages to the agent -- so a cursor
+  // past a message is the one honest piece of evidence this system has that the message reached
+  // somebody's context. Before this, that evidence existed and was thrown away on disk.
+  try { RC.publishCursor(session.hive.doc.getMap('cursors'), session.name, session.mailbox.cursor) } catch { /* a room that predates receipts */ }
 }
 async function tryResumeSession() {
   try {
@@ -80,7 +104,18 @@ async function tryResumeSession() {
   } catch { /* resume is best-effort; the agent can always hive_join explicitly */ }
 }
 
-async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor }) {
+async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false }) {
+  // REFUSED BEFORE THE OLD SESSION IS TORN DOWN. joinRoom's first act is to stop whatever session
+  // exists, so validating after that point would leave an agent with a bad name holding nothing at
+  // all -- it would lose a working room to a refusal it could have been given for free.
+  const nameCheck = validateMemberName(name)
+  if (!nameCheck.ok) {
+    return `${nameCheck.error}
+
+Nothing was joined and your current session is untouched. Re-run hive_join with name: "${nameCheck.suggested}".
+
+This is refused rather than fixed for you because renaming silently is worse: if another member is already called "${nameCheck.suggested}", you would be merged into them -- one awareness entry, one read cursor, one mailbox -- and neither of you would be told. Your own prompt would also still say your name is "${name}", so you would stop recognising messages about yourself.`
+  }
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
@@ -100,7 +135,7 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
   // folder is precisely the situation the lock exists to prevent.
   let hive
   try {
-    hive = startSync({ relay, room, dir, name, kind: 'ai', owner, token: useToken, log: () => {} })
+    hive = startSync({ relay, room, dir, name, kind: kind || 'ai', owner, token: useToken, log: () => {}, passive: !!passive })
   } catch (e) {
     if (e && e.code === 'EHIVELOCKED') {
       return text(
@@ -110,15 +145,76 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
     }
     throw e
   }
-  session = { hive, room, relay, dir, name, owner, mailbox: null }
+  session = { hive, room, relay, dir, name, owner, kind: kind || 'ai', passive: !!passive, mailbox: null }
   persistSession({ dir, name, owner }) // survive MCP host restarts (see tryResumeSession)
-  // wait for the first sync so members/board/rules are ready
+  // Wait for the first sync so members/board/rules are ready.
+  //
+  // REPORT THE TRUTH ABOUT THIS. Until 18 Sep 2026 the timeout below simply resolved and the
+  // caller returned a cheerful "joined" banner whether or not the relay had accepted us. On a
+  // relay at capacity that is a false success report: the agent is told it is in a room, reads
+  // the rules, claims files and writes code, and NONE of it reaches anybody. It happened for
+  // real -- a relay answered 38,011 connections with Q430 while three agents believed they were
+  // collaborating. An agent cannot detect this on its own; the only honest place to catch it is
+  // here, at the moment we know whether the socket came up.
+  let synced = false
+  let connErr = ''
+  let refusedCode = null
   await new Promise((resolve) => {
     let done = false
     const finish = () => { if (!done) { done = true; resolve() } }
-    hive.provider.on('sync', (s) => s && finish())
+    hive.provider.on('sync', (s) => { if (s) { synced = true; finish() } })
+    // A refusal arrives as a failed upgrade: the relay writes an HTTP status line carrying the
+    // Q-code and destroys the socket, so this event is the only place the reason is visible.
+    hive.provider.on('connection-error', (ev) => {
+      const code = RH.statusFromError(ev) || (ev && (ev.code || ev.status || ev.type))
+      if (code && typeof code === 'number') refusedCode = code
+      if (!connErr) connErr = `the relay refused the connection${code ? ` (${code})` : ''}`
+    })
     setTimeout(finish, 8000) // don't hang if the relay is cold
   })
+  if (!synced) {
+    // HIV-P12. EVIDENCE BEFORE INFERENCE.
+    // If the relay actually refused us with an HTTP status, explainStatus() maps it to the
+    // authoritative cause (Q430 -> capacity, Q431 -> HIVE_SEATS, 401/403 -> token).
+    // Only when nothing refused us with a code do we query /health to infer whether it was capacity.
+    if (refusedCode) {
+      const explanation = RH.explainStatus(refusedCode, relay)
+      return [
+        `NOT JOINED -- the relay refused the connection (${refusedCode}): ${explanation}`,
+        `room: ${room}`,
+        `relay: ${relay}`,
+        `folder: ${ROOT}`,
+        '',
+        'DO NOT START WORK. You are not in this room. Nothing you write will reach anyone, no',
+        'claim you make binds anyone else, and the files in this folder are NOT shared. Any work',
+        'you do now is invisible to the team and can be silently overwritten later.',
+        '',
+        'Tell whoever is running the relay, then retry hive_join. Call hive_status to re-check:',
+        'it reports `connected` and `filesSynced`, and both are authoritative.',
+      ].join('\n')
+    }
+    const why = connErr || 'no sync within 8s -- the relay did not answer'
+    const diag = await RH.explainNotSyncing(relay, { what: 'join' })
+    return [
+      `NOT JOINED -- ${why}.`,
+      `room: ${room}`,
+      `relay: ${relay}`,
+      `folder: ${ROOT}`,
+      '',
+      'DO NOT START WORK. You are not in this room. Nothing you write will reach anyone, no',
+      'claim you make binds anyone else, and the files in this folder are NOT shared. Any work',
+      'you do now is invisible to the team and can be silently overwritten later.',
+      '',
+      diag.text,
+      '',
+      'Two causes the relay cannot tell you about, worth checking if the above says capacity is fine:',
+      '  - the relay is not running, or the port/room in the link is wrong.',
+      '  - the room is secured and this link carries no token (Q4xx on connect).',
+      '',
+      'Tell whoever is running the relay, then retry hive_join. Call hive_status to re-check:',
+      'it reports `connected` and `filesSynced`, and both are authoritative.',
+    ].join('\n')
+  }
   // The mailbox is created AFTER the first sync, so chat.length is the real room history and
   // not 0 — otherwise a fresh joiner would be handed the entire backlog as unread mail.
   // A resumed session carries its saved cursor forward instead, so anything posted while this
@@ -132,8 +228,18 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
 
   // Event-Driven Wakeups: notify the MCP client the millisecond the DCO state changes
   hive.doc.getMap('swarm_state').observe(() => {
+    // SAME DEFECT AS THE MAIL DOORBELL BELOW, AND FOUND THE SAME WAY -- a test crashed inside a
+    // Yjs observer with the stack pointing at a `try` that looked like it had the case covered.
+    // `notification()` is async: a failure is a REJECTED PROMISE, which sails past this catch,
+    // becomes an unhandled rejection and takes the whole agent down.
+    //
+    // Worth recording that the first fix only repaired the copy in the chat observer. This one
+    // survived untouched for another two tickets and then crashed a second test -- which is the
+    // duplicated-wire-contract lesson arriving in person: repair the CLASS, not the instance.
+    // Both call sites are now the same shape, deliberately.
     try {
-      server.notification({ method: 'notifications/hive_state_changed', params: { state: hive.getState() } })
+      Promise.resolve(server.notification({ method: 'notifications/hive_state_changed', params: { state: hive.getState() } }))
+        .catch(() => { /* no transport, or a client that does not take notifications */ })
     } catch (e) {
       // client might not support notifications, swallow error
     }
@@ -166,7 +272,17 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
       // 0, and a later single mention must still ring. `>` would go permanently silent.
       if (!m.mentioned || m.mentions.length === lastMailSignal) return
       lastMailSignal = m.mentions.length
-      server.notification({
+      // THE CATCH BELOW DOES NOT COVER THIS CALL. `notification()` is async, so a failure inside
+      // it is a REJECTED PROMISE, not a thrown exception -- it sails past the surrounding
+      // try/catch, becomes an unhandled rejection, and takes the whole agent down. Observed
+      // 19 Sep 2026: a second agent posting chat to a server whose transport was not connected
+      // crashed the process from inside this Yjs observer, with the stack pointing at a `try`
+      // that looked like it had the case covered.
+      //
+      // A doorbell that can kill the agent is strictly worse than no doorbell -- and this one is
+      // already optional by design (custom MCP notifications are ignorable by spec), so the right
+      // behaviour on any failure is silence.
+      Promise.resolve(server.notification({
         method: 'notifications/hive_mail',
         params: {
           mentioned: true,
@@ -176,7 +292,7 @@ async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto
           latest: formatMessage(m.mentions[m.mentions.length - 1] || {}),
           hint: 'call hive_wait or hive_check to read it — this notification consumed nothing',
         },
-      })
+      })).catch(() => { /* no transport, or a client that does not take notifications */ })
     } catch (e) {
       // client might not support notifications, swallow error
     }
@@ -198,10 +314,18 @@ function requireSession() { if (!session) throw new Error('not in a room — cal
 /** The read cursor for this participant. Lazily built if a session predates it. */
 function mailbox() {
   const s = requireSession()
+  // hive_join has just handed over the full HIVE_RULES.md, so the nudge would be pure noise on
+  // the next wait. Marking it sent here is what makes the join and the reminder one mechanism
+  // rather than two that disagree.
+  try { throttle.sent('rules', RULES_NUDGE) } catch { }
   if (!s.mailbox) s.mailbox = createMailbox({ me: s.name, startAt: s.hive.doc.getArray('chat').length })
   return s.mailbox
 }
 function chatArray() { return requireSession().hive.doc.getArray('chat').toArray() }
+
+// HIV-P11. Returns null rather than throwing when there is no session: a liveness stamp is an
+// observation about a tool call, not part of it, and it must never be the reason a tool fails.
+function activityMap() { try { return requireSession().hive.doc.getMap('activity') } catch { return null } }
 // Names are matched case-insensitively everywhere else (mentionsName is /i), so a busy lookup
 // keyed on the exact string would silently miss whenever a sender typed @sam for Sam.
 function findBusy(map, name) {
@@ -216,6 +340,32 @@ const fmtTask = (t) => `${t.id} [${t.status}] ${t.by} -> ${t.to}: ${t.text}${t.d
 // Block until there is approved work for me (or a new chat message), then return.
 // This is how the agent reacts the INSTANT the owner approves — no polling loop,
 // no interval to tune. Resolves immediately if approved work already exists.
+/** WAKE ON STATE — the predicate that lets a roster run itself.
+ *
+ *  Without this, hive_wait only returns on work assigned TO you or a message naming you, so every
+ *  multi-agent roster silently depends on agents remembering to @ each other after each step. The
+ *  rules ASK them to (sync.js: "block on hive_wait until your specific state flag turns
+ *  APPROVED/READY") and nothing MAKES them, so a night roster stalls with no error: the reviewer
+ *  is asleep, the tests went green an hour ago, and nobody said so.
+ *
+ *  Shapes, all on one state key:
+ *     { key: 'tests', is: 'GREEN' }            exactly this value
+ *     { key: 'tests', in: ['GREEN', 'SKIP'] }  any of these
+ *     { key: 'tests', not: 'RED' }             anything except this (INCLUDING unset)
+ *     { key: 'tests' }                         any value at all, i.e. the key exists
+ *
+ *  `not` deliberately matches an unset key. A reviewer told "wake unless the build is RED" should
+ *  wake on a fresh room where nobody has set `build` yet -- treating absent as RED would hang it
+ *  forever waiting for a flag no one is going to write. */
+export function stateMatches(until, get) {
+  if (!until || !until.key) return false
+  const v = get(until.key)
+  if (Object.prototype.hasOwnProperty.call(until, 'is')) return String(v) === String(until.is)
+  if (Array.isArray(until.in)) return until.in.some((x) => String(x) === String(v))
+  if (Object.prototype.hasOwnProperty.call(until, 'not')) return String(v) !== String(until.not)
+  return v !== undefined && v !== null
+}
+
 function waitForWork(timeoutMs, opts = {}) {
   const s = requireSession()
   const tmap = s.hive.doc.getMap('tasks')
@@ -260,6 +410,13 @@ function waitForWork(timeoutMs, opts = {}) {
   }
   // Queued work no longer hides the mail. This returned `newChat: []` outright, which made
   // the busiest agent in the room the one guaranteed to see no messages at all.
+  // A state the caller is waiting for, checked BEFORE anything blocks: if it is already true the
+  // agent must not sit through a timeout waiting to be told something that happened an hour ago.
+  const state = s.hive.doc.getMap('swarm_state')
+  const until = opts.until && opts.until.key ? opts.until : null
+  const stateHit = () => stateMatches(until, (k) => state.get(k))
+  if (until && stateHit()) return Promise.resolve(deliver({ tasks: accepted(), stateReached: { ...until, value: state.get(until.key) } }))
+
   const ready = accepted()
   if (ready.length) return Promise.resolve(deliver({ tasks: ready }))
   // Anything already unread is handed over immediately rather than waited past — that backlog
@@ -270,7 +427,7 @@ function waitForWork(timeoutMs, opts = {}) {
   }
   return new Promise((resolve) => {
     let done = false
-    const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); controls.unobserve(onCtl); resolve(v) } }
+    const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); controls.unobserve(onCtl); if (until) { try { state.unobserve(onState) } catch { /* never observed */ } } resolve(v) } }
     const onTask = () => { const a = accepted(); if (a.length) finish(deliver({ tasks: a })) }
     const onChat = () => {
       const seen = box.peek(chat.toArray())
@@ -279,7 +436,11 @@ function waitForWork(timeoutMs, opts = {}) {
       finish(deliver({ tasks: accepted() }))
     }
     const onCtl = () => { if (paused()) finish({ paused: true }) } // paused mid-wait -> stop handing out work
-    tmap.observe(onTask); chat.observe(onChat); controls.observe(onCtl)
+    // A paused agent is NOT woken by state: pausing means stop picking up work, and a state flag
+    // turning green is the room offering it work. It re-checks the predicate on its next wait
+    // after a human resumes it.
+    const onState = () => { if (until && !paused() && stateHit()) finish(deliver({ tasks: accepted(), stateReached: { ...until, value: state.get(until.key) } })) }
+    tmap.observe(onTask); chat.observe(onChat); controls.observe(onCtl); if (until) state.observe(onState)
     // On timeout, flush anything that arrived rather than dropping it: a message must never
     // expire unread just because the wait window closed on it.
     setTimeout(() => finish(box.hasUnread(chat.toArray()) ? deliver({ tasks: accepted() }) : null), timeoutMs)
@@ -288,13 +449,13 @@ function waitForWork(timeoutMs, opts = {}) {
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join (or host) a Hivecode room for a project folder. Joins automatically as an AI participant. If a join link is given, uses it; else reads <dir>/.hive.json; else hosts a new room. Returns the room info and the HIVE_RULES you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'project folder to sync (default ./workspace)' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' }, token: { type: 'string', description: 'access token for a secured room (else uses $HIVE_TOKEN). Required only if the relay runs in auth-required mode.' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'project folder to sync (default ./workspace)' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' }, token: { type: 'string', description: 'access token for a secured room (else uses $HIVE_TOKEN). Required only if the relay runs in auth-required mode.' }, kind: { type: 'string', description: 'participant kind (ai or human)' }, passive: { type: 'boolean', description: 'true = this participant is a passive listener or bot daemon and does not take turns or answer questions' } } } },
   { name: 'hive_assign', description: 'Direct a task at another participant by name (e.g. ask another agent to work on a file). If the target is an AI with an owner, it stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name to assign to' }, text: { type: 'string', description: 'what to do' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Read tasks. Shows tasks directed at YOU (act only on accepted ones) and all pending tasks awaiting approval.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_wait', description: 'BLOCK until there is approved work for you, or unread mail arrives, then return BOTH. Use this as your main loop: call hive_wait; do the work; hive_complete; call hive_wait again. Returns instantly if approved work or unread mail already exists — nothing addressed to you can be missed while you were busy, because your read position is remembered between calls.',
-    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: "'any' (default) wakes on any new message; 'mention' only wakes when you are @mentioned or assigned a task — use it in a noisy room. Ambient messages are still delivered on the next wake either way, never dropped." } } } },
+  { name: 'hive_wait', description: 'BLOCK until there is approved work for you, unread mail arrives, or a project-state flag you named reaches the value you are waiting for — then return all of it. Use this as your main loop: call hive_wait; do the work; hive_complete; call hive_wait again. Returns instantly if any of those is ALREADY true, so nothing that happened while you were busy can be missed. Pass `until` to wait on the state machine instead of on somebody remembering to message you — that is how a roster runs itself overnight: the tester sets tests=GREEN, and the reviewer waiting on it wakes by itself.',
+    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: "'any' (default) wakes on any new message; 'mention' only wakes when you are @mentioned or assigned a task — use it in a noisy room. Ambient messages are still delivered on the next wake either way, never dropped." }, until: { type: 'object', description: 'wake when a GLOBAL PROJECT STATE key reaches a value. { key, is } for one exact value, { key, in: [...] } for any of several, { key, not } for anything else (an unset key counts as "not"), or { key } alone for "as soon as this is set at all". The result carries stateReached with the value that fired.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
   { name: 'hive_check', description: 'NON-BLOCKING: is anyone calling me? Returns unread messages addressed to you, plus approved work, and returns immediately. Call this between edits during a long task — that is the whole point: hive_wait blocks, so it cannot be used while you are working, and this can. If it reports priority "stop", deal with that BEFORE continuing what you were doing.',
     inputSchema: { type: 'object', properties: { peek: { type: 'boolean', description: 'true = look without marking messages read (default false: reading them here counts as read)' } } } },
   { name: 'hive_approve', description: 'Approve a pending task (you must be the owner of the target AI). The AI may then act on it.',
@@ -303,8 +464,14 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
   { name: 'hive_complete', description: 'Mark a task you were doing as done (optionally with a note).',
     inputSchema: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string' } }, required: ['id'] } },
-  { name: 'hive_say', description: 'Post a coordination message to the room chat. Use this to announce what you are about to work on BEFORE editing (e.g. "taking auth.js: adding login"). Address someone directly with @Name — that is what makes it land as mail rather than ambient chatter. Set urgent:true when you need them to stop what they are doing.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = prefix [!] so the recipient treats it as "handle before continuing", not "read at your next boundary"' } }, required: ['text'] } },
+  { name: 'hive_say', description: 'Post a coordination message to the room chat. Use this to announce what you are about to work on BEFORE editing (e.g. "taking auth.js: adding login"). Address someone directly with @Name — that is what makes it land as mail rather than ambient chatter. Set urgent:true when you need them to stop what they are doing. Set needsReply:true when you are ASKING something — the room then tracks that you are owed an answer, and tells you if you addressed somebody who is not here.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = prefix [!] so the recipient treats it as "handle before continuing", not "read at your next boundary"' }, needsReply: { type: 'boolean', description: 'true = this is a QUESTION and you are owed an answer. Records an obligation against everyone you named. It stays open until YOU call hive_answered -- the person you asked cannot close it, and answering is not closing. If you named someone who is not in the room you are told so immediately, instead of waiting forever.' }, replyWithinMinutes: { type: 'number', description: 'how long before you are reminded (default 10). The reminder arrives on a hive_wait you were going to make anyway, so it costs nothing.' } }, required: ['text'] } },
+  { name: 'hive_delivered', description: 'Did anyone actually READ what you said? "sent" only means the message entered your local copy. This reports, per recipient: READ (their read position passed it — real evidence), UNREAD (they are here and behind), UNKNOWN (they publish no read position, e.g. a bridge or a human client — so their silence means NOTHING either way), UNREACHABLE (they left, or you are offline). Read it before concluding an agent is ignoring you, and before believing a handoff landed.',
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many of your recent addressed messages to check (default 10)' } } } },
+  { name: 'hive_answered', description: 'Close a question YOU asked with needsReply — you are saying you got what you needed. Only the asker can call this: the agent you asked cannot mark its own answer sufficient, and a reply alone does not close anything. Pass id for one, or from:"Name" to close everything you asked that agent.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'the obligation id from hive_say or hive_owed' }, from: { type: 'string', description: 'close every open question you asked this agent' } } } },
+  { name: 'hive_owed', description: 'Who owes an answer to whom, and for how long. Read this when the room has gone quiet: an agent that stopped replying looks exactly like an agent that is thinking, and this is the difference. Shows questions aimed at YOU (answer these) and questions you asked (close these with hive_answered). Anything marked STALE has been reminded three times and is now the room\'s problem, not one agent\'s.',
+    inputSchema: { type: 'object', properties: { all: { type: 'boolean', description: 'true = the whole room, not just yours' } } } },
   { name: 'hive_busy', description: 'Tell the room you are mid-task, so anyone who @mentions you is told to expect a delay AT THE MOMENT THEY SEND, instead of waiting on a reply that is not coming yet. This posts no message and silences nothing — you still receive mail and must still call hive_check between edits. It expires by itself, so a crash cannot leave you permanently "busy". Clear it when you finish.',
     inputSchema: { type: 'object', properties: { what: { type: 'string', description: 'what you are working on, in a few words — the sender reads this' }, minutes: { type: 'number', description: 'how long to hold it (default 10). It expires on its own either way.' }, clear: { type: 'boolean', description: 'true = I am free again' } } } },
   { name: 'hive_read_chat', description: 'Read the room conversation. Read this to see what humans and other agents are doing before and while you work. Use mentioningMe to recover only what was addressed to you.',
@@ -313,8 +480,12 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_claim', description: 'CLAIM a file (or region) BEFORE you edit it, so other agents flow around you instead of colliding. Returns whether you got it — if false, someone else holds it: work on something else. Claims auto-expire, so call hive_release when done (or it frees itself).',
     inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'the file path (or region id) you want to edit' }, intent: { type: 'string', description: 'short note on what you intend to do' } }, required: ['region'] } },
-  { name: 'hive_release', description: 'Release a file/region you claimed, so other agents can take it. Call this when you finish editing it.',
-    inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'the file path (or region id) to release' } }, required: ['region'] } },
+  { name: 'hive_release', description: 'Hand a file back so other agents can take it. If the room has set a gate, this RUNS it in your folder first and a failing check REFUSES the handoff — you keep the file, nobody else can take it, and retrying will not help. Fix what the gate reported, or pass force with a reason if you are abandoning the work (recorded against your name and announced).',
+    inputSchema: { type: 'object', properties: {
+      region: { type: 'string', description: 'the file path (or region id) to release' },
+      force: { type: 'boolean', description: 'release even though the gate failed. Recorded against your name in the room and posted to chat — use it for abandoned work, never to get past a failing check.' },
+      why: { type: 'string', description: 'why the work is being abandoned. Give this whenever force is true; a forced release with no reason is recorded as exactly that.' },
+    }, required: ['region'] } },
   { name: 'hive_claims', description: 'See what every agent is currently working on (the live claim board). Read this to pick open work and avoid taken regions.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_edit', description: 'Write a file THROUGH the medium (preferred over editing on disk): your intent and exact change are cryptographically stamped into the provenance ledger at the instant of writing — race-free — then merged and synced like any edit. Claim the file first with hive_claim; pass your intent here too so the WHY travels with the change.',
@@ -443,13 +614,8 @@ function enforceDcoLock(opts = {}) {
 // itself reporting the wrong build. Read the truth instead; package.json always ships in the
 // tarball and sits beside this file in both the repo and the published package.
 // A failed read must never stop the server from starting, so it falls back rather than throwing.
-export const VERSION = (() => {
-  try {
-    const v = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
-    if (typeof v === 'string' && v) return v
-  } catch { /* fall through */ }
-  return '0.0.0-unknown'
-})()
+import { VERSION } from "./hive-version.js"
+export { VERSION }
 // `instructions` is placed in the agent's SYSTEM PROMPT by the client at connect time, which
 // makes it the only channel that reaches an agent before its first tool call. Everything else we
 // have -- tool descriptions, the HIVE_RULES returned by hive_join -- is read too late or scrolls
@@ -468,9 +634,32 @@ async function dispatch(req) {
     // persisted session exists for this cwd, transparently rejoin before any tool runs —
     // the agent (and its human) never see a "not in a room" flake again.
     if (!session && name !== 'hive_join' && name !== 'hive_leave') await tryResumeSession()
+    // HIV-P11. STAMPED BEFORE THE TOOL RUNS, not after it returns.
+    //
+    // The first version stamped in a `finally` -- which is wrong by exactly one call, and the
+    // suite caught it: an agent that called hive_members saw ITSELF reported PARKED, because the
+    // record it read still held the timestamp of its previous call. The activity is the call
+    // BEGINNING; a tool that takes four minutes is working for all four of them, and a tool that
+    // throws was still an agent doing something. Stamping first covers both, and covers every
+    // tool anyone adds later, because there is no path into the switch that skips this line.
+    //
+    // hive_wait stamps its own entry and exit (waitingSince must mean "inside the call RIGHT
+    // NOW"). hive_leave drops the row instead of refreshing it. hive_join has no session yet, so
+    // it is stamped in the finally below -- the one case where after is the only option.
+    if (session && name !== 'hive_wait' && name !== 'hive_leave') {
+      try { ACT.noteAction(activityMap(), { name: session.name, tool: name }) } catch { }
+    }
     switch (name) {
       case 'hive_join': return text(await joinRoom(args))
       case 'hive_say': {
+        // THE CONNECTION IS CHECKED BEFORE ANYTHING ELSE. Until today this tool reported
+        // "sent to @Builder: ..." with the socket down, which is a false success in the most
+        // literal sense: the bytes are in a local Yjs doc, the relay has never seen them, and the
+        // word the agent reads is the same word it reads on success. status().connected was
+        // right there and free the whole time.
+        const sendConn = (() => { try { return requireSession().hive.status() } catch { return null } })()
+        const sendWarn = RC.sendWarning({ connected: !sendConn || !!sendConn.connected })
+        const stamp = (t) => (sendWarn ? `${sendWarn}\n\n${t}` : t)
         const raw = String(args.text || '')
         // The marker is in the text itself so it survives into HIVE_CHAT.md and is visible to
         // a human reading the log, not just to the recipient's tool output.
@@ -482,7 +671,7 @@ async function dispatch(req) {
         // Immediate, per-call feedback, at the moment the mistake is made.
         const named = mentionedNames(body)
         if (!named.length) {
-          return text(`sent: ${body}\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
+          return text(stamp(`sent: ${body}`) + `\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
             `activity", where they are told to skip it — so assume no one acts on it. Name the ` +
             `agents you actually need with @Name (hive_members lists who is here). Use an ` +
             `unaddressed message only for a genuine announcement to the whole room.`)
@@ -492,14 +681,140 @@ async function dispatch(req) {
         // reply: it arrives before the sender starts waiting, and it costs the room no message.
         // This is the whole reason busy is state rather than an auto-reply (see hive-busy.js).
         const s = requireSession()
-        const present = new Set(s.hive.members().map((m) => String(m.name).toLowerCase()))
+        const members = s.hive.members()
+        const memberMap = new Map(members.map((m) => [String(m.name).toLowerCase(), m]))
+        const present = new Set(members.map((m) => String(m.name).toLowerCase()))
         const busyMap = s.hive.doc.getMap('busy')
-        const notes = named
-          .filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
-          .map((n) => describeRecipient(n, findBusy(busyMap, n), present.has(n.toLowerCase())))
-          .filter(Boolean)
+        const act = activityMap()
+        const controls = s.hive.doc.getMap('controls')
+        const parkedAfter = ACT.parkedAfterMs()
+        const now = Date.now()
+
+        const everHere = new Set(present)
+        for (const m of s.hive.doc.getArray('chat').toArray()) {
+          if (m && m.by) everHere.add(String(m.by).toLowerCase())
+        }
+
+        // HIV-P11b. Send-time inspection of recipient state:
+        // Warns when addressing PARKED, PAUSED, PASSIVE, or GONE/AWAY agents.
+        function describeRecipientLiveness(n) {
+          const lc = n.toLowerCase()
+          const mem = memberMap.get(lc)
+          const isPresent = !!mem
+          const rec = act ? act.get(lc) : null
+          const c = controls.get(mem ? mem.name : n)
+          const isPaused = !!(c && c.state === 'paused')
+          const isPassive = !!(mem && mem.passive)
+          const d = ACT.describe(rec, {
+            present: isPresent,
+            paused: isPaused,
+            passive: isPassive,
+            now,
+            parkedAfter,
+          })
+          const displayName = mem ? mem.name : n
+
+          if (d.state === ACT.PARKED) {
+            const age = d.ageMs == null ? 'its whole session' : `${Math.round(d.ageMs / 60000)} min`
+            const tool = d.lastTool ? ` (${d.lastTool})` : ''
+            return `⚠ @${displayName} — PARKED: connected, but NOT inside hive_wait and silent for ${age}${tool}. ` +
+              `It will not wake on its own — anything you send it now will sit unread until a human prompts it.`
+          }
+          if (d.state === ACT.PAUSED) {
+            return `⚠ @${displayName} — PAUSED by a human. It is obeying a stop, not stalled. Do not reassign its work.`
+          }
+          if (d.state === ACT.PASSIVE) {
+            return `⚠ @${displayName} — PASSIVE LISTENER. This process does not take turns or answer questions; no obligation recorded.`
+          }
+          if (d.state === ACT.GONE) {
+            if (everHere.has(lc)) {
+              return `⚠ @${displayName} — AWAY RIGHT NOW. Not connected at the moment, but has worked here before; obligation recorded for when they return.`
+            } else {
+              return `⚠ @${displayName} — NOT IN THIS ROOM. Nobody by that name is here, so nobody is going to answer. Call hive_members and re-address it now; this is the one failure mode that otherwise costs you a whole shift.`
+            }
+          }
+          // d.state is WORKING or WAITING
+          const busy = findBusy(busyMap, n)
+          if (busy) {
+            return describeRecipient(displayName, busy, true, now)
+          }
+          return ''
+        }
+
+        const candidateNames = named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+        const seenCandidates = new Set()
+        const uniqueCandidates = []
+        for (const n of candidateNames) {
+          const lc = n.toLowerCase()
+          if (!seenCandidates.has(lc)) {
+            seenCandidates.add(lc)
+            uniqueCandidates.push(n)
+          }
+        }
+        const notes = uniqueCandidates.map(describeRecipientLiveness).filter(Boolean)
         const to = mentionsAll(body) ? 'the whole room (@all)' : named.map((n) => '@' + n).join(', ')
-        return text(`sent to ${to}: ${body}` + (notes.length ? '\n\n' + notes.join('\n') : ''))
+        // NEEDS REPLY. A question is recorded, not just spoken. One obligation per agent named.
+        // HIV-P6: If the room knows nobody will answer, DO NOT record a debt.
+        //   1. Absent names: warned immediately, ZERO obligations opened.
+        //   2. Passive listeners (bot daemons, wake listeners): warned immediately, ZERO obligations opened.
+        //   3. Active participants: real debt opened, dischargeable ONLY by the asker.
+        //   4. @all broadcast: targets only active non-passive AI agents in the room.
+        let obStr = ''
+        if (args.needsReply) {
+          const obMap = s.hive.doc.getMap('obligations')
+          const dueMs = Math.max(1000, (Number(args.replyWithinMinutes) || 10) * 60000)
+
+          let activeTargets = []
+          let awayTargets = []
+          let neverSeenNames = []
+          let passiveNames = []
+
+          if (mentionsAll(body)) {
+            activeTargets = members
+              .filter((m) => String(m.name).toLowerCase() !== s.name.toLowerCase() && !m.passive && m.kind === 'ai')
+              .map((m) => String(m.name))
+          } else {
+            for (const n of uniqueCandidates) {
+              const lc = n.toLowerCase()
+              const mem = memberMap.get(lc)
+              if (mem) {
+                if (mem.passive) {
+                  passiveNames.push(mem.name || n)
+                } else {
+                  activeTargets.push(mem.name || n)
+                }
+              } else {
+                if (everHere.has(lc)) {
+                  awayTargets.push(n)
+                } else {
+                  neverSeenNames.push(n)
+                }
+              }
+            }
+          }
+
+          const openedActive = activeTargets.map((n) => OB.open(obMap, {
+            from: s.name, to: n, text: body, dueMs,
+            absent: false,
+            neverSeen: false,
+          }))
+
+          const openedAway = awayTargets.map((n) => OB.open(obMap, {
+            from: s.name, to: n, text: body, dueMs,
+            absent: true,
+            neverSeen: false,
+          }))
+
+          const opened = [...openedActive, ...openedAway]
+
+          if (opened.length) {
+            obStr += `\n\nYOU ARE OWED AN ANSWER — ${opened.map((o) => `${o.id} (${o.to})`).join(', ')}\n` +
+              `This stays open until YOU call hive_answered. The agent you asked cannot close it, and ` +
+              `a reply does not close it either — you decide whether you were actually answered. If it ` +
+              `is still open in ${Math.round(dueMs / 60000)} min you will be reminded on your next hive_wait.`
+          }
+        }
+        return text(stamp(`sent to ${to}: ${body}`) + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
       }
       case 'hive_busy': {
         const s = requireSession()
@@ -601,9 +916,37 @@ async function dispatch(req) {
       }
       case 'hive_wait': {
         const ms = Math.min(Math.max(Number(args.timeoutSeconds) || 60, 1), 300) * 1000
-        const r = await waitForWork(ms, { wakeOn: args.wakeOn })
+        // HIV-P11. `waitingSince` means "inside this call right now", never "waited at some
+        // point", and the finally is what keeps that true. A wait that returns or throws while
+        // leaving the flag set describes an agent parked in a call it has already left -- and
+        // describes it as WAITING, the single most reassuring state in the taxonomy. stateOf()
+        // gates WAITING on awareness so a process that DIES here cannot fake it, but a live
+        // process that merely threw is still present, so the gate does not cover that and this
+        // does. The name is captured first because the session can be gone by the finally.
+        const waitName = requireSession().name
+        ACT.noteWaitStart(activityMap(), { name: waitName })
+        let r
+        try {
+          r = await waitForWork(ms, { wakeOn: args.wakeOn, until: args.until })
+        } finally {
+          try { ACT.noteWaitEnd(activityMap(), { name: waitName }) } catch { }
+        }
         const globalState = requireSession().hive.getState()
-        const stateStr = Object.keys(globalState).length ? `\n[GLOBAL PROJECT STATE]\n${JSON.stringify(globalState, null, 2)}\n` : ''
+        // THE STATE BLOCK WAS RETURNED ON EVERY SINGLE WAIT, unchanged, forever -- an agent
+        // sitting in the night-shift loop was handed the same JSON hundreds of times and paid for
+        // it each time. It is now sent when the agent has not seen it, when it CHANGED (which
+        // always wins: a suppressed state change is a wrong answer, not a saving), or when enough
+        // time AND enough output have passed that it is probably no longer in context.
+        const stateBody = Object.keys(globalState).length ? `\n[GLOBAL PROJECT STATE]\n${JSON.stringify(globalState, null, 2)}\n` : ''
+        const stateStr = stateBody && throttle.send('state', stateBody) ? stateBody : ''
+        // The room rules went the other way: 6 KB handed over ONCE in the hive_join result, where
+        // compaction reaches them first. They are the ROOM-specific half -- lanes, gate command,
+        // ownership -- so the general rules in the system prompt do not cover them. A pointer is
+        // re-sent, never a copy: the file is on this agent's own disk, and a second summary here
+        // would be one more description to drift out of date.
+        const rulesStr = throttle.should('rules', RULES_NUDGE).why === 'likely-compacted'
+          ? (throttle.sent('rules', RULES_NUDGE), `\n${RULES_NUDGE}\n`)
+          : ''
         // Connection state, reported ONLY when it is bad. An agent that cannot tell a
         // quiet room from a dead socket reaches for hive_join -- which calls stop() and
         // tears the session down, turning a blip that would have healed itself into a
@@ -618,6 +961,25 @@ async function dispatch(req) {
           : ''
         
         const me = requireSession().name
+        // THE KNOCK RIDES THE WAIT. hive_wait is the agent's idle state and a blocked wait costs
+        // zero tokens, so a reminder delivered here arrives on a call that was going to happen
+        // anyway. Agent Relay re-injects its boomerang on a broker timer, which spends a turn on
+        // every knock; this spends nothing. The reminder is deliberately NOT sent to a paused
+        // agent -- paused means stop, and nagging a stopped agent is just noise.
+        const obMap = (() => { try { return requireSession().hive.doc.getMap('obligations') } catch { return null } })()
+        let owedStr = ''
+        if (obMap) {
+          const due = OB.overdue(obMap, me)
+          if (due.length) {
+            // Only a DELIVERED knock moves the deadline. If merely NOTICING an overdue record
+            // rescheduled it, an agent that never calls hive_wait would have its deadline pushed
+            // out forever by whoever happened to read the board -- exactly backwards.
+            for (const o of due) OB.knock(obMap, o.id)
+            owedStr = `\n[YOU OWE ${due.length} ANSWER(S)] These were asked of you and are still open. ` +
+              `Answer in chat with @Name — you cannot close them yourself, the asker does that.\n` +
+              due.map((o) => '  ' + OB.describe(o)).join('\n') + '\n'
+          }
+        }
         // Direct address is separated from ambient traffic on every path. It used to be that
         // only a PAUSED agent got this distinction, so a working agent could not tell "stop,
         // wrong file" from two other agents talking to each other.
@@ -637,13 +999,103 @@ async function dispatch(req) {
           }
           return text(`⏸ You are PAUSED by mission control. Stop new work and wait. You will be woken if someone @mentions you or assigns you a task; otherwise just call hive_wait again.${stateStr}`)
         }
-        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${connStr}${stateStr}`)
+        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${stateStr}${rulesStr}`)
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${connStr}${stateStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+      }
+      case 'hive_delivered': {
+        const s2 = requireSession()
+        const conn = (() => { try { return s2.hive.status() } catch { return null } })()
+        const connected = !conn || !!conn.connected
+        const here = new Set(s2.hive.members().map((m) => String(m.name).toLowerCase()))
+        const rs = RC.receipts({
+          chat: s2.hive.doc.getArray('chat').toArray(),
+          cursors: s2.hive.doc.getMap('cursors'),
+          me: s2.name,
+          present: (n) => here.has(String(n).toLowerCase()),
+          connected,
+          limit: Math.min(Math.max(Number(args.limit) || 10, 1), 50),
+        })
+        if (!rs.length) return text('You have not addressed anyone recently, so there is nothing to confirm. (Unaddressed and @all messages are not tracked — nobody promised to read those.)')
+        const states = rs.flatMap((r) => r.to)
+        const read = RC.countDelivered(states)
+        const unknown = states.filter((x) => x.state === RC.UNKNOWN).length
+        // The headline deliberately reports READ over TOTAL and names UNKNOWN separately rather
+        // than folding it in. Summing "not proven undelivered" into the good number is how a
+        // receipt system starts reassuring instead of measuring.
+        const head = `${read}/${states.length} confirmed READ` +
+          (unknown ? ` — ${unknown} UNKNOWN (no read position published; that is an absence of evidence, not evidence of delivery)` : '')
+        const worst = states.filter((x) => x.state !== RC.READ)
+        return text(`${head}\n\n` + rs.map((r) => '  ' + RC.describe(r)).join('\n') +
+          (worst.length ? '\n\n' + [...new Set(worst.map((x) => `${x.name}: ${x.why}`))].join('\n') : ''))
+      }
+      case 'hive_answered': {
+        const s2 = requireSession()
+        const obMap = s2.hive.doc.getMap('obligations')
+        if (args.from) {
+          const closed = OB.dischargeFrom(obMap, { by: s2.name, to: String(args.from) })
+          if (!closed.length) return text(`Nothing open that you asked @${args.from}. hive_owed shows what is.`)
+          return text(`Closed ${closed.length} question(s) you asked @${args.from}:\n` + closed.map((o) => '  ' + o.text).join('\n'))
+        }
+        if (!args.id) return err('hive_answered needs either id (one question) or from (everything you asked one agent). hive_owed lists both.')
+        const r2 = OB.discharge(obMap, { id: String(args.id), by: s2.name })
+        if (!r2.ok) return err(r2.reason)
+        return text(r2.already ? `${args.id} was already closed.` : `Closed ${args.id}: "${r2.rec.text}"`)
+      }
+      case 'hive_owed': {
+        const s2 = requireSession()
+        const obMap = s2.hive.doc.getMap('obligations')
+        const act = activityMap()
+        const parkedAfter = ACT.parkedAfterMs()
+        const members = s2.hive.members()
+        const memberMap = new Map(members.map((m) => [String(m.name).toLowerCase(), m]))
+        const controls = s2.hive.doc.getMap('controls')
+        const now = Date.now()
+
+        // HIV-P11b. Dynamic reachability annotation for debts:
+        // Distinguishes actionable pending debts from debts owed by PARKED, GONE, or PAUSED agents.
+        function describeDebt(o) {
+          const base = OB.describe(o, () => now)
+          const lc = String(o.to || '').toLowerCase()
+          const mem = memberMap.get(lc)
+          const rec = act ? act.get(lc) : null
+          const c = controls.get(mem ? mem.name : o.to)
+          const d = ACT.describe(rec, {
+            present: !!mem,
+            paused: !!(c && c.state === 'paused'),
+            passive: !!(mem && mem.passive),
+            now,
+            parkedAfter,
+          })
+          if (d.state === ACT.PARKED) {
+            const age = d.ageMs == null ? 'its whole session' : `${Math.round(d.ageMs / 60000)} min`
+            return `${base}  [UNREACHABLE — @${mem ? mem.name : o.to} is PARKED: silent for ${age}, will not wake on its own]`
+          }
+          if (d.state === ACT.GONE) {
+            return `${base}  [UNREACHABLE — @${o.to} is GONE: not connected]`
+          }
+          if (d.state === ACT.PAUSED) {
+            return `${base}  [PAUSED by human — do not reassign]`
+          }
+          return base
+        }
+
+        if (args.all) {
+          const openList = OB.openList(obMap, () => now)
+          if (!openList.length) return text('Nothing outstanding in this room.')
+          const staleCount = openList.filter(OB.isStale).length
+          return text(`${openList.length} open, ${staleCount} stale:\n` + openList.map((o) => '  ' + describeDebt(o)).join('\n'))
+        }
+        const mine = OB.owedBy(obMap, s2.name, () => now), theirs = OB.owedTo(obMap, s2.name, () => now)
+        if (!mine.length && !theirs.length) return text('You owe nothing and are owed nothing. (Pass all:true for the whole room.)')
+        const parts = []
+        if (mine.length) parts.push(`YOU OWE ${mine.length} ANSWER(S) — answer in chat with @Name; the asker closes it:\n` + mine.map((o) => '  ' + describeDebt(o)).join('\n'))
+        if (theirs.length) parts.push(`YOU ARE OWED ${theirs.length} — close with hive_answered once you actually have what you needed:\n` + theirs.map((o) => '  ' + describeDebt(o)).join('\n'))
+        return text(parts.join('\n\n'))
       }
       case 'hive_set_state': { requireSession().hive.setState(String(args.key), String(args.val)); return text(`Set global state [${args.key}] to [${args.val}]`) }
       case 'hive_read_state': { return text(requireSession().hive.getState()) }
@@ -661,9 +1113,29 @@ async function dispatch(req) {
       case 'hive_verified': {
         const f = String(args.file || ''); if (!f) return err('need a file path')
         const r = requireSession().hive.verified(f)
-        if (!r.count) return text(`${f}: NOT attested by anyone. Unverified — measure it and call hive_attest.`)
+        // Attestation and gate verdicts are independent records, so an unattested path must still
+        // report its gate. Returning early here would hide a FAILED check behind "nobody measured
+        // the bytes", which is the opposite of what this tool is for.
+        if (!r.count) {
+          const g0 = requireSession().hive.gateVerdicts(f)
+          const extra = Object.entries(g0).map(([n, v]) => v.forced
+            ? `\n  [!] ${n} FORCE-released it without passing the gate${v.why ? ` — "${v.why}"` : ''}`
+            : `\n  ${v.pass ? '[ok]' : '[!]'} ${n}'s gate ${v.pass ? 'passed' : `FAILED (exit ${v.exit})`}`).join('')
+          return text(`${f}: NOT attested by anyone. Unverified — measure it and call hive_attest.${extra}`)
+        }
         const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`).join('\n  ')
-        return text(`${f}\n  ${who}\n\n${r.diverged ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.' : r.quorum ? 'QUORUM: confirmed by 2+ peers at the same size.' : 'Attested by ONE peer only — not yet proof.'}`)
+        // Same bytes in two folders says the file PROPAGATED. It says nothing about whether it
+        // WORKS, which is the actual question an agent is asking here — so the gate verdicts
+        // belong in this answer. A file two peers agree on and whose owner's tests failed is the
+        // exact thing somebody is about to build on.
+        const g = requireSession().hive.gateVerdicts(f)
+        const gLines = Object.entries(g).map(([n, v]) => v.forced
+          ? `  [!] ${n} FORCE-released it without passing the gate${v.why ? ` — "${v.why}"` : ' and gave no reason'}`
+          : `  ${v.pass ? '[ok]' : '[!]'} ${n}'s gate ${v.pass ? 'passed' : `FAILED (exit ${v.exit})`}: ${v.cmd}`)
+        const gate = gLines.length
+          ? `\n\nCHECKS RUN BY THE AGENTS THAT HELD IT:\n${gLines.join('\n')}${Object.values(g).some((v) => !v.pass) ? '\n  Somebody handed this back knowing it did not pass. Read it before you build on it.' : ''}`
+          : '\n\nNo gate verdict recorded for this path — nobody has run a check on it here.'
+        return text(`${f}\n  ${who}\n\n${r.diverged ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.' : r.quorum ? 'QUORUM: confirmed by 2+ peers at the same size.' : 'Attested by ONE peer only — not yet proof.'}${gate}`)
       }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
@@ -674,18 +1146,84 @@ async function dispatch(req) {
         // always a mistake, and refusing here is far cheaper than refusing after the agent has
         // built the content it intended to write.
         enforceDcoLock({ path: region });
-        const got = requireSession().hive.claim(region, String(args.intent || 'edit'))
-        if (got) return text(`claimed ${region} — it's yours. Edit it, then call hive_release.`)
+        // HIV-27: A CLAIM YOU CANNOT PUBLISH IS NOT A CLAIM. The claim is a path string in the
+        // shared map; whether that path's BYTES sync is decided separately, per client. Nothing
+        // compared them, so an agent could hold an exclusive claim on a file nobody else can
+        // see, do the work, pass a gate running in its own folder where the file is real, and
+        // hand back something that never existed for anyone else -- every signal green.
+        // Refused HERE rather than at release: by release time the work is already built and
+        // all we could do is tell the agent it was wasted.
+        const unshared = requireSession().hive.whyNotShared(region)
+        if (unshared) {
+          return err(`refusing to claim ${region} — ${unshared}
+
+Nothing was claimed. Put the path inside the room's sync scope, or pick one that is already in it, BEFORE you start work: a claim whose bytes never leave this folder is indistinguishable from one that works.`)
+        }
+        // SETTLED, not optimistic. The synchronous claim answers from this replica alone and
+        // tells three simultaneous callers "it's yours" (measured 5/5). An agent then edits
+        // behind a lock it does not hold. This waits for the relay to serialise it.
+        const got = await requireSession().hive.claimSettled(region, String(args.intent || 'edit'))
+        if (got) {
+          // HIV-P18. "It's yours" was all this said, and for a file outside the working set that
+          // was the entire defect: the agent reads its directory, sees nothing, concludes the file
+          // does not exist, and CREATES it -- which is the blind recreate. Measured 21 Sep 2026:
+          // claim returned true, the file doc was never opened, no bytes arrived, and the agent
+          // was told it held something it could not see.
+          //
+          // sync.js now fetches on claim. This reports WHICH of three states the agent is in,
+          // because they demand different next actions and an empty directory cannot tell them
+          // apart. Awaited here rather than in claim(), whose contract is synchronous.
+          let fetched = null
+          try { fetched = await requireSession().hive.fetch(region) } catch { }
+          const head = `claimed ${region} — it's yours.`
+          if (fetched && fetched.notInRoom) {
+            return text(`${head}
+
+!! ${region} IS NOT IN THIS ROOM. No client has ever published it, so nothing will fetch it and it is NOT simply outside your working set. If you create it now you are creating a new file, not editing an existing one — which is correct only if that is what you intend. If you expected content here, the path is probably outside the room's sync scope: check that first, then ask whoever holds the file to write it into their synced folder.
+
+Edit it, then call hive_release.`)
+          }
+          if (fetched && fetched.ok === false) {
+            return text(`${head}
+
+!! ${region} IS IN THE ROOM BUT ITS CONTENT HAS NOT ARRIVED. ${fetched.reason || ''}
+DO NOT create it from scratch — the room's copy exists and writing over it unions two whole files. Retry, or check hive_status (filesHeld of roomFiles).
+
+Then call hive_release.`)
+          }
+          const note = fetched && fetched.ok && !fetched.alreadyLocal && !fetched.empty
+            ? ` Its content was not in this folder and has been fetched (${fetched.bytes} bytes) — read it before editing.`
+            : ''
+          return text(`claimed ${region} — it's yours.${note} Edit it, then call hive_release.`)
+        }
         const c = requireSession().hive.senseClaim(region)
         return text(`could NOT claim ${region}${c ? ` — held by ${c.by}${c.intent ? ` (${c.intent})` : ''}` : ''}. Work on something else; check hive_claims for open files.`)
       }
-      case 'hive_release': { const region = String(args.region || ''); if (!region) return err('need a region'); requireSession().hive.release(region); return text(`released ${region}`) }
+      case 'hive_release': {
+        const region = String(args.region || '')
+        if (!region) return err('need a region')
+        // A gated release can REFUSE, and reporting "released" either way is the worst thing this
+        // could do: the agent moves on believing it handed the file back while it still holds it.
+        const r = requireSession().hive.release(region, { force: !!args.force, why: String(args.why || '') })
+        if (r && r.ok === false) return text(r.message)
+        if (r && r.forced) return text(`released ${region} WITHOUT passing the gate — recorded against your name in the room`)
+        return text(`released ${region}${r && r.gated ? ' (gate passed)' : ''}`)
+      }
       case 'hive_claims': { const b = requireSession().hive.claimsBoard(); return text(b.length ? b.map((c) => `${c.region} — ${c.by}${c.intent ? ` (${c.intent})` : ''}`).join('\n') : '(nothing claimed right now — all open)') }
       case 'hive_edit': {
         const editPath = String(args.file || '')
         // Path gate + lease consumed BEFORE the write, not after: a spent lease that still wrote is
         // indistinguishable from no lease at all.
         enforceDcoLock({ consumes: true, path: editPath })
+        // HIV-27, same reasoning: this tool's entire promise is that the change reaches every
+        // peer. On a path this client never opens a connection for, it would not -- and it
+        // would still report success.
+        const unshared = requireSession().hive.whyNotShared(editPath)
+        if (unshared) {
+          return err(`refusing to write ${editPath} through the medium — ${unshared}
+
+Nothing was written. This tool exists to guarantee the change syncs to every peer; on this path it cannot.`)
+        }
         const r = requireSession().hive.edit(editPath, String(args.content ?? ''), String(args.intent || ''))
         if (r.error) return err(r.error)
         return text(r.conflicted
@@ -709,7 +1247,40 @@ async function dispatch(req) {
         const dropped = (r.coverage || []).filter((c) => !c.covered)
         return text(`✓ resolution LANDED in ${file} — validated by ICR (parses, no dangling refs), signed by you, synced to every peer.${dropped.length ? ` ⚠ Intent coverage: ${dropped.map((c) => `${c.name}'s changes (${c.missing.slice(0, 5).join(', ')}) did not survive`).join('; ')} — if that was not deliberate, submit a better reconciliation.` : ' Full intent coverage: every side\'s changes survived.'}`)
       }
-      case 'hive_members': { const now = Date.now(); return text(requireSession().hive.members().map((m) => `${m.name} (${m.kind})${m.editing && now - m.editing.at < 15000 ? ` — editing ${m.editing.file}` : ''}`).join('\n') || '(none)') }
+      case 'hive_members': {
+        const now = Date.now()
+        const s = requireSession()
+        const act = activityMap()
+        const controls = s.hive.doc.getMap('controls')
+        const parkedAfter = ACT.parkedAfterMs()
+        const present = s.hive.members()
+        const presentKeys = new Set(present.map((m) => String(m.name).toLowerCase()))
+
+        const rows = present.map((m) => {
+          const rec = act ? act.get(String(m.name).toLowerCase()) : null
+          const c = controls.get(m.name)
+          const editing = m.editing && now - m.editing.at < 15000 ? `\n    editing ${m.editing.file}` : ''
+          return ACT.line(`${m.name} (${m.kind})`, rec, {
+            present: true, passive: !!m.passive,
+            paused: !!(c && c.state === 'paused'),
+            // HIV-P11c. Without this the room said `Ganesh (human) — PARKED: ... anything you
+            // send it now will sit unread until a human prompts it` about the human.
+            human: String(m.kind || '').toLowerCase() === 'human',
+            now, parkedAfter,
+          }) + editing
+        })
+
+        // HIV-P11. THE ONES THAT ARE NOT HERE ANY MORE, which is the half a human coming back in
+        // the morning actually needs. Awareness is ephemeral: an agent that died at 23:00 simply
+        // vanishes from members(), so the old output could not distinguish "never joined" from
+        // "worked here for three hours and stopped". The activity record is durable, so it can.
+        const goneRows = ACT.all(act)
+          .filter((r) => !presentKeys.has(r.key))
+          .map((r) => ACT.line(r.name || r.key, r, { present: false, now, parkedAfter }))
+
+        const body = [...rows, ...(goneRows.length ? ['', '— not connected —', ...goneRows] : [])]
+        return text(body.join('\n') || '(none)')
+      }
       case 'hive_status': {
         const s = requireSession()
         // Connection state belongs here too, not only in hive_wait: this is the tool an
@@ -724,10 +1295,21 @@ async function dispatch(req) {
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
         })
       }
-      case 'hive_leave': { requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
+      // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity
+      // row is dropped rather than left to read as GONE. GONE means "stopped without saying so",
+      // and diluting it with agents that signed off correctly is how a signal stops being read.
+      case 'hive_leave': { try { ACT.forget(activityMap(), requireSession().name) } catch { }; requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
       default: return err(`unknown tool: ${name}`)
     }
   } catch (e) { return err(`error: ${e.message}`) }
+  finally {
+    // hive_join only: the session does not exist until the case has run, so this is the single
+    // tool that cannot be stamped on the way in. Everything else is stamped above, before the
+    // switch, so that an agent's own record reflects the call it is currently making.
+    try {
+      if (session && name === 'hive_join') ACT.noteAction(activityMap(), { name: session.name, tool: name })
+    } catch { /* a liveness stamp must never be able to fail a tool call */ }
+  }
 }
 
 // MAIL PIGGYBACK — the delivery channel that cannot be ignored.
@@ -801,7 +1383,44 @@ function mailBanner() {
   } catch { return '' }
 }
 
+// A MISSING REQUIRED ARGUMENT MUST BE REFUSED, NOT WRITTEN AS `undefined`.
+//
+// Nothing was validating `inputSchema.required`. The SDK does not enforce it, and every handler
+// read its arguments straight off the object, so a near-miss parameter name sailed through as
+// `undefined` and the tool reported success. Two real cases, both on 18 Sep 2026:
+//   hive_say({ message })    -> posted an EMPTY message and answered "sent: "
+//   hive_set_state({ value }) -> answered "Set global state [gate:cmd] to [undefined]", which
+//                                overwrote the room's gate command with the string "undefined"
+//                                and would have broken the handoff gate for every agent.
+// The failure mode is what makes it serious: the agent is told the action happened. It moves on,
+// and the room is left holding a corrupted value nobody wrote on purpose. Near-miss names are
+// the common case, so the refusal names the unknown argument that was supplied too.
+function missingRequired(req) {
+  const name = req && req.params && req.params.name
+  const tool = TOOLS.find((t) => t.name === name)
+  const schema = tool && tool.inputSchema
+  const required = schema && Array.isArray(schema.required) ? schema.required : []
+  if (!required.length) return ''
+  const args = (req.params && req.params.arguments) || {}
+  // undefined/null only: '' and 0 and false are legitimate values a caller may mean.
+  const missing = required.filter((k) => args[k] === undefined || args[k] === null)
+  if (!missing.length) return ''
+  const known = Object.keys(schema.properties || {})
+  const unknown = Object.keys(args).filter((k) => !known.includes(k))
+  const lines = [
+    `REFUSED -- ${name} needs ${missing.map((m) => `\`${m}\``).join(', ')} and it was not supplied.`,
+    `Nothing was written. This call did NOT happen.`,
+  ]
+  if (unknown.length) {
+    lines.push(`You passed ${unknown.map((u) => `\`${u}\``).join(', ')}, which ${name} does not take -- most likely you meant ${missing.map((m) => `\`${m}\``).join(', ')}.`)
+  }
+  lines.push(`${name} accepts: ${known.map((k) => (required.includes(k) ? `${k} (required)` : k)).join(', ')}.`)
+  return lines.join('\n')
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const bad = missingRequired(req)
+  if (bad) return { content: [{ type: 'text', text: bad }], isError: true }
   const res = await dispatch(req)
   // Never let the banner break a tool: append only to a well-formed text result, and skip the two
   // tools that already deliver mail themselves (appending would double-report the same messages).
@@ -831,6 +1450,10 @@ if (isEntryPoint) {
 export const _test = {
   waitForWork,
   mailbox,
+  // Exposed so the throttle's saving is asserted against the counter itself rather than inferred
+  // from what happened not to appear in a tool result. Counting absences is how you prove a thing
+  // is quiet, not how you prove it is working.
+  throttleStats: () => throttle.stats(),
   setSession(s) { session = s },
   getSession() { return session },
   callTool: (name, args = {}) =>

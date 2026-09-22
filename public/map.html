@@ -30,10 +30,22 @@
   #dot.on{background:var(--built);box-shadow:0 0 10px var(--built)}
   #dot.off{background:var(--broken)}
 
-  #legend{left:14px;bottom:14px;display:flex;gap:14px;flex-wrap:wrap;
-    background:#0e1018cc;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12px}
+  #legend{left:14px;bottom:14px;max-width:min(560px,calc(100% - 28px));
+    background:#0e1018d9;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:12px;
+    backdrop-filter:blur(8px)}
+  #groupKey{display:flex;gap:5px 11px;flex-wrap:wrap}
+  #stateKey{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
   #legend span{display:flex;align-items:center;gap:6px;color:var(--dim)}
-  #legend i{width:9px;height:9px;border-radius:50%;display:inline-block}
+  #legend i{width:9px;height:9px;border-radius:50%;display:inline-block;flex:none}
+  /* State is SHAPE, because hue is already spoken for. Solid = real, ringed = in progress,
+     hollow = only agreed. The key has to show the same shapes the canvas draws. */
+  #legend i.sh{width:11px;height:11px;border-radius:50%;box-sizing:border-box}
+  .sh-built{background:#cfd6e4}
+  .sh-wip{background:#cfd6e4;box-shadow:0 0 0 2px var(--wip)}
+  .sh-broken{background:#cfd6e4;box-shadow:0 0 0 2px var(--broken)}
+  .sh-planned{background:transparent;border:1.5px dashed #8492ad}
+  #groupKey span{font-size:11px;cursor:pointer;user-select:none}
+  #groupKey span.off{opacity:.3}
 
   #side{right:14px;top:58px;width:286px;max-height:calc(100% - 130px);overflow:auto;
     background:#0e1018e6;border:1px solid var(--line);border-radius:12px;padding:14px;
@@ -99,11 +111,16 @@
 </div>
 
 <div class="hud" id="legend">
-  <span data-s="built"><i style="background:var(--built)"></i>built <b id="sB">0</b></span>
-  <span data-s="broken"><i style="background:var(--broken)"></i>broken <b id="sX">0</b></span>
-  <span data-s="wip"><i style="background:var(--wip)"></i>wip <b id="sW">0</b></span>
-  <span data-s="planned"><i style="background:var(--planned)"></i>planned <b id="sP">0</b></span>
-  <span id="clearF" style="display:none">clear filter ×</span>
+  <!-- Colour now means GROUP, so the group key has to be here or the palette is decoration a
+       reader has to reverse-engineer. Shape means state, and it gets its own row below. -->
+  <div id="groupKey"></div>
+  <div id="stateKey">
+    <span data-s="built"><i class="sh sh-built"></i>built <b id="sB">0</b></span>
+    <span data-s="wip"><i class="sh sh-wip"></i>wip <b id="sW">0</b></span>
+    <span data-s="broken"><i class="sh sh-broken"></i>broken <b id="sX">0</b></span>
+    <span data-s="planned"><i class="sh sh-planned"></i>planned <b id="sP">0</b></span>
+    <span id="clearF" style="display:none">clear filter ×</span>
+  </div>
 </div>
 
 <div class="hud" id="side">
@@ -113,7 +130,7 @@
   <div id="dBody"></div>
 </div>
 
-<div class="hud" id="hint">drag to rotate · scroll to zoom · click a node<br>shift-drag to pan · R to recentre</div>
+<div class="hud" id="hint">drag to pan · scroll to zoom · click a node<br>R to recentre</div>
 <div id="empty"><div>
   <p>This room has no map yet.</p>
   <p>Add the first node:</p>
@@ -184,35 +201,53 @@ let nodes = [], edges = [], members = []
 const adj = new Map()      // id -> Set(neighbours), undirected, for walking the neighbourhood
 const deg = new Map()      // id -> connection count, which drives node size
 let focusId = null         // hovered or selected
-let depth = 1              // hops lit around the focus
+let depth = 2              // hops lit around the focus -- 2, not 1, because one hop shows
+                           // WHAT touches this and nothing about how those reach anything else
 let filterState = null     // light only this state and what it touches
+// Filtering by GROUP is the other half of the same idea: colour tells you the subsystems exist,
+// clicking one is how you look at just that subsystem and the things it touches.
+let filterGroup = null
 let query = ''
 
+// Returns a Map of id -> HOPS AWAY, not a bare Set. The distance is the whole point: lighting
+// three hops equally makes a 3-hop node look exactly like a direct neighbour, so you can see that
+// more things are involved but not how they reach each other. Fading by hop turns the same
+// selection into a chain you can follow outward. A Map still answers .has(), so callers that only
+// ask "is this lit" are unchanged.
 function neighbourhood(id, d) {
-  const seen = new Set([id])
+  const seen = new Map([[id, 0]])
   let frontier = [id]
   for (let i = 0; i < d && frontier.length; i++) {
     const next = []
-    for (const a of frontier) for (const b of (adj.get(a) || [])) if (!seen.has(b)) { seen.add(b); next.push(b) }
+    for (const a of frontier) for (const b of (adj.get(a) || [])) if (!seen.has(b)) { seen.set(b, i + 1); next.push(b) }
     frontier = next
   }
   return seen
 }
+
+// How bright a lit node is, by how far it sits from what you are pointing at.
+const HOP_DIM = [1, 1, 0.58, 0.34, 0.22]
+const dimOf = (hop) => HOP_DIM[Math.min(hop === undefined ? 1 : hop, HOP_DIM.length - 1)]
 
 /** Which nodes are lit. Everything else is drawn faint rather than hidden, so the shape of the
  *  whole system stays visible while one part of it is readable. null means "everything". */
 function litSet() {
   if (query) {
     const q = query.toLowerCase()
-    const out = new Set()
+    const out = new Map()
     for (const n of nodes) {
       if (((n.label || '') + ' ' + n.id + ' ' + (n.note || '')).toLowerCase().includes(q)) {
-        for (const x of neighbourhood(n.id, 1)) out.add(x)
+        for (const [x, h] of neighbourhood(n.id, depth)) if (!out.has(x) || out.get(x) > h) out.set(x, h)
       }
     }
     return out
   }
   if (focusId) return neighbourhood(focusId, depth)
+  if (filterGroup) {
+    const out = new Map()
+    for (const n of nodes) if (n.group === filterGroup) for (const [x, h] of neighbourhood(n.id, 1)) if (!out.has(x) || out.get(x) > h) out.set(x, h)
+    return out
+  }
   if (filterState) {
     const out = new Set()
     for (const n of nodes) if (n.state === filterState) for (const x of neighbourhood(n.id, 1)) out.add(x)
@@ -223,6 +258,41 @@ function litSet() {
 
 const STATE_COLOR = { built: '#2fd27a', broken: '#ff5a63', wip: '#ffc24b', planned: '#5b6b8c' }
 const GHOST = '#3a4056'
+
+// TWO DIMENSIONS, TWO CHANNELS. A node answers two questions -- which part of the system is this,
+// and is it real -- and encoding both in one colour is why ninety identical green dots told a
+// reader nothing. HUE now carries the group (where you are), and the node's TREATMENT carries the
+// state (filled / ringed / hollow). You can read either one without the other getting in the way.
+//
+// The ramp runs cyan -> violet -> amber so neighbouring subsystems are never neighbouring hues.
+// `tools`, `flow` and `rule` are deliberately desaturated slate: there are thirty of them and they
+// are scaffolding around the seven subsystems, so they must recede rather than compete.
+const GROUP_COLOR = {
+  core: '#8ef6ff', identity: '#a78bfa', perms: '#60a5fa', locks: '#22d3ee',
+  ipc: '#34d399', sched: '#a3e635', audit: '#fbbf24', policy: '#fb923c',
+  medium: '#7dd3fc', surface: '#f472b6', dist: '#2dd4bf', proof: '#4ade80',
+  tools: '#5b6b8c', flow: '#5b6b8c', rule: '#8492ad', gap: '#f87171',
+}
+const hueOf = (n) => (n.ghost ? GHOST : (GROUP_COLOR[n.group] || GROUP_COLOR.tools))
+
+// Parsed once per colour, not once per node per frame: at 87 nodes and 113 edges this runs
+// thousands of times a second and a regex in the draw loop is measurable.
+const rgbCache = new Map()
+function rgb(hex) {
+  let v = rgbCache.get(hex)
+  if (!v) {
+    v = [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]
+    rgbCache.set(hex, v)
+  }
+  return v
+}
+const rgba = (hex, a) => { const c = rgb(hex); return `rgba(${c[0]},${c[1]},${c[2]},${a})` }
+// An edge between two groups is drawn as a gradient between their hues, so a line that leaves its
+// cluster is visible as a departure rather than as one more grey thread in a pile of grey threads.
+const mix = (h1, h2, t) => {
+  const a = rgb(h1), b = rgb(h2)
+  return [Math.round(a[0] + (b[0] - a[0]) * t), Math.round(a[1] + (b[1] - a[1]) * t), Math.round(a[2] + (b[2] - a[2]) * t)]
+}
 
 // A deterministic starting point per id — same id, same seed, every reload. Math.random() here
 // would make the layout different on every refresh, which destroys the one thing a spatial map is
@@ -275,11 +345,31 @@ function rebuild() {
     if (adj.has(e.to)) { adj.get(e.to).add(e.from); deg.set(e.to, deg.get(e.to) + 1) }
   }
 
+  // The group key is built from the data, not hardcoded, so a room with different groups explains
+  // itself and a group nobody uses never appears. Ordered biggest-first: the eye should meet the
+  // parts that dominate the picture before the ones that barely appear in it.
+  const gc = new Map()
+  for (const n of nodes) if (!n.ghost && n.group) gc.set(n.group, (gc.get(n.group) || 0) + 1)
+  const gk = document.getElementById('groupKey')
+  const wanted = [...gc.entries()].sort((a, b) => b[1] - a[1]).map(([g, c]) => g + ':' + c).join('|')
+  if (gk.dataset.sig !== wanted) {
+    gk.dataset.sig = wanted
+    gk.innerHTML = [...gc.entries()].sort((a, b) => b[1] - a[1]).map(([g, c]) =>
+      `<span data-g="${g}"><i style="background:${GROUP_COLOR[g] || GROUP_COLOR.tools}"></i>${g} <b>${c}</b></span>`).join('')
+    for (const sp of gk.querySelectorAll('span[data-g]')) {
+      sp.onclick = () => {
+        filterGroup = filterGroup === sp.dataset.g ? null : sp.dataset.g
+        for (const o of gk.querySelectorAll('span[data-g]')) o.classList.toggle('off', !!filterGroup && o.dataset.g !== filterGroup)
+      }
+    }
+  }
+
   const st = (k) => nodes.filter((n) => !n.ghost && n.state === k).length
   document.getElementById('sB').textContent = st('built')
   document.getElementById('sX').textContent = st('broken')
   document.getElementById('sW').textContent = st('wip')
   document.getElementById('sP').textContent = st('planned')
+  layout()
   document.getElementById('empty').style.display = nodes.length ? 'none' : 'grid'
   renderReading()
   energy = 1 // a change re-heats the layout so it settles into the new shape
@@ -337,41 +427,99 @@ function heldBy(node) {
   return hit
 }
 
-// ---------------------------------------------------------------- physics
-// Plain O(n²) repulsion plus springs. At the scale a human can read — a couple of hundred nodes —
-// this is far cheaper than the barnes-hut it would take to avoid it, and it is exact.
+// ---------------------------------------------------------------- layout
+//
+// TWO DIMENSIONS. This is the whole fix, and it took three attempts to see it.
+//
+// Every complaint about the old view -- "nodes scattered in space", "no pattern", "I cannot see
+// anything I understand" -- was really one complaint about 3D. In a rotating 3D cloud, two nodes
+// that look adjacent are usually just at different depths, near things hide behind other near
+// things, and every drag throws away whatever mental map you had built. No amount of colour or
+// label tuning fixes a picture whose geometry lies to you.
+//
+// Flat, a plain force layout does the thing Obsidian's does: repulsion pushes everything apart,
+// links pull related things together, and what settles out are visible clusters in a plane you
+// can actually read and, crucially, REMEMBER. Position becomes stable and meaningful, so "policy
+// is over on the right" stays true.
+//
+// There is no separate layout step now. The forces below are the layout.
+
+// ---------------------------------------------------------------- layout: layers
+//
+// COLUMNS, NOT A CLOUD.
+//
+// A force field -- 2D or 3D -- gives you an organic blob whose shape is an accident of the
+// simulation. Nothing is anywhere in particular, so there is nothing to learn and nothing to
+// remember. This instead states the hierarchy the system actually has:
+//
+//     the core ->  the seven subsystems  ->  what implements them  ->  the tools  ->  surfaces
+//
+// x is DEPTH FROM THE CORE. y is position within that depth, ordered so a group's members sit
+// together, so each column reads top-to-bottom as a list of related things. Edges are then drawn
+// as bundled curves between columns, which is what produces the woven look: many strands leaving
+// one column, converging, and fanning into the next.
+//
+// The payoff is that position MEANS something and stays put. "policy is the third column, upper
+// half" is a fact a person can hold in their head, which is the entire difference between a
+// diagram and a decoration.
 let energy = 1
+const LAYER_W = 260, ROW_H = 30
+
+/** Hops from the core over the undirected graph; anything unreachable lands in the last column. */
+function depthMap() {
+  const d = new Map()
+  const start = nodes.find((n) => n.id === 'hivecode') || nodes.find((n) => n.group === 'core') || nodes[0]
+  if (!start) return d
+  d.set(start.id, 0)
+  let front = [start.id]
+  while (front.length) {
+    const next = []
+    for (const id of front) for (const nb of (adj.get(id) || [])) if (!d.has(nb)) { d.set(nb, d.get(id) + 1); next.push(nb) }
+    front = next
+  }
+  return d
+}
+
+function layout() {
+  if (!nodes.length) return
+  const depth = depthMap()
+  const far = Math.max(0, ...[...depth.values()])
+  const cols = new Map()
+  for (const n of nodes) {
+    const k = depth.has(n.id) ? depth.get(n.id) : far + 1
+    if (!cols.has(k)) cols.set(k, [])
+    cols.get(k).push(n)
+  }
+  const order = [...cols.keys()].sort((x, y) => x - y)
+  for (const k of order) {
+    // Within a column, keep a group together and put the best-connected of each group first --
+    // so the eye can run down one column and find "the locks ones" as a contiguous run.
+    const list = cols.get(k).sort((x, y) => {
+      const g = (GROUP_RANK[x.group] ?? 99) - (GROUP_RANK[y.group] ?? 99)
+      return g || (deg.get(y.id) || 0) - (deg.get(x.id) || 0) || String(x.id).localeCompare(String(y.id))
+    })
+    const h = (list.length - 1) * ROW_H
+    list.forEach((n, i) => {
+      const p = sim.get(n.id); if (!p) return
+      p.tx = order.indexOf(k) * LAYER_W - (order.length - 1) * LAYER_W / 2
+      p.ty = i * ROW_H - h / 2
+    })
+  }
+}
+const GROUP_RANK = { core: 0, identity: 1, perms: 2, locks: 3, ipc: 4, sched: 5, audit: 6, policy: 7,
+  medium: 8, tools: 9, flow: 10, surface: 11, dist: 12, proof: 13, rule: 14, gap: 15 }
+
 function step() {
   if (energy < 0.002) return
-  const arr = nodes.map((n) => sim.get(n.id)).filter(Boolean)
-  const REP = 14000, SPRING = 0.010, REST = 130, CENTER = 0.0012, DAMP = 0.88
-
-  for (let i = 0; i < arr.length; i++) {
-    for (let j = i + 1; j < arr.length; j++) {
-      const a = arr[i], b = arr[j]
-      let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z
-      let d2 = dx * dx + dy * dy + dz * dz
-      if (d2 < 1) { d2 = 1; dx = (i - j) || 1 }
-      const f = REP / d2 / Math.sqrt(d2)
-      a.vx += dx * f; a.vy += dy * f; a.vz += dz * f
-      b.vx -= dx * f; b.vy -= dy * f; b.vz -= dz * f
-    }
+  // Ease each node onto its slot. Nothing repels anything: the slots are already disjoint, so a
+  // repulsion term could only push nodes off the grid the layout just built for them.
+  for (const n of nodes) {
+    const p = sim.get(n.id); if (!p || p.tx === undefined) continue
+    p.x += (p.tx - p.x) * 0.12
+    p.y += (p.ty - p.y) * 0.12
+    p.z = 0
   }
-  for (const e of edges) {
-    const a = sim.get(e.from), b = sim.get(e.to)
-    if (!a || !b) continue
-    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z
-    const d = Math.hypot(dx, dy, dz) || 1
-    const f = (d - (e.ekind === 'then' ? REST * 1.25 : REST)) * SPRING
-    a.vx += dx / d * f; a.vy += dy / d * f; a.vz += dz / d * f
-    b.vx -= dx / d * f; b.vy -= dy / d * f; b.vz -= dz / d * f
-  }
-  for (const p of arr) {
-    p.vx -= p.x * CENTER; p.vy -= p.y * CENTER; p.vz -= p.z * CENTER
-    p.vx *= DAMP; p.vy *= DAMP; p.vz *= DAMP
-    p.x += p.vx * energy; p.y += p.vy * energy; p.z += p.vz * energy
-  }
-  energy *= 0.997
+  energy *= 0.99
 }
 
 // ---------------------------------------------------------------- camera + draw
@@ -390,20 +538,39 @@ function resize() {
 }
 window.addEventListener('resize', () => { resize(); energy = Math.max(energy, 0.5) })
 
-let yaw = 0.6, pitch = -0.3, zoom = 1, panX = 0, panY = 0
-const FOV = 520
+let zoom = 1, panX = 0, panY = 0
 
 function project(p) {
-  const cy = Math.cos(yaw), sy = Math.sin(yaw)
-  const x1 = p.x * cy - p.z * sy
-  const z1 = p.x * sy + p.z * cy
-  const cp = Math.cos(pitch), sp = Math.sin(pitch)
-  const y2 = p.y * cp - z1 * sp
-  const z2 = p.y * sp + z1 * cp
-  // Perspective divide. `f` doubles as the depth cue: far things are smaller AND fainter, which is
-  // what makes a flat canvas read as depth at all.
-  const f = FOV / (FOV + z2 + 260)
-  return { x: W / 2 + panX + x1 * f * zoom, y: H / 2 + panY + y2 * f * zoom, f, z: z2 }
+  // Flat. No yaw, no pitch, no perspective divide. `f` stays 1 so everything downstream that used
+  // it as a depth cue simply becomes uniform -- which is the point: in 2D there is no depth to
+  // cue, and pretending otherwise is what made the old view unreadable.
+  return { x: W / 2 + panX + p.x * zoom, y: H / 2 + panY + p.y * zoom, f: 1, z: 0 }
+}
+
+/**
+ * Fit the graph to the window, measured in WORLD space.
+ *
+ * The 3D version of this fought itself: it measured the PROJECTED extent, which already had the
+ * current zoom baked in, so setting the zoom changed the next measurement and the two chased each
+ * other until the graph was a knot in the middle. Flat, the simulation's own coordinates are
+ * zoom-independent, so the measurement is stable and one pass is exact.
+ *
+ * Percentiles rather than min/max: a force layout always flings one or two nodes a long way out,
+ * and fitting the absolute extent shrinks the other eighty-five to make room for them.
+ */
+function fitToView() {
+  const xs = [], ys = []
+  for (const n of nodes) { const p = sim.get(n.id); if (p) { xs.push(p.x); ys.push(p.y) } }
+  if (xs.length < 2) return
+  xs.sort((a, b) => a - b); ys.sort((a, b) => a - b)
+  const pct = (arr, q) => arr[Math.min(arr.length - 1, Math.max(0, Math.round((arr.length - 1) * q)))]
+  const dx = Math.max(1, pct(xs, 0.97) - pct(xs, 0.03))
+  const dy = Math.max(1, pct(ys, 0.97) - pct(ys, 0.03))
+  zoom = Math.max(0.12, Math.min(2.2, Math.min((W - 90) / dx, (H - 170) / dy)))
+  // Centre on the middle of that same range, so the fit is about the body of the graph rather
+  // than about wherever the simulation's origin happens to have drifted.
+  panX = -((pct(xs, 0.97) + pct(xs, 0.03)) / 2) * zoom
+  panY = -((pct(ys, 0.97) + pct(ys, 0.03)) / 2) * zoom
 }
 
 let hover = null, selected = null
@@ -417,28 +584,49 @@ function draw() {
   for (const n of nodes) { const p = sim.get(n.id); if (p) P.set(n.id, project(p)) }
   const lit = litSet()
   const isLit = (id) => !lit || lit.has(id)
+  const hopDim = (id) => (lit && lit.get ? dimOf(lit.get(id)) : 1)
   const FADE = 0.07
 
   const drawn = edges.map((e) => ({ e, a: P.get(e.from), b: P.get(e.to) }))
     .filter((o) => o.a && o.b)
     .sort((o1, o2) => (o1.a.z + o1.b.z) - (o2.a.z + o2.b.z))
+  const byId = new Map(nodes.map((n) => [n.id, n]))
   for (const { e, a, b } of drawn) {
     const on = isLit(e.from) && isLit(e.to)
     const touching = focusId && (e.from === focusId || e.to === focusId)
     const flow = e.ekind === 'then'
-    // A step in a process and a dependency are different claims about the world, so they cannot
-    // look the same. Flow edges are brighter and dashed-in-motion; you read them as "then".
-    ctx.strokeStyle = touching ? 'rgba(77,163,255,.9)'
+    // An edge takes the colour of the two things it joins. Within a cluster that makes the cluster
+    // read as one object; across clusters the line changes hue along its length, so a dependency
+    // that leaves its subsystem announces itself instead of disappearing into the pile.
+    const na = byId.get(e.from), nb = byId.get(e.to)
+    const c = mix(na ? hueOf(na) : GHOST, nb ? hueOf(nb) : GHOST, 0.5)
+    // A SEVERE baseline. 113 lines at a readable weight IS the mess -- they cover the nodes and
+    // each other. Unlit edges are barely present, lit ones are quiet, and only the neighbourhood
+    // you asked about is drawn to be followed by eye.
+    const depth = (a.f + b.f) / 2
+    // An edge is only as bright as its FARTHER end, so a link reaching out to hop 3 visibly
+    // recedes instead of shouting as loudly as one touching the focus.
+    const hd = Math.min(hopDim(e.from), hopDim(e.to))
+    ctx.strokeStyle = touching ? 'rgba(140,200,255,.95)'
       : !on ? 'rgba(120,132,160,' + FADE + ')'
-      : flow ? 'rgba(120,200,255,' + (0.30 + 0.35 * ((a.f + b.f) / 2)) + ')'
-      : 'rgba(120,132,160,' + (0.12 + 0.22 * ((a.f + b.f) / 2)) + ')'
-    ctx.lineWidth = touching ? 1.9 : flow ? 1.5 : 1
+      : flow ? `rgba(${c[0]},${c[1]},${c[2]},${(0.22 + 0.30 * depth) * hd})`
+      : `rgba(${c[0]},${c[1]},${c[2]},${(0.07 + 0.13 * depth) * hd})`
+    ctx.lineWidth = touching ? 2.1 : flow ? 1.4 : 0.9
     if (flow && on) { ctx.setLineDash([7, 5]); ctx.lineDashOffset = -(Date.now() / 45) % 12 }
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke()
+    // BUNDLED STRANDS, not straight lines. Two control points placed hard against the columns
+    // either side pull every edge into the gap between them, so a hundred edges leaving one column
+    // converge, cross, and fan out into the next -- the woven spindle look, and it comes from the
+    // geometry rather than from any per-edge styling. It also gets the lines OFF the nodes: a
+    // straight chord cuts through everything between its ends, a curve arcs around it.
+    const mid = (a.x + b.x) / 2
+    ctx.beginPath()
+    ctx.moveTo(a.x, a.y)
+    ctx.bezierCurveTo(mid, a.y, mid, b.y, b.x, b.y)
+    ctx.stroke()
     ctx.setLineDash([]); ctx.lineDashOffset = 0
     if (!on) continue
-    // Direction tick at 62%. An arrowhead at this line weight turns into mush.
-    const t = 0.62, mx = a.x + (b.x - a.x) * t, my = a.y + (b.y - a.y) * t
+    // Direction read at the waist of the curve, where the strands are tightest.
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2
     const ang = Math.atan2(b.y - a.y, b.x - a.x)
     ctx.beginPath()
     ctx.moveTo(mx, my); ctx.lineTo(mx - 6 * Math.cos(ang - 0.4), my - 6 * Math.sin(ang - 0.4))
@@ -447,12 +635,15 @@ function draw() {
   }
 
   const order = nodes.map((n) => ({ n, p: P.get(n.id) })).filter((o) => o.p).sort((a, b) => b.p.z - a.p.z)
+  const labelQueue = []
   const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 320)
   for (const { n, p } of order) {
     const on = isLit(n.id)
     const held = heldBy(n)
-    const col = n.ghost ? GHOST : (STATE_COLOR[n.state] || GHOST)
-    const r = radiusOf(n) * p.f * zoom
+    const col = hueOf(n)
+    // Belt and braces alongside the near plane: arc() THROWS on a negative radius, and the throw
+    // escapes the whole draw loop, so one bad node blanks the entire map instead of itself.
+    const r = Math.max(0.5, radiusOf(n) * p.f * zoom)
 
     if (held && on) {
       ctx.beginPath(); ctx.arc(p.x, p.y, r + 6 + 7 * pulse, 0, 7)
@@ -460,46 +651,123 @@ function draw() {
     }
     if (on && (n === selected || n === hover)) {
       ctx.beginPath(); ctx.arc(p.x, p.y, r + 5, 0, 7)
-      ctx.strokeStyle = 'rgba(77,163,255,.9)'; ctx.lineWidth = 1.5; ctx.stroke()
+      ctx.strokeStyle = 'rgba(160,215,255,.95)'; ctx.lineWidth = 1.5; ctx.stroke()
     }
 
-    ctx.globalAlpha = on ? 1 : 0.13
+    const hd = hopDim(n.id)
+    ctx.globalAlpha = on ? hd : 0.13
+    // GLOW, but only where it is earned. shadowBlur is the single most expensive thing in this
+    // loop, so it is spent on lit nodes near the camera -- which is exactly where the eye already
+    // is. Applying it to all 87 costs frames and, worse, turns the whole field into fog.
+    const glow = on && p.f > 0.55 ? Math.min(16, 5 + r * 0.9) : 0
+    if (glow) { ctx.shadowColor = rgba(col, 0.85); ctx.shadowBlur = glow }
+
+    // STATE IS THE TREATMENT, not the colour. A solid disc is real, a ring is in progress, a
+    // hollow outline is only agreed. That reads at a glance and leaves hue free to say WHERE.
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7)
-    if (n.ghost) {
-      ctx.strokeStyle = col; ctx.lineWidth = 1.4; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([])
+    if (n.ghost || n.state === 'planned') {
+      ctx.strokeStyle = rgba(col, (on ? 0.8 * hd : 0.13) * (0.4 + 0.6 * p.f))
+      ctx.lineWidth = 1.4; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([])
     } else {
-      ctx.fillStyle = col; ctx.globalAlpha = (on ? 1 : 0.13) * (0.4 + 0.6 * p.f); ctx.fill()
+      ctx.fillStyle = col; ctx.globalAlpha = (on ? hd : 0.13) * (0.45 + 0.55 * p.f); ctx.fill()
     }
+    ctx.shadowBlur = 0
     ctx.globalAlpha = 1
 
-    // Label rules, in order of how much a person needs the label:
-    // always for the focus and its neighbours, then for hubs, then for anything near the camera.
-    // Labelling everything at all times is what turned the first version into a wall of text.
-    const important = (deg.get(n.id) || 0) >= 3
-    const show = on && (focusId || query || filterState ? true : (important || p.f > 0.62)) || n === selected || n === hover
-    if (show) {
-      ctx.globalAlpha = on ? 1 : 0.2
-      ctx.font = Math.max(10, 12 * p.f) + 'px ui-sans-serif,system-ui,sans-serif'
-      ctx.fillStyle = 'rgba(231,233,240,' + (0.4 + 0.6 * p.f) + ')'
-      ctx.textAlign = 'center'
-      ctx.fillText(n.label || n.id, p.x, p.y + r + 13)
-      if (held) {
-        ctx.fillStyle = 'rgba(255,194,75,.95)'
-        ctx.font = Math.max(9, 10 * p.f) + 'px ui-sans-serif,system-ui,sans-serif'
-        ctx.fillText(held.by + ' · ' + held.intent, p.x, p.y + r + 26)
-      }
-      ctx.globalAlpha = 1
+    // Anything not finished wears a ring in the state colour. Broken pulses, because a thing that
+    // is broken and sitting quietly in a corner is how it stays broken.
+    if (on && !n.ghost && (n.state === 'broken' || n.state === 'wip')) {
+      const sc = STATE_COLOR[n.state]
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, r + 3.5 + (n.state === 'broken' ? 2.5 * pulse : 0), 0, 7)
+      ctx.strokeStyle = rgba(sc, n.state === 'broken' ? 0.55 + 0.45 * pulse : 0.75)
+      ctx.lineWidth = n.state === 'broken' ? 2 : 1.4
+      ctx.stroke()
     }
+
+    labelQueue.push({ n, p, r, on, held })
+  }
+
+  // ---- LABELS, LAST AND BUDGETED --------------------------------------------------------------
+  //
+  // This is the single biggest thing standing between 87 nodes and a readable picture. Drawing a
+  // label per node is 87 pieces of text over a field of 87 dots: the text covers the structure it
+  // is supposed to explain, and every label collides with two others.
+  //
+  // So labels are a scarce resource, spent in priority order and cut off hard:
+  //   1. whatever you are pointing at, and whatever you asked for  (always -- you asked)
+  //   2. the hubs, by connection count                             (the shape of the thing)
+  //   3. nearest the camera, until the budget runs out             (local detail)
+  // and a label is skipped entirely if its box would touch one already drawn, so what survives is
+  // always legible rather than a pile.
+  //
+  // Drawn in a second pass so labels sit above every node, not just the ones behind them.
+  const focused = !!(focusId || query || filterState || filterGroup)
+  // A deeper focus lights more nodes, so it needs more labels or the outer hops are anonymous
+  // dots -- which is exactly the thing depth was turned up to see.
+  const BUDGET = focused ? (18 + 10 * depth) : 14
+  labelQueue.sort((A, B) => {
+    const pri = (o) => (o.n === selected || o.n === hover ? 3 : o.n.id === focusId ? 3 : focused && o.on ? 2 : 0)
+    const d = pri(B) - pri(A); if (d) return d
+    // then by hop: the chain is read outward, so hop 1 gets named before hop 3
+    const ha = lit && lit.get ? (lit.get(A.n.id) ?? 9) : 0
+    const hb = lit && lit.get ? (lit.get(B.n.id) ?? 9) : 0
+    if (ha !== hb) return ha - hb
+    const gd = (deg.get(B.n.id) || 0) - (deg.get(A.n.id) || 0); if (gd) return gd
+    return B.p.f - A.p.f
+  })
+  const taken = []
+  let spent = 0
+  for (const { n, p, r, on, held } of labelQueue) {
+    const forced = n === selected || n === hover || n.id === focusId
+    if (!forced) { if (!on || spent >= BUDGET) continue }
+    const text = n.label || n.id
+    const size = Math.min(15, Math.max(10, 11 * p.f))
+    ctx.font = size + 'px ui-sans-serif,system-ui,sans-serif'
+    const w = ctx.measureText(text).width
+    const box = { x: p.x - w / 2 - 3, y: p.y + r + 3, w: w + 6, h: size + 5 }
+    // Rectangle overlap against what is already on screen. O(budget) per label, and the budget is
+    // small by construction, so this never shows up in a frame budget.
+    if (!forced && taken.some((t) => box.x < t.x + t.w && box.x + box.w > t.x && box.y < t.y + t.h && box.y + box.h > t.y)) continue
+    taken.push(box)
+    if (!forced) spent++
+
+    ctx.globalAlpha = on ? 1 : 0.22
+    // A dark plate behind the text. Without it a label crossing a bright edge or a node is simply
+    // unreadable, and at this density something is always behind something.
+    ctx.fillStyle = 'rgba(7,8,12,.66)'
+    ctx.fillRect(box.x, box.y, box.w, box.h)
+    ctx.fillStyle = forced ? '#ffffff' : rgba('#e7e9f0', 0.55 + 0.45 * p.f)
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    ctx.fillText(text, p.x, box.y + 2)
+    if (held) {
+      ctx.fillStyle = 'rgba(255,194,75,.95)'
+      ctx.font = Math.min(13, Math.max(9, 9.5 * p.f)) + 'px ui-sans-serif,system-ui,sans-serif'
+      ctx.fillText(held.by + ' · ' + held.intent, p.x, box.y + box.h + 2)
+    }
+    ctx.textBaseline = 'alphabetic'
+    ctx.globalAlpha = 1
   }
   hitmap = order.map(({ n, p }) => ({ n, x: p.x, y: p.y, r: radiusOf(n) * p.f * zoom + 6 }))
 }
 let hitmap = []
 
+// Fit ONCE, after the force layout has stopped moving. Fitting on the first frame measures a
+// cloud that is still flying apart, so the view would settle wrong and stay wrong; and refitting
+// forever would fight the viewer every time they zoomed. It re-arms whenever the graph itself
+// changes size, because that is a genuinely new shape to frame.
+let lastFitCount = -1, fitted = false
 function frame() {
   // Re-check every frame rather than trusting one call at startup. The canvas can report 0 on the
   // first frame, and a stale W/H silently moves the centre of the world off screen.
   if (cv.clientWidth && (cv.clientWidth !== W || cv.clientHeight !== H)) { resize(); energy = Math.max(energy, 0.6) }
-  step(); draw(); requestAnimationFrame(frame)
+  step()
+  // Track the fit while the layout is still moving, then stop and leave the camera to whoever is
+  // driving it. Re-arms when the graph itself changes size, because that is a new shape to frame.
+  if (nodes.length !== lastFitCount) { lastFitCount = nodes.length; fitted = false }
+  if (!fitted && nodes.length) { fitToView(); if (energy < 0.08) fitted = true }
+  draw(); requestAnimationFrame(frame)
 }
 
 // ---------------------------------------------------------------- interaction
@@ -521,7 +789,7 @@ cv.addEventListener('pointermove', (e) => {
   const dx = e.clientX - lastX, dy = e.clientY - lastY
   moved += Math.abs(dx) + Math.abs(dy)
   if (shift) { panX += dx; panY += dy }
-  else { yaw += dx * 0.006; pitch = Math.max(-1.4, Math.min(1.4, pitch + dy * 0.006)) }
+  else { panX += dx; panY += dy }
   lastX = e.clientX; lastY = e.clientY
 })
 cv.addEventListener('pointerup', (e) => {
@@ -533,7 +801,7 @@ cv.addEventListener('wheel', (e) => {
   zoom = Math.max(0.25, Math.min(4, zoom * (e.deltaY < 0 ? 1.12 : 0.89)))
 }, { passive: false })
 addEventListener('keydown', (e) => {
-  if (e.key === 'r' || e.key === 'R') { yaw = 0.6; pitch = -0.3; zoom = 1; panX = panY = 0; energy = 1 }
+  if (e.key === 'r' || e.key === 'R') { fitToView(); energy = 0.25 }
   if (e.key === 'Escape') select(null)
 })
 
@@ -589,7 +857,7 @@ for (const b of document.querySelectorAll('.depth button')) {
     for (const o of document.querySelectorAll('.depth button')) o.classList.toggle('on', o === b)
   }
 }
-document.querySelector('.depth button[data-d="1"]').classList.add('on')
+document.querySelector('.depth button[data-d="2"]').classList.add('on')
 
 const clearF = document.getElementById('clearF')
 for (const sp of document.querySelectorAll('#legend span[data-s]')) {

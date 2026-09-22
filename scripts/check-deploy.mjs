@@ -35,6 +35,21 @@ process.chdir(ROOT)
 // The files a deploy actually starts. Add an entry here if you add another entry point.
 const ENTRIES = ['server.js']
 
+let isGitRepo = false
+try {
+  const top = execSync('git rev-parse --show-toplevel', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim()
+  if (path.resolve(top).toLowerCase() === path.resolve(ROOT).toLowerCase()) {
+    isGitRepo = true
+  }
+} catch {
+  isGitRepo = false
+}
+
+if (!isGitRepo) {
+  console.log('[check-deploy] skipped: working copy is not its own git repository checkout')
+  process.exit(0)
+}
+
 const tracked = new Set(
   execSync('git ls-files', { encoding: 'utf8', maxBuffer: 1 << 26 })
     .split(/\r?\n/).filter(Boolean).map((s) => s.split(path.sep).join('/'))

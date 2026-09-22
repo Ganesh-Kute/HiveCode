@@ -25,7 +25,9 @@ import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
+import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
+import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
 // `languageFor` belongs in this list and was missing: reconcile() calls it on the
 // clean-rewrite path, so a local whole-file rewrite of a supported file threw
@@ -34,6 +36,12 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 // whole file is the most common thing an agent does, so this fired constantly.
 import grmLink from './grm-link.cjs' // hands this room's history to GRM, so the ROOM has a memory
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
+import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from './hive-pr-staleness.js' // room-versus-branch provenance staleness checks (HIV-P9)
+// HIV-P8. The map key MUST be the string 'obligations' — hive-mcp.js:656 reads that exact key, and
+// a debt written anywhere else would be invisible to hive_owed: a warning nobody can see, which is
+// the defect this ticket is about, one level down.
+import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
+import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -78,6 +86,52 @@ const ALWAYS_IGNORE = [
   '__pycache__/', '*.pyc', '.pytest_cache/', '.mypy_cache/', '.venv/',
 ]
 
+// Is this "merge" actually a FUSION — output neither author wrote? Returns the reason, or ''.
+//
+// Exported and pure so it can be tested against crafted inputs. Forcing a real fusion is
+// timing-dependent (it needs concurrent writes landing inside the sync window), and a guard
+// this important should not be covered only by a test that is inherently flaky.
+//
+// The two signals, and why each is here:
+//   - BROKE IT: both versions parsed and the merged output does not. There is no reading of
+//     that which is correct — whatever it produced, neither author wrote it.
+//   - DUPLICATION: distinctive lines appear MORE often in the output than in the side they
+//     came from. That is content copied rather than merged, and it is what a union of two
+//     near-identical versions looks like — the live corruption had `const MAX_OPEN` and
+//     `function evictIfOverCap` three times each.
+//
+// LENGTH IS DELIBERATELY NOT A SIGNAL, and the first version of this got that wrong. "The
+// output is about as long as both inputs combined" describes a fusion, but it equally
+// describes two authors who each added two hundred lines in different places — a perfectly
+// good merge. The test caught it firing on exactly that. Duplication separates them: a
+// genuine disjoint merge repeats nothing.
+export function fusionReason(merged, mine, theirs, lang) {
+  if (!merged || !mine || !theirs || mine === theirs) return ''
+  // If a side was ALREADY broken, the merge did not break it — blaming the merge would make
+  // every merge on a half-written file look like corruption.
+  if (lang && lang.parses(mine) && lang.parses(theirs) && !lang.parses(merged)) {
+    return 'the merged result does not parse, although BOTH versions did'
+  }
+  // Only distinctive lines: a closing brace or a blank line legitimately repeats, and
+  // counting those would make every file look duplicated.
+  const sig = (s) => s.split('\n').map((l) => l.trim()).filter((l) => l.length > 24)
+  const tally = (arr) => { const m = new Map(); for (const l of arr) m.set(l, (m.get(l) || 0) + 1); return m }
+  const M = tally(sig(merged)), A = tally(sig(mine)), B = tally(sig(theirs))
+  let dup = 0, seen = 0
+  for (const [line, n] of M) {
+    const expected = Math.max(A.get(line) || 0, B.get(line) || 0)
+    if (expected === 0) continue // content in neither side — new, and not our business here
+    seen++
+    if (n > expected) dup++
+  }
+  // Needs enough lines to mean anything, and enough of them repeated to be structural rather
+  // than one unlucky duplicated statement.
+  if (seen >= 10 && dup / seen >= 0.25) {
+    return `${dup} of ${seen} distinctive lines appear more often in the result than in either version — that is content duplicated, not merged`
+  }
+  return ''
+}
+
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
 const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
@@ -89,10 +143,15 @@ const LOCK_FILE = '.hive-lock.json'     // one sync client per folder; see acqui
 const ID_FILE = '.hive-id.json'    // this client's substrate signing identity (private); never synced
 const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
 const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
+// The claim map is the stigmergic trace agents SENSE before editing (see `claims` below), but it
+// was the one part of the room that never reached disk — so an agent could only learn it by
+// remembering to call a tool, and a trace nobody can see coordinates nothing. Rendered here for
+// the same reason HIVE_CHAT.md is: a file in the working folder needs no tool call and no memory.
+const CLAIMS_FILE = 'HIVE_CLAIMS.md'
 const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder joins (via .hive.json) + behaves
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
-const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, AGENTS_FILE])
+const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
 
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the
@@ -153,6 +212,19 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 
 ## Know who you are working with
 - Read HIVE_MEMBERS.md — who (humans + AIs) is in the room right now, and how many.
+
+## DESIGN BEFORE YOU WRITE — mandatory (Ganesh, 19 Sep 2026)
+Before you build any new feature, post in the room, BEFORE your first edit:
+1. WHO uses it, and when — name the person or agent and the moment they reach for it.
+2. WHAT IT COSTS when it is wrong — one sentence someone who did not write it can act on at 3am.
+3. EVERY EDGE CASE you can name — empty, missing, offline, refused, concurrent, already-done,
+   called twice, called by the wrong person.
+Then build it.
+This is not process for its own sake. Every defect this project has produced has been a FALSE
+SUCCESS — nothing crashed, every signal was green, the result was wrong. That class is never
+caught by testing the happy path afterwards; it is caught by asking first what "wrong but green"
+would look like for this particular feature. If you cannot say what breaks, you do not understand
+it well enough to write it — say so in the room and ask. That is a complete answer.
 
 ## Before you touch a file
 1. Read HIVE_CHAT.md — what is everyone doing right now.
@@ -339,7 +411,21 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false }) {
+  // BEFORE ANY DISK OR SOCKET WORK. A name outside the mention grammar joins successfully and is
+  // then unreachable: its mail, its obligations and its wake-on-mention are all silently dead,
+  // and the only symptom is other people being told "@X is NOT in the room" about someone who is
+  // sitting right there. Refusing here costs the caller one clear error; allowing it cost an hour
+  // on 20 Sep 2026 and was only found because a human noticed the routing failures by eye.
+  // This throws rather than returning, because startSync has no failure channel and a half-joined
+  // client is worse than no client.
+  const nameCheck = validateMemberName(name)
+  if (!nameCheck.ok) {
+    const e = new Error(`${nameCheck.error} Try "${nameCheck.suggested}".`)
+    e.code = 'EHIVEINVALIDNAME'
+    e.suggested = nameCheck.suggested
+    throw e
+  }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
   // FIRST, before any socket or file work: if another client already holds this folder,
@@ -432,6 +518,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // DISAGREEMENT becomes the signal. One shared "size" field would have silently converged on
   // whichever peer wrote last, which is precisely the failure it exists to catch.
   const swarmAttest = doc.getMap('swarm_attest')
+  // GATE VERDICTS — `<region>|<peerName>` -> the result of that peer running the room's check in
+  // ITS OWN folder before handing the file back. Keyed per peer for the same reason swarmAttest
+  // is: "the tests pass" is a fact about one folder's bytes, and storing it as a single shared
+  // value would converge on whoever released last, silently erasing the disagreement that is the
+  // entire signal. Two agents reporting different verdicts for one path both survive here.
+  const gateResults = doc.getMap('gate_results')
   // CLAIM LEASE. Expiry is evaluated lazily on read, so the moment a lease passes its TTL the
   // next agent that tries simply gets the file -- that is what stops a stalled agent
   // deadlocking the room.
@@ -856,9 +948,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (lic) wsParams.license = lic
   if (name) wsParams.name = String(name).slice(0, 48)
   if (kind) wsParams.kind = kind
+  if (passive) wsParams.passive = 'true'
   const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, passive: !!passive }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -956,6 +1049,148 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // "not pulled yet", NOT "new file", so we must not re-seed it from disk (that
   // would create a second CRDT history and duplicate/garble content on rejoin).
   const fileDocs = new Map() // relPath -> { doc, provider, text, synced }
+
+  // REFUSED FILE-ROOMS. y-websocket retries a failed upgrade forever, with backoff and in
+  // silence. That is right for a flaky network and badly wrong for a relay that is full: on
+  // 18 Sep 2026 a relay answered 38,011 connections with Q430 while the agents involved
+  // showed no symptom at all. Their files simply never arrived, and an unsynced file-doc
+  // reads as EMPTY, which is how the same evening ended with 186 files written to 0 bytes.
+  //
+  // So count refusals for docs that have NEVER synced, and say it once. The condition is
+  // usually a whole-relay problem rather than a per-file one, so one message naming the
+  // count is the useful shape -- one per file would be 800 lines of chat.
+  const refusedFiles = new Map() // relPath -> consecutive connection errors, cleared on sync
+  const refusedCodes = new Map() // relPath -> the HTTP status the relay refused with, when it gave one
+  let refusalSaidAt = 0
+  let refusalTimer = null
+
+  function noteRefusals() {
+    if (refusalTimer) return
+    // Debounced: a full relay refuses every file at once, and we want the total, not the first.
+    refusalTimer = setTimeout(async () => {
+      refusalTimer = null
+      const stuck = [...refusedFiles.keys()].filter((r) => { const e = fileDocs.get(r); return e && !e.synced })
+      // One transient error on one file is a blip, not an outage. Two or more files stuck, or
+      // repeated failures on one, is the shape of a relay that will not take us.
+      const repeated = stuck.some((r) => (refusedFiles.get(r) || 0) >= 3)
+      if (stuck.length < 2 && !repeated) return
+      const now = Date.now()
+      if (now - refusalSaidAt < 300000) return // at most once every 5 minutes
+      refusalSaidAt = now
+      // HIV-P13. THIS MESSAGE USED TO NAME A CAUSE IT HAD NOT MEASURED.
+      //
+      // It said "the usual cause is the relay being full (Q430)" on the strength of having
+      // observed only that N file docs have synced=false. Measured 21 Sep 2026, at the moment a
+      // third agent printed it for 49 files: the relay reported 56 connections of 512, and
+      // limits.js keys its per-room count on the FILE-room, so any one file held three
+      // connections against a cap of 64. Q430 needed 512 and had 56; Q431 needed 64 and had 3.
+      // Neither refusal could have fired. The real event was the relay dropping its room state
+      // -- /health went rooms 44 -> 0 -> 29 -> 44 over a few minutes -- and every client
+      // reconnecting one socket per file.
+      //
+      // "The relay is full" and "the relay just dropped everyone and we are all reconnecting"
+      // produce an identical symptom and need OPPOSITE responses: a config change, or thirty
+      // seconds of patience. Telling an operator to raise a limit that is 89% free is worse
+      // than saying nothing, because they will do it, see no change, and conclude the product
+      // is broken -- correctly, on the evidence they were given.
+      //
+      // So the client asks the relay instead of guessing, and reports what came back. It also
+      // stops printing the literal string "<relay-http>", which it did for three weeks while
+      // holding the relay URL in scope.
+      // EVIDENCE BEFORE INFERENCE. If the relay actually refused us it said so with a status,
+      // and explain() maps those to the right cause and the right knob -- Q431 to HIVE_SEATS,
+      // Q430 to capacity, 401/403 to the token, 402 to the plan. That is a fact from the relay.
+      // Only when nothing refused us -- the sockets simply never came up, which is what a
+      // dropped-and-reconnecting relay looks like -- is there anything left to infer, and then
+      // we go and ASK rather than assert.
+      const coded = stuck.map((r) => refusedCodes.get(r)).filter(Boolean)
+      const code = coded.length ? coded.sort((a, b) => coded.filter((c) => c === b).length - coded.filter((c) => c === a).length)[0] : null
+      const msg = code
+        ? `${stuck.length} file(s) are not synced and will READ AS EMPTY until this clears. ` +
+          `The relay refused ${coded.length} of them with ${code}: ${explain(code)} ` +
+          `Do not trust this folder's contents meanwhile.`
+        : (await RH.explainNotSyncing(relay, {
+            stuck: stuck.length, what: 'files',
+            trailer: `Nothing refused these connections with a status code, so the cause above is ` +
+              `inferred from the relay's own counters rather than reported by it. ` +
+              `Do not trust this folder's contents meanwhile.`,
+          })).text
+      log(`[${name}] !! ${msg}`)
+      try { say(`[!] @all ${msg}`) } catch { /* chat may itself be unreachable — the log still carries it */ }
+    }, 4000)
+    if (refusalTimer.unref) refusalTimer.unref()
+  }
+  // HIV-P18. THE DOCUMENTED REMEDY DID NOT EXIST.
+  //
+  // The README told every user: "A file outside the working set is not on your disk yet. It
+  // exists in the room. Reading or claiming the path fetches it." Measured 21 Sep 2026 against
+  // a client holding 8 of a room's 41 files, on a path that WAS in the manifest:
+  //
+  //   whyNotShared(mod024.js) -> ""      (in scope; edits would reach the room)
+  //   claim(mod024.js)        -> true    ("it's yours")
+  //   after claim + 9s        -> on disk = false
+  //   after release + 9s      -> on disk = false
+  //   provenanceOf            -> 0 receipts,  headOf -> null   (doc never opened)
+  //   public fetch/read/open  -> undefined
+  //
+  // Nothing brought the bytes down. The cause is one line in reconcile: `if (disk === null)
+  // return` before openFile, plus a warm-up that only opens files already on local disk. A
+  // manifest entry with no local copy was never opened, so it could never arrive.
+  //
+  // The only thing that DID work was writing to the path -- which is precisely the blind
+  // recreate HIV-P14b guards. So the sole recovery route was the one dangerous action, reached
+  // by an agent that had been told "it's yours" and then saw an empty directory. That is
+  // HIV-P3's class arriving inbound: a claim granted over bytes that cannot move.
+  //
+  // This makes the sentence true. `fetch` opens the doc and RESOLVES WHEN THE CONTENT HAS
+  // LANDED, because an un-awaited open is the same false success one layer down: the caller
+  // reads the directory, sees nothing, and concludes the file is absent.
+  function fetchFile(relPath, { timeoutMs = 15000 } = {}) {
+    const r = String(relPath)
+    if (!canOpen(r)) return Promise.resolve({ ok: false, reason: `${r} is out of your scope` })
+    const full = path.join(ROOT, r)
+    // Already here: report it, and say so rather than implying we went and got it.
+    if (fs.existsSync(full)) return Promise.resolve({ ok: true, alreadyLocal: true, file: r })
+    // Not in the room either. This is the case @Hermes hit, and it is NOT the working-set
+    // case: nothing will ever arrive, so saying "fetching" would be a lie. The two look
+    // identical from an empty directory and have opposite remedies, so they get different
+    // answers here.
+    if (!manifest.has(r)) {
+      return Promise.resolve({
+        ok: false, notInRoom: true, file: r,
+        reason: `${r} is not in this room at all — no client has ever published it, so nothing ` +
+          `can fetch it. This is not a working-set miss. Check the room's .gitignore allow-list ` +
+          `covers the path, then have whoever holds the file write it into their synced folder.`,
+      })
+    }
+    const e = openFile(r)
+    if (!e) return Promise.resolve({ ok: false, reason: `could not open ${r}` })
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (res) => { if (done) return; done = true; clearInterval(iv); clearTimeout(to); resolve(res) }
+      const check = () => {
+        if (!e.synced) return
+        // reconcile() runs on the provider's own sync event and writes to disk. Wait for the
+        // BYTES, not for the flag -- the flag says the socket settled, which is not the claim
+        // being made to the caller.
+        if (fs.existsSync(full)) return finish({ ok: true, file: r, bytes: fs.statSync(full).size })
+        // Synced and still nothing: the room holds this path with empty content. Real, and a
+        // different answer from "not fetched yet".
+        if (e.text.toString() === '') return finish({ ok: true, file: r, empty: true, bytes: 0 })
+      }
+      const iv = setInterval(check, 250)
+      if (iv.unref) iv.unref()
+      const to = setTimeout(() => finish({
+        ok: false, file: r, timedOut: true,
+        reason: `${r} is in the room but did not arrive within ${timeoutMs}ms. The file's own ` +
+          `socket may be refused — hive_status reports filesHeld of roomFiles, and a refused ` +
+          `file doc is indistinguishable from an empty file.`,
+      }), timeoutMs)
+      if (to.unref) to.unref()
+      check()
+    })
+  }
+
   function openFile(relPath) {
     let e = fileDocs.get(relPath)
     if (e) return e
@@ -998,7 +1233,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // The fork record arrived/changed from a peer: render it locally, or — if it was
     // cleared (resolved elsewhere) — adopt the now-clean shared text to disk.
     conflict.observe((_ev, txn) => { if (txn.local) return; if (e.conflict.has('meta')) renderConflict(relPath); else adoptResolved(relPath) })
-    fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(relPath, 'remote'); detectFork(relPath) } }) // initial pull settled
+    fprovider.on('sync', (s) => { if (s) { e.synced = true; refusedFiles.delete(relPath); reconcile(relPath, 'remote'); detectFork(relPath) } }) // initial pull settled
+    // A refused upgrade lands here. The provider will keep retrying by itself, which is the
+    // right behaviour and exactly why nothing surfaces it — so count it and let noteRefusals
+    // decide whether this is a blip or a relay that will not take us.
+    fprovider.on('connection-error', (ev) => {
+      if (e.synced) return // already have the content; a later blip is the provider's business
+      refusedFiles.set(relPath, (refusedFiles.get(relPath) || 0) + 1)
+      // HIV-P13. THE STATUS CODE WAS THROWN AWAY HERE, and it is the only authoritative evidence
+      // in the whole path. joinRoom in hive-mcp.js already captured it from this same event; this
+      // handler took no argument at all, so noteRefusals had nothing but "N files are quiet" and
+      // had to INFER a cause -- which is how it came to announce Q430 on 21 Sep while the relay
+      // sat at 56 of 512. explain() above maps these codes correctly and has done since 5 Sep.
+      const code = ev && (ev.code || ev.status)
+      if (code) refusedCodes.set(relPath, code)
+      noteRefusals()
+    })
+    // Newly opened counts as used, and opening is the moment the working set can go over
+    // its bound — so this is where the least-recently-used ones are let go.
+    touched.set(relPath, Date.now())
+    evictIfOverCap(relPath)
     return e
   }
   function closeFile(relPath) {
@@ -1010,6 +1264,60 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fileDocs.delete(relPath)
   }
   const fileText = (relPath) => { const e = fileDocs.get(relPath); return e ? e.text : null }
+
+  // HIV-18: BOUND HOW MANY FILE SOCKETS THIS CLIENT HOLDS.
+  //
+  // Hivecode opens one WebSocket per FILE. A relay allows 512 connections in total by
+  // default, and a normal project has more files than that, so a single client could
+  // exhaust the whole relay by itself. Measured 18 Sep 2026: 889 files, 38,011 Q430
+  // refusals in one evening, three agents locked out — and because a file-doc that never
+  // syncs reads as EMPTY, 186 files per folder were written to 0 bytes.
+  //
+  // Holding every file open forever is what made that possible. A client now keeps a
+  // BOUNDED working set: the most recently used MAX_OPEN files stay connected, the rest
+  // are closed and reopened on demand. Closing a file doc costs nothing on disk — the
+  // bytes stay where they are, the room keeps the content, and touching the file reopens
+  // it and pulls the current copy.
+  //
+  // THE TRADE, stated plainly: a file outside the working set does not receive remote
+  // edits until something touches it. That is a real semantic change, and it is strictly
+  // better than the alternative it replaces, which was not receiving them either AND
+  // believing the file was empty. The default is high enough that ordinary projects never
+  // notice; size it as MAX_OPEN x agents < the relay's maxConnsTotal.
+  //
+  // NEVER EVICT, because these lose work rather than merely adding latency:
+  //   - a doc that has not synced (its content has not reached the relay yet)
+  //   - a file in an unresolved conflict (its fork record is live and local-only)
+  //   - a file anyone currently holds a claim on (they are mid-edit)
+  //   - anything used within the grace window
+  const MAX_OPEN = Math.max(8, Number(process.env.HIVE_MAX_OPEN_FILES) || 128)
+  // Configurable because the grace window is what makes eviction untestable otherwise: in a
+  // short run every file was touched seconds ago, so nothing is ever eligible.
+  const EVICT_GRACE_MS = Number(process.env.HIVE_EVICT_GRACE_MS) || 30000
+  const touched = new Map() // relPath -> last use (ms)
+  const touchFile = (relPath) => { if (fileDocs.has(relPath)) touched.set(relPath, Date.now()) }
+  let evicted = 0
+  function evictIfOverCap(keep) {
+    if (fileDocs.size <= MAX_OPEN) return
+    const now = Date.now()
+    const isClaimed = (r) => { try { return claims.has(r) } catch { return false } }
+    const cand = []
+    for (const [r, e] of fileDocs) {
+      if (r === keep || !e.synced) continue
+      if (conflicted.has(r)) continue
+      try { if (e.conflict && e.conflict.size) continue } catch { }
+      if (isClaimed(r)) continue
+      const t = touched.get(r) || 0
+      if (now - t < EVICT_GRACE_MS) continue
+      cand.push([r, t])
+    }
+    cand.sort((a, b) => a[1] - b[1]) // least recently used first
+    let over = fileDocs.size - MAX_OPEN
+    for (const [r] of cand) {
+      if (over-- <= 0) break
+      closeFile(r); touched.delete(r); evicted++
+    }
+  }
 
   // My own path scope, read from my token (for THIS room). Used so I don't even
   // try to open files I'm not granted — the relay would reject them anyway, but
@@ -1027,6 +1335,84 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // or a full-write grant => everything I can open is writable (back-compat).
   const canWrite = (relPath) => !myScope || writeAllowed(myScope, relPath)
 
+  // WOULD AN EDIT TO THIS PATH ACTUALLY REACH ANYONE? '' if yes, else the reason. (HIV-27)
+  //
+  // A claim is a path STRING in the shared `claims` map. Whether that path's BYTES sync is
+  // decided somewhere else entirely, per client, by canOpen/isIgnored. Nothing compared the
+  // two, so an agent could hold an exclusive claim on a file nobody else can see, do the work,
+  // pass a gate that runs in its OWN folder where the file is real, and hand back something
+  // that never existed for anyone else. Every signal green, the work genuinely done, and
+  // invisible. Observed live: an agent edited scripts/check-deploy.mjs, claimed it, released it
+  // through the gate, and the other two folders still held the old bytes.
+  //
+  // This is checked at CLAIM time on purpose. Release is too late -- by then the agent has
+  // built the thing it intended to write, and all we could do is tell it the work was wasted.
+  //
+  // THE FALSE-POSITIVE DIRECTION IS WHAT MAKES THIS USABLE, and it is easy to get wrong.
+  // A claim may name a logical region rather than a file ("auth-refactor", "the parser"), and
+  // under an ALLOW-LIST .gitignore -- `/*` followed by negations, which is how a room bounds
+  // itself against the one-socket-per-file limit -- isIgnored() returns true for every string
+  // that is not an explicitly allowed path. A naive isIgnored() check would therefore refuse
+  // almost every legitimate claim in exactly the rooms that need this guard most, and it would
+  // be switched off within a day. So we only judge things we have positive reason to believe
+  // are FILES: known to the room, present on disk, or carrying a directory separator.
+  // HIV-P3, 20 Sep 2026. THE GENESIS CASE: the five tests above are all false for a root-level
+  // file that DOES NOT EXIST YET, which is the most common reason anyone claims at all -- you
+  // claim `config.env` precisely because you are about to create it. Found by DeepMind-Agent.
+  // So HIV-27's guard had a hole in exactly the case it was written for: claim succeeds, write
+  // succeeds, the local gate passes because in YOUR folder the file is real, and the bytes never
+  // leave. Born invisible, every signal green.
+  //
+  // THE ONLY QUESTION IS: is this bare string a FILE-TO-BE or a LOGICAL LABEL? Nothing on disk
+  // and nothing in the room can answer it, so this is a guess, and the direction of the guess is
+  // what matters. Guessing "file" too eagerly refuses legitimate region claims -- and under an
+  // allow-list .gitignore that means refusing ALMOST ALL of them, which gets the guard switched
+  // off within a day and costs more than the hole. So every rule here must be one a LABEL would
+  // essentially never satisfy.
+  //
+  // THE DIGIT RULE IS THE LOAD-BEARING ONE and it is not obvious. A trailing dot-segment
+  // containing a LETTER is an extension: .js .env .secret. One that is ALL DIGITS is a version
+  // number: v1.2, release-0.11.6, HIV-P3.5. Without that distinction every ticket id and release
+  // label in this room's own vocabulary gets refused as a file.
+  //
+  // WHAT THIS DOES NOT CLOSE, stated rather than discovered later. Extensionless root files that
+  // are neither conventional nor `*file` shaped -- a bare `config`, `staging`, `hosts` -- are
+  // still read as labels and still go invisible. The hole narrows; it does not close. It cannot
+  // close here, because at claim time the string is all we have. The rest belongs at WRITE time,
+  // where a path that appears on disk inside the room folder is a fact and needs no heuristic.
+  // That is HIV-P8, and it is filed rather than quietly assumed.
+  const EXTENSIONLESS_ROOT_FILES = new Set([
+    'LICENSE', 'LICENCE', 'README', 'CHANGELOG', 'CHANGES', 'NOTICE', 'AUTHORS', 'CONTRIBUTORS',
+    'CODEOWNERS', 'COPYING', 'INSTALL', 'CONTRIBUTING', 'VERSION', 'MAINTAINERS', 'TODO',
+  ])
+  const looksLikeFilename = (p) => {
+    if (/\s/.test(p)) return false                       // "the parser rewrite", "P3 lane"
+    if (/\.[^.]*[A-Za-z][^.]*$/.test(p)) return true     // .js .env .secret -- but NOT .2 .5 .6
+    if (EXTENSIONLESS_ROOT_FILES.has(p.toUpperCase())) return true
+    // Makefile, Dockerfile, Rakefile, Gemfile, Procfile, Vagrantfile, Justfile, Caddyfile.
+    // Capital-initial and case-SENSITIVE on purpose: lowercase "profile" and "logfile" are
+    // perfectly ordinary region names and must stay claimable.
+    if (/^[A-Z][A-Za-z]+file$/.test(p)) return true
+    return false
+  }
+
+  const whyNotShared = (relPath) => {
+    const p = String(relPath || '')
+    if (!p) return ''
+    let onDisk = false
+    try { onDisk = fs.existsSync(path.join(ROOT, p)) } catch { onDisk = false }
+    // SKIP counts as positive evidence: those names ARE files by definition, and a control
+    // file sits in the room root with no separator in its name, so the heuristics below miss it.
+    const isFile = manifest.has(p) || fileDocs.has(p) || SKIP.has(p) || onDisk || p.includes('/')
+      || looksLikeFilename(p)                    // HIV-P3: the genesis case -- see above
+    if (!isFile) return ''                       // a label, not a path -- not ours to judge
+    if (!isSafeRelPath(p)) return `"${p}" is not a safe relative path, so it can never be synced`
+    if (SKIP.has(p)) return `${p} is a Hivecode control file, not shared source`
+    if (!canOpen(p)) return `your access token's scope does not cover ${p}, so its bytes stay in this folder`
+    if (isIgnored(p)) return `${p} is ignored by a .gitignore here, so this client never opens a sync connection for it -- anything you write stays in this folder and no other agent will ever see it`
+    return ''
+  }
+
   const known = new Set()
   const mtimes = new Map()
   // Paths that already existed on disk when this client STARTED. This is the
@@ -1034,6 +1420,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // files" (adopt the room's copy) and "this file was created during the session"
   // (a creation race -- merge, never adopt). Populated once, on the first scan.
   const preexisting = new Set()
+  // HIV-P14b. Manifest keys as of our first sync: what the ROOM held before we arrived.
+  // `preexisting` records our DISK, which structurally cannot distinguish "nobody had this file"
+  // from "the room had it all along and we never fetched it". null until the first sync, and null
+  // must never be read as "the room was empty" -- that would classify every joiner's first
+  // creation as a race, which is the bug this exists to fix.
+  let roomAtJoin = null
   let firstScanDone = false
   const shadow = new Map()     // relPath -> exact bytes THIS ENGINE last wrote/captured (source-level edit capture)
   // THE SAME THING, FROM THE PREVIOUS SESSION, and the reason it exists:
@@ -1057,15 +1449,28 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // work (it would look like a deliberate deletion against an up-to-date base).
 
   const rel = (full) => path.relative(ROOT, full).split(path.sep).join('/')
-  function walk(d, acc = []) {
+  // HIV-P8: `skipped` collects the files this walk DECLINES to sync, and that second list is the
+  // whole ticket. Everything in this engine is derived from "the files we sync", so every natural
+  // place to notice a born-invisible file is definitionally blind to it: walk() dropped ignored
+  // paths, so scan() never saw them, so reconcile() was never called for them, so the guard at the
+  // top of reconcile() was unreachable for exactly the class of file it names. Hooking there would
+  // have passed a unit test that called reconcile() directly and done nothing in a real session.
+  //
+  // DIRECTORY PRUNING IS UNCHANGED, deliberately. Descending into ignored directories to find
+  // ignored files would walk vendor and build trees on every tick. Measured on a real checkout with
+  // pruning kept: 7934 synced, 256 ignored files visible, 280 directories descended, 191ms for the
+  // whole traversal — and that traversal already happens. We are keeping an answer isIgnored()
+  // already computed instead of discarding it. An ignored file inside an ignored directory stays
+  // unseen, which is the correct trade at that price.
+  function walk(d, acc = [], skipped = []) {
     let entries = []
     try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return acc }
     for (const e of entries) {
       if (IGNORE.has(e.name)) continue
       const full = path.join(d, e.name)
       const r = rel(full)
-      if (e.isDirectory()) { if (!isIgnored(r + '/')) walk(full, acc) }      // prune ignored dirs
-      else if (e.isFile()) { if (!isIgnored(r)) acc.push(full) }             // skip ignored/secret files
+      if (e.isDirectory()) { if (!isIgnored(r + '/')) walk(full, acc, skipped) }   // prune ignored dirs
+      else if (e.isFile()) { if (isIgnored(r)) skipped.push(full); else acc.push(full) }
     }
     return acc
   }
@@ -1154,6 +1559,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
+    touchFile(relPath) // reconciling a file IS using it — keep it in the working set
     // SOURCE CAPTURE (fork gate): before ANYTHING in this pass can merge over or render into
     // this file, record any authored edit sitting on disk. The edit enters the provenance
     // DAG first; whatever happens to the disk afterwards can no longer lose it.
@@ -1204,9 +1610,29 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (disk !== null && hasConflictMarkers(disk) && !hasConflictMarkers(fe.text.toString())) { adoptResolved(relPath); return }
     }
     const docText = fe.text.toString()
-    if (docText === '' && !manifest.has(relPath)) {
-      // the relay has no copy of this path -> publish ours (a genuinely new file)
+    // An empty shared doc is authoritative ONLY if we have history for this path.
+    // A file's NAME lives in the parent doc and its CONTENT in the file's own doc, on two
+    // different connections — there is no atomicity across them. A client that joins a large
+    // project and dies mid-join gets every manifest key up and only some file bodies, leaving
+    // the room asserting that paths exist with nothing behind them. With no ancestor and real
+    // bytes on disk, "" means the publisher never finished, not that the file is empty, and
+    // adopting it deletes real work (measured: 186 files zeroed across three folders).
+    // A genuine emptying of a file we HAVE synced still has an ancestor, so it falls through
+    // to the merge below and still lands.
+    const noHistory = !bases.has(relPath) && !priorShadow.has(relPath)
+    // HIV-P14b tracing, env-gated. Which branch a blind recreate actually takes was guessed
+    // wrong twice from reading the code; this answers it from the running product.
+    if (process.env.HIVE_P14_DEBUG && new RegExp(process.env.HIVE_P14_DEBUG).test(relPath)) {
+      log(`[P14] ${relPath} origin=${origin} synced=${fe.synced} docLen=${docText.length} ` +
+        `diskLen=${disk === null ? 'null' : disk.length} hasBase=${bases.has(relPath)} ` +
+        `priorShadow=${priorShadow.has(relPath)} inManifest=${manifest.has(relPath)} ` +
+        `preexisting=${preexisting.has(relPath)}`)
+    }
+    if (docText === '' && (!manifest.has(relPath) || (disk && noHistory))) {
+      // the relay has no usable copy of this path -> publish ours (a genuinely new file,
+      // or one whose registration outlived the join that promised it)
       if (disk === null) return
+      if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=genesis-publish ${relPath}`)
       fe.doc.transact(() => applyDiff(fe.text, disk))
       stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)
       manifest.set(relPath, 1)
@@ -1254,6 +1680,72 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // disjoint additions union (the normal case -- each author added their own
       // block), and a real overlap raises conflict markers for a human to settle
       // instead of the engine quietly picking a winner on arrival order.
+      // HIV-P14b, OPEN AND DELIBERATELY NOT IMPLEMENTED HERE YET.
+      //
+      // There is a third case this dichotomy misses: the path appeared on OUR disk after we
+      // started AND the room already had it before we joined. That is not a race -- the agent
+      // could not see the file (bounded working set, nothing touched it), believed it did not
+      // exist, and wrote one. Measured 21 Sep 2026: agent B recreated mod039.js and agent A's
+      // copy ended up with two const declarations of the same name.
+      //
+      // `preexisting` records our DISK, so it structurally cannot tell those apart; the manifest
+      // as of first sync can. A guard on that was written and REMOVED before shipping, because
+      // the probe showed it never firing -- most likely the manifest is not yet populated at the
+      // instant the base provider reports sync, so the snapshot came back empty. A refusal path
+      // that silently never runs is worse than none: it reads as protection in review and does
+      // nothing in production, which is the defect class this repo keeps hitting.
+      //
+      // What ships instead is the reporting half, which is verified: status() now exposes
+      // filesHeld/roomFiles/filesMissing instead of a full house, and the join announces the gap
+      // with the count and the remedy. An agent told "33 files exist here that you do not have,
+      // reading the path fetches it" will not recreate them. That removes the cause; the guard
+      // is the belt for when it happens anyway, and it lands when it is proven to fire.
+      if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=no-base-block ${relPath} preexisting=${preexisting.has(relPath)}`)
+      // HIV-P14b. A BLIND RECREATE IS NOT A RACE, and the empty-base merge below corrupts it.
+      //
+      // The dichotomy above has a third case: the path appeared on OUR disk after we started AND
+      // the room already had it before we joined. The working set is bounded, nothing touched
+      // that file, so the agent could not see it, concluded it did not exist, and wrote one.
+      //
+      // Measured 21 Sep 2026, traced through the running product. Agent B, holding 8 of a room's
+      // 41 files, wrote mod039.js:
+      //   mod039.js origin=remote synced=true docLen=22 diskLen=39 hasBase=false
+      //             inManifest=true preexisting=false   -> BRANCH=no-base-block
+      // It lands exactly here, `preexisting` is false, and the empty-base merge unions two whole
+      // files into agent A's copy:
+      //   export const v39 = 39
+      //   export const v39 = "FROM SCRATCH BY B"
+      // Two const declarations of the same name. Invalid code, in someone else's folder, from B
+      // doing the only thing available to it.
+      //
+      // The union is right for what the comment above describes -- two authors adding DIFFERENT
+      // blocks to a file they both just created. It is wrong for two independent whole-file
+      // creations of the same module, which is what a blind recreate always is.
+      //
+      // `roomAtJoin` is the discriminator `preexisting` cannot be: a path in it existed in the
+      // ROOM before we did, however new it is on our disk. The `roomAtJoin &&` guard is
+      // load-bearing -- before first sync it is null, and treating null as an empty room would
+      // classify every joiner's first creation as a race.
+      //
+      // Adopt the room's copy, because it is the real file and the agent needs it to work from,
+      // and snapshot the local draft so nothing the agent wrote is lost. Then say so loudly: the
+      // entire failure was the agent not knowing the file was already there.
+      if (roomAtJoin && roomAtJoin.has(relPath) && !preexisting.has(relPath)) {
+        captureSnapshot(relPath, disk, name, {
+          force: true, kind: 'manual',
+          label: `local draft preserved — ${relPath} already existed in the room before this client joined`,
+        })
+        bases.set(relPath, docText); forkBases.set(relPath, docText); shadow.set(relPath, docText)
+        if (docText !== disk) writeToDisk(relPath, docText)
+        try {
+          say(`⚠ ${relPath} ALREADY EXISTED IN THE ROOM before I joined — I had not fetched it, so it was ` +
+            `written here from scratch. The room's copy is now on disk and my draft was snapshotted. ` +
+            `This folder holds a bounded working set: a file you cannot see may still exist, so read or ` +
+            `claim the path before creating it. hive_status reports filesHeld of roomFiles.`)
+        } catch { }
+        if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=blind-recreate-refused ${relPath}`)
+        return
+      }
       if (!preexisting.has(relPath)) {
         // Terminate both sides before merging. With an empty base there is no shared
         // trailing context, so a side whose last line lacks a newline gets its final
@@ -1261,6 +1753,33 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // which is worse than failing -- it reads as corruption to whoever opens it.
         const nl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
         const r0 = icrMerge3('', nl(disk), nl(docText), relPath)
+        // HIV-P17: SILENT COLLISION DETECTION on genesis-publish creation race.
+        // The normal merge path (below, ~line 1880) runs fusionReason() to catch merges
+        // that broke valid code or duplicated structure. This creation-race path skipped
+        // that check entirely — a dead-heat race could silently fuse two whole-file
+        // rewrites of the same module and nobody was told. Now we run the same check:
+        // if both inputs parsed but the merged result does not, or if the merge duplicated
+        // structure, refuse it — keep both sides intact and announce loudly.
+        if (!r0.conflict) {
+          const why = fusionReason(r0.text, nl(disk), nl(docText), supports(relPath) ? languageFor(relPath) : null)
+          if (why) {
+            conflicted.add(relPath)
+            // Do NOT write the fused result to doc or disk. The doc already holds docText
+            // (the room's copy) and disk holds the local draft — both are intact. Setting
+            // bases to docText means the next normal edit will merge against the room's copy,
+            // which is the same recovery path the normal-merge refusal uses.
+            bases.set(relPath, docText); forkBases.set(relPath, docText); shadow.set(relPath, docText)
+            if (!manifest.has(relPath)) manifest.set(relPath, 1)
+            if (icrWarned.get(relPath) !== why) {
+              icrWarned.set(relPath, why)
+              log(`[${name}] !! HIV-P17 REFUSED a fused creation-race merge of ${relPath}: ${why}`)
+              try {
+                say(`[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+              } catch { /* the log still carries it */ }
+            }
+            return
+          }
+        }
         if (r0.text !== docText) fe.doc.transact(() => applyDiff(yt, r0.text))
         if (r0.text !== disk) writeToDisk(relPath, r0.text)
         if (r0.conflict) conflicted.add(relPath)
@@ -1295,14 +1814,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         try { say(`⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`) } catch { }
         return
       }
-      // Genuinely no ancestor (a clone-then-join). Adopt the room's copy, keep ours as a
-      // restore point — and SAY SO. This branch used to be the only silent one on this
-      // path, which is why the data loss went unnoticed rather than merely being rare.
-      captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
-      writeToDisk(relPath, docText)
-      bases.set(relPath, docText); forkBases.set(relPath, docText)
-      if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(relPath) }
-      try { say(`↓ ${relPath} already existed in this room — ${name} adopted the room's copy. The local version before joining is saved in the file's history.`) } catch { }
+      // Genuinely no ancestor (a clone-then-join, or joining with an existing checkout).
+      // HIV-P9: Do NOT adopt the room's copy blindly. Check provenance!
+      // Has the room ever seen what is currently on disk?
+      const receipts = fe && fe.ledger ? fe.ledger.toArray() : []
+      const st = accountFor({ rel: relPath, branchText: disk, roomText: docText, receipts })
+
+      if (st.state === DESCENDS || st.state === IDENTICAL) {
+        // Safe: The room has passed through our disk content, so the room's copy is a true descendant.
+        captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
+        writeToDisk(relPath, docText)
+        bases.set(relPath, docText); forkBases.set(relPath, docText)
+        if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(relPath) }
+        try { say(`↓ ${relPath} already existed in this room — ${name} adopted the room's copy. The local version before joining is saved in the file's history.`) } catch { }
+        return
+      }
+
+      // DIVERGED or UNPROVEN: The room has NEVER seen local disk's content, or has no proof.
+      // Overwriting disk with docText would cause silent data loss (e.g. wiping out local fixes).
+      // Merging from an empty base would concatenate both copies, creating invalid syntax.
+      // Refuse adoption: keep local disk untouched, keep room doc untouched, snapshot local, and announce loudly.
+      captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: `local copy preserved at join (${st.state}: room copy refused)` })
+      bases.set(relPath, disk); forkBases.set(relPath, disk)
+      try {
+        say(`⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted. Local disk was preserved. Resolve deliberately.`)
+      } catch { }
       return
     }
     const base = bases.has(relPath) ? bases.get(relPath) : disk
@@ -1336,6 +1872,41 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
     } else {
       res = icrMerge3(base, disk, docText, relPath) // incoming remote change merged into our working copy
+    }
+
+    // FUSION GUARD (HIV-26). A merge must never produce something NEITHER author wrote.
+    //
+    // On 18 Sep 2026 three peers wrote the same file within about a second of each other and
+    // the character-CRDT UNIONED the versions instead of converging: sync.js went 144,144 ->
+    // 291,750 bytes, `const MAX_OPEN` appeared three times, and the splice landed mid-token
+    // (`evicted// Newly opened...`). There were NO conflict markers, every peer converged on
+    // the corruption — so agreement proved nothing — and the only thing that caught it was a
+    // parse failure at the handoff gate, by which point it had already reached every folder.
+    //
+    // Two cheap signals, each catching what the other misses:
+    //   - the merge BROKE a file both sides could parse. Definitionally wrong: whatever that
+    //     output is, neither author wrote it.
+    //   - the result is about as long as both sides put together. That is concatenation in a
+    //     merge's clothing, and it catches a fusion that happens to still parse.
+    //
+    // We land NOTHING. Not a conflict block either: this engine deliberately keeps markers
+    // out of the shared text, because writing them into the very layer that fuses is what
+    // produced marker-fusion before. So the doc keeps its version, disk keeps its version,
+    // both are still intact and recoverable, and the room is TOLD. A file left visibly
+    // divergent is a bad day; a file silently fused is an unrecoverable one.
+    if (res && !res.conflict) {
+      const why = fusionReason(res.text, disk, docText, supports(relPath) ? languageFor(relPath) : null)
+      if (why) {
+        conflicted.add(relPath)
+        if (icrWarned.get(relPath) !== why) {
+          icrWarned.set(relPath, why)
+          log(`[${name}] !! REFUSED a fused merge of ${relPath}: ${why}`)
+          try {
+            say(`[!] @all ${relPath}: a merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact and unchanged. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+          } catch { /* the log still carries it */ }
+        }
+        return
+      }
     }
 
     // Snapshot the state JUST BEFORE this author's edit lands, attributed to them —
@@ -1683,7 +2254,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, passive: !!passive })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -1731,6 +2302,44 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     writeToDisk(MEMBERS_FILE, out.join('\n') + '\n')
   }
+  /** The claim map as a file. Same contract as renderMembers: generated locally, never synced.
+   *
+   *  EXPIRY IS SHOWN, NOT HIDDEN. A claim whose TTL has run out is not a lock any more — the
+   *  region is free — so rendering it as "held" would make agents queue behind a crashed peer,
+   *  which is the deadlock TTLs exist to prevent. Expired rows stay visible but labelled, because
+   *  "AgentX died holding this" is information, and silently dropping the row loses it. */
+  function renderClaims() {
+    const now = Date.now()
+    const rows = []
+    claims.forEach((c, region) => {
+      if (!c || !c.by) return
+      const ttl = Number(c.ttl) || 0
+      const age = now - (Number(c.at) || 0)
+      const left = ttl - age
+      rows.push({ region, by: c.by, intent: c.intent || 'edit', age, left, dead: left <= 0 })
+    })
+    rows.sort((a, b) => a.region.localeCompare(b.region))
+
+    const secs = (ms) => `${Math.max(0, Math.round(ms / 1000))}s`
+    const live = rows.filter((r) => !r.dead)
+    const out = [
+      '# Hive Claims — who holds which file right now (live).',
+      '# SENSE this before you edit. A region held by someone else is not yours to write:',
+      '# flow to open work instead of waiting. Claims expire on their own, so nothing deadlocks.',
+      '',
+      `held: ${live.length}`,
+      '',
+    ]
+    for (const r of rows) {
+      out.push(r.dead
+        ? `- ${r.region} — EXPIRED (was ${r.by}, ${r.intent}, ${secs(r.age)} ago) — free to take`
+        : `- ${r.region} — ${r.by} (${r.intent}) — held ${secs(r.age)}, ${secs(r.left)} left`)
+    }
+    if (!rows.length) out.push('- nothing claimed; every region is open')
+    writeToDisk(CLAIMS_FILE, out.join('\n') + '\n')
+  }
+  if (syncFiles) claims.observe(() => renderClaims())
+
   // Warn (once per peer) when someone joins on an incompatible protocol version —
   // otherwise they'd silently fail to sync and look like a "broken room".
   const versionWarned = new Set()
@@ -1745,18 +2354,108 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { say(`⚠ ${u.name} is on an incompatible version — files won't sync with them until everyone updates Hivecode.`) } catch { }
     }
   }
-  if (syncFiles) provider.awareness.on('change', () => { renderMembers(); checkVersions() })
+  if (syncFiles) provider.awareness.on('change', () => { renderMembers(); renderClaims(); checkVersions() })
+
+  // HIV-P8: A FILE THAT WILL NEVER LEAVE THIS FOLDER, SAID OUT LOUD.
+  //
+  // HIV-P3 closed the genesis-claim hole at CLAIM time by classifying the claim string, and it
+  // could only ever be a classifier: at claim time a bare string is all there is, and `config`,
+  // `hosts` and `staging` are indistinguishable from ticket labels. At WRITE time there is no
+  // ambiguity left — the file is on disk and isIgnored() is exact. So this is the backstop for
+  // everything the classifier could not decide.
+  //
+  // IT CANNOT REFUSE. The bytes are already written by the time anyone knows, so this is
+  // structurally a warning — and a warning is exactly what every born-invisible incident has
+  // already scrolled past. That is why the claimed case opens an OBLIGATION instead of logging:
+  // an obligation rides hive_wait, backs off, escalates to STALE and shows on the board. It is
+  // un-ignorable by construction and costs nothing while nobody is idle.
+  //
+  // THE TWO GATES ARE THE WHOLE DESIGN, and the numbers are why. On a real checkout there are 256
+  // ignored files. Warning about all of them would open 256 debts on join, each closable only by
+  // its author, and the ledger would be unusable inside one join — the same flooding we spent this
+  // morning clearing forty entries of. So:
+  //   CLAIMED     the author declared they were working on this path. That is their own stated
+  //               intent, already in the CRDT — not a guess about the filename.
+  //   NOT PREEXISTING   it appeared during this session, rather than having sat there for a week.
+  // Neither alone is sufficient: without the claim gate, 256; without the other, every long-lived
+  // ignored file re-fires on every join.
+  //
+  // THE UNCLAIMED CASE GETS ONE LINE AND NO LEDGER ENTRY. The room rule is CLAIM BEFORE YOU WRITE,
+  // so an unclaimed write is outside the protocol and does not get to consume the ledger. I am not
+  // confident this tier earns its place — a chat line is precisely the signal these incidents
+  // scroll past — but deleting the case entirely is worse than announcing it cheaply.
+  const ENGINE_ID = 'hivecode'
+  const invisibleWarned = new Map()  // relPath -> obligation id, or null for the ambient case
+
+  function noticeBornInvisible(ignoredRel) {
+    // DISCHARGE FIRST. A file that has gone away takes its debt with it: the question "this will
+    // never sync" stops being a question when there is nothing left to sync. Left open, the ledger
+    // fills with debts about paths that no longer exist, which is the noise the three-state
+    // lifecycle exists to prevent. Its expiry cannot help here — that only covers names never seen
+    // in the room, and this path was seen, on disk, by us.
+    for (const [r, id] of [...invisibleWarned]) {
+      if (ignoredRel.has(r)) continue
+      if (id) { try { OB.discharge(doc.getMap('obligations'), { id, by: ENGINE_ID }) } catch { } }
+      invisibleWarned.delete(r)
+    }
+    for (const r of ignoredRel) {
+      if (SKIP.has(r)) continue           // control files are ours and are supposed to be invisible
+      if (preexisting.has(r)) continue    // it was already here; nobody did this during the session
+      if (invisibleWarned.has(r)) continue // once per path, not once per scan tick
+      const holder = coordinator.sense(r)
+      if (holder && holder.by) {
+        let id = null
+        try {
+          const rec = OB.open(doc.getMap('obligations'), {
+            from: ENGINE_ID,
+            to: holder.by,
+            text: `${r} is on disk and claimed by you, but it is ignored by a .gitignore here — ` +
+              `no sync connection is opened for it, so nothing written to it will ever reach the room. ` +
+              `Add it to the allow-list, or confirm the work is deliberately local.`,
+            absent: false,
+            neverSeen: false,
+          })
+          id = rec && rec.id
+        } catch { }
+        invisibleWarned.set(r, id)
+        try {
+          say(`⛔ ${r} is claimed and on disk, but it is ignored by a .gitignore here — its bytes will never leave this folder.`)
+        } catch { }
+      } else {
+        invisibleWarned.set(r, null)
+        try {
+          say(`· ${r} was created here but is ignored by a .gitignore — it stays local, and no other agent will see it.`)
+        } catch { }
+      }
+    }
+  }
 
   function scan() {
-    const diskFulls = walk(ROOT)
+    const skippedFulls = []
+    const diskFulls = walk(ROOT, [], skippedFulls)
     const diskRel = new Set(diskFulls.map(rel))
+    const ignoredRel = new Set(skippedFulls.map(rel))
     // Snapshot the starting file set BEFORE the first reconcile pass touches anything.
     // Everything here pre-dates our participation; anything that shows up later was
     // authored while we were connected. See `preexisting`.
     // The ancestor must be loaded BEFORE any path can reach reconcile(), and this is the
     // one place guaranteed to run first exactly once. Loading it later would mean the first
     // scan's reconciles see no ancestor — precisely the bug this is here to close.
-    if (!firstScanDone) { loadPriorShadow(); for (const r of diskRel) preexisting.add(r); firstScanDone = true }
+    //
+    // HIV-P8: THE UNION IS NOT A DETAIL. `preexisting` used to be seeded from diskRel alone, and
+    // diskRel comes from walk(), which dropped ignored files — so `preexisting.has(r)` was
+    // permanently FALSE for every ignored path, whether it was created a second ago or had been
+    // sitting there for a week. Any check phrased as "ignored AND not preexisting" therefore
+    // reduced to "ignored", and a client joining a real checkout would have opened an obligation
+    // for each of its 256 ignored files, about files nobody touched. Seeding the union is what
+    // makes "not preexisting" mean what it says: authored during this session.
+    if (!firstScanDone) {
+      loadPriorShadow()
+      for (const r of diskRel) preexisting.add(r)
+      for (const r of ignoredRel) preexisting.add(r)
+      firstScanDone = true
+    }
+    noticeBornInvisible(ignoredRel)
     for (const full of diskFulls) {
       const r = rel(full)
       if (SKIP.has(r)) continue
@@ -1784,8 +2483,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         try { fs.rmSync(path.join(ROOT, key)) } catch { }
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key)
         log(`[${name}] <- deleted ${key}`)
-      } else if (canOpen(key)) {
-        openFile(key)
+      } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
+        // Same rule as the initial sweep: a path this client ignores must not cost it a
+        // socket just because somebody else registered it.
+        //
+        // AND the same BOUND. This observer is how a joining client learns the room's whole
+        // manifest — every existing path arrives here as a remote change — so capping only
+        // the sweep achieved nothing: the first measurement of this cap showed a client with
+        // cap 8 holding 30 file docs, every one of them opened right here. A path we decline
+        // to open now is not lost; it opens when something touches it.
+        if (fileDocs.size < MAX_OPEN) openFile(key)
       }
     })
   })
@@ -1808,15 +2515,74 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   provider.on('sync', (s) => {
     if (!s || !syncFiles) return
+    // HIV-P14b. Snapshot what the room already had, once. Measured: the manifest IS populated at
+    // this point -- a fresh joiner's observer fires with 13 of 13 entries before the sync event,
+    // so reading it here is sound. (That was checked because the first version of this guard was
+    // wrongly assumed to be failing for this reason.)
+    if (!roomAtJoin) {
+      roomAtJoin = new Set()
+      try { for (const k of manifest.keys()) roomAtJoin.add(k) } catch { }
+    }
     writeToDisk(RULES_FILE, HIVE_RULES_TEXT) // the law is always present in the room
     writeToDisk(AGENTS_FILE, AGENT_MANUAL_TEXT) // so an agent opening this folder learns how to join + behave
-    for (const key of manifest.keys()) if (canOpen(key)) openFile(key) // connect to every file I'm granted; each file-room's sync pulls its content
+    // Connect to every file I'm granted AND have not excluded; each file-room's sync pulls
+    // its content. `canOpen` is the TOKEN's scope -- what the relay would let me see. It is
+    // not the same question as "do I want this file", and using it alone meant a participant
+    // could not bound its own footprint: on 18 Sep 2026 two agents kept opening demo/** file
+    // rooms after their .gitignore had been narrowed to 35 paths, and between them consumed
+    // the relay's entire 512-connection budget. Since one socket is opened PER FILE, an
+    // ignore rule that does not stop the connection is not a containment tool at all.
+    // Same predicate reconcile() uses, so a file is never open but unreconcilable.
+    // BOUND THE INITIAL SWEEP, not just the steady state. This burst is precisely when the
+    // budget blows: a client with 889 files used to try to open 889 sockets at once against
+    // a 512-connection relay. LRU eviction cannot help here — during a burst every file was
+    // touched seconds ago, so nothing is eligible to evict. The only thing that works is to
+    // not open them all.
+    //
+    // Files that exist on THIS client's disk come first: they are the ones that need
+    // reconciling, and a path we have no local copy of can wait until something asks for it.
+    const openable = [...manifest.keys()].filter((k) => canOpen(k) && !SKIP.has(k) && !isIgnored(k))
+    const localFirst = openable.sort((a, b) => {
+      const la = fs.existsSync(path.join(ROOT, a)) ? 0 : 1
+      const lb = fs.existsSync(path.join(ROOT, b)) ? 0 : 1
+      return la - lb
+    })
+    for (const key of localFirst.slice(0, MAX_OPEN)) openFile(key)
+    if (localFirst.length > MAX_OPEN) {
+      log(`[${name}] ${localFirst.length} files in this room, holding ${MAX_OPEN} open (HIVE_MAX_OPEN_FILES). The rest sync when touched.`)
+    }
     if (board.size) renderBoard()
     if (chat.length) renderChat()
     if (tasks.size) renderTasks()
     renderMembers()
+    renderClaims() // unconditional: "nothing is claimed" is the answer an arriving agent needs most
     scan()
     log(`[${name}] folder sync active on ${ROOT} (room "${room}") as ${kind}. ${manifest.size} files.`)
+    // HIV-P14. SAY THE GAP OUT LOUD, ONCE, AT JOIN.
+    //
+    // The working set is bounded on purpose, and the documented trade is that "a file outside it
+    // does not arrive until something touches it". For a human reading a folder that is fine. For
+    // an AI agent it is not, because an agent decides what exists by listing its directory: a
+    // file it cannot see is a file it believes does not exist, and it writes one. Measured 21 Sep
+    // 2026, a 40-file room and MAX_OPEN=8: the joiner held 7 files, reported "filesSynced 8/8",
+    // said nothing, and its agent recreated a file the room already had.
+    //
+    // Nothing here changes the cap. It tells the agent the number it needs in order to ASK,
+    // which is the one thing that makes "until something touches it" true.
+    setTimeout(() => {
+      try {
+        const want = [...manifest.keys()].filter((r) => canOpen(r) && !SKIP.has(r))
+        const have = want.filter((r) => fs.existsSync(path.join(ROOT, r)))
+        const short = want.length - have.length
+        if (short <= 0) return
+        log(`[${name}] !! THIS FOLDER IS INCOMPLETE ON PURPOSE. The room has ${want.length} files; ` +
+          `${have.length} are on disk here and ${short} are NOT. The working set is bounded to ` +
+          `${MAX_OPEN} open files (HIVE_MAX_OPEN_FILES), because one socket is opened per file and a ` +
+          `relay admits a limited number. A missing file EXISTS — it simply has not been fetched. ` +
+          `Do not treat it as absent and do not create it: reading or claiming the path fetches it. ` +
+          `hive_status reports filesHeld of roomFiles, and hive_read_board lists what the room holds.`)
+      } catch { }
+    }, 4000).unref?.()
     if (!scanTimer) {
       startWatch()
       scanTimer = setInterval(scan, watcher ? 2000 : 400) // watch handles fast path; scan is the net
@@ -1920,9 +2686,91 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     isPaused,            // is a participant currently paused?
     controls,            // the live control map
     // --- hive coordination: claim a region BEFORE editing (collision prevention) ---
-    claim: (region, intent) => { const r = String(region), i = String(intent || 'edit'); myIntents.set(r, i); return coordinator.acquire(r, i) }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
-    release: (region) => { const r = String(region); myIntents.delete(r); return coordinator.release(r) },
+    // HIV-P18: a claim is a promise about BYTES, so granting one over bytes the claimer cannot
+    // see is the same false success we shut in the outbound direction (HIV-27: a claim whose
+    // writes could never leave). The claim itself is unchanged -- callers and every existing
+    // suite still get the same boolean -- but it now also starts the fetch the README has been
+    // promising, so an agent that claims a path it does not hold actually receives it instead of
+    // finding an empty directory and creating the file from scratch.
+    claim: (region, intent) => {
+      const r = String(region), i = String(intent || 'edit')
+      myIntents.set(r, i)
+      const held = coordinator.acquire(r, i)
+      // Fire-and-forget on purpose: claim's contract is synchronous and changing that would
+      // break every caller. Use fetch(path) directly when you need to WAIT for the bytes.
+      if (held) { try { fetchFile(r).catch(() => {}) } catch { } }
+      return held
+    }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
+    // HIV-P18: bring a file the room has but this folder does not. Resolves when the BYTES have
+    // landed, and distinguishes "outside the working set" (fetchable) from "not in the room at
+    // all" (nothing will ever arrive) -- two states that look identical from an empty directory
+    // and have opposite remedies.
+    fetch: fetchFile,
+    // RELEASE IS A HANDOFF, AND A HANDOFF CAN BE REFUSED.
+    //
+    // Until the room sets `gate:cmd`, this behaves exactly as it always did and returns
+    // {ok:true} — no configured gate means no new failure mode for existing rooms.
+    //
+    // With a gate set, the check runs in THIS agent's folder and a non-zero exit keeps the claim.
+    // That is the whole idea: the file stays visibly yours, so the next agent cannot quietly
+    // inherit something that looked finished. It does NOT unsend the bytes — the CRDT syncs
+    // continuously and they are already everywhere — it refuses the "I am done, it is yours".
+    //
+    // `force` exists because abandoning work is legitimate, and it is never silent: it releases,
+    // records that it was forced, and says so in the room.
+    release: (region, opts = {}) => {
+      const r = String(region)
+      const g = gateConfig((k) => swarmState.get(k))
+      const letGo = () => { myIntents.delete(r); coordinator.release(r) }
+      if (!g) { letGo(); return { ok: true, gated: false } }
+
+      if (opts.force) {
+        const rec = verdictRecord({ region: r, by: name, cmd: g.cmd, result: null, forced: true, why: opts.why })
+        gateResults.set(`${r}|${name}`, rec)
+        letGo()
+        try { say(forcedMessage({ region: r, by: name, why: opts.why })) } catch { /* chat is not the point */ }
+        return { ok: true, gated: true, forced: true }
+      }
+
+      const result = runGate({ cmd: g.cmd, cwd: ROOT, timeoutMs: g.timeoutMs })
+      gateResults.set(`${r}|${name}`, verdictRecord({ region: r, by: name, cmd: g.cmd, result }))
+      if (!result.ok) {
+        // The claim is NOT dropped. Saying so in the room is what makes the refusal visible to
+        // everyone rather than a private error the holder can ignore.
+        try { say(`@all ${name} could not hand back ${r}: the gate failed (exit ${result.code}). Still held.`) } catch { /* ignore */ }
+        return { ok: false, gated: true, code: result.timedOut ? 'Q491' : 'Q490', result, message: refusalMessage({ region: r, cmd: g.cmd, result }) }
+      }
+      letGo()
+      return { ok: true, gated: true, result }
+    },
+    /** The verdicts recorded for a path, by peer. Read this before building on someone's file. */
+    gateVerdicts: (region) => {
+      const out = {}
+      const pre = String(region) + '|'
+      gateResults.forEach((v, k) => { if (k.startsWith(pre)) out[k.slice(pre.length)] = v })
+      return out
+    },
+    /** The room's gate, or null. Exposed so a client can say what it is about to be judged by. */
+    gate: () => gateConfig((k) => swarmState.get(k)),
+    // THE LOCK YOU MAY WRITE BEHIND. `claim()` answers from this replica alone, so under real
+    // concurrency it says yes to everyone (see hive-coord.js). This waits for the claim to
+    // round-trip through the relay -- the only place the room is actually serialised -- and then
+    // asks who the converged map says holds it. Exactly one caller gets true.
+    //
+    // The loser has nothing to release: the winner's entry replaced its own under last-writer-
+    // wins on the same key, so conceding is just returning false.
+    claimSettled: async (region, intent, waitMs = 900) => {
+      const r = String(region), i = String(intent || 'edit')
+      myIntents.set(r, i)
+      if (!coordinator.acquire(r, i)) return false          // someone already visibly holds it
+      await new Promise((res) => setTimeout(res, Math.max(200, waitMs)))
+      const holder = coordinator.sense(r)
+      if (holder && holder.by === name) return true
+      myIntents.delete(r)
+      return false
+    },
     senseClaim: (region) => coordinator.sense(String(region)), // the live claim on a region, or null
+    whyNotShared,        // '' if edits to this path reach the room, else why they would not (HIV-27)
     claimsBoard: () => coordinator.board(),                     // everything currently claimed
     // --- intent-aware fork resolution: any agent may judge; the medium validates ---
     forkInfo,            // the active fork on a file as a resolvable object (base + versions + signed intents), or null
@@ -1959,7 +2807,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         const u = s.user
         if (!u || !u.name) continue
         const prev = seen.get(u.name) || {}
-        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner })
+        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive) })
       }
       return [...seen.values()]
     },
@@ -1974,11 +2822,54 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     status: () => {
       let synced = 0
       for (const e of fileDocs.values()) if (e.synced) synced++
+      // `notSyncing` is the number the caller actually needs when something is wrong: files
+      // whose own socket the relay refused. They are not slow, they are not arriving, and
+      // until they do they read as empty. filesSynced alone shows a shortfall but not a cause.
+      const notSyncing = [...refusedFiles.keys()].filter((r) => { const e = fileDocs.get(r); return e && !e.synced })
+      // HIV-P14. THE FULL-HOUSE LIE.
+      //
+      // `files` and `filesSynced` both counted OPEN docs, so a client holding eight of the
+      // room's forty files reported "filesSynced 8/8" -- a complete set. Measured 21 Sep 2026:
+      // a second agent joined a 40-file room, received 7, stayed at 7 for a full minute, and
+      // reported 8/8. Its manifest listed all forty the whole time.
+      //
+      // The bounded working set is deliberate and correct -- one socket per file against a 512
+      // ceiling is the wall, and tests/open-file-cap-test.mjs documents the trade rather than
+      // hiding it: "a file outside the working set does not arrive until something touches it."
+      // What that header does not cover is that FOR AN AGENT, NOTHING EVER TOUCHES IT. An agent
+      // decides what exists by reading its folder; a file it cannot see is a file it believes
+      // does not exist, so it writes one from scratch. Measured consequence, same probe: agent B
+      // created mod039.js, and agent A's copy ended up holding two const declarations of the
+      // same name -- invalid code, in someone else's folder, from B doing the only reasonable
+      // thing available to it.
+      //
+      // So the trade stays and the reporting changes. `files` keeps meaning open docs, because
+      // tests/open-file-cap-test.mjs:71 pins it as the proof the cap is respected. What is added
+      // is the pair that was missing: what the ROOM has, and what this client actually HOLDS.
+      const roomFiles = (() => { try { return [...manifest.keys()].filter((r) => canOpen(r)).length } catch { return 0 } })()
+      const held = (() => {
+        let n = 0
+        try { for (const r of manifest.keys()) { if (canOpen(r) && fs.existsSync(path.join(ROOT, r))) n++ } } catch { }
+        return n
+      })()
       return {
         connected: !!provider.wsconnected,
         connecting: !!provider.wsconnecting,
         files: fileDocs.size,
         filesSynced: synced,
+        // The honest pair. `filesHeld` of `roomFiles` is the number a joiner needs, and the one
+        // that says 7 of 40 where filesSynced said 8 of 8.
+        roomFiles,
+        filesHeld: held,
+        filesMissing: Math.max(0, roomFiles - held),
+        notSyncing: notSyncing.length,
+        notSyncingFiles: notSyncing.slice(0, 20),
+        // The working set and its bound. `openCap` x agents must stay under the relay's
+        // maxConnsTotal, and `evicted` climbing steadily means the cap is too small for
+        // how this room actually works — both are things an operator can only act on if
+        // they can see them.
+        openCap: MAX_OPEN,
+        evicted,
       }
     },
     stop: () => {

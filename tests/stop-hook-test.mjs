@@ -122,7 +122,16 @@ section('the system-prompt text')
   T('teaches claim-before-write', /hive_claim/.test(INSTRUCTIONS))
   T('says a refused write is not an error', /not an error/.test(INSTRUCTIONS))
   // This is re-sent on every turn of every agent forever, so its size is a recurring cost.
-  T('stays inside a sane system-prompt budget (<2500 chars)', INSTRUCTIONS.length < 2500)
+  // THE BUDGET MOVED ON PURPOSE, 19 Sep 2026: 2500 -> 2900, to pay for DESIGN BEFORE YOU WRITE.
+  // That rule is ~400 chars re-sent every turn of every agent forever, and it is worth it: every
+  // defect on this project has been a false success, and it is the only instruction that attacks
+  // that class BEFORE the code exists rather than after. Raising a cap to make a change fit is
+  // normally the defect -- so the rule it was raised for is pinned on the next line, and cannot
+  // be quietly deleted to get back under.
+  T('stays inside a sane system-prompt budget (<2900 chars)', INSTRUCTIONS.length < 2900,
+    `${INSTRUCTIONS.length} chars`)
+  T('teaches DESIGN BEFORE YOU WRITE — the rule the budget was raised for',
+    /DESIGN BEFORE YOU WRITE -- MANDATORY/.test(INSTRUCTIONS) && /wrong but green/.test(INSTRUCTIONS))
   T('one-liner exists for small surfaces', ONE_LINER.length > 0 && ONE_LINER.length < 160)
 }
 

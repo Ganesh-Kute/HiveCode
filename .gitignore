@@ -127,3 +127,6 @@ demo/panel-frames/
 demo/frames/
 demo/.elevenkey
 .hive-mcp-token
+
+# staged package builds (scripts/build-relay.mjs) — derived, never committed
+dist/
