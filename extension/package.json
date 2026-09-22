@@ -163,6 +163,11 @@
           "default": "human",
           "description": "How this window appears in the member list. Set to 'ai' for a window driven by an AI agent."
         },
+        "hivecode.relayPin": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "**Lock this machine to a relay.** When set, Hivecode REFUSES to connect to any relay other than the one(s) named here (comma-separated), before a socket is opened and before any file is published. `hivecode.relayUrl` is a default that a pasted link can override; this is a rule that it cannot. Set it on every machine on a team that self-hosts — otherwise one stale link silently publishes your source to the public relay."
+        },
         "hivecode.token": {
           "type": "string",
           "default": "",

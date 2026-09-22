@@ -34,6 +34,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
+import { checkRelay } from './hive-privacy.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
@@ -120,6 +121,24 @@ This is refused rather than fixed for you because renaming silently is worse: if
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
   const { relay, room, token: linkToken, mode } = resolveRoom(link, dir)
+  // THE PRIVACY GATE, and note where it sits: after the relay is resolved, BEFORE the
+  // .hive.json write below and before startSync opens a socket. A refused join must leave
+  // nothing behind -- no config pointing at the wrong relay for the next process to find,
+  // and above all no published file. Checking after connecting would report a leak instead
+  // of preventing one, which is the difference between a guard and a log line.
+  const priv = checkRelay({ relay, env: process.env, dir: ROOT, fs })
+  if (!priv.ok) {
+    return `${priv.headline}
+
+${priv.detail}
+
+room: ${room}
+mode: ${mode}
+folder: ${ROOT}
+
+NOTHING WAS JOINED. No socket was opened, no file was published, and ${path.join(ROOT, '.hive.json')}
+was not written. Fix the relay and call hive_join again.`
+  }
   // token precedence: explicit arg > token baked into the join link > $HIVE_TOKEN.
   const useToken = token || linkToken || process.env.HIVE_TOKEN || ''
   // persist the token too, so a re-join from .hive.json keeps the grant (the
@@ -307,7 +326,12 @@ This is refused rather than fixed for you because renaming silently is worse: if
   // The invite link carries the token when there is one — without it a secured room rejects
   // whoever you hand it to, and the Control Room says the link is missing its token.
   const inviteLink = `${relay}|${room}${useToken ? `|${useToken}` : ''}`
-  return `${mode}\nroom: ${room}\nrelay: ${relay}\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  // THE VERDICT, NOT JUST THE URL. `relay: wss://...` on its own is unreadable to anybody
+  // who has not run a relay -- the public one and a company's own look identical. The
+  // bracketed verdict is what makes "did my source just leave the building?" answerable
+  // without asking, and the warning line below is what makes it actionable.
+  const privNote = priv.warn ? `\n\n!! ${priv.warn}` : ''
+  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }
@@ -1288,8 +1312,16 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // is almost always "you are still connected, do nothing".
         let conn = null
         try { conn = s.hive.status() } catch { }
+        // `privacy` sits next to `connected` on purpose. These are the two questions an
+        // agent asks here, and only one of them had an answer: "am I reaching anyone" was
+        // reportable and "where is my source going" was not. A bare relay URL is not an
+        // answer to the second -- the public relay and a company's own are the same shape.
+        const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs })
         return text({
           room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION,
+          privacy: pv.headline,
+          ...(pv.warn ? { privacyWarning: pv.warn } : {}),
+          ...(pv.pin && pv.pin.pinned ? { relayPin: pv.pin.origins.join(', ') } : {}),
           unread: mailbox().peek(chatArray()).unreadCount,
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,

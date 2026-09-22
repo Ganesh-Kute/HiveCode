@@ -41,6 +41,7 @@ import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from '.
 // a debt written anywhere else would be invisible to hive_owed: a warning nobody can see, which is
 // the defect this ticket is about, one level down.
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
+import { checkRelay } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
 import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
@@ -424,6 +425,23 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const e = new Error(`${nameCheck.error} Try "${nameCheck.suggested}".`)
     e.code = 'EHIVEINVALIDNAME'
     e.suggested = nameCheck.suggested
+    throw e
+  }
+  // THE SAME PRIVACY GATE hive-mcp.js applies at join, repeated here because this is the
+  // real choke point. Every client in the product -- the MCP server, hive-agent.js, the
+  // CLIs, every demo script -- reaches the network through this one function, and a guard
+  // that lives only in the MCP layer protects only agents that went through the MCP layer.
+  // An operator who sets HIVE_RELAY_PIN is entitled to expect it means "this machine",
+  // not "this machine, except for the seven scripts that call startSync directly".
+  //
+  // It throws for the reason the name check above throws: startSync has no failure channel,
+  // and a client that half-connects to a relay nobody authorised is the failure this exists
+  // to prevent. Refusing here means no socket was opened and no file was published.
+  const priv = checkRelay({ relay, env: process.env, dir: path.resolve(dir), fs })
+  if (!priv.ok) {
+    const e = new Error(`${priv.headline}\n\n${priv.detail}`)
+    e.code = 'EHIVERELAYPIN'
+    e.qcode = priv.code
     throw e
   }
   const ROOT = path.resolve(dir)

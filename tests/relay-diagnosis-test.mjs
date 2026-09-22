@@ -197,8 +197,32 @@ try {
 
     T(`F1 no shipped file prints the "<relay-http>" placeholder in CODE (${scanned.length} files scanned)`,
       placeholder.length === 0, placeholder.join(', '))
+    // THE RELAY IS NOT A CLIENT, and this rule is about what a CLIENT tells its agent.
+    //
+    // server.js became visible to this scan the day it was added to files[] (so `npx
+    // hivecode-relay` could start it), and it matched — on one line of its boot banner,
+    // where it prints its own configured tier to its own operator's console. That is a
+    // third category the rule never meant to cover: not a refusal, not an inference from
+    // counters, just a process stating a constant it holds. Counting it would have made
+    // shipping a file change whether an invariant held, which is a property of the
+    // packaging manifest and not of the code.
+    //
+    // So the relay is excluded from the CLIENT scan and pinned separately below. The
+    // exclusion is one named file, asserted to be exactly one file, so it cannot quietly
+    // become the place a second diagnosis engine hides.
+    const RELAY_FILE = 'server.js'
+    const clientAdvisors = advisors.filter((f) => f !== RELAY_FILE)
     T('F2 exactly ONE module assembles the INFERRED capacity advice',
-      advisors.length === 1 && advisors[0] === 'hive-relay-health.js', advisors.join(', ') || '(none — see G)')
+      clientAdvisors.length === 1 && clientAdvisors[0] === 'hive-relay-health.js',
+      clientAdvisors.join(', ') || '(none — see G)')
+    {
+      const relaySrc = fs.readFileSync(path.join(ROOT, RELAY_FILE), 'utf8')
+      const hits = strip(relaySrc).split('\n').filter((l) => ADVICE.test(l))
+      T('F2b the relay names a knob only while printing its own settings at boot',
+        hits.length === 1 && /TIERS\.free|FREE tier/.test(hits[0]), hits.join(' | ') || '(none)')
+      T('F2c ... and holds no diagnosis engine of its own',
+        !/explainNotSyncing|function\s+explainStatus/.test(relaySrc))
+    }
     T('F5 and sync.js prefers the relay\'s OWN status code over that inference when it has one',
       /refusedCodes/.test(fs.readFileSync(path.join(ROOT, 'sync.js'), 'utf8')))
     T('F3 sync.js gets the diagnosis from that module rather than writing its own',
@@ -232,8 +256,14 @@ try {
           .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
         return ADVICE.test(code)
       })
+      // Same exclusion as F2, for the same reason: server.js states its own tier at boot.
+      // It is subtracted rather than ignored, so the planted file must still be caught and
+      // the count must still be exactly two -- the guard proves itself with the relay out
+      // of the picture, not by widening until everything fits.
+      const clientAdvisors = advisors.filter((f) => f !== 'server.js')
       T('G3 A PLANTED SECOND PRODUCER IS CAUGHT — F2 is a guard, not decoration',
-        advisors.includes('__p13_planted_violation.js') && advisors.length === 2, advisors.join(', '))
+        clientAdvisors.includes('__p13_planted_violation.js') && clientAdvisors.length === 2,
+        clientAdvisors.join(', '))
     } finally {
       try { fs.unlinkSync(planted) } catch { }
     }

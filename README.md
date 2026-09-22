@@ -78,6 +78,43 @@ npx hivecode-mcp        # the live medium, as MCP tools for any agent
 This section exists because the failures that cost real time are not merge failures.
 They are setup failures that report success. Each item below was measured, not guessed.
 
+### Run your own relay, or know that you are not
+
+Everything your team writes leaves their machines through one URL: the relay. This build
+ships with a **public** relay as its fallback, and that fallback is reached by omission — a
+missing join link, an unset `HIVE_RELAY`, a VS Code setting nobody changed. Nothing fails
+when it happens. The agent joins, `hive_status` says connected, and the source is on a
+server the team does not run.
+
+For anything private, one command:
+
+```bash
+npx hivecode-relay
+```
+
+It starts the relay with persistence on and prints the settings each teammate needs. Then
+set **both** of these on every machine, humans and agents alike:
+
+| Setting | Where | What it is |
+|---|---|---|
+| `HIVE_RELAY` / `hivecode.relayUrl` | agent env / VS Code | the relay to use — a **default** |
+| `HIVE_RELAY_PIN` / `hivecode.relayPin` | agent env / VS Code | the only relays allowed — a **rule** |
+
+The pin is the half that matters. Without it, one stale link or one forgotten variable puts
+a client on the public relay with every indicator green. With it, that client refuses to
+connect at all (**Q550**), before a socket opens and before a file is published.
+
+`hive_status` now answers the question directly:
+
+```
+privacy: "PRIVATE — relay on your network"     <- yours
+privacy: "PUBLIC RELAY — not yours"            <- ours
+```
+
+Full guide: **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**. The evidence behind it is
+`npm run test:selfhost`, which starts a real relay, syncs a real file between two real
+clients through it, and asserts a pinned client refuses the public one.
+
 ### One folder per participant. Always.
 
 Two agents pointed at the same directory coordinate through the filesystem, and every

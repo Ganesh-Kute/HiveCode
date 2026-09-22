@@ -1,0 +1,233 @@
+// AUTO-GENERATED from hive-privacy.js by scripts/build-privacy-cjs.cjs — do not edit by hand.
+// Run `node scripts/build-privacy-cjs.cjs` after changing hive-privacy.js.
+// tests/extension-privacy-parity-test.mjs fails if this file is stale.
+
+// WHICH RELAY IS THIS, AND DID ANYBODY CHOOSE IT?
+//
+// Every byte of a team's source leaves their machines through one URL: the relay. The
+// client has always printed that URL and stopped there -- a bare `relay: wss://...` line
+// that says nothing about what it MEANS. That is the whole defect this file exists for,
+// and it is the product's highest-stakes false success:
+//
+//   An agent starts with no link and no .hive.json. resolveRoom() falls through to the
+//   shipped default -- a relay the team does not run. The agent joins. hive_status says
+//   connected. filesSynced climbs. Every signal is green, and the company's source code
+//   is now on a stranger's server. Nothing crashed, so nothing reports it.
+//
+// Two separate things are needed and they are NOT the same thing:
+//
+//   1. A VERDICT on every join, so "am I private?" is answered without being asked.
+//      Printing the URL is not a verdict. A person who has never run a relay cannot tell
+//      wss://livecode-xoss.onrender.com from wss://relay.theircompany.com by looking.
+//
+//   2. A PIN that REFUSES. A verdict you have to read is a verdict that gets skimmed, and
+//      an agent does not read banners at all. HIVE_RELAY_PIN says "this machine may only
+//      ever talk to these relays" -- set once in the MCP config, and no stale link, no
+//      typo'd host and no forgotten env var can send a file anywhere else. The refusal
+//      happens BEFORE the socket opens, so a refused join publishes nothing.
+//
+// Comparison is on ORIGIN, never on the raw string. wss://r.co, wss://r.co/ and
+// wss://R.co:443 are one relay; a string compare would refuse a correct configuration,
+// and a guard that fires on the healthy path is a guard people disable.
+
+// The relay this build falls back to when nobody chose one. Kept here rather than imported
+// so this module has no dependencies and can be loaded by the relay, the clients and the
+// tests alike. It is asserted equal to hive-mcp.js's DEFAULT_RELAY by relay-pin-test.mjs --
+// two copies that drift would make this file confidently wrong about which relay is public.
+const PUBLIC_DEFAULT_RELAY = 'wss://livecode-xoss.onrender.com'
+
+const DEFAULT_PORT = { 'ws:': '80', 'wss:': '443', 'http:': '80', 'https:': '443' }
+
+/**
+ * Normalise a relay URL to a comparable origin: scheme://host:port, lowercased, with the
+ * scheme's default port made explicit. Returns null for anything that is not a URL --
+ * callers must treat null as "unknown", never as "fine".
+ */
+function relayOrigin(url) {
+  const s = String(url || '').trim()
+  if (!s) return null
+  let u
+  try { u = new URL(s) } catch { return null }
+  const proto = u.protocol.toLowerCase()
+  if (!DEFAULT_PORT[proto]) return null
+  const port = u.port || DEFAULT_PORT[proto]
+  // ws:// and wss:// to the same host:port are the SAME relay reached two ways, and a pin
+  // written as https:// (which is what a person copies out of a browser) must match the
+  // wss:// the client actually dials. Scheme is reported separately by classifyRelay so
+  // the plaintext warning still fires; it deliberately does not participate in identity.
+  const secureScheme = proto === 'wss:' || proto === 'https:'
+  return `${secureScheme ? 'wss' : 'ws'}://${u.hostname.toLowerCase()}:${port}`
+}
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0', '[::1]'])
+
+function isLoopback(host) {
+  const h = String(host || '').toLowerCase().replace(/^\[|\]$/g, '')
+  if (LOOPBACK.has(h)) return true
+  return /^127\./.test(h)
+}
+
+function isPrivateLan(host) {
+  const h = String(host || '').toLowerCase()
+  if (/^10\./.test(h)) return true
+  if (/^192\.168\./.test(h)) return true
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true
+  if (/\.local$/.test(h) || /\.lan$/.test(h) || /\.internal$/.test(h)) return true
+  return false
+}
+
+/**
+ * What kind of relay is this, and does traffic to it leave the machine in the clear?
+ *
+ *   kind: 'public-default' | 'loopback' | 'private-lan' | 'own'  | 'unknown'
+ *
+ * 'own' does not mean audited -- it means "not the relay we ship". A team that pastes a
+ * link from a blog post lands in 'own' too, which is exactly why the pin exists.
+ */
+function classifyRelay(url) {
+  const origin = relayOrigin(url)
+  if (!origin) return { kind: 'unknown', origin: null, host: null, encrypted: false, url: String(url || '') }
+  const u = new URL(String(url).trim())
+  const host = u.hostname.toLowerCase()
+  const encrypted = u.protocol === 'wss:' || u.protocol === 'https:'
+  let kind
+  if (origin === relayOrigin(PUBLIC_DEFAULT_RELAY)) kind = 'public-default'
+  else if (isLoopback(host)) kind = 'loopback'
+  else if (isPrivateLan(host)) kind = 'private-lan'
+  else kind = 'own'
+  return { kind, origin, host, encrypted, url: String(url).trim() }
+}
+
+/**
+ * The pin, from the environment or from <dir>/.hive.json's `pinnedRelay`. Comma-separated,
+ * because a team legitimately has a staging relay and a production one.
+ *
+ * A pin that cannot be parsed is an ERROR, never an empty pin. That distinction is the
+ * whole value of the feature: a typo silently collapsing to "no pin" leaves somebody
+ * believing they are locked to their own relay while the client dials the public one --
+ * the same absence-rendered-as-a-value shape the room has been bitten by before.
+ */
+function readPin({ env = process.env, dir = null, fs = null } = {}) {
+  let raw = String((env && env.HIVE_RELAY_PIN) || '').trim()
+  let from = 'HIVE_RELAY_PIN'
+  if (!raw && dir && fs) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(`${dir}/.hive.json`, 'utf8'))
+      if (cfg && cfg.pinnedRelay) { raw = String(cfg.pinnedRelay).trim(); from = '.hive.json pinnedRelay' }
+    } catch { /* no config, or not JSON -- that is "no pin", not "bad pin" */ }
+  }
+  if (!raw) return { pinned: false, origins: [], from: null, raw: '' }
+  const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
+  const origins = []
+  const bad = []
+  for (const p of parts) {
+    const o = relayOrigin(p)
+    if (o) origins.push(o); else bad.push(p)
+  }
+  if (bad.length || !origins.length) {
+    return { pinned: true, origins, from, raw, error: `not a relay URL: ${bad.join(', ') || raw}` }
+  }
+  return { pinned: true, origins, from, raw }
+}
+
+const HEADLINE = {
+  'public-default': 'PUBLIC RELAY — not yours',
+  loopback: 'PRIVATE — relay on this machine',
+  'private-lan': 'PRIVATE — relay on your network',
+  own: 'YOUR RELAY',
+  unknown: 'UNKNOWN RELAY',
+}
+
+/**
+ * The one call a client makes before opening a socket.
+ *
+ * Returns { ok, code, headline, detail, classification, pin }. `ok:false` means DO NOT
+ * CONNECT -- the caller must not open the socket and must not publish anything, because
+ * publishing is the leak this prevents. A warning (ok:true with `warn`) is printed and
+ * proceeds: a team on a plaintext LAN relay has made a choice, and refusing it would be
+ * this guard deciding policy it was not given.
+ *
+ *   Q550  the relay is not one this machine is pinned to
+ *   Q551  HIVE_PRIVATE is set and this is the public relay we ship
+ *   Q552  the pin itself is malformed, so nothing is actually pinned
+ */
+function checkRelay({ relay, env = process.env, dir = null, fs = null } = {}) {
+  const c = classifyRelay(relay)
+  const pin = readPin({ env, dir, fs })
+  const strict = String((env && env.HIVE_PRIVATE) || '') === '1'
+
+  if (pin.pinned && pin.error) {
+    return {
+      ok: false, code: 'Q552', classification: c, pin,
+      headline: 'Q552 THE RELAY PIN IS MALFORMED — REFUSING TO CONNECT',
+      detail: [
+        `${pin.from} = ${pin.raw}`,
+        `problem: ${pin.error}`,
+        '',
+        'A pin that cannot be parsed is refused rather than ignored. Ignoring it would leave',
+        'you believing this machine is locked to your relay while it dials whatever it likes.',
+        'Write it as a full URL, e.g. HIVE_RELAY_PIN=wss://relay.yourcompany.com',
+      ].join('\n'),
+    }
+  }
+
+  if (pin.pinned && c.origin && !pin.origins.includes(c.origin)) {
+    return {
+      ok: false, code: 'Q550', classification: c, pin,
+      headline: 'Q550 THIS RELAY IS NOT THE ONE THIS MACHINE IS PINNED TO — REFUSING TO CONNECT',
+      detail: [
+        `asked to connect to : ${c.url}   (${c.origin})`,
+        `pinned to           : ${pin.origins.join(', ')}   (via ${pin.from})`,
+        '',
+        'Nothing was opened and nothing was published, so no file has left this machine.',
+        c.kind === 'public-default'
+          ? 'The relay asked for is the PUBLIC one this build ships as a fallback — which is what\nyou get when a link is missing, a .hive.json was not found, or HIVE_RELAY is unset.'
+          : 'Check the join link you were given, and HIVE_RELAY in this process\'s environment.',
+      ].join('\n'),
+    }
+  }
+
+  if (!pin.pinned && strict && c.kind === 'public-default') {
+    return {
+      ok: false, code: 'Q551', classification: c, pin,
+      headline: 'Q551 HIVE_PRIVATE=1 AND THIS IS THE PUBLIC RELAY — REFUSING TO CONNECT',
+      detail: [
+        `relay: ${c.url}`,
+        '',
+        'This is the relay this build falls back to when nobody chose one. Under HIVE_PRIVATE',
+        'that fallback is an error rather than a default, because it is reached by omission —',
+        'a missing link or an unset HIVE_RELAY — and never by anybody deciding on it.',
+        '',
+        'Point HIVE_RELAY at your own relay, or unset HIVE_PRIVATE if you meant to use ours.',
+      ].join('\n'),
+    }
+  }
+
+  // Connecting. Say what that means, in one line, every time.
+  let warn = null
+  if (c.kind === 'public-default') {
+    warn = 'Your files are being sent to a relay run by the Hivecode author, not by you. ' +
+      'Anyone who learns this room id can read them. For private work run your own relay ' +
+      '(npx hivecode-relay) and set HIVE_RELAY.'
+  } else if (c.kind === 'own' && !c.encrypted) {
+    warn = `ws:// to ${c.host} is NOT encrypted — your source travels the public internet in ` +
+      'plaintext. Put TLS in front of the relay and use wss://.'
+  } else if (c.kind === 'unknown') {
+    warn = `"${c.url}" does not parse as a relay URL — the client will almost certainly fail ` +
+      'to connect, and if it does connect you cannot tell where to.'
+  }
+
+  return {
+    ok: true, code: null, classification: c, pin, warn,
+    headline: `${HEADLINE[c.kind]}${c.encrypted ? '' : c.kind === 'loopback' ? '' : ' (UNENCRYPTED)'}`,
+    detail: warn || '',
+  }
+}
+
+/** One line for a join banner / status block: the URL plus what it means. */
+function privacyLine(relay, opts = {}) {
+  const v = checkRelay({ relay, ...opts })
+  return `relay: ${relay}  [${v.headline}]`
+}
+
+module.exports = { PUBLIC_DEFAULT_RELAY, relayOrigin, classifyRelay, readPin, checkRelay, privacyLine }
