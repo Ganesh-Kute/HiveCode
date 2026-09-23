@@ -2,7 +2,7 @@
   "name": "hivecode",
   "displayName": "Hivecode \u2014 oversight & control for AI coding agents",
   "description": "Watch, fence, approve, and roll back your AI coding agents. Live oversight, folder-scoped permissions, approval gates, and instant rollback for multi-agent coding. No git push/pull.",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "publisher": "hivecode",
   "license": "MIT",
   "author": "Ganesh Shivlal Kute <support@getgrm.tech>",
@@ -141,7 +141,7 @@
       "properties": {
         "hivecode.relayUrl": {
           "type": "string",
-          "default": "wss://livecode-xoss.onrender.com",
+          "default": "wss://hivecode-relay.onrender.com",
           "description": "The Hivecode relay server URL."
         },
         "hivecode.displayName": {

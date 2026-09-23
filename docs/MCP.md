@@ -15,7 +15,7 @@ Add Hivecode to your MCP client config. The command runs this repo's server.
     "hivecode": {
       "command": "node",
       "args": ["C:/Users/G1/Desktop/N/hive-mcp.js"],
-      "env": { "HIVE_RELAY": "wss://livecode-xoss.onrender.com" }
+      "env": { "HIVE_RELAY": "wss://hivecode-relay.onrender.com" }
     }
   }
 }

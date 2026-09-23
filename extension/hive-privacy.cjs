@@ -30,11 +30,21 @@
 // wss://R.co:443 are one relay; a string compare would refuse a correct configuration,
 // and a guard that fires on the healthy path is a guard people disable.
 
-// The relay this build falls back to when nobody chose one. Kept here rather than imported
-// so this module has no dependencies and can be loaded by the relay, the clients and the
-// tests alike. It is asserted equal to hive-mcp.js's DEFAULT_RELAY by relay-pin-test.mjs --
-// two copies that drift would make this file confidently wrong about which relay is public.
-const PUBLIC_DEFAULT_RELAY = 'wss://livecode-xoss.onrender.com'
+// The relay this build falls back to when nobody chose one -- THE ONE PLACE IT IS WRITTEN.
+//
+// It used to be written four times: here, hive-mcp.js, hive-agent.js and hive-say.js, each a
+// literal. On 23 Sep 2026 the hosted relay's Render account was suspended and a new one stood
+// up at a new address, and moving meant hunting down every copy -- any one missed would have
+// sent that client to a dead host, or made this module call the live default "YOUR RELAY".
+// Every client now imports it from here. The extension's JSON setting cannot import, so
+// extension-privacy-parity-test pins it equal to this value instead.
+const PUBLIC_DEFAULT_RELAY = 'wss://hivecode-relay.onrender.com'
+
+// Relays this project has run publicly and retired. A .hive.json written before a move still
+// names the old one, and if that host ever answers again (a reactivated account, a squatter
+// on the name) the verdict must still say PUBLIC -- not "YOUR RELAY", which is what any host
+// outside this list is called.
+const RETIRED_PUBLIC_RELAYS = ['wss://livecode-xoss.onrender.com']
 
 const DEFAULT_PORT = { 'ws:': '80', 'wss:': '443', 'http:': '80', 'https:': '443' }
 
@@ -109,7 +119,8 @@ function classifyRelay(url) {
   const host = u.hostname.toLowerCase()
   const encrypted = u.protocol === 'wss:' || u.protocol === 'https:'
   let kind
-  if (origin === relayOrigin(PUBLIC_DEFAULT_RELAY)) kind = 'public-default'
+  if (origin === relayOrigin(PUBLIC_DEFAULT_RELAY) ||
+    RETIRED_PUBLIC_RELAYS.some((r) => relayOrigin(r) === origin)) kind = 'public-default'
   else if (isLoopback(host)) kind = 'loopback'
   else if (isPrivateLan(host)) kind = 'private-lan'
   else if (isPublicTunnel(host)) kind = 'tunnel'
@@ -255,4 +266,4 @@ function privacyLine(relay, opts = {}) {
   return `relay: ${relay}  [${v.headline}]`
 }
 
-module.exports = { PUBLIC_DEFAULT_RELAY, relayOrigin, classifyRelay, readPin, checkRelay, privacyLine }
+module.exports = { PUBLIC_DEFAULT_RELAY, RETIRED_PUBLIC_RELAYS, relayOrigin, classifyRelay, readPin, checkRelay, privacyLine }

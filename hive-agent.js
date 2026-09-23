@@ -19,8 +19,9 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
+import { PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 
-const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
+const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 const [, , ARG_LINK = '', DIR = './workspace', NAME = `agent-${crypto.randomBytes(2).toString('hex')}`] = process.argv
 
 const ROOT = path.resolve(DIR)

@@ -203,16 +203,26 @@ sec('H  a remote team: a private mesh is private, a public tunnel says what it i
 // -------------------------------------------------------------------- G: anti-vacuity
 sec('G  the suite is measuring something')
 {
-  // Two copies of the public relay URL exist by necessity: hive-mcp.js dials it, this
-  // module decides whether it is public. If they drift, hive-privacy.js would classify the
-  // relay the client actually uses as "own" -- a false PRIVATE verdict, which is the exact
-  // failure this file was written to prevent, arriving through its own back door.
-  const mcp = fs.readFileSync(path.join(ROOT, 'hive-mcp.js'), 'utf8')
-  const m = mcp.match(/HIVE_RELAY\s*\|\|\s*'([^']+)'/)
-  T('G1 hive-mcp.js still declares its default relay where this test can read it', !!m)
-  T('G2 hive-mcp.js and hive-privacy.js name the SAME public relay',
-    !!m && relayOrigin(m[1]) === relayOrigin(PUBLIC_DEFAULT_RELAY),
-    m ? `${m[1]} vs ${PUBLIC_DEFAULT_RELAY}` : '')
+  // THE DEFAULT RELAY IS WRITTEN ONCE, in hive-privacy.js, and every client imports it.
+  //
+  // It used to be a literal in four files, and this section used to check two of them agreed.
+  // Agreement between copies is the weak form of the property: the day the hosted relay moved
+  // (23 Sep 2026, suspended Render account, new address) every copy had to be found by hand,
+  // and a missed one would have sent that client to a dead host -- or made this module call the
+  // live default "YOUR RELAY", the false verdict this file exists to prevent. The strong form
+  // is that there is nothing to disagree: no client may hardcode a default relay at all.
+  const CLIENTS = ['hive-mcp.js', 'hive-agent.js', 'hive-say.js']
+  const srcOf = (f) => { try { return fs.readFileSync(path.join(ROOT, f), 'utf8') } catch { return '' } }
+  const hardcoded = CLIENTS.filter((f) => /HIVE_RELAY\s*\|\|\s*['"`]wss?:\/\//.test(srcOf(f)))
+  T('G1 no client hardcodes a default relay URL', hardcoded.length === 0, hardcoded.join(', '))
+  const derived = CLIENTS.filter((f) => /HIVE_RELAY\s*\|\|\s*PUBLIC_DEFAULT_RELAY/.test(srcOf(f)) &&
+    /import\s*\{[^}]*PUBLIC_DEFAULT_RELAY[^}]*\}\s*from\s*'\.\/hive-privacy\.js'/.test(srcOf(f)))
+  T('G2 ... every one derives it from hive-privacy.js (so the check above cannot pass on an empty file)',
+    derived.length === CLIENTS.length, `${derived.length}/${CLIENTS.length}: ${derived.join(', ')}`)
+  // A relay this project retired must still read as PUBLIC. An old .hive.json names it, and
+  // if that host ever answers again the join would otherwise be labelled "YOUR RELAY".
+  T('G2b the retired relay is still recognised as a public one, not "YOUR RELAY"',
+    classifyRelay('wss://livecode-xoss.onrender.com').kind === 'public-default')
 
   // Every code the sections above claim to have seen must have actually been produced. A
   // checkRelay that returned ok:true forever would pass F and silently gut C, D and E.

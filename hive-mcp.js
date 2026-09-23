@@ -4,7 +4,7 @@
 //
 // Register it with an MCP client (e.g. Claude Code / Claude Desktop):
 //   command: node   args: ["<abs-path>/hive-mcp.js"]
-//   env (optional): HIVE_RELAY = wss://your-relay   (defaults to the hosted relay)
+//   env (optional): HIVE_RELAY = wss://your-relay   (defaults to PUBLIC_DEFAULT_RELAY in hive-privacy.js)
 //
 // Tools exposed:
 //   hive_join         join/host a room for a folder (auto kind:ai) -> returns the rules
@@ -34,7 +34,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { checkRelay } from './hive-privacy.js'
+import { checkRelay, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
@@ -44,7 +44,7 @@ import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 
-const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
+const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 let session = null // { hive, room, relay, dir, name, mailbox }
 
 // ONE THROTTLE PER SERVER PROCESS, which is one agent. It deliberately does NOT live on the

@@ -10,8 +10,9 @@
 import fs from 'fs'
 import path from 'path'
 import { startSync, parseLink } from './sync.js'
+import { PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 
-const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
+const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 const args = process.argv.slice(2)
 // link is optional first arg (contains "|" or starts with ws); detect it
 let link = ''
