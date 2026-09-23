@@ -40,7 +40,12 @@ let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
 const read = (p) => { try { return fs.readFileSync(path.join(ROOT, p), 'utf8') } catch { return '' } }
 
-const README = read('README.md')
+// THE README SURFACE IS TWO FILES. On 23 Sep 2026 the README became a setup guide for new users,
+// and the team-operations material moved to docs/OPERATIONS.md nearly word for word. Moving a
+// paragraph must not be the way it stops being checked, so every identifier section below reads
+// both files, and each file's relative links are resolved from that file's own directory.
+const SURFACES = [['README.md', ROOT], ['docs/OPERATIONS.md', path.join(ROOT, 'docs')]]
+const README = SURFACES.map(([f]) => read(f)).join('\n')
 const MCP = read('hive-mcp.js')
 const SYNC = read('sync.js')
 const LIMITS = read('limits.js')
@@ -167,9 +172,11 @@ T(`E1 all ${qNamed.length} documented Q-codes exist in the source`, qMissing.len
 T('E2 no unsubstituted placeholder survives in the README', !/<relay-http>|<your-relay>|TODO|FIXME|XXX/.test(README))
 
 console.log('\n# F. paths and scripts — one producer, folded in from the ad-hoc checks')
-const links = [...new Set([...README.matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1]))]
-  .filter((u) => !/^https?:|^#|^mailto:/.test(u))
-const deadLinks = links.filter((l) => !fs.existsSync(path.join(ROOT, l.split('#')[0])))
+const linkPairs = SURFACES.flatMap(([f, base]) => [...read(f).matchAll(/\]\(([^)\s]+)\)/g)]
+  .map((m) => [m[1], base, f])).filter(([u]) => !/^https?:|^#|^mailto:/.test(u))
+const links = [...new Set(linkPairs.map(([u, , f]) => `${f}:${u}`))]
+const deadLinks = linkPairs.filter(([u, base]) => !fs.existsSync(path.join(base, u.split('#')[0])))
+  .map(([u, , f]) => `${f}:${u}`)
 T(`F1 all ${links.length} relative links resolve`, deadLinks.length === 0, deadLinks.join(' '))
 const filePaths = [...new Set([...README.matchAll(/(?:tests|scripts|demo|docs|packages)\/[A-Za-z0-9._/-]+\.(?:mjs|js|cjs|md)/g)].map((m) => m[0]))]
 const deadPaths = filePaths.filter((p) => !fs.existsSync(path.join(ROOT, p)))
