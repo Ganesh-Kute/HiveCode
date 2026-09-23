@@ -19,7 +19,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import {
-  relayOrigin, classifyRelay, readPin, checkRelay, privacyLine, PUBLIC_DEFAULT_RELAY,
+  relayOrigin, classifyRelay, readPin, checkRelay, privacyLine, PUBLIC_DEFAULT_RELAY, currentRelayFor,
 } from '../hive-privacy.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -198,6 +198,37 @@ sec('H  a remote team: a private mesh is private, a public tunnel says what it i
   T('H15 a pin on a tunnel URL still admits that tunnel',
     checkRelay({ relay: 'wss://duncan-past-collins-silicon.trycloudflare.com',
       env: { HIVE_RELAY_PIN: 'wss://duncan-past-collins-silicon.trycloudflare.com' } }).ok === true)
+}
+
+// ------------------------------------------- I: a retired relay is followed, nothing else is
+sec('I  a retired public relay is followed to its replacement — and only that')
+{
+  // Measured before this existed, on a build that already shipped the new default: a folder
+  // whose .hive.json predated the move sent a returning user straight back to the dead host --
+  // "NOT JOINED ... 503", as if nothing had been fixed. Publishing cannot reach a saved file.
+  const m = currentRelayFor('wss://livecode-xoss.onrender.com')
+  T('I1 the retired relay is followed to the current default', m.relay === PUBLIC_DEFAULT_RELAY, m.relay)
+  T('I2 ... and the move is reported, not silent', m.migratedFrom === 'wss://livecode-xoss.onrender.com')
+  T('I3 the retired relay written with a slash / :443 / https is still recognised',
+    ['wss://livecode-xoss.onrender.com/', 'wss://livecode-xoss.onrender.com:443', 'https://livecode-xoss.onrender.com']
+      .every((u) => currentRelayFor(u).relay === PUBLIC_DEFAULT_RELAY))
+  // The property that makes the move safe: it can never redirect a team's OWN relay.
+  const own = currentRelayFor('wss://relay.acme.com')
+  T('I4 a company\'s own relay is returned untouched', own.relay === 'wss://relay.acme.com' && own.migratedFrom === null)
+  T('I5 localhost is returned untouched', currentRelayFor('ws://127.0.0.1:1234').migratedFrom === null)
+  T('I6 the current default is returned untouched (no loop)', currentRelayFor(PUBLIC_DEFAULT_RELAY).migratedFrom === null)
+  T('I7 garbage is returned untouched rather than throwing', currentRelayFor('???').relay === '???')
+
+  // The wiring. Both transports must follow the move, and the privacy check must judge the
+  // relay actually dialled -- so in sync.js the move has to happen BEFORE checkRelay.
+  const MCP = fs.readFileSync(path.join(ROOT, 'hive-mcp.js'), 'utf8')
+  const SY = fs.readFileSync(path.join(ROOT, 'sync.js'), 'utf8')
+  T('I8 hive-mcp.js resolveRoom follows a retired relay on every route (link, .hive.json, env)',
+    /function resolveRoom\(link, dir\)\s*\{\s*const r = resolveRoomRaw\(link, dir\)\s*const \{ relay, migratedFrom \} = currentRelayFor\(r\.relay\)/.test(MCP))
+  const iMove = SY.indexOf('currentRelayFor(relay)'), iCheck = SY.indexOf('const priv = checkRelay({ relay')
+  T('I9 sync.js startSync follows it too, before the privacy check', iMove > 0 && iCheck > iMove, `move@${iMove} check@${iCheck}`)
+  // A pin kept in .hive.json is one of the two places readPin() looks; the join used to erase it.
+  T('I10 the .hive.json rewrite carries a saved pinnedRelay over', /keep = \{ pinnedRelay: old\.pinnedRelay \}/.test(MCP))
 }
 
 // -------------------------------------------------------------------- G: anti-vacuity

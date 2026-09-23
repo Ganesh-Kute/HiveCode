@@ -41,7 +41,7 @@ import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from '.
 // a debt written anywhere else would be invisible to hive_owed: a warning nobody can see, which is
 // the defect this ticket is about, one level down.
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
-import { checkRelay } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
+import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
 import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
@@ -437,6 +437,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // It throws for the reason the name check above throws: startSync has no failure channel,
   // and a client that half-connects to a relay nobody authorised is the failure this exists
   // to prevent. Refusing here means no socket was opened and no file was published.
+  // A retired public relay is followed to its replacement here too, because every node client
+  // (hive-agent.js, hive-say.js, the demos) reaches the network through this function and not
+  // through hive-mcp.js's resolveRoom. The privacy check below then judges the relay actually
+  // dialled, not the one that was asked for.
+  const moved = currentRelayFor(relay)
+  if (moved.migratedFrom) {
+    relay = moved.relay
+    try { log(`relay ${moved.migratedFrom} has been retired; using ${relay}`) } catch { /* log is optional */ }
+  }
   const priv = checkRelay({ relay, env: process.env, dir: path.resolve(dir), fs })
   if (!priv.ok) {
     const e = new Error(`${priv.headline}\n\n${priv.detail}`)

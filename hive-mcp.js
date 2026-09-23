@@ -34,7 +34,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { checkRelay, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
+import { checkRelay, currentRelayFor, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
@@ -63,7 +63,16 @@ const text = (s) => {
 }
 const err = (s) => ({ content: [{ type: 'text', text: s }], isError: true })
 
+// Every route to a relay passes through here, so a retired public relay is followed to its
+// replacement in one place -- whether it arrived in a pasted link, a .hive.json written before
+// the move, or a HIVE_RELAY our own docs once told people to set. See currentRelayFor().
 function resolveRoom(link, dir) {
+  const r = resolveRoomRaw(link, dir)
+  const { relay, migratedFrom } = currentRelayFor(r.relay)
+  return { ...r, relay, migratedFrom }
+}
+
+function resolveRoomRaw(link, dir) {
   if (link) { const { relay, room, token } = parseLink(link); return { relay: relay || DEFAULT_RELAY, room, token, mode: 'joined (link)' } }
   const cfgPath = path.join(path.resolve(dir), '.hive.json')
   if (fs.existsSync(cfgPath)) {
@@ -120,7 +129,7 @@ This is refused rather than fixed for you because renaming silently is worse: if
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
-  const { relay, room, token: linkToken, mode } = resolveRoom(link, dir)
+  const { relay, room, token: linkToken, mode, migratedFrom } = resolveRoom(link, dir)
   // THE PRIVACY GATE, and note where it sits: after the relay is resolved, BEFORE the
   // .hive.json write below and before startSync opens a socket. A refused join must leave
   // nothing behind -- no config pointing at the wrong relay for the next process to find,
@@ -143,7 +152,13 @@ was not written. Fix the relay and call hive_join again.`
   const useToken = token || linkToken || process.env.HIVE_TOKEN || ''
   // persist the token too, so a re-join from .hive.json keeps the grant (the
   // invitee pastes the link once; subsequent joins just read the folder config).
-  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}) }, null, 2))
+  // pinnedRelay SURVIVES the rewrite. This line used to write only relay/room/token, so a pin
+  // kept in .hive.json -- one of the two places readPin() looks -- was erased by the very first
+  // join that honoured it. Only the pin is carried over: an old token must not follow the
+  // folder into a different room.
+  let keep = {}
+  try { const old = JSON.parse(fs.readFileSync(path.join(ROOT, '.hive.json'), 'utf8')); if (old && old.pinnedRelay) keep = { pinnedRelay: old.pinnedRelay } } catch { /* none yet */ }
+  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}), ...keep }, null, 2))
   // The ACCOUNT licence is passed through but NOT persisted to .hive.json above, and that
   // asymmetry is deliberate. `.hive.json` sits in the project folder, so it gets committed
   // and it gets shared -- fine for a room invite, which is what it is for, and wrong for a
@@ -331,7 +346,13 @@ was not written. Fix the relay and call hive_join again.`
   // bracketed verdict is what makes "did my source just leave the building?" answerable
   // without asking, and the warning line below is what makes it actionable.
   const privNote = priv.warn ? `\n\n!! ${priv.warn}` : ''
-  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  // Said out loud, because changing where someone's files go without telling them is the thing
+  // this whole module exists to prevent -- even when the move is to where they meant to be.
+  const movedNote = migratedFrom
+    ? `\n\nMOVED: this folder pointed at ${migratedFrom}, a Hivecode relay that has been retired. ` +
+      `It now uses ${relay}, and .hive.json has been updated, so this happens once.`
+    : ''
+  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }

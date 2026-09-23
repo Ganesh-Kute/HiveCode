@@ -46,6 +46,31 @@ const PUBLIC_DEFAULT_RELAY = 'wss://hivecode-relay.onrender.com'
 // outside this list is called.
 const RETIRED_PUBLIC_RELAYS = ['wss://livecode-xoss.onrender.com']
 
+/**
+ * The relay a client should actually dial for a URL it was handed.
+ *
+ * A RETIRED PUBLIC RELAY IS FOLLOWED TO ITS REPLACEMENT, and nothing else is ever rewritten.
+ * Measured 23 Sep 2026 on 0.12.1 -- a build that already shipped the new default: a project
+ * folder whose .hive.json was written before the move still named the retired host, the client
+ * obeyed it, and a returning user got "NOT JOINED ... 503" exactly as if nothing had been fixed.
+ * The same held for HIVE_RELAY set to the old host, which docs/MCP.md told people to do.
+ *
+ * That address was never the user's choice -- it was this project's default, copied into their
+ * config by the client and by our own docs -- so following it to the current default honours
+ * what they actually chose (the public relay), and moves nobody from anyone to anyone else.
+ * A relay the user runs is never in RETIRED_PUBLIC_RELAYS and is returned untouched.
+ *
+ * Returns { relay, migratedFrom } -- migratedFrom is the retired URL when a move happened,
+ * so the caller can say so on screen instead of changing someone's destination silently.
+ */
+function currentRelayFor(url) {
+  const origin = relayOrigin(url)
+  if (origin && RETIRED_PUBLIC_RELAYS.some((r) => relayOrigin(r) === origin)) {
+    return { relay: PUBLIC_DEFAULT_RELAY, migratedFrom: String(url).trim() }
+  }
+  return { relay: url, migratedFrom: null }
+}
+
 const DEFAULT_PORT = { 'ws:': '80', 'wss:': '443', 'http:': '80', 'https:': '443' }
 
 /**
@@ -266,4 +291,4 @@ function privacyLine(relay, opts = {}) {
   return `relay: ${relay}  [${v.headline}]`
 }
 
-module.exports = { PUBLIC_DEFAULT_RELAY, RETIRED_PUBLIC_RELAYS, relayOrigin, classifyRelay, readPin, checkRelay, privacyLine }
+module.exports = { PUBLIC_DEFAULT_RELAY, RETIRED_PUBLIC_RELAYS, currentRelayFor, relayOrigin, classifyRelay, readPin, checkRelay, privacyLine }
