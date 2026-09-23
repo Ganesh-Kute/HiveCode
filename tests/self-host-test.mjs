@@ -319,6 +319,19 @@ sec('G  docs/SELF_HOSTING.md promises only things that exist')
   T('G9 every Q-code the guide names exists in the source', unproducible.length === 0, unproducible.join(', '))
   T('G10 ... and it named some (anti-vacuity)', qcodes.length >= 3, qcodes.join(', '))
 
+  // render.yaml IS A DEPLOYMENT CONTRACT, and it was the same class of defect: it set only
+  // NODE_VERSION, so a Blueprint deploy produced an 8-connection relay that enforced nothing
+  // -- the exact state production was in until 5 Sep 2026. It must carry the two settings
+  // production was verified with, and every variable it sets must be one the relay reads.
+  const RY = fs.readFileSync(path.join(ROOT, 'render.yaml'), 'utf8')
+  const ryKeys = [...RY.matchAll(/^\s*-\s*key:\s*([A-Z_]+)/gm)].map((m) => m[1])
+  T('G12 render.yaml sets HIVE_SEATS and HIVE_ENFORCE_CLAIMS, not just the Node version',
+    ryKeys.includes('HIVE_SEATS') && ryKeys.includes('HIVE_ENFORCE_CLAIMS'), ryKeys.join(', '))
+  const ryDead = ryKeys.filter((k) => k !== 'NODE_VERSION' && !SRC.includes(k))
+  T('G13 every variable render.yaml sets is read by the relay', ryDead.length === 0, ryDead.join(', '))
+  T('G14 render.yaml stores no secret value (secrets are sync:false, entered in the dashboard)',
+    !/^\s*-\s*key:\s*[A-Z_]*(SECRET|TOKEN|KEY)[A-Z_]*\s*\n\s*value:/m.test(RY))
+
   // The guide points readers at this very file as the evidence for its claims. If it ever
   // stops being run, that sentence becomes the confident lie the whole class is about.
   T('G11 the suite the guide cites as its evidence is in an npm script',

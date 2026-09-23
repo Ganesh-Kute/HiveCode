@@ -1,27 +1,43 @@
-# Render deployment for the livecode relay.
-# Render supports WebSockets on web services and has a free tier.
-# Free tier sleeps after ~15 min idle — but server.js self-pings
-# RENDER_EXTERNAL_URL every 10 min to KEEP IT WARM (no cold start). Render sets
-# RENDER_EXTERNAL_URL automatically, so keep-warm activates on its own.
-# For state that survives a restart, set HIVE_PERSIST_DIR to a mounted disk
-# (paid) — without it, rooms live only in connected clients' memory.
+# Render Blueprint for the Hivecode relay.  Render → New → Blueprint → pick this repo.
+#
+# Note that "Deploy a Web Service" does NOT read this file -- only a Blueprint does. With a
+# plain Web Service you type the same values into the form by hand.
+#
+# THE TWO SETTINGS BELOW ARE THE ONES THAT MATTER, and this file used to leave both out.
+# Deploying it as-is gave a relay that caps every room at 8 connections (each participant
+# holds one socket per open file, so that is not 8 people) and that enforces nothing -- a
+# second write to a claimed file lands anyway. That is exactly the state production sat in
+# until 5 Sep 2026: "enforcement and seats are env-gated and default to the useless value,
+# and nothing reported them." These are the values production was verified with that day
+# (12 real processes over the internet, the rogue write refused).
+#
+# Free tier notes: the relay pings its own RENDER_EXTERNAL_URL (set by Render automatically)
+# every ~10 min so it never sleeps -- which also means it runs all month and uses most of the
+# workspace's free instance hours, so keep it the only free service in its workspace. There
+# is no persistent disk on free; rooms survive a process restart, not a redeploy.
 services:
   - type: web
-    name: livecode-relay
+    name: hivecode-relay
     runtime: node
     plan: free
+    region: singapore
     buildCommand: npm install
     startCommand: npm start
-    healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
         value: 20.11.1
-      # - key: HIVE_PERSIST_DIR    # uncomment + attach a disk to persist rooms across restarts
+      # 32 seats x 8 = 256 connections per room (the free default is 8).
+      - key: HIVE_SEATS
+        value: "32"
+      # queue = a write to a file someone else holds is held and replayed on release,
+      # instead of landing on top of their work.
+      - key: HIVE_ENFORCE_CLAIMS
+        value: queue
+      # --- optional, off unless you set them (secrets go in the dashboard, never here) ---
+      # - key: HIVE_PERSIST_DIR    # needs a paid disk mounted at this path
       #   value: /var/data/hive
-      # --- access control (RBAC Phase 1, opt-in) — see RBAC.md ---
-      # - key: HIVE_AUTH_MODE      # 'required' gates every connection on a valid token
+      # - key: HIVE_AUTH_MODE      # 'required' = nothing connects without a minted token
       #   value: required
-      # - key: HIVE_JWT_SECRET     # HS256 shared secret (self-host); set as a Render secret
-      #   sync: false
-      # - key: HIVE_AUDIT_FILE     # append-only JSONL audit log (needs a mounted disk)
-      #   value: /var/data/hive/audit.jsonl
+      # - key: HIVE_JWT_SECRET     # the signing secret for those tokens
+      #   sync: false              # Render asks for the value; it is never stored in git
