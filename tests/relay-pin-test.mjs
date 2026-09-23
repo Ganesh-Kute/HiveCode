@@ -166,6 +166,40 @@ sec('F  a verdict on every join, whether or not it refuses')
     line.includes('ws://127.0.0.1:1234') && /PRIVATE/i.test(line), line)
 }
 
+// ------------------------------------------------- H: remote teams — mesh vs public tunnel
+sec('H  a remote team: a private mesh is private, a public tunnel says what it is')
+{
+  // The two setups a remote team actually reaches for, and the first version of this module
+  // got BOTH wrong: it told Tailscale users their source was "travelling the public internet
+  // in plaintext" (it is WireGuard, end to end), and it told a cloudflared tunnel it was simply
+  // "YOUR RELAY" (the provider decrypts at its edge and the URL is public).
+  const ts = checkRelay({ relay: 'ws://100.101.102.103:1234', env: {} })
+  T('H1 a Tailscale address (100.64.0.0/10) is a private network', ts.classification.kind === 'private-lan', ts.classification.kind)
+  T('H2 ... with no plaintext alarm', !ts.warn, ts.warn || '')
+  T('H3 a MagicDNS name (*.ts.net) is a private network too',
+    classifyRelay('ws://relay-box.tail1234.ts.net:1234').kind === 'private-lan')
+  // The range is 100.64 -- 100.127. Its edges are where a sloppy pattern leaks.
+  T('H4 100.63.x.x is NOT in the mesh range', classifyRelay('ws://100.63.1.1:1234').kind === 'own')
+  T('H5 100.128.x.x is NOT in the mesh range', classifyRelay('ws://100.128.1.1:1234').kind === 'own')
+  T('H6 100.64.0.1 (first address) IS', classifyRelay('ws://100.64.0.1:1234').kind === 'private-lan')
+  T('H7 100.127.255.254 (last address) IS', classifyRelay('ws://100.127.255.254:1234').kind === 'private-lan')
+
+  const cf = checkRelay({ relay: 'wss://duncan-past-collins-silicon.trycloudflare.com', env: {} })
+  T('H8 a cloudflared quick tunnel is classified as a tunnel', cf.classification.kind === 'tunnel', cf.classification.kind)
+  T('H9 ... connects (it is the team\'s relay, not a defect)', cf.ok === true)
+  T('H10 ... says the provider can read the traffic', /decrypts|can read/i.test(cf.warn || ''), cf.warn || '')
+  T('H11 ... and tells them to set --secret', /--secret/.test(cf.warn || ''))
+  T('H12 ... and never calls itself PRIVATE', !/PRIVATE/.test(cf.headline), cf.headline)
+  T('H13 ngrok is recognised as a tunnel too', classifyRelay('wss://abc123.ngrok-free.app').kind === 'tunnel')
+  // A lookalike must not pass: the pattern is anchored to the end of the host.
+  T('H14 a host merely CONTAINING a tunnel domain is not a tunnel',
+    classifyRelay('wss://trycloudflare.com.evil.example').kind === 'own')
+  // Pinning is orthogonal to classification: a team may legitimately pin its tunnel URL.
+  T('H15 a pin on a tunnel URL still admits that tunnel',
+    checkRelay({ relay: 'wss://duncan-past-collins-silicon.trycloudflare.com',
+      env: { HIVE_RELAY_PIN: 'wss://duncan-past-collins-silicon.trycloudflare.com' } }).ok === true)
+}
+
 // -------------------------------------------------------------------- G: anti-vacuity
 sec('G  the suite is measuring something')
 {

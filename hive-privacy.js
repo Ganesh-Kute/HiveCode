@@ -69,13 +69,31 @@ function isPrivateLan(host) {
   if (/^192\.168\./.test(h)) return true
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true
   if (/\.local$/.test(h) || /\.lan$/.test(h) || /\.internal$/.test(h)) return true
+  // A PRIVATE MESH (Tailscale and friends) IS A PRIVATE NETWORK, and the first version of this
+  // file called it "the public internet in plaintext". 100.64.0.0/10 is the shared address space
+  // Tailscale hands out and *.ts.net is its MagicDNS; the transport underneath is WireGuard,
+  // end-to-end encrypted between the two devices, and nothing outside the tailnet can even
+  // route to the relay. Warning a remote team that chose the most private setup available
+  // that their source was travelling in the clear would have taught them to ignore the verdict.
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true
+  if (/\.ts\.net$/.test(h)) return true
   return false
+}
+
+// PUBLIC TUNNELS decrypt at their own edge. A relay on a laptop behind cloudflared or ngrok is
+// the team's relay -- nobody else runs it -- but the tunnel provider terminates TLS and can read
+// every frame, and anyone holding the URL can reach the port. Both facts matter to a team that
+// picked a tunnel *for privacy*, and neither is visible in a URL that starts with wss://.
+const PUBLIC_TUNNEL = /\.(trycloudflare\.com|ngrok-free\.app|ngrok\.app|ngrok\.io|ngrok-free\.dev|loca\.lt|serveo\.net|localhost\.run)$/
+
+function isPublicTunnel(host) {
+  return PUBLIC_TUNNEL.test(String(host || '').toLowerCase())
 }
 
 /**
  * What kind of relay is this, and does traffic to it leave the machine in the clear?
  *
- *   kind: 'public-default' | 'loopback' | 'private-lan' | 'own'  | 'unknown'
+ *   kind: 'public-default' | 'loopback' | 'private-lan' | 'tunnel' | 'own' | 'unknown'
  *
  * 'own' does not mean audited -- it means "not the relay we ship". A team that pastes a
  * link from a blog post lands in 'own' too, which is exactly why the pin exists.
@@ -90,6 +108,7 @@ export function classifyRelay(url) {
   if (origin === relayOrigin(PUBLIC_DEFAULT_RELAY)) kind = 'public-default'
   else if (isLoopback(host)) kind = 'loopback'
   else if (isPrivateLan(host)) kind = 'private-lan'
+  else if (isPublicTunnel(host)) kind = 'tunnel'
   else kind = 'own'
   return { kind, origin, host, encrypted, url: String(url).trim() }
 }
@@ -130,6 +149,7 @@ const HEADLINE = {
   'public-default': 'PUBLIC RELAY — not yours',
   loopback: 'PRIVATE — relay on this machine',
   'private-lan': 'PRIVATE — relay on your network',
+  tunnel: 'YOUR RELAY — through a public tunnel',
   own: 'YOUR RELAY',
   unknown: 'UNKNOWN RELAY',
 }
@@ -205,6 +225,11 @@ export function checkRelay({ relay, env = process.env, dir = null, fs = null } =
     warn = 'Your files are being sent to a relay run by the Hivecode author, not by you. ' +
       'Anyone who learns this room id can read them. For private work run your own relay ' +
       '(npx hivecode-relay) and set HIVE_RELAY.'
+  } else if (c.kind === 'tunnel') {
+    warn = `${c.host} is a public tunnel. The relay is yours, but the tunnel provider decrypts ` +
+      'traffic at its edge and can read it, and anyone with this URL can reach the relay. Fine for ' +
+      'a trial with --secret set; for private remote work use a private network (e.g. Tailscale) ' +
+      'or a server you control.'
   } else if (c.kind === 'own' && !c.encrypted) {
     warn = `ws:// to ${c.host} is NOT encrypted — your source travels the public internet in ` +
       'plaintext. Put TLS in front of the relay and use wss://.'

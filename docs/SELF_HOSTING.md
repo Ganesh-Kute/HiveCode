@@ -65,6 +65,22 @@ Render one-click; the walkthrough is in [DEPLOY.md](DEPLOY.md).
 
 You deploy once. After that it stays up.
 
+### A remote team, keeping it private
+
+A relay on a laptop is reachable only from that network. For teammates in other places there
+are three real options, and they are **not** equally private:
+
+| Option | Private? | Stays up? | Setup |
+|---|---|---|---|
+| **Private network (Tailscale or similar)** — relay on any team machine, teammates join the same private network and use its `100.x.y.z` or `*.ts.net` address | **Yes.** WireGuard end to end; nothing outside the network can even reach the relay | Only while that machine is on | Each person installs the app and logs in once |
+| **Your own server** — a small cloud VM or office box in *your* account, TLS terminated on it | **Yes.** You run every machine the traffic touches | Yes | One-time server setup |
+| **Public tunnel** (`cloudflared tunnel --url http://localhost:1234`, ngrok) | **No.** The tunnel provider decrypts traffic at its edge, and the URL is public | Only while the laptop is on; quick tunnels get a new URL every restart | One command |
+
+A public tunnel works — verified end to end: two clients synced a file through a Cloudflare
+quick tunnel, and a client holding the URL but no token was refused. Use it for a trial, and
+**always with `--secret`**, because a public URL on an open relay is an open room. `hive_status`
+says so on every join: `YOUR RELAY — through a public tunnel`.
+
 ---
 
 ## Step 2 — Point EVERY client at it
