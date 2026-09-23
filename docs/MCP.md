@@ -29,7 +29,7 @@ The package declares a `bin` (`hivecode-mcp` → `hive-mcp.js`), so once it's
 published to npm the other agent needs no local copy/clone — just:
 
 ```json
-{ "mcpServers": { "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp"] } } }
+{ "mcpServers": { "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp@latest"] } } }
 ```
 
 `npx` fetches and runs it. (End state, even simpler: a **remote** MCP server

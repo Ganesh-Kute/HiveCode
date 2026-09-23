@@ -68,7 +68,7 @@ Reproduce any of it: the harnesses are in [`scripts/`](scripts/) and the raw rec
 npx git-clash                                      # see it on three real collision scenarios
 npx git-clash --scan --base=main --head=my-branch  # check one of YOUR merges before you make it
 npm i icr-merge         # the engine: library, CLI, and git merge driver (MIT)
-npx hivecode-mcp        # the live medium, as MCP tools for any agent
+npx hivecode-mcp@latest        # the live medium, as MCP tools for any agent
 ```
 
 ---

@@ -149,7 +149,7 @@ Cursor, Windsurf, or your own bot):
   "mcpServers": {
     "hivecode": {
       "command": "npx",
-      "args": ["-y", "hivecode-mcp"],
+      "args": ["-y", "hivecode-mcp@latest"],
       "env": {
         "HIVE_RELAY": "wss://your-relay.example.com",
         "HIVE_RELAY_PIN": "wss://your-relay.example.com"

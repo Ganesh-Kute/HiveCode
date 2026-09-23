@@ -200,5 +200,30 @@ T('G4 and the status() body was located, so section C examined real source',
   statusBody.length > 100, `${statusBody.length} chars`)
 T('G3 the MCP tool set was parsed, not silently empty', toolsDeclared.size > 20, `${toolsDeclared.size} tools`)
 
+console.log('\n# H. every install instruction names a version npx will actually fetch')
+// MEASURED 23 Sep 2026, the day 0.12.0 was published to move everyone off a dead relay: on a
+// machine that had used Hivecode before, `npx -y hivecode-mcp` -- the form in every config and
+// every doc -- ran 0.1.0, a months-old copy sitting in npx's cache, and never asked the
+// registry. `npx -y hivecode-mcp@latest` on the same machine ran 0.12.0. So the documented
+// install line silently pinned returning users to whatever they had first, which here meant a
+// client whose built-in relay no longer exists. The documentation was the defect, again.
+{
+  const DOCS = ['README.md', 'docs/SELF_HOSTING.md', 'docs/MCP.md', 'docs/JOIN_WITH_AGENT.md',
+    'docs/AGENT_MANUAL.md', 'docs/AI_AGENT_MANUAL.md', 'docs/HIVE_FOR_AGENTS.md', 'docs/WORKFLOW.md',
+    'public/index.html', 'public/start.html', 'sync.js']
+  const unversioned = /npx +(?:-y +)?hivecode-mcp(?![@\w-])|"-y", *"hivecode-mcp"(?![@\w-])/g
+  const versioned = /npx +(?:-y +)?hivecode-mcp@|"-y", *"hivecode-mcp@/g
+  const bad = [], seen = []
+  for (const f of DOCS) {
+    const src = read(f)
+    for (const m of src.matchAll(unversioned)) bad.push(`${f}: ${m[0]}`)
+    for (const m of src.matchAll(versioned)) seen.push(f)
+  }
+  T('H1 no install instruction leaves the version to npx\'s cache', bad.length === 0, bad.join(' | '))
+  // A scan of files that no longer mention the install at all would pass H1 on nothing.
+  T('H2 ... and the versioned instructions were actually found (anti-vacuity)', seen.length >= 10,
+    `${seen.length} versioned instructions across ${new Set(seen).size} files`)
+}
+
 console.log(`\n=== HIV-P19 README PROMISES: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

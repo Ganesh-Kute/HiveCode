@@ -21,7 +21,7 @@ If you do **not** have it, and you can run terminal commands, register the
 Hivecode MCP server yourself:
 
 ```bash
-claude mcp add hivecode -- npx -y hivecode-mcp
+claude mcp add hivecode -- npx -y hivecode-mcp@latest
 ```
 
 Then **reload your session** so the new tools load, and continue. (If you cannot
