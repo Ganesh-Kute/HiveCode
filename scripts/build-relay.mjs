@@ -23,6 +23,7 @@
  * install those to run a WebSocket server would be embarrassing.
  */
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync, spawn } from 'child_process'
@@ -170,52 +171,107 @@ if (fs.existsSync(path.join(ROOT, 'LICENSE'))) fs.copyFileSync(path.join(ROOT, '
 
 fs.writeFileSync(path.join(OUT, 'README.md'), `# hivecode-relay
 
-The Hivecode relay, self-hosted. One command:
+Run the Hivecode relay yourself, so your team's code never goes to a server you don't own.
 
 \`\`\`bash
 npx hivecode-relay
 \`\`\`
 
-It listens on \`:1234\` (set \`PORT\` to change it) and prints what it is enforcing. Point agents
-and editors at \`ws://localhost:1234|<room>\`, open \`/control\` to watch, \`/map\` for the live
-architecture graph, \`/health\` for connections and limits.
+It starts the relay, **saves rooms to \`./hive-data\`** so they survive a restart, and prints the
+join link plus the exact setting each teammate needs.
 
-## Why run your own
+## How your team connects
 
-The relay is the component that **decides**. When two participants reach for the same file, the
-second write is refused here — at the transport, before it lands, with no model involved. Running
-it yourself means your code never leaves your network.
+Everyone pastes the join link it prints — people in VS Code (**Hivecode: Join a Session**), AI
+agents as the \`link\` argument to \`hive_join\`. That is all a teammate has to do.
 
-## Seats — read this before a real team uses it
+**Where to run it depends on where your team is:**
 
-A room caps at **8 connections** by default, and the refusal is **invisible**: the 9th socket
-connects and then simply never syncs. Every CLI call is its own connection, so a five-person team
-reaches that ceiling quickly.
+- **Same office / same Wi-Fi** — run it on any one machine. Teammates use the \`ws://192.168.x.x\`
+  address it prints. Not encrypted, so keep it inside a network you trust.
+- **Team in different places** — run it on a machine everyone can reach over the internet: a small
+  cloud server or container host. Put TLS in front of it and hand out a \`wss://\` address. A laptop
+  at home does not work for this: nobody outside your network can reach it, and it stops when the
+  lid closes.
+
+## Lock it down
 
 \`\`\`bash
-HIVE_SEATS=4 npx hivecode-relay      # 4 x 8 = 32 connections per room
+npx hivecode-relay --secret <a-long-random-string>
+npx hivecode-token --room <room> --name <who> --role writer --ttl 7d
 \`\`\`
 
-## Configuration
+\`--secret\` turns on token-required mode: nothing connects without a token you minted. Without it
+the relay is **open** — anyone who can reach the port and guesses a room id can join.
 
-| variable | what it does |
+## Options
+
+| flag / variable | what it does |
 |---|---|
-| \`PORT\` | listen port (default 1234) |
-| \`HIVE_SEATS\` | seats; each grants 8 connections per room |
-| \`HIVE_AUTH\` | \`required\` to reject any client without a valid token |
-| \`HIVE_JWT_SECRET\` / \`HIVE_JWT_PUBKEY\` | HS256 / RS256 verification keys |
+| \`--port\` / \`PORT\` | listen port (default 1234) |
+| \`--room\` | print the link for a named room instead of a random one |
+| \`--data\` / \`HIVE_PERSIST_DIR\` | where rooms are saved (default \`./hive-data\`) |
+| \`--seats\` / \`HIVE_SEATS\` | connection budget, 8 connections per seat per room (default 25) |
+| \`--secret\` / \`HIVE_JWT_SECRET\` | require a token; sets \`HIVE_AUTH_MODE=required\` |
+| \`HIVE_JWT_PUBKEY_FILE\` | verify RS256 tokens against this public key instead of a shared secret |
 | \`HIVE_ENFORCE_CLAIMS\` | \`on\` to refuse writes to a file someone else holds |
-| \`HIVE_PROVENANCE\` | \`on\` to require signed receipts on every change |
-| \`ENABLE_REMOTE_MCP\` | \`false\` to shut the HTTP MCP endpoint entirely |
+| \`HIVE_AUDIT_FILE\` | append one line per admit and reject |
+| \`ENABLE_REMOTE_MCP\` | \`false\` to switch off the HTTP MCP endpoint entirely |
 
-With \`HIVE_AUTH=required\` nothing joins without a token, so an open port is not an open room.
+## Optional: lock each machine to your relay
+
+A pasted link is enough to join. For a company that wants a guarantee, add this to each agent's
+MCP config \`env\` block (or \`hivecode.relayPin\` in VS Code):
+
+\`\`\`
+HIVE_RELAY_PIN = wss://your-relay.example.com
+\`\`\`
+
+With it set, that machine **refuses** to connect to any other relay — before a socket opens — so a
+stale or mistaken link cannot send your files somewhere else.
 
 ## What this package is not
 
-It is the relay only. Agents connect through [\`hivecode-mcp\`](https://www.npmjs.com/package/hivecode-mcp);
-humans use the VS Code extension or \`/control\`. This is the piece that was missing: until now the
-client shipped and the server did not, so nobody could actually self-host.
+The relay only. Agents connect with [\`hivecode-mcp\`](https://www.npmjs.com/package/hivecode-mcp);
+people use the VS Code extension. \`/health\` shows connections and limits, \`/control\` shows the room.
 `)
+
+// THE README IS AN API SURFACE, and the first published draft of this one proved it: it told
+// operators to set HIVE_AUTH=required and HIVE_JWT_PUBKEY. Neither name is read by anything.
+// "With HIVE_AUTH=required nothing joins without a token" was the one sentence a company
+// would rely on for access control, and following it left the relay wide open with every
+// indicator green. So the build now refuses (Q483) if the README names a variable or flag
+// that the staged sources never read -- checked here, before anything can be published.
+//
+// The first version of this guard reported ALL TWELVE settings dead, PORT included. Its
+// boundary was written `\b` inside a template literal, where it is a backspace character,
+// not a regex word boundary -- so it searched for names that could never appear. Had that
+// negative been believed, the fix would have been to delete twelve correct lines from the
+// README. Boundaries are now spelled as character classes, with no escape to get wrong,
+// and they still tell HIVE_AUTH (read by nothing) apart from HIVE_AUTH_MODE (the real one),
+// which is the exact confusion the guard was written to catch.
+{
+  const stripComments = (src) => src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const readme = fs.readFileSync(path.join(OUT, 'README.md'), 'utf8')
+  const staged = stripComments([...local].map((f) => fs.readFileSync(path.join(OUT, f), 'utf8')).join('\n'))
+  // Settings the README documents for the CLIENT side, which the relay rightly never reads.
+  // They are checked against the client sources instead, so they cannot rot either.
+  const CLIENT_SIDE = ['HIVE_RELAY_PIN']
+  const client = stripComments(['hive-privacy.js', 'sync.js', 'hive-mcp.js']
+    .map((f) => { try { return fs.readFileSync(path.join(ROOT, f), 'utf8') } catch { return '' } }).join('\n'))
+  const isNamed = (src, name) => new RegExp('(^|[^A-Z_])' + name + '($|[^A-Z_])').test(src)
+  const vars = [...new Set([...readme.matchAll(/(?:HIVE|ENABLE)_[A-Z_]+|PORT/g)].map((m) => m[0]))]
+  const flags = [...new Set([...readme.matchAll(/--([a-z]+)/g)].map((m) => m[1]))]
+  const deadVars = vars.filter((v) => !isNamed(CLIENT_SIDE.includes(v) ? client : staged, v))
+  // A flag counts as read if the code names it as a property, a key or a string.
+  const deadFlags = flags.filter((f) => !new RegExp("[.'\"]" + f + "[^a-z]").test(staged))
+  if (deadVars.length || deadFlags.length) {
+    throw new Error(`Q483 the README documents settings nothing reads: ${[...deadVars, ...deadFlags.map((f) => '--' + f)].join(', ')}`)
+  }
+  // ANTI-VACUITY: a guard that checked nothing would print this same line.
+  if (vars.length < 8 || flags.length < 5) throw new Error(`Q483 the README guard examined too little to mean anything: ${vars.length} vars, ${flags.length} flags`)
+  console.log(`README: ${vars.length} variables and ${flags.length} flags documented, every one read`)
+}
 
 // ── 3. verify — a package that installs and then cannot start is worse than none ─────────────
 console.log(`staged ${local.size} sources + ${ASSETS.length + 1} assets -> dist/relay`)
@@ -227,7 +283,13 @@ const install = spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-f
 if (install.status !== 0) throw new Error('npm install in the staged package failed: ' + (install.stderr || '').slice(0, 500))
 
 const PORT = 1247
-const proc = spawn(process.execPath, ['server.js'], { cwd: OUT, env: { ...process.env, PORT: String(PORT), HIVE_SEATS: '4' }, stdio: ['ignore', 'pipe', 'pipe'] })
+// SMOKE-TEST THE BIN, NOT server.js. `npx hivecode-relay` runs hive-relay.js; a check that
+// started server.js directly would stay green while the command users actually type was
+// broken -- the wrong-entry-point version of testing the consumer instead of the thing.
+// Persistence is pointed at a temp dir on purpose: hive-relay.js defaults it to ./hive-data,
+// and with cwd=OUT that folder would land inside dist/relay and ship to npm with the package.
+const SMOKE_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-relay-smoke-'))
+const proc = spawn(process.execPath, ['hive-relay.js', '--room', 'smoke'], { cwd: OUT, env: { ...process.env, PORT: String(PORT), HIVE_SEATS: '4', HIVE_PERSIST_DIR: SMOKE_DATA }, stdio: ['ignore', 'pipe', 'pipe'] })
 let boot = ''
 proc.stdout.on('data', (d) => { boot += d })
 proc.stderr.on('data', (d) => { boot += d })
