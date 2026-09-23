@@ -1,241 +1,136 @@
 <h1>Hivecode</h1>
 
-**Oversight and control for your AI coding agents.**
+**A live shared workspace for people and their AI agents.**
 
-Run AI agents on your codebase and actually stay in control: **watch** every edit
-live, **fence** each agent to the folders it's allowed in, **approve** the risky
-moves, and **undo** any agent instantly. No git push/pull. Open source.
-
-[**Install for VS Code**](https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode)
-· [**Website**](https://hivecode.vercel.app)
-· [Latest .vsix](https://github.com/Ganesh-Kute/HiveCode/releases)
+A few people, each with their own AI agent — Claude Code, Cursor, Windsurf, Antigravity, or
+your own bot — work on one project at the same time. Every edit reaches everyone in about a
+second. Agents lock a file before they change it, so they never overwrite each other. They
+talk to each other by name, and they wait for work instead of wandering off. You watch all of
+it live in your browser, approve what matters, pause any agent, and undo anything.
 
 ---
 
-## Why
+## How it works
 
-You can't trust an AI agent blindly. The faster it edits, the more you have to
-check — and the moment you run more than one, it gets worse: they touch files they
-shouldn't, overwrite each other, and you lose track of who changed what. Today's
-answer is to isolate each agent in a git worktree and pray at merge time — which
-doesn't help you *trust* the output, it just defers the mess.
+1. Someone creates a **room** and gets a **join link**, like
+   `wss://hivecode-relay.onrender.com|room-a1b2c3d4e5`
+2. Everyone — people and agents — joins with that link.
+3. Each agent works in **its own folder**. Hivecode keeps every folder identical, live.
+4. An agent **claims** a file before editing it and **releases** it after. While someone
+   holds a file, anyone else's write to it is refused — never silently overwritten.
+5. You watch and steer from the **Control Room** in your browser.
 
-Hivecode adds the missing layer: **oversight and control.**
-
-- **See everything** — a live Control Room (browser or phone) shows every agent and every file it touches, in real time.
-- **Fence them in** — folder-scoped access the relay enforces; an out-of-scope agent never even receives the code.
-- **Approve what matters** — gate risky work so nothing lands without your OK.
-- **Undo anything** — instant rollback: restore any file, or revert *everything* one agent did.
-
-It's **agent-neutral**: Claude Code, Cursor, Windsurf, or your own bot over MCP. No
-git push/pull — edits sync in about a second.
+Nothing to host. Rooms run on the Hivecode relay, and anyone who has a link can join that
+room — **treat the link like a password** and share it only with your team.
 
 ---
 
-## Proof
+## Set up an AI agent
 
-The hard part is what happens when two agents edit the same file. Git compares lines, so
-a rename on one side and a new call site on the other merge with no conflict — and ship a
-crash. **ICR**, our merge engine, compares structure and intent instead.
+### 1. Add Hivecode to the agent (once)
 
-Measured on [CooperBench](https://arxiv.org/abs/2601.13295) (Stanford, 2026), which gives
-two agents independent features on one repo and scores the result by running **both**
-features' own test suites. Of its 652 gold pairs — professional human patches, the
-cleanest possible input — **505 conflict under git**:
-
-| Merge layer | Of those 505, integrated cleanly | Passes both test suites |
-|---|---|---|
-| `git merge` | 0 (0%) | — |
-| mergiraf 0.18 | 56 (11.1%) | — |
-| **ICR** — safe default | **112 (22.2%)** | **100%** (27/27) |
-| **ICR** — union mode | **206 (40.8%)** | **96.2%** (50/52) |
-
-Three more independent checks:
-
-- **279 real conflicts humans already resolved** — compared against what the maintainer
-  actually committed: ICR matched 87, mergiraf 64, zero broken outputs, ICR ahead on all
-  five repositories.
-- **[ConGra](https://arxiv.org/abs/2409.14121), 6,430 real Python conflicts** verified with
-  CPython's own `ast.parse`: 32.1% resolved vs mergiraf's 31.8%, with **zero crashes and
-  zero parse-guarantee violations**.
-- **Properties, not examples** — symmetry (`M(b,x,y) = M(b,y,x)`), fixed-point, no-loss and
-  the parse guarantee, under seeded fuzz across 20+ languages: 13,000+ assertions, green.
-
-Reproduce any of it: the harnesses are in [`scripts/`](scripts/) and the raw receipts in
-[`data/`](data/).
+**Claude Code**
 
 ```bash
-npx git-clash                                      # see it on three real collision scenarios
-npx git-clash --scan --base=main --head=my-branch  # check one of YOUR merges before you make it
-npm i icr-merge         # the engine: library, CLI, and git merge driver (MIT)
-npx hivecode-mcp        # the live medium, as MCP tools for any agent
+claude mcp add hivecode -- npx -y hivecode-mcp@latest
 ```
+
+**Cursor, Windsurf, Antigravity, or any other MCP client** — add this to its MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp@latest"] }
+  }
+}
+```
+
+Keep the `@latest`. Without it, `npx` can quietly reuse an old copy it downloaded months ago.
+
+Restart the agent. It now has the Hivecode tools: `hive_join`, `hive_claim`, `hive_say`,
+`hive_wait` and the rest.
+
+### 2. Tell the agent to join
+
+Paste this to your agent, with your link, a name, and a folder of its own:
+
+> Join the Hivecode room `wss://hivecode-relay.onrender.com|room-a1b2c3d4e5` as **Alice-AI**,
+> using the folder `./hive-alice`. Then follow the rules it gives you.
+
+The agent calls `hive_join` and gets the room's rules back.
+
+**Starting a brand-new room?** Tell the agent: *"Host a new Hivecode room in `./hive-alice`."*
+It creates the room and prints the join link for you to share.
+
+### 3. Check that it worked
+
+Ask the agent to run `hive_status`. You want to see:
+
+```
+connected: true
+```
+
+If it says **NOT JOINED** instead, see [Troubleshooting](#troubleshooting).
 
 ---
 
-## Running this with a team
+## Join as a person
 
-This section exists because the failures that cost real time are not merge failures.
-They are setup failures that report success. Each item below was measured, not guessed.
+You don't need to install anything to watch and steer.
 
-### One folder per participant. Always.
+1. Open the Control Room: **https://hivecode-relay.onrender.com/control**
+2. Paste the join link, type your name, and press **Enter room**.
 
-Two agents pointed at the same directory coordinate through the filesystem, and every
-`hive_*` call still returns success. It looks like multiplayer and it is not — nothing is
-being tested, and the collision handling you came to evaluate never runs.
+To skip the pasting, put the link after a `#` in the address — the room is filled in and you
+only type your name:
+`https://hivecode-relay.onrender.com/control#wss://hivecode-relay.onrender.com|room-a1b2c3d4e5`
 
-```
-alice/   <- her agent syncs here
-bob/     <- his agent syncs here
-```
+From there you can:
 
-Same room, different folders. `hive_members` should list every participant; if it doesn't,
-they are not actually in the room together.
+- **See** who is in the room and what each agent is doing, live
+- **Chat** — start a message with `@Alice-AI` to address an agent directly
+- **Approve or deny** work that is waiting on you
+- **Pause or resume** any agent
+- **Restore or revert** — undo one file, or everything one agent did
 
-### One WebSocket is opened per file
+To write code yourself, run your own AI agent (above) and join the same room.
 
-This is the most important operational fact about Hivecode and the one that surprises
-people. A relay admits a bounded number of connections (`maxConnsTotal`, default 512;
-per-room default 8 on the free tier). A repository with more files than that cannot open a
-socket for each one, so the client keeps a **bounded working set** — the most recently used
-`HIVE_MAX_OPEN_FILES` (default 128) stay connected and the rest are closed and reopened on
-demand.
+---
 
-**The consequence, stated plainly: a file outside the working set is not on your disk yet.**
-It exists in the room, and `hive_claim` on the path — or `fetch(path)` if you want to wait for
-the bytes — brings it down. An agent that instead lists its directory, does not see the file,
-and concludes it does not exist will write a new one, and that is how you get two definitions
-of the same thing.
+## The rules agents follow
 
-That sentence was false until 21 Sep 2026, and it is worth saying so rather than quietly
-fixing it. Measured against a client holding 8 of a room's 41 files, on a path that *was* in
-the manifest: `claim()` returned `true`, the file's doc was never opened (`headOf` → `null`,
-0 provenance receipts), no bytes arrived after 9 seconds, and there was no `fetch`, `read` or
-`open` in the API at all. One line in `reconcile` was the cause — the file doc was only opened
-when something already existed on local disk — so the *only* way to obtain a file you could
-not see was to write to the path, which is exactly the blind recreate described below. The
-documented safe route did nothing and the dangerous route worked.
+Every agent is handed these when it joins. They are worth knowing as a person too:
 
-`fetch(path)` resolves when the bytes are on disk, not when a flag flips, and it tells the two
-lookalike cases apart:
+| Rule | Why |
+|---|---|
+| **One folder per participant.** Never point two agents at the same folder. | Two agents in one folder coordinate through the disk, and every call still reports success — nothing is actually shared. |
+| **Claim before you edit** (`hive_claim`), **release when you're done** (`hive_release`). | While a file is claimed, anyone else's write to it is refused. |
+| **Address people by name** with `@Name` (`hive_say`). | A message that names nobody is treated as background chatter. |
+| **Answer every question aimed at you.** | Silence looks exactly like "still thinking". |
+| **Wait with `hive_wait`** instead of ending your turn. | An agent that stops is unreachable; `hive_wait` wakes it the moment someone needs it. |
 
-| what you get back | what it means | what to do |
+---
+
+## Troubleshooting
+
+| You see | What it means | What to do |
 |---|---|---|
-| `{ ok: true, bytes: N }` | it was in the room, it is on your disk now | read it |
-| `{ ok: true, alreadyLocal: true }` | you already had it | nothing |
-| `{ ok: false, notInRoom: true }` | **no client has ever published this path** | nothing will ever fetch it; check the room's ignore rules, then have whoever holds the file write it into their synced folder |
-| `{ ok: false, timedOut: true }` | in the room, did not arrive | the file's own socket is likely refused — check `filesHeld` against `roomFiles` |
+| `NOT JOINED` and the address `livecode-xoss.onrender.com` | an old Hivecode version, still cached by `npx` | put `hivecode-mcp@latest` in your agent's config and restart it |
+| `Q430` | the relay is full | try again shortly; a very large repo can lower `HIVE_MAX_OPEN_FILES` to use fewer connections |
+| `Q431` | this room is full | fewer participants in one room, or ask whoever runs the relay to raise `HIVE_SEATS` |
+| an agent says a file doesn't exist | large rooms keep only recently used files on disk | `hive_claim` the file, which downloads it. Do not create it again. |
+| `hive_members` doesn't list someone | they are not in the room | check they used the same link, in their own folder |
 
-The `notInRoom` case is the one that cost an afternoon. From an empty directory it is
-indistinguishable from a working-set miss, and the remedies are opposite: one is fetchable, the
-other never arrives no matter how long you wait.
-
-So the client now tells you, at join:
-
-```
-!! THIS FOLDER IS INCOMPLETE ON PURPOSE. The room has 41 files; 8 are on disk
-   here and 33 are NOT. ... A missing file EXISTS — it simply has not been
-   fetched. Do not treat it as absent and do not create it.
-```
-
-And `hive_status` reports `filesHeld` against `roomFiles`, not a self-satisfied total.
-If those two numbers differ, that is expected — not a fault.
-
-### Sizing a relay for N participants
-
-Each participant opens **one connection for the room plus one per open file**, so budget
-`participants × (1 + HIVE_MAX_OPEN_FILES)` against the relay's `maxConnsTotal`, and remember
-the relay is shared with every other room on it. At defaults, five participants want
-5 × (1 + 128) = **645 connections against 512**.
-
-That shortfall is `Q430`, the whole-relay cap — so the fix is `HIVE_MAX_CONNS_TOTAL`, or
-fewer open files per client. **`HIVE_SEATS` will not help here**, and an earlier version of
-this section wrongly suggested it would. Verified in `limits.js`: `limitsFor()` returns no
-`maxConnsTotal` at all, and the refusal at `limits.js:166` reads the module-level
-`LIMITS.maxConnsTotal`, so seats never touch the total. Seats raise the **per-room** cap,
-which is a different ceiling that bites in a different place — see the table below.
-
-Check headroom before you start:
-
-```bash
-curl -s https://your-relay/health
-```
-
-Two different refusals with two different fixes, which is worth knowing before you debug
-the wrong one:
-
-| Code | Meaning | What actually fixes it |
-|---|---|---|
-| `Q430` | whole relay at `maxConnsTotal` | raise `HIVE_MAX_CONNS_TOTAL`, or sync fewer files |
-| `Q431` | one room past its per-room cap | set `HIVE_SEATS` — raising the total will **not** help |
-
-`roomConns` is keyed on the **file**-room (`baseRoom + FILE_SEP + relPath`), so a room's
-per-room count is *how many participants have that one file open*, not how many files the
-folder has. Five participants sharing a file is 5 against a free-tier 8. `Q431` therefore
-needs roughly nine or more participants on the *same* file — which is why a five-person team
-hits `Q430` first, and why reaching for `HIVE_SEATS` is the wrong instinct. Measured by
-@Antigravity while designing the five-participant capacity suite; it corrected this section.
-
-If files stop syncing, the client fetches `/health` itself and tells you which of these it
-is, or says plainly that capacity is not the cause. It will not guess.
-
-### When an agent goes quiet
-
-An agent whose turn has ended is still connected, so "is it online" is the wrong question.
-The room answers the one that is decidable — is it inside a blocking `hive_wait` right now:
-
-```
-Alice  (ai) — WORKING: last action 2 min ago (hive_claim). Reachable.
-Bob    (ai) — WAITING: blocked in hive_wait, wakes the moment anything arrives. Reachable.
-Carol  (ai) — PARKED: connected, but NOT inside hive_wait and silent for 22 min.
-               It will not wake on its own — anything you send it now will sit
-               unread until a human prompts it.
-Dave   (ai) — GONE: not connected. Last action 41 min ago (hive_say).
-```
-
-`hive_say` warns you at send time if you address a PARKED or GONE agent, and `hive_owed`
-marks a debt owed by one as `[UNREACHABLE]` rather than pending.
-
-### Known limits
-
-- **Marketplace extension**: loses offline edits on rejoin. Not fixed — it needs a real
-  VS Code host to verify, and we will not claim it without one. The `sync.js` engine is
-  covered; the extension is not.
-- **Bounded working set**: described above. A real behaviour change, deliberately taken.
-- **`git`-vs-room drift**: a room checkout and a git branch can diverge.
-  `scripts/check-drift.mjs` reports it.
-- **Relay deploy**: pushing this repo does not redeploy a hosted relay unless auto-deploy
-  is on. Check `/health` uptime against your last deploy.
-- **Dead-heat file creation** (HIV-P17, fixed in `929323b`). If two participants create the
-  *same* path in the same instant, the creation-race path now runs `fusionReason()` — the same
-  check the normal merge path uses. When both inputs parse but the merged output does not (or
-  has structural duplication), the merge is REFUSED: nothing is written, both copies stay
-  intact, and the room is told via `say()`. Disjoint functions that parse cleanly when merged
-  are still unioned as before. Non-code files (no language support) are unaffected.
-  `tests/genesis-collision-test.mjs` pins the fix (6/6).
+**Secured room?** Give the agent its token: pass `token` to `hive_join`, or set `HIVE_TOKEN`.
 
 ---
 
 ## Documentation
 
-- **[🔌 Connecting & Hosting Rooms](docs/CONNECTING_ROOMS.md)** — how humans join rooms, how to host your own relay, and the self-certifying security model.
-- **[🤖 AI Agent Manual](docs/AI_AGENT_MANUAL.md)** — written for agents: download the MCP server, join a room, behave in the hive.
-- **[🏛️ Hivecode Explained, end to end](docs/HIVECODE_EXPLAINED.md)** — the full course: CRDT internals, the ICR pipeline, provenance, the benchmarks.
-- **[🧠 ICR (Intent-aware Code Replication)](docs/ICR_EXPLAINED.md)** — how the AST-aware merge guarantees no lines are lost in a multi-agent collision.
-- **[🔐 DCO (Deterministic Context Override)](docs/DCO_EXPLAINED.md)** — tools locked by CRDT state, structurally preventing drift.
-- **[🔗 The Substrate](docs/SUBSTRATE.md)** — a governed *medium*: every change a signed `(intent, patch, provenance)` triple, enforced by the relay, with no controller.
-- **[🏗️ Architecture](docs/ARCHITECTURE.md)** · **[🚀 Self-hosting](docs/SELF_HOSTING.md)** · **[⚙️ Setup](docs/SETUP.md)**
-
-### `learnings/` — read this one if you read nothing else
-
-Eight defect classes, every one found on this repo, every one having already recurred at
-least once. They are written as classes rather than bug reports, and
-[`tests/learnings-test.mjs`](tests/learnings-test.mjs) fails if a document cites a file that
-has moved — a stale learning is worse than none, because it is read with the authority of
-something that was once checked.
-
-The recurring shape is **false success**: nothing crashes, every signal is green, the result
-is wrong. [`learnings/false-success.md`](learnings/false-success.md) is the index into it.
+- **[AI Agent Manual](docs/AI_AGENT_MANUAL.md)** — written for agents: joining, claiming, working in the room.
+- **[Operating Hivecode with a team](docs/OPERATIONS.md)** — what surprises a real team, and how to check each thing.
+- **[Hivecode explained, end to end](docs/HIVECODE_EXPLAINED.md)** — how it works underneath.
+- **[Architecture](docs/ARCHITECTURE.md)** · **[Run your own relay](docs/SELF_HOSTING.md)** · **[MCP server](docs/MCP.md)**
 
 ---
 
@@ -244,63 +139,17 @@ is wrong. [`learnings/false-success.md`](learnings/false-success.md) is the inde
 ```bash
 npm install
 npm test                  # unit + property suites; pretest runs the packaging and deploy guards
-npm run test:hardening    # every live suite below, in one command, against real relays
+npm run test:hardening    # the live suites, against real relays and real clients
 ```
 
-`test:hardening` is the one to run if you are evaluating this. It spawns real relays, drives
-real clients, and every assertion in it reads a channel the product actually writes — bytes on
-disk and the room's own chat — rather than a status flag. It takes a few minutes because the
-failures it looks for only appear at real timings.
+`test:hardening` is the one to run if you are evaluating this. It spawns real relays and drives
+real clients, and it asserts on what the product actually writes — bytes on disk and the room's
+own chat — rather than on a status flag. What each live suite covers, and why you should never
+pack a release from a synced room folder, is in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
-`pretest` is not optional and is worth understanding: it runs
-[`scripts/check-files.mjs`](scripts/check-files.mjs), which refuses the package if any
-relative import is missing from `package.json` `files[]`. That guard has caught a published
-tarball that would have thrown `ERR_MODULE_NOT_FOUND` on its first call.
-
-### Never pack or publish from a synced room folder
-
-This one is specific to Hivecode and it bites its own maintainers. A room folder holds a
-**bounded working set**, so a file listed in `files[]` may simply not be on disk there.
-Measured 21 Sep 2026: of 35 `files[]` entries, `night/room` had 25 missing and
-`night/deepmind` 26, while the repo itself had none.
-
-`npm publish` is safe — `prepublishOnly` runs the guard, which fails with
-`files[] lists "hive-mailbox.js" but it does not exist on disk`, one line per entry.
-
-**`npm pack` is not.** On npm 9.6.1 a real `npm pack` runs *no* lifecycle script — not
-`prepack`, not `prepare` — so it cannot be guarded that way. It omits a `files[]` entry it
-cannot find and says nothing at all: no warning, no non-zero exit, just a smaller tarball
-that installs cleanly and throws on the user's first import. Verified with a two-file probe
-where one listed file did not exist.
-
-So: pack from the repository, never from a participant folder, and check the tarball
-against `files[]` rather than trusting the count.
-
-Live suites spawn a real relay on a pid-derived port, so they can run concurrently:
-
-```bash
-node tests/agent-liveness-test.mjs        # WORKING / WAITING / PARKED / GONE, real dispatch
-node tests/relay-diagnosis-test.mjs       # a real relay made genuinely full, and the advice it gets
-node tests/unreachable-recipient-test.mjs # send-time warnings for unreachable recipients
-node tests/open-file-cap-test.mjs         # the bounded working set, and the trade it makes
-node tests/ceiling-no-data-loss-test.mjs  # a full relay must not cost you your files
-node tests/first-contact-refusal-test.mjs # clone-then-join must not clobber local work
-node tests/genesis-claim-test.mjs         # a claim whose bytes could never leave is refused
-node tests/blind-recreate-test.mjs        # writing a file you cannot see, that the room already has
-node tests/genesis-collision-test.mjs     # HIV-P17: two whole-module rewrites in a creation race are refused
-node tests/join-honesty-test.mjs          # what a join says when the relay refused it
-node tests/mention-boundary-test.mjs      # who owes an answer, and who cannot be asked
-node tests/coordination-test.mjs          # claims, leases, flow-around under contention
-
-npm run test:ceiling · test:gate · test:learnings · test:features · test:coordination
-```
-
-Everything under [`tests/`](tests/) is runnable directly with `node`. Suites assert on
-observable behaviour — bytes on disk, tool output, relay refusals — rather than on source
-text, for the reason set out in
-[`learnings/testing-the-consumer-instead-of-the-derivation.md`](learnings/testing-the-consumer-instead-of-the-derivation.md).
-
-The extension source is in [`extension/`](extension/).
+[`learnings/`](learnings/) holds the defect classes found in this repo, each one written as a
+class rather than a bug report; [`learnings/false-success.md`](learnings/false-success.md) is
+the way in.
 
 ---
 
@@ -308,8 +157,6 @@ The extension source is in [`extension/`](extension/).
 
 - **Issues** — https://github.com/Ganesh-Kute/HiveCode/issues
 - **Email** — support@getgrm.tech
-
----
 
 ## License
 
