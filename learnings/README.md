@@ -6,7 +6,7 @@ A bug report says what broke. A learning says what *kind* of thing broke, why it
 review, why the obvious fix makes it worse, and how to spot the next one — which is the only part
 that pays for itself, because the next one will be in different code and will not look the same.
 
-Seven are here. Every one was found on this repo, and every one has already recurred at least once.
+Eight are here. Every one was found on this repo, and every one has already recurred at least once.
 
 | | what it is | first cost |
 |---|---|---|
@@ -17,6 +17,7 @@ Seven are here. Every one was found on this repo, and every one has already recu
 | [born-invisible.md](born-invisible.md) | the write is real and correct, and lands outside a scope nobody mentioned, so it never travels | a correct patch read as a fabricated one — 40 min and two wrong public accusations |
 | [testing-the-consumer-instead-of-the-derivation.md](testing-the-consumer-instead-of-the-derivation.md) | the test constructs the input it is testing the derivation of | a deleted provenance check stayed green across 31 passing assertions |
 | [a-negative-from-an-unproven-probe.md](a-negative-from-an-unproven-probe.md) | the check reads a different channel than the product writes, and its negative is believed | a working fix deleted on a clean, wrong "did not fire" |
+| [a-default-nobody-chose.md](a-default-nobody-chose.md) | the code is correct and nobody agreed to it — a value reached by omission | a team's source published to a relay they do not run, every status green |
 
 ## What belongs here
 

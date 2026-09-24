@@ -7,9 +7,9 @@ If you are an AI assistant or Agent asked to collaborate in a Hivecode project, 
 Before you can join the decentralized room, you must register the Hivecode Model Context Protocol (MCP) server. If you have terminal execution capabilities, run:
 
 ```bash
-claude mcp add hivecode -- npx -y hivecode-mcp
+claude mcp add hivecode -- npx -y hivecode-mcp@latest
 ```
-*(If you are using Cursor, Windsurf, or another client, use the appropriate command or settings file to add the `npx -y hivecode-mcp` MCP server).*
+*(If you are using Cursor, Windsurf, or another client, use the appropriate command or settings file to add the `npx -y hivecode-mcp@latest` MCP server).*
 
 After running this command, **reload or refresh your tools** so that the Hivecode tools become available in your context window.
 

@@ -24,6 +24,11 @@ let grmLink = null
 // Optional: without GRM installed the room simply has no memory, which is the old behaviour.
 try { grmLink = require('./grm-link.cjs') } catch (e) { /* GRM link optional */ }
 try { icrlib = require('./icr.cjs') } catch (e) { /* ICR optional — extension works without it */ }
+// Generated from hive-privacy.js by scripts/build-privacy-cjs.cjs so humans and agents run
+// ONE implementation of "which relay is this". Unlike the two above, a missing copy is NOT
+// treated as "feature off" when a pin is configured — see start().
+let privacy = null
+try { privacy = require('./hive-privacy.cjs') } catch (e) { /* handled explicitly in start() */ }
 
 const IGNORE = new Set(['node_modules', '.git', '.vscode'])
 const MAX_BYTES = 1_000_000
@@ -371,7 +376,10 @@ async function tryAutoResume() {
     if (keys && keys.privateKey) {
       const me = (vscode.workspace.getConfiguration('hivecode').get('displayName') || '').trim() || 'Owner'
       const { token: ownerTok } = mintToken(keys, cfg.room, { name: me, kind: 'human', role: 'maintainer' })
-      start(root, cfg.room, relay, ownerTok)
+      // start() returns false when it refused the relay. The next line dereferences
+      // `session`, which start() only assigns on success -- without this guard a refusal
+      // would become a TypeError, and a stack trace is not a privacy message.
+      if (!start(root, cfg.room, relay, ownerTok)) return
       session.keys = keys; session.ownerToken = ownerTok; session.secured = true
       seedInvitesFromStore(cfg.room)
       logActivity('Resumed your secured room — existing invite links still work')
@@ -381,7 +389,7 @@ async function tryAutoResume() {
     // secured room but no key here (e.g. a different machine) — fall back to token if present
   }
   if (cfg.token || !cfg.secured) {
-    start(root, cfg.room, relay, cfg.token || '')
+    if (!start(root, cfg.room, relay, cfg.token || '')) return
     logActivity('Resumed the room')
     pushState()
   }
@@ -588,7 +596,10 @@ async function hostSession() {
   const prev = loadRoomCfg(root)
   const room = (prev && prev.room && !prev.secured) ? prev.room : 'room-' + crypto.randomBytes(13).toString('base64url')
   const relay = relayUrl()
-  start(root, room, relay)
+  // A REFUSED RELAY MUST NOT BE SAVED. saveRoomCfg is what the next window reads to decide
+  // where to connect, so writing it here would make one refusal into a permanent one -- or
+  // worse, leave a config naming a relay this machine has already declined.
+  if (!start(root, room, relay)) return
   saveRoomCfg(root, { relay, room })
   await vscode.env.clipboard.writeText(`${relay}|${room}`)
   logActivity('Hosting — join link copied to clipboard')
@@ -610,7 +621,7 @@ async function joinSessionWithLink(link) {
   // link shapes: "relay|room" (open) or "relay|room|token" (secured — token baked in).
   const [relay, room, token] = link.includes('|') ? link.split('|') : [relayUrl(), link, '']
   const r = room.trim(), rl = relay.trim(), tk = (token || '').trim()
-  start(root, r, rl, tk)
+  if (!start(root, r, rl, tk)) return
   // remember it so reopening the IDE rejoins automatically (no re-pasting the link)
   saveRoomCfg(root, { relay: rl, room: r, ...(tk ? { token: tk } : {}) })
   logActivity(`Joining room ${r}`)
@@ -655,7 +666,7 @@ async function hostSecuredSession() {
   const relay = relayUrl()
   const me = (vscode.workspace.getConfiguration('hivecode').get('displayName') || '').trim() || 'Owner'
   const { token: ownerTok } = mintToken(keys, room, { name: me, kind: 'human', role: 'maintainer' }) // full access
-  start(root, room, relay, ownerTok)
+  if (!start(root, room, relay, ownerTok)) return
   session.keys = keys; session.ownerToken = ownerTok; session.secured = true // re-attach after start() rebuilt session
   seedInvitesFromStore(room)
   saveRoomCfg(root, { relay, room, secured: true })
@@ -885,6 +896,41 @@ function relayHttpPost(routePath, body) {
 
 // --- the sync engine (whole-folder, disk-level, mtime-optimized) ---
 function start(root, room, relay, linkToken) {
+  // THE PRIVACY GATE, before the Y.Doc exists and long before a socket does.
+  //
+  // `hivecode.relayUrl` DEFAULTS to the public relay this build ships. So for a human who
+  // installs the extension and changes nothing, "do nothing" and "publish our source to a
+  // server we do not run" are the same action, and every indicator stays green throughout.
+  // HIVE_RELAY_PIN (or `hivecode.relayPin`) turns that into a refusal.
+  //
+  // This runs the SAME module the agents run, copied in by scripts/build-privacy-cjs.cjs,
+  // because a second implementation of a privacy rule is a rule that drifts and then lies.
+  //
+  // icr.cjs and grm-link.cjs are genuinely optional and their absence degrades a feature.
+  // This one is not: if a pin is configured and the module that evaluates it is missing,
+  // connecting anyway would enforce nothing while the setting still reads as set. That is
+  // the same absence-as-a-value shape as Q552, so it is refused the same way.
+  const pinCfg = (vscode.workspace.getConfiguration('hivecode').get('relayPin') || '').trim()
+  const wanted = relay || relayUrl()
+  if (!privacy) {
+    if (pinCfg) {
+      vscode.window.showErrorMessage('Hivecode: Q552 hivecode.relayPin is set but this build cannot evaluate it',
+        { modal: true, detail: 'hive-privacy.cjs is missing from the extension, so the pin would enforce nothing while still appearing set. Nothing was joined. Reinstall the extension.' })
+      return false
+    }
+    logActivity('hive-privacy.cjs missing — relay privacy is NOT being checked in this build')
+  } else {
+    const env = { ...process.env }
+    if (pinCfg) env.HIVE_RELAY_PIN = pinCfg
+    const verdict = privacy.checkRelay({ relay: wanted, env })
+    if (!verdict.ok) {
+      vscode.window.showErrorMessage(`Hivecode: ${verdict.headline}`, { modal: true, detail: `${verdict.detail}\n\nNOTHING WAS JOINED. No socket was opened and no file was published.` })
+      logActivity(verdict.headline)
+      return false
+    }
+    logActivity(`relay ${wanted} — ${verdict.headline}`)
+    if (verdict.warn) logActivity(verdict.warn)
+  }
   const doc = new Y.Doc()
   const manifest = doc.getMap('manifest') // relPath -> 1 (file registry); each file is its own subdoc
   const board = doc.getMap('board') // relPath -> { by, at, churn, symbols } (auto-logged rewrites)
@@ -1626,6 +1672,10 @@ function start(root, room, relay, linkToken) {
   // expose chat/task actions to the panel handler
   session = { doc, provider, root, scanTimer: null, room, relay: useRelay, me, chat, tasks, owners, invites, controls, say, assign, decide, control, listHistory, restore, restoreFileTo, revertAuthor, checkpoint, undoLast, redoLast, stopActivity: () => { if (editingClearTimer) clearTimeout(editingClearTimer); for (const r of [...fileDocs.keys()]) closeFile(r) } }
   pushState()
+  // The single success return. Every caller checks it, because the early returns above are
+  // refusals that leave `session` untouched -- and a caller that assumed success would
+  // dereference the previous session, or save a config for a relay we just declined.
+  return true
 }
 
 // --- the sidebar panel ---

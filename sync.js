@@ -41,6 +41,7 @@ import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from '.
 // a debt written anywhere else would be invisible to hive_owed: a warning nobody can see, which is
 // the defect this ticket is about, one level down.
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
+import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
 import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
@@ -165,7 +166,7 @@ asked to collaborate here, follow this.
 ## Join the room
 1. If you do NOT have a \`hive_join\` tool and you can run terminal commands, register
    the Hivecode MCP server, then reload so the tools load:
-     claude mcp add hivecode -- npx -y hivecode-mcp
+     claude mcp add hivecode -- npx -y hivecode-mcp@latest
 2. Call: hive_join({ dir: ".", name: "<your name>", owner: "<the human you work for>" })
    The room, relay, and token are already saved in .hive.json in this folder, so you
    do NOT need a link — hive_join reads them automatically.
@@ -424,6 +425,32 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const e = new Error(`${nameCheck.error} Try "${nameCheck.suggested}".`)
     e.code = 'EHIVEINVALIDNAME'
     e.suggested = nameCheck.suggested
+    throw e
+  }
+  // THE SAME PRIVACY GATE hive-mcp.js applies at join, repeated here because this is the
+  // real choke point. Every client in the product -- the MCP server, hive-agent.js, the
+  // CLIs, every demo script -- reaches the network through this one function, and a guard
+  // that lives only in the MCP layer protects only agents that went through the MCP layer.
+  // An operator who sets HIVE_RELAY_PIN is entitled to expect it means "this machine",
+  // not "this machine, except for the seven scripts that call startSync directly".
+  //
+  // It throws for the reason the name check above throws: startSync has no failure channel,
+  // and a client that half-connects to a relay nobody authorised is the failure this exists
+  // to prevent. Refusing here means no socket was opened and no file was published.
+  // A retired public relay is followed to its replacement here too, because every node client
+  // (hive-agent.js, hive-say.js, the demos) reaches the network through this function and not
+  // through hive-mcp.js's resolveRoom. The privacy check below then judges the relay actually
+  // dialled, not the one that was asked for.
+  const moved = currentRelayFor(relay)
+  if (moved.migratedFrom) {
+    relay = moved.relay
+    try { log(`relay ${moved.migratedFrom} has been retired; using ${relay}`) } catch { /* log is optional */ }
+  }
+  const priv = checkRelay({ relay, env: process.env, dir: path.resolve(dir), fs })
+  if (!priv.ok) {
+    const e = new Error(`${priv.headline}\n\n${priv.detail}`)
+    e.code = 'EHIVERELAYPIN'
+    e.qcode = priv.code
     throw e
   }
   const ROOT = path.resolve(dir)

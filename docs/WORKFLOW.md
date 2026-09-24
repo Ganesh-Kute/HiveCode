@@ -120,7 +120,7 @@ The common case: one developer who wants three agents working at once.
 ### Once per machine
 
 ```bash
-claude mcp add hivecode -- npx -y hivecode-mcp
+claude mcp add hivecode -- npx -y hivecode-mcp@latest
 ```
 
 Claude Desktop and Cursor read a config file instead of having a CLI:
@@ -128,7 +128,7 @@ Claude Desktop and Cursor read a config file instead of having a CLI:
 ```json
 {
   "mcpServers": {
-    "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp"] }
+    "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp@latest"] }
   }
 }
 ```

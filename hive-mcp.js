@@ -4,7 +4,7 @@
 //
 // Register it with an MCP client (e.g. Claude Code / Claude Desktop):
 //   command: node   args: ["<abs-path>/hive-mcp.js"]
-//   env (optional): HIVE_RELAY = wss://your-relay   (defaults to the hosted relay)
+//   env (optional): HIVE_RELAY = wss://your-relay   (defaults to PUBLIC_DEFAULT_RELAY in hive-privacy.js)
 //
 // Tools exposed:
 //   hive_join         join/host a room for a folder (auto kind:ai) -> returns the rules
@@ -34,6 +34,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
+import { checkRelay, currentRelayFor, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
@@ -43,7 +44,7 @@ import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 
-const DEFAULT_RELAY = process.env.HIVE_RELAY || 'wss://livecode-xoss.onrender.com'
+const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 let session = null // { hive, room, relay, dir, name, mailbox }
 
 // ONE THROTTLE PER SERVER PROCESS, which is one agent. It deliberately does NOT live on the
@@ -62,7 +63,16 @@ const text = (s) => {
 }
 const err = (s) => ({ content: [{ type: 'text', text: s }], isError: true })
 
+// Every route to a relay passes through here, so a retired public relay is followed to its
+// replacement in one place -- whether it arrived in a pasted link, a .hive.json written before
+// the move, or a HIVE_RELAY our own docs once told people to set. See currentRelayFor().
 function resolveRoom(link, dir) {
+  const r = resolveRoomRaw(link, dir)
+  const { relay, migratedFrom } = currentRelayFor(r.relay)
+  return { ...r, relay, migratedFrom }
+}
+
+function resolveRoomRaw(link, dir) {
   if (link) { const { relay, room, token } = parseLink(link); return { relay: relay || DEFAULT_RELAY, room, token, mode: 'joined (link)' } }
   const cfgPath = path.join(path.resolve(dir), '.hive.json')
   if (fs.existsSync(cfgPath)) {
@@ -119,12 +129,36 @@ This is refused rather than fixed for you because renaming silently is worse: if
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
-  const { relay, room, token: linkToken, mode } = resolveRoom(link, dir)
+  const { relay, room, token: linkToken, mode, migratedFrom } = resolveRoom(link, dir)
+  // THE PRIVACY GATE, and note where it sits: after the relay is resolved, BEFORE the
+  // .hive.json write below and before startSync opens a socket. A refused join must leave
+  // nothing behind -- no config pointing at the wrong relay for the next process to find,
+  // and above all no published file. Checking after connecting would report a leak instead
+  // of preventing one, which is the difference between a guard and a log line.
+  const priv = checkRelay({ relay, env: process.env, dir: ROOT, fs })
+  if (!priv.ok) {
+    return `${priv.headline}
+
+${priv.detail}
+
+room: ${room}
+mode: ${mode}
+folder: ${ROOT}
+
+NOTHING WAS JOINED. No socket was opened, no file was published, and ${path.join(ROOT, '.hive.json')}
+was not written. Fix the relay and call hive_join again.`
+  }
   // token precedence: explicit arg > token baked into the join link > $HIVE_TOKEN.
   const useToken = token || linkToken || process.env.HIVE_TOKEN || ''
   // persist the token too, so a re-join from .hive.json keeps the grant (the
   // invitee pastes the link once; subsequent joins just read the folder config).
-  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}) }, null, 2))
+  // pinnedRelay SURVIVES the rewrite. This line used to write only relay/room/token, so a pin
+  // kept in .hive.json -- one of the two places readPin() looks -- was erased by the very first
+  // join that honoured it. Only the pin is carried over: an old token must not follow the
+  // folder into a different room.
+  let keep = {}
+  try { const old = JSON.parse(fs.readFileSync(path.join(ROOT, '.hive.json'), 'utf8')); if (old && old.pinnedRelay) keep = { pinnedRelay: old.pinnedRelay } } catch { /* none yet */ }
+  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}), ...keep }, null, 2))
   // The ACCOUNT licence is passed through but NOT persisted to .hive.json above, and that
   // asymmetry is deliberate. `.hive.json` sits in the project folder, so it gets committed
   // and it gets shared -- fine for a room invite, which is what it is for, and wrong for a
@@ -307,7 +341,18 @@ This is refused rather than fixed for you because renaming silently is worse: if
   // The invite link carries the token when there is one — without it a secured room rejects
   // whoever you hand it to, and the Control Room says the link is missing its token.
   const inviteLink = `${relay}|${room}${useToken ? `|${useToken}` : ''}`
-  return `${mode}\nroom: ${room}\nrelay: ${relay}\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  // THE VERDICT, NOT JUST THE URL. `relay: wss://...` on its own is unreadable to anybody
+  // who has not run a relay -- the public one and a company's own look identical. The
+  // bracketed verdict is what makes "did my source just leave the building?" answerable
+  // without asking, and the warning line below is what makes it actionable.
+  const privNote = priv.warn ? `\n\n!! ${priv.warn}` : ''
+  // Said out loud, because changing where someone's files go without telling them is the thing
+  // this whole module exists to prevent -- even when the move is to where they meant to be.
+  const movedNote = migratedFrom
+    ? `\n\nMOVED: this folder pointed at ${migratedFrom}, a Hivecode relay that has been retired. ` +
+      `It now uses ${relay}, and .hive.json has been updated, so this happens once.`
+    : ''
+  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }
@@ -1288,8 +1333,16 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // is almost always "you are still connected, do nothing".
         let conn = null
         try { conn = s.hive.status() } catch { }
+        // `privacy` sits next to `connected` on purpose. These are the two questions an
+        // agent asks here, and only one of them had an answer: "am I reaching anyone" was
+        // reportable and "where is my source going" was not. A bare relay URL is not an
+        // answer to the second -- the public relay and a company's own are the same shape.
+        const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs })
         return text({
           room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION,
+          privacy: pv.headline,
+          ...(pv.warn ? { privacyWarning: pv.warn } : {}),
+          ...(pv.pin && pv.pin.pinned ? { relayPin: pv.pin.origins.join(', ') } : {}),
           unread: mailbox().peek(chatArray()).unreadCount,
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,

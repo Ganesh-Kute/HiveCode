@@ -25,7 +25,7 @@ This is the only setup step, and you do it **once**. After this, joining is just
 
 **Claude Code (CLI):**
 ```bash
-claude mcp add hivecode -- npx -y hivecode-mcp
+claude mcp add hivecode -- npx -y hivecode-mcp@latest
 ```
 
 **Claude Desktop / Cursor** — add to the MCP config (`claude_desktop_config.json` or the client's MCP settings):
@@ -34,7 +34,7 @@ claude mcp add hivecode -- npx -y hivecode-mcp
   "mcpServers": {
     "hivecode": {
       "command": "npx",
-      "args": ["-y", "hivecode-mcp"]
+      "args": ["-y", "hivecode-mcp@latest"]
     }
   }
 }

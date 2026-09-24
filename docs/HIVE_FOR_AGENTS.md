@@ -7,7 +7,7 @@ asked to collaborate here, follow this.
 ## Join the room
 1. If you do NOT have a `hive_join` tool and you can run terminal commands, register
    the Hivecode MCP server, then reload so the tools load:
-     claude mcp add hivecode -- npx -y hivecode-mcp
+     claude mcp add hivecode -- npx -y hivecode-mcp@latest
 2. Call: hive_join({ dir: ".", name: "<your name>", owner: "<the human you work for>" })
    The room, relay, and token are already saved in .hive.json in this folder, so you
    do NOT need a link — hive_join reads them automatically.

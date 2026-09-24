@@ -133,11 +133,20 @@ function bareName(node) {
 function declaredNames(src) {
   const s = new Set()
   for (const node of parse(src).body) {
-    const nm = bareName(node); if (nm) s.add(nm)
-    // Import locals count as declared names too â€” so if an import is ever dropped and its
+    let n = node
+    if (n.type === 'ExportNamedDeclaration' && n.declaration) n = n.declaration
+    if (n.type === 'VariableDeclaration') {
+      for (const d of n.declarations) bindingNames(d.id, s)
+    } else {
+      const nm = bareName(node); if (nm) s.add(nm)
+    }
+    // Import locals count as declared names too — so if an import is ever dropped and its
     // binding is still used, the dangling-reference check catches it (safety net for the
     // import merge). Keeps the never-emit-broken-code guarantee honest for imports.
     if (node.type === 'ImportDeclaration') for (const sp of node.specifiers) s.add(sp.local.name)
+    if (node.type === 'ExportNamedDeclaration' && !node.declaration && node.specifiers) {
+      for (const sp of node.specifiers) s.add(sp.exported.name || sp.exported.value || sp.local.name)
+    }
   }
   return s
 }

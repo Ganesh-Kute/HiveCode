@@ -15,7 +15,7 @@ Add Hivecode to your MCP client config. The command runs this repo's server.
     "hivecode": {
       "command": "node",
       "args": ["C:/Users/G1/Desktop/N/hive-mcp.js"],
-      "env": { "HIVE_RELAY": "wss://livecode-xoss.onrender.com" }
+      "env": { "HIVE_RELAY": "wss://hivecode-relay.onrender.com" }
     }
   }
 }
@@ -29,7 +29,7 @@ The package declares a `bin` (`hivecode-mcp` → `hive-mcp.js`), so once it's
 published to npm the other agent needs no local copy/clone — just:
 
 ```json
-{ "mcpServers": { "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp"] } } }
+{ "mcpServers": { "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp@latest"] } } }
 ```
 
 `npx` fetches and runs it. (End state, even simpler: a **remote** MCP server
