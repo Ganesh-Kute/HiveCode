@@ -38,7 +38,7 @@ No link goes in this command. The join link is for your agent, in step 2 below.
 It finds the agent apps on your computer (Claude Code, Antigravity, Cursor, Windsurf, Claude
 Desktop, Gemini CLI), adds Hivecode to each one, and **starts each one to check it works**. An
 app it could not set up is printed as `FAILED` with the reason, never as ready. The first run
-downloads the package, which takes about 40 seconds.
+downloads the package, which takes about 10 seconds.
 
 Then:
 

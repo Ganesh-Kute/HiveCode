@@ -24,9 +24,9 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+// The stdio server is our own, not @modelcontextprotocol/sdk's: the SDK drags express, hono, zod
+// and ~85 more packages into every install for a slice this small. See hive-stdio.js.
+import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from './hive-stdio.js'
 // Substrate defaults for MCP agents: signed provenance + the silent-fork gate are ON
 // unless explicitly disabled. Agents register this server with arbitrary (often empty)
 // env, so relying on per-registration env vars left rooms in mixed signed/unsigned mode —
@@ -1559,6 +1559,13 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   process.exit(0)
 } else if (isEntryPoint) {
   const transport = new StdioServerTransport()
+  // STDIN CLOSING IS THE AGENT APP SAYING GOODBYE -- the MCP spec's stdio shutdown. Leave the
+  // room and exit. The SDK kept this process alive on its open sockets instead, holding a seat
+  // and a presence entry for a member that was gone, until something killed it.
+  server.onclose = () => {
+    try { if (session) session.hive.stop() } catch { /* leaving is best-effort; exiting is not */ }
+    setTimeout(() => process.exit(0), 500)
+  }
   await server.connect(transport)
   // stderr is fine for logs; stdout is the JSON-RPC channel and must stay clean.
   console.error('[hive-mcp] Hivecode MCP server ready (stdio). Default relay:', DEFAULT_RELAY)

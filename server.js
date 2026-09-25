@@ -24,7 +24,9 @@ import { isMcpRequest, handleMcpRequest } from './remote-mcp.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 import { createRequire } from 'module'
 import { WebSocketServer } from 'ws'
-import { setupWSConnection, setPersistence, getYDoc } from 'y-websocket/bin/utils'
+// y-websocket v2's server half, kept in-repo: the client moved to v3, which ships no server code.
+// See the header of vendor/y-websocket/utils.cjs for why it is CommonJS and why it is here.
+import { setupWSConnection, setPersistence, getYDoc } from './vendor/y-websocket/utils.cjs'
 import {
   LIMITS, TIERS, limitsFor, admitConnection, noteConnectionOpened, noteConnectionClosed,
   attachRateLimit, noteDocBytes, docOverCap, setDocBytes, forgetDoc, stats as limitStats,

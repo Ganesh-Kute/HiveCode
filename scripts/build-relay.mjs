@@ -55,6 +55,13 @@ function specifiersOf(src, rel) {
     // `await import('./x.js')` is a real edge and the relay uses it; a literal argument is
     // resolvable, a computed one is not and must not be guessed at.
     if (n.type === 'ImportExpression' && n.source && n.source.type === 'Literal') out.push(n.source.value)
+    // require('x') in the vendored CommonJS, and createRequire(import.meta.url)('x') in server.js.
+    // Without these the relay package never declared yjs at all: it installed only because npm
+    // auto-installs y-websocket's PEER dependency -- one --legacy-peer-deps away from a relay that
+    // dies on its first require. Only literal arguments count, as for import().
+    if (n.type === 'CallExpression' && n.arguments.length === 1 && n.arguments[0].type === 'Literal' && typeof n.arguments[0].value === 'string' &&
+        ((n.callee.type === 'Identifier' && n.callee.name === 'require') ||
+         (n.callee.type === 'CallExpression' && n.callee.callee.type === 'Identifier' && n.callee.callee.name === 'createRequire'))) out.push(n.arguments[0].value)
     for (const k of Object.keys(n)) if (k !== 'type' && k !== 'loc' && k !== 'range') visit(n[k])
   }
   visit(ast)
@@ -73,7 +80,7 @@ function walk(rel) {
       if (!/\.(js|cjs|mjs|json)$/.test(p)) p += '.js'
       walk(p)
     } else if (!spec.startsWith('node:')) {
-      // "lib0/decoding" and "y-websocket/bin/utils" are deep imports; the DEPENDENCY is the
+      // "lib0/decoding" and "y-protocols/sync" are deep imports; the DEPENDENCY is the
       // package, which for a scoped name is the first two segments.
       const pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]
       bare.add(pkg)
