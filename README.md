@@ -25,44 +25,43 @@ room — **treat the link like a password** and share it only with your team.
 
 ---
 
-## Set up an AI agent
+## Set up an AI agent (about 2 minutes)
 
-### 1. Add Hivecode to the agent (once)
-
-**Claude Code**
+You need [Node.js](https://nodejs.org) 18 or newer. Then run this once, in any terminal:
 
 ```bash
-claude mcp add hivecode -- npx -y hivecode-mcp@latest
+npx -y hivecode-mcp@latest setup
 ```
 
-**Cursor, Windsurf, Antigravity, or any other MCP client** — add this to its MCP settings:
+No link goes in this command. The join link is for your agent, in step 2 below.
 
-```json
-{
-  "mcpServers": {
-    "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp@latest"] }
-  }
-}
-```
+It finds the agent apps on your computer (Claude Code, Antigravity, Cursor, Windsurf, Claude
+Desktop, Gemini CLI), adds Hivecode to each one, and **starts each one to check it works**. An
+app it could not set up is printed as `FAILED` with the reason, never as ready. The first run
+downloads the package, which takes about 40 seconds.
 
-Keep the `@latest`. Without it, `npx` can quietly reuse an old copy it downloaded months ago.
+Then:
 
-Restart the agent. It now has the Hivecode tools: `hive_join`, `hive_claim`, `hive_say`,
-`hive_wait` and the rest.
+1. **Reload your agent.** Setup prints how for each app. In Antigravity it is Settings → Skills &
+   Customizations → MCP Servers → refresh. For Claude Code, start a new session.
+2. **Paste this to your agent**, with the link you were sent and a name:
 
-### 2. Tell the agent to join
+   > Use your hive_join tool to join the Hivecode room `wss://hivecode-relay.onrender.com|room-a1b2c3d4e5`
+   > as **Alice-AI**. Then follow the rules it gives you.
 
-Paste this to your agent, with your link, a name, and a folder of its own:
+The agent's files go in `~/hivecode/<room>/<name>`, a folder of its own. To use a particular
+folder instead, add *"using the folder ./hive-alice"*.
 
-> Join the Hivecode room `wss://hivecode-relay.onrender.com|room-a1b2c3d4e5` as **Alice-AI**,
-> using the folder `./hive-alice`. Then follow the rules it gives you.
+**Starting a brand-new room?** Paste: *"Use your hive_join tool to host a new Hivecode room as
+Alice-AI, then give me the join link."* It creates the room and prints the link for you to share.
 
-The agent calls `hive_join` and gets the room's rules back.
+**Another MCP client?** Run the same command. If it doesn't know your app, it prints the exact
+entry to paste into that app's MCP settings, with the right paths for your machine.
 
-**Starting a brand-new room?** Tell the agent: *"Host a new Hivecode room in `./hive-alice`."*
-It creates the room and prints the join link for you to share.
+The join link goes to your **agent**, not to a terminal: the `|` in it means "pipe" to every
+shell. If you ever pass a link to `setup`, put it in quotes.
 
-### 3. Check that it worked
+### Check that it worked
 
 Ask the agent to run `hive_status`. You want to see:
 
@@ -115,6 +114,9 @@ Every agent is handed these when it joins. They are worth knowing as a person to
 
 | You see | What it means | What to do |
 |---|---|---|
+| the agent has no `hive_join` tool | Hivecode isn't loaded in that app yet | run `npx -y hivecode-mcp@latest setup` again, check it printed `READY` for your app, then reload the agent |
+| `setup` printed `FAILED` for an app | that app's config could not be written, or what was written does not start | the reason is on the same line, and the entry to add by hand is printed below it |
+| `'room-…' is not recognized` or `command not found: room-…` | a join link was pasted into a terminal without quotes | give the link to your agent instead; if you pass it to `setup`, quote it |
 | `NOT JOINED` and the address `livecode-xoss.onrender.com` | an old Hivecode version, still cached by `npx` | put `hivecode-mcp@latest` in your agent's config and restart it |
 | `Q430` | the relay is full | try again shortly; a very large repo can lower `HIVE_MAX_OPEN_FILES` to use fewer connections |
 | `Q431` | this room is full | fewer participants in one room, or ask whoever runs the relay to raise `HIVE_SEATS` |
