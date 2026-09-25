@@ -132,13 +132,33 @@ export function diagnose(probe, { stuck = 0, what = 'files' } = {}) {
   const seats = h.seats ? ` (${h.seats} seats)` : ''
   const facts = `I asked ${url}: ${conns} of ${total} connections in use, ${h.rooms || 0} rooms, per-room cap ${perRoom}${seats}.`
 
+  // ONE SOCKET PER PARTICIPANT has its own ceiling: the files open across every participant's
+  // shared socket (Q438). Checked first, because at that ceiling the socket count looks healthy.
+  const chanCap = Number(h.limits && h.limits.maxChannelsTotal) || 0
+  const chans = Number(h.channels) || 0
+  if (Number(h.mux) >= 1 && chanCap && chans >= chanCap * NEAR_CAPACITY) {
+    return {
+      verdict: RELAY_FULL,
+      text: [lead, `I asked ${url}: ${chans} of ${chanCap} open files in use across all participants.`,
+        `THE RELAY IS AT ITS OPEN-FILE CAPACITY — this is Q438. Raise HIVE_MAX_CHANNELS_TOTAL on the relay,`,
+        `or narrow what syncs.`].join(' '),
+    }
+  }
+
   if (total && conns >= total * NEAR_CAPACITY) {
+    // Who spends the sockets depends on the transport. A relay offering one-socket mode charges
+    // those clients 2 each; the older transport, still spoken by the VS Code extension, the browser
+    // panel and HIVE_MUX=0, charges one PER FILE -- and that is what exhausts a relay.
+    const who = Number(h.mux) >= 1
+      ? `This relay carries each participant's files on one socket (2 sockets a participant), but clients`
+        + ` on the older transport -- the VS Code extension, the browser panel, HIVE_MUX=0 -- still open one`
+        + ` socket PER FILE, and one large folder on those can exhaust it alone.`
+      : `Hivecode opens one socket PER FILE, so a single large folder can exhaust it alone.`
     return {
       verdict: RELAY_FULL,
       text: [lead, facts,
-        `THE RELAY IS AT OR NEAR CAPACITY — this is Q430. Hivecode opens one socket PER FILE, so a`,
-        `single large folder can exhaust it alone. Raise HIVE_MAX_CONNS_TOTAL on the relay, or narrow`,
-        `what syncs.`].join(' '),
+        `THE RELAY IS AT OR NEAR CAPACITY — this is Q430.`, who,
+        `Raise HIVE_MAX_CONNS_TOTAL on the relay, or narrow what syncs.`].join(' '),
     }
   }
 
@@ -198,7 +218,7 @@ export function explainStatus(code, relay = '') {
   if (c === 402) return 'this room is over its plan limit. Contact support@getgrm.tech and we will sort it out.'
   if (c === 403) return 'the relay refused this room or path for your token. You are outside the folders you were given.'
   if (c === 429) return 'this room is FULL, so you were not let in (Q431). A relay admits a limited number of connections per room -- 8 on the free tier -- and this room is at that ceiling. Note it counts CONNECTIONS, not people: one agent holding several files holds several. If you run the relay, raise it with HIVE_SEATS; otherwise ask whoever does, or contact support@getgrm.tech.'
-  if (c === 503) return 'the relay is not serving this connection. Either the whole relay is at capacity (Q430) or it could not check your licence and is failing closed rather than guessing. It may also be restarting -- if this lasts, contact support@getgrm.tech.'
+  if (c === 503) return 'the relay is not serving this connection. Either the whole relay is at capacity (Q430 sockets, Q438 open files, or Q439 files held by one participant) or it could not check your licence and is failing closed rather than guessing. It may also be restarting -- if this lasts, contact support@getgrm.tech.'
   if (c) return `the relay answered ${c} instead of accepting the connection. Contact support@getgrm.tech.`
   return `the relay at ${relay || 'the relay'} cannot be reached. It may be down, asleep, or blocked by a network. Contact support@getgrm.tech if this continues.`
 }

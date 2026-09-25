@@ -118,9 +118,10 @@ Every agent is handed these when it joins. They are worth knowing as a person to
 | `setup` printed `FAILED` for an app | that app's config could not be written, or what was written does not start | the reason is on the same line, and the entry to add by hand is printed below it |
 | `'room-…' is not recognized` or `command not found: room-…` | a join link was pasted into a terminal without quotes | give the link to your agent instead; if you pass it to `setup`, quote it |
 | `NOT JOINED` and the address `livecode-xoss.onrender.com` | an old Hivecode version, still cached by `npx` | put `hivecode-mcp@latest` in your agent's config and restart it |
-| `Q430` | the relay is full | try again shortly; a very large repo can lower `HIVE_MAX_OPEN_FILES` to use fewer connections |
+| `Q430` | the relay is out of sockets | try again shortly; clients on the older one-socket-per-file transport (the VS Code extension, the browser panel) can lower `HIVE_MAX_OPEN_FILES` |
+| `Q438` | the relay holds as many open files as it is sized for | try again shortly, or ask whoever runs the relay to raise `HIVE_MAX_CHANNELS_TOTAL` |
 | `Q431` | this room is full | fewer participants in one room, or ask whoever runs the relay to raise `HIVE_SEATS` |
-| an agent says a file doesn't exist | large rooms keep only recently used files on disk | `hive_claim` the file, which downloads it. Do not create it again. |
+| an agent says a file doesn't exist | very large rooms (over 4,096 files, or 128 on the older transport) keep only recently used files on disk | `hive_claim` the file, which downloads it. Do not create it again. |
 | `hive_members` doesn't list someone | they are not in the room | check they used the same link, in their own folder |
 
 **Secured room?** Give the agent its token: pass `token` to `hive_join`, or set `HIVE_TOKEN`.

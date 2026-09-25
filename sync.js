@@ -20,6 +20,7 @@ import os from 'os'
 import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
+import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
 import { WebSocket } from 'ws'
 import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
@@ -977,6 +978,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (kind) wsParams.kind = kind
   if (passive) wsParams.passive = 'true'
   const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
+  // ONE SOCKET PER PARTICIPANT. When the relay offers it (it says so in /health), file docs stop
+  // costing a socket each: they ride one physical socket as channels, and the relay admits each
+  // one through the same gates a per-file socket passes. Against a relay that does not offer it,
+  // or with HIVE_MUX=0, every file gets its own WebsocketProvider exactly as before. Decided once,
+  // before the first file opens, so a session never straddles the two transports.
+  // onFallback: the relay stopped offering it mid-session, so trim to the per-file bound (ignoring
+  // the grace window, keeping every NEVER-EVICT file) before each remaining file gets a socket.
+  const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => evictIfOverCap(null, 0) })
+  let stopped = false
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
   provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, passive: !!passive }) // identity is implicit in the client
 
@@ -1019,7 +1029,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       `counts CONNECTIONS, not people: one agent holding several files holds several. If you run the relay, ` +
       `raise it with HIVE_SEATS; otherwise ask whoever does, or contact ${SUPPORT}.`
     if (code === 503) return `the relay is not serving this connection. Either the whole relay is at capacity ` +
-      `(Q430) or it could not check your licence and is failing closed rather than guessing. It may also be ` +
+      `(Q430 sockets, Q438 open files, or Q439 files held by one participant) or it could not check your licence and is failing closed rather than guessing. It may also be ` +
       `restarting -- if this lasts, contact ${SUPPORT}.`
     if (code) return `the relay answered ${code} instead of accepting the connection. Contact ${SUPPORT}.`
     return `the relay at ${relay} cannot be reached. It may be down, asleep, or blocked by a network. ` +
@@ -1088,6 +1098,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // count is the useful shape -- one per file would be 800 lines of chat.
   const refusedFiles = new Map() // relPath -> consecutive connection errors, cleared on sync
   const refusedCodes = new Map() // relPath -> the HTTP status the relay refused with, when it gave one
+  const refusedReasons = new Map() // relPath -> the relay's own words (a mux refusal carries its Q-code line)
   let refusalSaidAt = 0
   let refusalTimer = null
 
@@ -1134,7 +1145,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const code = coded.length ? coded.sort((a, b) => coded.filter((c) => c === b).length - coded.filter((c) => c === a).length)[0] : null
       const msg = code
         ? `${stuck.length} file(s) are not synced and will READ AS EMPTY until this clears. ` +
-          `The relay refused ${coded.length} of them with ${code}: ${explain(code)} ` +
+          `The relay refused ${coded.length} of them with ${code}` +
+          // The relay's own reason outranks any mapping of the bare number: one code covers
+          // several ceilings, and only the relay knows which one it hit.
+          (() => { const why = stuck.map((r) => refusedCodes.get(r) === code && refusedReasons.get(r)).find(Boolean); return why ? ` ("${String(why).slice(0, 160)}")` : '' })() +
+          `: ${explain(code)} ` +
           `Do not trust this folder's contents meanwhile.`
         : (await RH.explainNotSyncing(relay, {
             stuck: stuck.length, what: 'files',
@@ -1222,7 +1237,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let e = fileDocs.get(relPath)
     if (e) return e
     const fdoc = new Y.Doc()
-    const fprovider = new WebsocketProvider(relay, fileRoom(room, relPath), fdoc, wsOpts)
+    const fprovider = fileTransport.provide(fileRoom(room, relPath), fdoc)
     const text = fdoc.getText('content')
     // `snap` (in the FILE's own doc, so it's scope-protected with the file) holds
     // restore points: id -> { id, file, by, at, ts, content, churn, kind, label }.
@@ -1272,8 +1287,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // handler took no argument at all, so noteRefusals had nothing but "N files are quiet" and
       // had to INFER a cause -- which is how it came to announce Q430 on 21 Sep while the relay
       // sat at 56 of 512. explain() above maps these codes correctly and has done since 5 Sep.
-      const code = ev && (ev.code || ev.status)
+      // A mux refusal carries the code; a per-file socket's ErrorEvent carries it only in its
+      // message, which is why this read nothing at all on the socket path.
+      const code = RH.statusFromError(ev)
       if (code) refusedCodes.set(relPath, code)
+      if (ev && typeof ev.reason === 'string' && ev.reason) refusedReasons.set(relPath, ev.reason)
       noteRefusals()
     })
     // Newly opened counts as used, and opening is the moment the working set can go over
@@ -1317,15 +1335,22 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   //   - a file in an unresolved conflict (its fork record is live and local-only)
   //   - a file anyone currently holds a claim on (they are mid-edit)
   //   - anything used within the grace window
-  const MAX_OPEN = Math.max(8, Number(process.env.HIVE_MAX_OPEN_FILES) || 128)
+  //
+  // THE BOUND DEPENDS ON THE TRANSPORT. With a socket per file it is what keeps one client from
+  // filling the relay, and the rule above applies. In one-socket mode a file costs a channel, not
+  // a socket, so the bound only caps memory -- set high enough that an ordinary repo is held
+  // whole, which is what ends "this folder is incomplete on purpose". HIVE_MAX_OPEN_FILES wins
+  // either way. A function, not a constant: the transport is known only once /health answers.
+  const MAX_OPEN_SET = Number(process.env.HIVE_MAX_OPEN_FILES) || 0
+  const maxOpen = () => Math.max(8, MAX_OPEN_SET || (fileTransport.mode === 'mux' ? 4096 : 128))
   // Configurable because the grace window is what makes eviction untestable otherwise: in a
   // short run every file was touched seconds ago, so nothing is ever eligible.
   const EVICT_GRACE_MS = Number(process.env.HIVE_EVICT_GRACE_MS) || 30000
   const touched = new Map() // relPath -> last use (ms)
   const touchFile = (relPath) => { if (fileDocs.has(relPath)) touched.set(relPath, Date.now()) }
   let evicted = 0
-  function evictIfOverCap(keep) {
-    if (fileDocs.size <= MAX_OPEN) return
+  function evictIfOverCap(keep, graceMs = EVICT_GRACE_MS) {
+    if (fileDocs.size <= maxOpen()) return
     const now = Date.now()
     const isClaimed = (r) => { try { return claims.has(r) } catch { return false } }
     const cand = []
@@ -1335,11 +1360,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { if (e.conflict && e.conflict.size) continue } catch { }
       if (isClaimed(r)) continue
       const t = touched.get(r) || 0
-      if (now - t < EVICT_GRACE_MS) continue
+      if (now - t < graceMs) continue
       cand.push([r, t])
     }
     cand.sort((a, b) => a[1] - b[1]) // least recently used first
-    let over = fileDocs.size - MAX_OPEN
+    let over = fileDocs.size - maxOpen()
     for (const [r] of cand) {
       if (over-- <= 0) break
       closeFile(r); touched.delete(r); evicted++
@@ -2519,7 +2544,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // the sweep achieved nothing: the first measurement of this cap showed a client with
         // cap 8 holding 30 file docs, every one of them opened right here. A path we decline
         // to open now is not lost; it opens when something touches it.
-        if (fileDocs.size < MAX_OPEN) openFile(key)
+        if (fileDocs.size < maxOpen()) openFile(key)
       }
     })
   })
@@ -2568,16 +2593,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     //
     // Files that exist on THIS client's disk come first: they are the ones that need
     // reconciling, and a path we have no local copy of can wait until something asks for it.
-    const openable = [...manifest.keys()].filter((k) => canOpen(k) && !SKIP.has(k) && !isIgnored(k))
-    const localFirst = openable.sort((a, b) => {
-      const la = fs.existsSync(path.join(ROOT, a)) ? 0 : 1
-      const lb = fs.existsSync(path.join(ROOT, b)) ? 0 : 1
-      return la - lb
-    })
-    for (const key of localFirst.slice(0, MAX_OPEN)) openFile(key)
-    if (localFirst.length > MAX_OPEN) {
-      log(`[${name}] ${localFirst.length} files in this room, holding ${MAX_OPEN} open (HIVE_MAX_OPEN_FILES). The rest sync when touched.`)
+    //
+    // If /health has not said yet which transport this relay speaks, the sweep opens what is safe
+    // on either (the per-file bound) now and the rest the moment it answers -- holding every file
+    // back on one HTTP round trip would delay the join for nothing.
+    const sweep = (final) => {
+      const openable = [...manifest.keys()].filter((k) => canOpen(k) && !SKIP.has(k) && !isIgnored(k))
+      const localFirst = openable.sort((a, b) => {
+        const la = fs.existsSync(path.join(ROOT, a)) ? 0 : 1
+        const lb = fs.existsSync(path.join(ROOT, b)) ? 0 : 1
+        return la - lb
+      })
+      const cap = maxOpen()
+      for (const key of localFirst.slice(0, cap)) openFile(key)
+      if (final && localFirst.length > cap) {
+        log(`[${name}] ${localFirst.length} files in this room, holding ${cap} open (HIVE_MAX_OPEN_FILES). The rest sync when touched.`)
+      }
     }
+    const decided = fileTransport.mode !== 'detecting'
+    sweep(decided)
+    if (!decided) fileTransport.ready.then(() => { if (!stopped) sweep(true) })
     if (board.size) renderBoard()
     if (chat.length) renderChat()
     if (tasks.size) renderTasks()
@@ -2596,20 +2631,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     //
     // Nothing here changes the cap. It tells the agent the number it needs in order to ASK,
     // which is the one thing that makes "until something touches it" true.
-    setTimeout(() => {
+    //
+    // Said only when the bound really leaves files out. Below it a missing file is in flight (or
+    // refused, which noteRefusals reports with the relay's reason) -- not missing on purpose -- and
+    // one-socket mode holds 4096 files, so an ordinary room never hears this. Timed from the
+    // moment the transport is known, because the bound is not known before that.
+    fileTransport.ready.then(() => setTimeout(() => {
       try {
         const want = [...manifest.keys()].filter((r) => canOpen(r) && !SKIP.has(r))
         const have = want.filter((r) => fs.existsSync(path.join(ROOT, r)))
         const short = want.length - have.length
-        if (short <= 0) return
+        if (short <= 0 || want.length <= maxOpen() || stopped) return
         log(`[${name}] !! THIS FOLDER IS INCOMPLETE ON PURPOSE. The room has ${want.length} files; ` +
           `${have.length} are on disk here and ${short} are NOT. The working set is bounded to ` +
-          `${MAX_OPEN} open files (HIVE_MAX_OPEN_FILES), because one socket is opened per file and a ` +
-          `relay admits a limited number. A missing file EXISTS — it simply has not been fetched. ` +
+          `${maxOpen()} open files (HIVE_MAX_OPEN_FILES), because ` +
+          (fileTransport.mode === 'mux' ? `every open file costs relay memory. ` : `one socket is opened per file and a relay admits a limited number. `) +
+          `A missing file EXISTS — it simply has not been fetched. ` +
           `Do not treat it as absent and do not create it: reading or claiming the path fetches it. ` +
           `hive_status reports filesHeld of roomFiles, and hive_read_board lists what the room holds.`)
       } catch { }
-    }, 4000).unref?.()
+    }, 4000).unref?.())
     if (!scanTimer) {
       startWatch()
       scanTimer = setInterval(scan, watcher ? 2000 : 400) // watch handles fast path; scan is the net
@@ -2895,7 +2936,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // maxConnsTotal, and `evicted` climbing steadily means the cap is too small for
         // how this room actually works — both are things an operator can only act on if
         // they can see them.
-        openCap: MAX_OPEN,
+        openCap: maxOpen(),
+        // 'mux' = every file on this client's one socket; 'socket' = a socket per file.
+        transport: fileTransport.mode,
         evicted,
       }
     },
@@ -2904,6 +2947,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (debounce) clearTimeout(debounce)
       if (editingClearTimer) clearTimeout(editingClearTimer)
       try { watcher && watcher.close() } catch { }
+      stopped = true
+      // The shared socket first: closing it ends every channel at once on the relay, instead of
+      // one CLOSE frame per file down a socket that is about to go anyway.
+      try { fileTransport.stop() } catch { }
       for (const r of [...fileDocs.keys()]) closeFile(r) // tear down every per-file provider
       try { provider.awareness.setLocalState(null) } catch { } // announce departure now (don't wait for timeout)
       try { provider.destroy() } catch { }

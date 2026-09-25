@@ -135,6 +135,19 @@ export const LIMITS = {
   // relay memory per connection (400 extra sockets to the same 400 docs: +22 MB), so 2048 is
   // ~115 MB -- comfortable on a 512 MB free instance.
   maxConnsTotal: num('HIVE_MAX_CONNS_TOTAL', 2048),
+  // ONE SOCKET PER PARTICIPANT (hive-mux-proto.js). A mux socket counts ONCE against
+  // maxConnsTotal above; each file it opens is a CHANNEL, counted against the file's per-room
+  // ceiling exactly as a per-file socket is, and against these two caps instead of the socket
+  // total -- which is the whole point: a participant stops costing 129 sockets.
+  //
+  // Sized by MEMORY, measured 25 Sep 2026: ~25.8 KB per channel whose doc no one else holds (the
+  // doc is most of it), ~2.4 KB for each further participant on the same doc. The socket cap
+  // used to bound open docs as a side effect; this is what bounds them now. 8192 lone small docs
+  // is ~211 MB on the 512 MB hosted instance -- raise it with the instance, not before. The per-
+  // participant cap matches the client's own bound in one-socket mode, so no single participant
+  // can take more than half the relay.
+  maxChannelsTotal: num('HIVE_MAX_CHANNELS_TOTAL', 8192),
+  maxChannelsPerSocket: num('HIVE_MUX_MAX_DOCS', 4096),
   // How long a client stays refused after tripping a rate limit. Long enough that a tight
   // loop actually yields, short enough that a human does not notice a one-off burst.
   cooloffMs: num('HIVE_RATE_COOLOFF_MS', 5000),
@@ -188,6 +201,32 @@ export function admitConnection(room, tier = null) {
 export function noteConnectionOpened(room) {
   totalConns++
   roomConns.set(room, (roomConns.get(room) || 0) + 1)
+}
+
+// Channels share roomConns with sockets on purpose: the per-room ceiling means "how many
+// participants hold this file", and it must mean that whichever transport each one uses.
+let totalChannels = 0
+export function admitChannel(room, tier = null) {
+  if (totalChannels >= LIMITS.maxChannelsTotal) {
+    return { code: 503, reason: `Q438 relay at capacity (${LIMITS.maxChannelsTotal} open files across all participants)` }
+  }
+  const cap = (tier && tier.maxConnsPerRoom) || LIMITS.maxConnsPerRoom
+  const n = roomConns.get(room) || 0
+  if (n >= cap) {
+    const which = tier ? `${tier.tier} tier` : 'this relay'
+    return { code: 429, reason: `Q431 room at capacity (${cap} connections on ${which})` }
+  }
+  return null
+}
+export function noteChannelOpened(room) {
+  totalChannels++
+  roomConns.set(room, (roomConns.get(room) || 0) + 1)
+}
+export function noteChannelClosed(room) {
+  totalChannels = Math.max(0, totalChannels - 1)
+  const n = (roomConns.get(room) || 1) - 1
+  if (n <= 0) roomConns.delete(room)
+  else roomConns.set(room, n)
 }
 
 export function noteConnectionClosed(room) {
@@ -337,6 +376,7 @@ export function usageFor(room = null) {
 export function stats() {
   return {
     connections: totalConns,
+    channels: totalChannels,
     rooms: roomConns.size,
     largestDocBytes: docBytes.size ? Math.max(...docBytes.values()) : 0,
     docsTracked: docBytes.size,
@@ -347,6 +387,7 @@ export function stats() {
 /** Test-only: reset module state between cases. */
 export function _reset() {
   totalConns = 0
+  totalChannels = 0
   roomConns.clear()
   docBytes.clear()
   usage.clear()

@@ -20,14 +20,30 @@ bob/     <- his agent syncs here
 Same room, different folders. `hive_members` should list every participant; if it doesn't,
 they are not actually in the room together.
 
-### One WebSocket is opened per file
+### One socket per participant (and the older transport that is one per file)
 
-This is the most important operational fact about Hivecode and the one that surprises
-people. A relay admits a bounded number of connections (`maxConnsTotal`, default 2048;
-per-room default 8 on the free tier). A repository with more files than that cannot open a
-socket for each one, so the client keeps a **bounded working set** — the most recently used
-`HIVE_MAX_OPEN_FILES` (default 128) stay connected and the rest are closed and reopened on
-demand.
+Every file is its own shared document. Until 25 Sep 2026 each of those documents cost its
+own WebSocket, so a relay's socket budget was spent on files rather than people: on 18 Sep
+2026 889 files against a 512-socket relay refused 38,011 connections in one evening.
+
+A client now carries **all of its files on one socket**, next to the one for the room: two
+sockets per participant, whatever the file count. Each file is a *channel* on that socket,
+and the relay admits every channel through exactly the gates a per-file socket passes —
+token, path scope, read-only role, claims, rate and size limits. The relay advertises this
+in `/health` (`"mux": 1`) and the client uses it only when it is advertised, so a new client
+still works against an old relay.
+
+The older transport — **one socket per file** — is still spoken by the VS Code extension,
+the browser panel, any relay that predates the change, and any client started with
+`HIVE_MUX=0`. The two converge in the same room. An operator who needs to turn the new
+transport off sets `HIVE_RELAY_MUX=off` on the relay; clients already connected fall back
+to one socket per file by themselves, without a restart.
+
+Either way the client keeps a **bounded working set** — the most recently used
+`HIVE_MAX_OPEN_FILES` stay open and the rest are closed and reopened on demand. The bound is
+4,096 files on one-socket mode, so an ordinary repository is held whole, and 128 on the
+older transport, where every open file is a socket. Everything below about files that are
+not on disk applies only past that bound.
 
 **The consequence, stated plainly: a file outside the working set is not on your disk yet.**
 It exists in the room, and `hive_claim` on the path — or `fetch(path)` if you want to wait for
@@ -71,12 +87,18 @@ If those two numbers differ, that is expected — not a fault.
 
 ### Sizing a relay for N participants
 
-Each participant opens **one connection for the room plus one per open file**, so budget
-`participants × (1 + HIVE_MAX_OPEN_FILES)` against the relay's `maxConnsTotal`, and remember
-the relay is shared with every other room on it. At defaults, five participants want
-5 × (1 + 128) = **645 connections**. The default was 512 until 25 Sep 2026, when three
-participants on a 150-file room measured 409 of them, so a fourth was refused. It is now 2048,
-which costs about 115 MB of relay memory (measured: ~56 KB per connection).
+Two budgets, one per transport, and the relay is shared with every other room on it:
+
+- **Sockets** (`maxConnsTotal`, default 2048, ~56 KB each). A one-socket client costs **2**.
+  A client on the older transport costs **1 + its open files**, so at defaults five of those
+  want 5 × (1 + 128) = **645**. The default was 512 until 25 Sep 2026, when three such
+  participants on a 150-file room measured 409 of them and a fourth was refused.
+- **Open files on one-socket clients** (`HIVE_MAX_CHANNELS_TOTAL`, default 8,192; at most
+  `HIVE_MUX_MAX_DOCS`, default 4,096, per participant). Measured 25 Sep 2026 with small files:
+  about **25.8 KB** for a file nobody else has open (the document is most of that, and it grows
+  with the file's content and history) and **2.4 KB** for each further participant on the same
+  file. Five people on a 900-file repository of small files is ~4,500 channels, roughly 32 MB. The default is sized so 8,192 files nobody shares stays near 211 MB on the
+  512 MB hosted instance: raise it with the instance, not before.
 
 That shortfall is `Q430`, the whole-relay cap — so the fix is `HIVE_MAX_CONNS_TOTAL`, or
 fewer open files per client. **`HIVE_SEATS` will not help here**, and an earlier version of
@@ -98,6 +120,8 @@ the wrong one:
 |---|---|---|
 | `Q430` | whole relay at `maxConnsTotal` | raise `HIVE_MAX_CONNS_TOTAL`, or sync fewer files |
 | `Q431` | one room past its per-room cap | set `HIVE_SEATS` — raising the total will **not** help |
+| `Q438` | open files across all one-socket participants at `HIVE_MAX_CHANNELS_TOTAL` | raise it (and the instance's memory with it) |
+| `Q439` | one participant at `HIVE_MUX_MAX_DOCS` open files | raise it, or narrow what that participant syncs |
 
 `roomConns` is keyed on the **file**-room (`baseRoom + FILE_SEP + relPath`), so a room's
 per-room count is *how many participants have that one file open*, not how many files the

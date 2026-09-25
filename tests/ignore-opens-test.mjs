@@ -23,6 +23,11 @@ import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
 import { startSync } from '../sync.js'
+// PINNED TO THE PER-FILE TRANSPORT (HIVE_MUX=0). What this suite measures is the arithmetic of one
+// socket PER FILE, which the VS Code extension, the browser panel and every older relay still
+// speak. A client on one-socket mode holds 2 sockets whatever its file count; its own ceilings
+// and refusals are asserted in tests/mux-test.mjs.
+process.env.HIVE_MUX = '0'
 
 // pid-derived: this suite runs as a room gate, so two agents may run it at the same
 // moment. A fixed port means one fails to bind and the gate refuses a handoff for a

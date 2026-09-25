@@ -23,6 +23,11 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { statusFromError, explainStatus } from '../hive-relay-health.js'
+// PINNED TO THE PER-FILE TRANSPORT (HIVE_MUX=0). What this suite measures is the arithmetic of one
+// socket PER FILE, which the VS Code extension, the browser panel and every older relay still
+// speak. A client on one-socket mode holds 2 sockets whatever its file count; its own ceilings
+// and refusals are asserted in tests/mux-test.mjs.
+process.env.HIVE_MUX = '0'
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
 const PORT_BASE = Number(process.env.HIVE_TEST_PORT) || (24000 + (process.pid % 15000))

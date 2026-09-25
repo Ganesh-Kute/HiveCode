@@ -203,6 +203,7 @@ relay. It is the evidence behind every claim on this page.
 | `HIVE_PERSIST_DIR=/var/data/hive` | **Important.** Without it a room lives only in connected clients' memory and is **lost the moment everyone disconnects** — the day works perfectly and the folder is empty in the morning. `npx hivecode-relay` turns this on by default; `node server.js` does not. |
 | `HIVE_SEATS=<n>` | Per-room connection budget (8 per seat). It does **not** raise the whole-relay total — that is `HIVE_MAX_CONNS_TOTAL`. The free-tier ceiling is 8 per room, which is **not** 8 people — see below. |
 | `HIVE_AUDIT_FILE=./audit.log` | One line per admit and reject. This is your evidence of who connected and when. |
+| `HIVE_RELAY_MUX=off` | Turns off one-socket-per-participant mode. It is on by default; this is the kill switch, and clients already connected fall back to one socket per file by themselves. |
 | `RENDER_EXTERNAL_URL` (auto on Render) | Keeps a free-tier host warm so the first join is not a 30-second cold start. |
 
 > ⚠️ **An open relay on a public IP is a public relay.** Without `HIVE_AUTH_MODE=required`,
@@ -213,10 +214,11 @@ relay. It is the evidence behind every claim on this page.
 
 ## How much can one relay handle?
 
-**Count connections, not people.** Each participant holds one base-room socket **plus one
-per open file**, so a five-person team is not five connections — it is up to
-`participants × (1 + HIVE_MAX_OPEN_FILES)`. The client caps its own working set at
-`HIVE_MAX_OPEN_FILES` (default 128) for exactly this reason.
+**Count sockets and open files, not people.** A current client holds **two sockets** — one for
+the room, one carrying all of its files — and each open file is a channel on the second.
+Clients on the older transport (the VS Code extension, the browser panel, `HIVE_MUX=0`, or any
+client against a relay that predates this) still hold one base-room socket **plus one per open
+file**, up to `1 + HIVE_MAX_OPEN_FILES` (default 128) each.
 
 Two different ceilings refuse you, with two different remedies:
 
@@ -224,6 +226,7 @@ Two different ceilings refuse you, with two different remedies:
 |---|---|---|
 | **Q430** (503) | the whole relay is at `maxConnsTotal` (default 2048, ~56 KB of memory each) | `HIVE_MAX_CONNS_TOTAL` — **`HIVE_SEATS` does not help here** |
 | **Q431** (429) | one room is at its per-room cap | `HIVE_SEATS` |
+| **Q438** (503) | open files across all participants are at `HIVE_MAX_CHANNELS_TOTAL` (default 8,192; ~25.8 KB each unshared, ~2.4 KB per extra participant) | `HIVE_MAX_CHANNELS_TOTAL`, with the memory to match |
 
 - **A focused team (~10 humans and their agents in one room): comfortably**, on a small
   always-on instance (≈1 vCPU / 1–2 GB). Free tiers are fine for a trial.

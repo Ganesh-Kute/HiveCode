@@ -29,10 +29,15 @@ import { WebSocketServer } from 'ws'
 import { setupWSConnection, setPersistence, getYDoc } from './vendor/y-websocket/utils.cjs'
 import {
   LIMITS, TIERS, limitsFor, admitConnection, noteConnectionOpened, noteConnectionClosed,
+  admitChannel, noteChannelOpened, noteChannelClosed,
   attachRateLimit, noteDocBytes, docOverCap, setDocBytes, forgetDoc, stats as limitStats,
   recordUsage, usageFor,
 } from './limits.js'
 import * as meter from './usage-meter.js'
+// ONE SOCKET PER PARTICIPANT: the wire format and the session that serves it. Static imports, so
+// scripts/build-relay.mjs puts both in the published relay.
+import { MUX_PREFIX, MUX_VERSION } from './hive-mux-proto.js'
+import { serveMux } from './relay-mux.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
 // library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
@@ -732,6 +737,12 @@ const server = http.createServer((req, res) => {
       ok: true,
       uptimeSec: Math.round(process.uptime()),
       connections: s.connections,
+      // Files open over mux sockets. `connections` counts physical sockets; a mux participant is
+      // ONE of those however many files it holds, and those files are counted here instead.
+      channels: s.channels,
+      // Clients read this to decide whether to carry all their files on one socket (mux) or open
+      // one socket per file. An absent field is what every older relay answers: "one per file".
+      mux: RELAY_MUX ? MUX_VERSION : 0,
       rooms: s.rooms,
       docsTracked: s.docsTracked,
       largestDocBytes: s.largestDocBytes,
@@ -959,10 +970,20 @@ function census(baseRoom) {
   return { peers: m.size, ai, human, unattested, names: [...m.keys()] }
 }
 
-server.on('upgrade', async (req, socket, head) => {
+// THE UPGRADE PATH, as reusable steps. It used to be one inline handler, which meant the only
+// way to reach these gates was a real HTTP upgrade. ONE SOCKET PER PARTICIPANT needs every file a
+// mux client opens to pass exactly the same gates a per-file upgrade passes, so they are lifted out
+// verbatim: resolveTier (licence/seats, once per physical socket), gateRoom (authorize, committer
+// limit, capacity -- per file), acceptConnection (account, counters, audit, then the 'connection'
+// handler that installs every per-connection gate and setupWSConnection). The per-file path below
+// calls the same three, in the same order, with the same audit events and status lines as before.
+const RELAY_MUX = !/^(off|0|false)$/i.test(process.env.HIVE_RELAY_MUX || '')
+const MUX_KEY = (baseRoom) => `${baseRoom}\u0002mux` // a mux socket's slot in the per-room/total counts
+
+function parseUpgrade(url) {
   let room = 'default', token = '', license = '', declaredName = '', declaredKind = ''
   try {
-    const u = new URL(req.url, 'http://localhost')
+    const u = new URL(url, 'http://localhost')
     room = decodeURIComponent(u.pathname.slice(1)) || 'default'
     token = u.searchParams.get('token') || ''
     license = u.searchParams.get('license') || ''
@@ -970,7 +991,16 @@ server.on('upgrade', async (req, socket, head) => {
     declaredName = u.searchParams.get('name') || ''
     declaredKind = u.searchParams.get('kind') || ''
   } catch { /* keep defaults */ }
+  return { room, token, license, declaredName, declaredKind }
+}
 
+function refuseUpgrade(socket, line) {
+  socket.write(`HTTP/1.1 ${line}\r\nConnection: close\r\n\r\n`)
+  socket.destroy()
+}
+
+// The licence/seat decision. { ok, tier, committerLimit } or { ok:false, line }.
+async function resolveTier(room, license) {
   // SaaS Enforcer: entitlement comes from the licence RECORD, never from the key string.
   // The previous version admitted anything prefixed "HC-PRO-" and read the seat count out
   // of the key, so HC-PRO-9999-anything bought nothing and granted 9,999 committers.
@@ -1009,15 +1039,18 @@ server.on('upgrade', async (req, socket, head) => {
       // 503 for "we could not check", 402 for "you have not paid" — a billing outage must
       // not tell a paying customer their licence is invalid.
       const unavailable = verdict.source === 'unavailable'
-      const line = unavailable ? '503 Service Unavailable' : '402 Payment Required'
-      socket.write(`HTTP/1.1 ${line}\r\nConnection: close\r\n\r\n`)
-      socket.destroy()
-      return
+      return { ok: false, line: unavailable ? '503 Service Unavailable' : '402 Payment Required' }
     }
     committerLimit = verdict.seats > 0 ? verdict.seats : 1
     tier = limitsFor(verdict)
   }
+  return { ok: true, tier, committerLimit }
+}
 
+// Authorize + committer limit + capacity, for ONE room (a file, or the base). Synchronous on
+// purpose: a mux OPEN must be admitted and wired in one tick, so no frame for it can arrive
+// before setupWSConnection has registered its listener.
+function gateRoom(room, { token, declaredName, declaredKind, tier, committerLimit, channel }) {
   // Fail CLOSED on any unexpected error in authorization — a thrown exception here
   // must reject the connection, never crash the relay process (which would take down
   // every room). authorize() is the only trust gate, so a throw = deny.
@@ -1028,9 +1061,7 @@ server.on('upgrade', async (req, socket, head) => {
     audit('reject', { room, reason: auth.reason })
     const code = auth.code || 401
     const msg = code === 403 ? 'Forbidden' : code === 503 ? 'Service Unavailable' : 'Unauthorized'
-    socket.write(`HTTP/1.1 ${code} ${msg}\r\nConnection: close\r\n\r\n`)
-    socket.destroy()
-    return
+    return { ok: false, code, reason: auth.reason || msg, line: `${code} ${msg}` }
   }
 
   // Enforce Committer Limit
@@ -1039,9 +1070,7 @@ server.on('upgrade', async (req, socket, head) => {
     const active = roomAgents.get(room) || new Set()
     if (!active.has(agentId) && active.size >= committerLimit) {
       audit('reject-limit', { room, identity: agentId, limit: committerLimit })
-      socket.write(`HTTP/1.1 402 Payment Required: License Limit Reached. Email support@getgrm.tech\r\nConnection: close\r\n\r\n`)
-      socket.destroy()
-      return
+      return { ok: false, code: 402, reason: 'License Limit Reached. Email support@getgrm.tech', line: '402 Payment Required: License Limit Reached. Email support@getgrm.tech' }
     }
   }
 
@@ -1050,101 +1079,180 @@ server.on('upgrade', async (req, socket, head) => {
   // the handshake because a rejected connection should cost one socket and no doc state.
   // This is separate from the committer/seat limit above: seats are entitlement, this is
   // survival -- one client reconnecting in a loop is not a licensing question.
-  const full = admitConnection(room, tier)
+  // A mux CHANNEL is counted against the file's per-room ceiling like a socket, but not
+  // against the socket total -- its physical socket already paid that once.
+  const full = channel ? admitChannel(room, tier) : admitConnection(room, tier)
   if (full) {
     audit('reject-capacity', { room, identity: agentId, reason: full.reason })
-    socket.write(`HTTP/1.1 ${full.code} ${full.reason}\r\nConnection: close\r\n\r\n`)
-    socket.destroy()
-    return
+    return { ok: false, code: full.code, reason: full.reason, line: `${full.code} ${full.reason}` }
   }
+  return { ok: true, auth, agentId }
+}
 
-  wss.handleUpgrade(req, socket, head, (conn) => {
-    // `account` is what usage meters against: the licence key when there is one, else the
-    // base room. Computed here so a licensed client accumulates across every room it opens
-    // and across relay restarts, which is exactly what the per-file seat counter could not do.
-    // Declared HERE, before anything reads it. It used to be introduced further down, so
-    // the account logic below referenced it in its temporal dead zone -- a ReferenceError on
-    // every single connection, which `node --check` cannot see because it is a runtime rule,
-    // not a syntax one.
-    const baseRoom = baseRoomOf(room)
-    // A licensed client claims the workspace for its account; an unlicensed one INHERITS
-    // whatever the workspace was claimed for. That is what makes a team on one plan actually
-    // work -- see roomAccount above for the failure this replaces.
-    let account = claimRoomAccount(baseRoom, license, tier)
-    if (!account) {
-      const inherited = inheritedRoomAccount(baseRoom)
-      if (inherited) {
-        account = inherited.account
-        tier = inherited.tier   // and the ceilings, or they would still hit the free wall
-      } else {
-        account = meter.accountFor('', baseRoom)  // genuinely unclaimed: an anonymous workspace
-      }
+// Everything that happens once a connection is admitted -- for a real ws and a mux VirtualConn
+// alike. `channel` only changes which counter it occupies.
+function acceptConnection(conn, req, room, { auth, tier, license, agentId, channel }) {
+  // `account` is what usage meters against: the licence key when there is one, else the
+  // base room. Computed here so a licensed client accumulates across every room it opens
+  // and across relay restarts, which is exactly what the per-file seat counter could not do.
+  // Declared HERE, before anything reads it. It used to be introduced further down, so
+  // the account logic below referenced it in its temporal dead zone -- a ReferenceError on
+  // every single connection, which `node --check` cannot see because it is a runtime rule,
+  // not a syntax one.
+  const baseRoom = baseRoomOf(room)
+  // A licensed client claims the workspace for its account; an unlicensed one INHERITS
+  // whatever the workspace was claimed for. That is what makes a team on one plan actually
+  // work -- see roomAccount above for the failure this replaces.
+  let account = claimRoomAccount(baseRoom, license, tier)
+  if (!account) {
+    const inherited = inheritedRoomAccount(baseRoom)
+    if (inherited) {
+      account = inherited.account
+      tier = inherited.tier   // and the ceilings, or they would still hit the free wall
+    } else {
+      account = meter.accountFor('', baseRoom)  // genuinely unclaimed: an anonymous workspace
     }
-    conn._hive = { room, identity: auth.identity, role: auth.role, tier, account }
-    noteConnectionOpened(room)
-    
-    // Add agent to active committers list
-    if (!roomAgents.has(room)) roomAgents.set(room, new Set())
-    roomAgents.get(room).add(agentId)
-    joinWorkspace(baseRoom, auth.identity)
+  }
+  conn._hive = { room, identity: auth.identity, role: auth.role, tier, account }
+  if (channel) noteChannelOpened(room)
+  else noteConnectionOpened(room)
 
-    // Remove agent when connection drops, and SAY SO. Without a disconnect event the
-    // audit log is connect-only, which makes three ordinary questions unanswerable:
-    // how many clients were in a room at the same time, how long a session lasted, and
-    // whether a burst of joins is several people or one client reconnecting. `held`
-    // separates those last two on its own -- a reconnect storm shows up as many
-    // short-lived connections, a real session as a long one.
-    const openedAt = Date.now()
-    conn.on('close', () => {
-      noteConnectionClosed(room)
-      // Fold this connection's counters into the per-agent totals. Done on close because a
-      // client holds one connection per FILE: accumulating on the base room with the file
-      // name recorded is what makes "which agent wrote most, and to how many files"
-      // answerable, which a per-socket view cannot do.
-      try {
-        if (conn._hiveLimit) recordUsage(baseRoom, agentId, conn._hiveLimit.usage(), pathOf(room) || null)
-      } catch { /* telemetry must never break a disconnect */ }
-      const active = roomAgents.get(room)
-      if (active) {
-        active.delete(agentId)
-        if (active.size === 0) roomAgents.delete(room)   // don't leak an empty Set per room
-      }
-      leaveWorkspace(baseRoom, agentId)
-      const c = census(baseRoom)
-      audit('disconnect', {
-        room,
-        baseRoom,
-        file: pathOf(room),
-        identity: auth.identity,
-        heldMs: Date.now() - openedAt,
-        stillInRoom: (roomAgents.get(room) || new Set()).size,
-        stillInWorkspace: c.peers,
-        workspace: c,
-      })
-    })
+  // Add agent to active committers list
+  if (!roomAgents.has(room)) roomAgents.set(room, new Set())
+  roomAgents.get(room).add(agentId)
+  joinWorkspace(baseRoom, auth.identity)
 
+  // Remove agent when connection drops, and SAY SO. Without a disconnect event the
+  // audit log is connect-only, which makes three ordinary questions unanswerable:
+  // how many clients were in a room at the same time, how long a session lasted, and
+  // whether a burst of joins is several people or one client reconnecting. `held`
+  // separates those last two on its own -- a reconnect storm shows up as many
+  // short-lived connections, a real session as a long one.
+  const openedAt = Date.now()
+  conn.on('close', () => {
+    if (channel) noteChannelClosed(room)
+    else noteConnectionClosed(room)
+    // Fold this connection's counters into the per-agent totals. Done on close because a
+    // client holds one connection per FILE: accumulating on the base room with the file
+    // name recorded is what makes "which agent wrote most, and to how many files"
+    // answerable, which a per-socket view cannot do.
+    try {
+      if (conn._hiveLimit) recordUsage(baseRoom, agentId, conn._hiveLimit.usage(), pathOf(room) || null)
+    } catch { /* telemetry must never break a disconnect */ }
+    const active = roomAgents.get(room)
+    if (active) {
+      active.delete(agentId)
+      if (active.size === 0) roomAgents.delete(room)   // don't leak an empty Set per room
+    }
+    leaveWorkspace(baseRoom, agentId)
     const c = census(baseRoom)
-    audit('connect', {
+    audit('disconnect', {
       room,
-      // Split out so the log is greppable without anyone having to know that the room
-      // name is two values joined by a control character.
       baseRoom,
       file: pathOf(room),
       identity: auth.identity,
-      role: auth.role,
-      // How many distinct clients hold this FILE right now, counted AFTER this one was
-      // added above. Near-always 1, and that is correct -- see inWorkspace for the
-      // number that answers "is more than one agent in here".
-      inRoom: (roomAgents.get(room) || new Set()).size,
-      inWorkspace: c.peers,
+      heldMs: Date.now() - openedAt,
+      stillInRoom: (roomAgents.get(room) || new Set()).size,
+      stillInWorkspace: c.peers,
       workspace: c,
+      ...(channel ? { via: 'mux' } : {}),
     })
-    wss.emit('connection', conn, req)
+  })
+
+  const c = census(baseRoom)
+  audit('connect', {
+    room,
+    // Split out so the log is greppable without anyone having to know that the room
+    // name is two values joined by a control character.
+    baseRoom,
+    file: pathOf(room),
+    identity: auth.identity,
+    role: auth.role,
+    // How many distinct clients hold this FILE right now, counted AFTER this one was
+    // added above. Near-always 1, and that is correct -- see inWorkspace for the
+    // number that answers "is more than one agent in here".
+    inRoom: (roomAgents.get(room) || new Set()).size,
+    inWorkspace: c.peers,
+    workspace: c,
+    ...(channel ? { via: 'mux' } : {}),
+  })
+  wss.emit('connection', conn, req)
+}
+
+// ONE SOCKET PER PARTICIPANT. The physical socket is authorized as the BASE room -- the same
+// grant the client's base-room connection already uses -- and occupies one slot of the total.
+// Every file it then opens goes through gateRoom and acceptConnection above, per file.
+async function upgradeMux(req, socket, head, q) {
+  if (!RELAY_MUX) return refuseUpgrade(socket, '404 Not Found')
+  const baseRoom = q.room.slice(MUX_PREFIX.length)
+  if (!baseRoom || baseRoomOf(baseRoom) !== baseRoom || pathOf(baseRoom)) return refuseUpgrade(socket, '400 Bad Request')
+  const t = await resolveTier(q.room, q.license)
+  if (!t.ok) return refuseUpgrade(socket, t.line)
+  let auth
+  try { auth = authorize(baseRoom, q.token, q.declaredName, q.declaredKind) }
+  catch (e) { auth = { ok: false, code: 401, reason: 'authorization error' }; console.error('[relay] authorize threw:', e && e.message) }
+  if (!auth.ok) {
+    audit('reject', { room: q.room, reason: auth.reason })
+    const code = auth.code || 401
+    return refuseUpgrade(socket, `${code} ${code === 403 ? 'Forbidden' : code === 503 ? 'Service Unavailable' : 'Unauthorized'}`)
+  }
+  const key = MUX_KEY(baseRoom)
+  const full = admitConnection(key, t.tier)
+  if (full) {
+    audit('reject-capacity', { room: q.room, identity: auth.identity.name, reason: full.reason })
+    return refuseUpgrade(socket, `${full.code} ${full.reason}`)
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    noteConnectionOpened(key)
+    const openedAt = Date.now()
+    audit('mux-connect', { baseRoom, identity: auth.identity })
+    serveMux(ws, {
+      baseRoom,
+      audit,
+      limits: { maxChannelsPerSocket: LIMITS.maxChannelsPerSocket },
+      openChannel: (id, docName, session) => {
+        // Only files of THIS socket's room: a grant for one room must not open another's.
+        // The name is used EXACTLY as sent. A per-file client puts it raw into a URL, where '#',
+        // '?' and '%xx' are rewritten -- so for those rare names the old transport reaches a
+        // different doc (usually it is refused, having lost its token to the '#' or '?'). Do not
+        // "fix" that by rewriting here: it would make two different files share one doc.
+        if (typeof docName !== 'string' || baseRoomOf(docName) !== baseRoom || !pathOf(docName)) {
+          audit('reject', { room: String(docName).slice(0, 200), reason: 'mux channel outside its room' })
+          return { code: 403, reason: 'Q437 a channel may only open a file of its own room' }
+        }
+        const g = gateRoom(docName, { token: q.token, declaredName: q.declaredName, declaredKind: q.declaredKind, tier: t.tier, committerLimit: t.committerLimit, channel: true })
+        if (!g.ok) return { code: g.code, reason: g.reason }
+        const vc = session.makeConn(id, docName)
+        session.opened(id)
+        acceptConnection(vc, req, docName, { auth: g.auth, tier: t.tier, license: q.license, agentId: g.agentId, channel: true })
+        return { ok: true }
+      },
+      onClose: () => {
+        noteConnectionClosed(key)
+        audit('mux-disconnect', { baseRoom, identity: auth.identity, heldMs: Date.now() - openedAt })
+      },
+    })
+  })
+}
+
+server.on('upgrade', async (req, socket, head) => {
+  const q = parseUpgrade(req.url)
+  if (q.room.startsWith(MUX_PREFIX)) return upgradeMux(req, socket, head, q)
+  const t = await resolveTier(q.room, q.license)
+  if (!t.ok) return refuseUpgrade(socket, t.line)
+  const g = gateRoom(q.room, { token: q.token, declaredName: q.declaredName, declaredKind: q.declaredKind, tier: t.tier, committerLimit: t.committerLimit, channel: false })
+  if (!g.ok) return refuseUpgrade(socket, g.line)
+  wss.handleUpgrade(req, socket, head, (conn) => {
+    acceptConnection(conn, req, q.room, { auth: g.auth, tier: t.tier, license: q.license, agentId: g.agentId, channel: false })
   })
 })
 
 wss.on('connection', (conn, req) => {
   const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'
+  // A ws with no 'error' listener THROWS on the first malformed frame (bad opcode, bad UTF-8,
+  // an oversized payload) -- and nothing else catches it, so one bad client took down the
+  // relay and every room on it. The socket still closes; the process no longer dies.
+  if (!conn.isVirtual) conn.on('error', (e) => { try { audit('socket-error', { room, reason: e && e.message }) } catch { } })
   // One line per file is unavoidable (a room IS a file), but it should at least say
   // what is being opened and by how many people -- the previous version printed the
   // raw joined room name, control character and all, and no occupancy at all.

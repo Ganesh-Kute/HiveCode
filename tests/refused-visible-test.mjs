@@ -20,6 +20,11 @@ import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
 import { startSync } from '../sync.js'
+// PINNED TO THE PER-FILE TRANSPORT (HIVE_MUX=0). What this suite measures is the arithmetic of one
+// socket PER FILE, which the VS Code extension, the browser panel and every older relay still
+// speak. A client on one-socket mode holds 2 sockets whatever its file count; its own ceilings
+// and refusals are asserted in tests/mux-test.mjs.
+process.env.HIVE_MUX = '0'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0
@@ -62,10 +67,12 @@ T('A1 status reports files whose sockets were refused', st.notSyncing > 0)
 T('A2 and names them, so the agent knows which are untrustworthy', Array.isArray(st.notSyncingFiles) && st.notSyncingFiles.length > 0)
 T('A3 those files are genuinely not synced', st.filesSynced < st.files)
 
-const warned = logsFull.filter((l) => /cannot connect to the relay/.test(l))
+// The wording changed in HIV-P13 (9147158) and this matcher did not, so B1-B4 sat red outside
+// test:hardening from then until 25 Sep 2026. Match the warning by what it must say.
+const warned = logsFull.filter((l) => /not synced and will READ AS EMPTY/.test(l))
 T('B1 the client says so rather than retrying quietly', warned.length >= 1)
 T('B2 the warning names the likely cause (Q430 / relay full)', warned.some((l) => /Q430/.test(l)))
-T('B3 it warns that the files will read as empty', warned.some((l) => /read as empty/.test(l)))
+T('B3 it warns that the files will read as empty', warned.some((l) => /READ AS EMPTY/.test(l)))
 T('B4 it does NOT repeat itself per file', warned.length === 1)
 
 try { S1.stop() } catch { }
@@ -86,7 +93,7 @@ await sleep(12000)
 const st2 = S2.status()
 console.log(`  healthy: files=${st2.files} synced=${st2.filesSynced} notSyncing=${st2.notSyncing}\n`)
 T('C1 a healthy relay reports nothing refused', st2.notSyncing === 0)
-T('C2 and raises no warning (crying wolf gets it ignored)', !logsOk.some((l) => /cannot connect to the relay/.test(l)))
+T('C2 and raises no warning (crying wolf gets it ignored)', !logsOk.some((l) => /not synced and will READ AS EMPTY/.test(l)))
 T('C3 the files really did sync, so C1 means something', st2.filesSynced >= FILES.length)
 
 try { S2.stop() } catch { }

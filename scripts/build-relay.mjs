@@ -308,6 +308,9 @@ try {
   const h = await fetch(`http://127.0.0.1:${PORT}/health`).then((r) => r.json())
   check('the staged relay starts and answers /health', h.ok === true)
   check('HIVE_SEATS is honoured', h.connsPerRoom === 32, `connsPerRoom=${h.connsPerRoom}`)
+  // One socket per participant: a staged relay that silently lost relay-mux.js would still pass
+  // every check above, and every client would quietly fall back to a socket per file.
+  check('it offers one socket per participant (mux in /health)', h.mux === 1, `mux=${h.mux}`)
   const page = await fetch(`http://127.0.0.1:${PORT}/`)
   check('/ serves the relay landing page', page.status === 200)
   const ctl = await fetch(`http://127.0.0.1:${PORT}/control`)
