@@ -27,6 +27,7 @@ import { fileURLToPath } from 'url'
 // The stdio server is our own, not @modelcontextprotocol/sdk's: the SDK drags express, hono, zod
 // and ~85 more packages into every install for a slice this small. See hive-stdio.js.
 import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from './hive-stdio.js'
+import { startUpdateCheck, updateNotice } from './hive-update.js'
 // Substrate defaults for MCP agents: signed provenance + the silent-fork gate are ON
 // unless explicitly disabled. Agents register this server with arbitrary (often empty)
 // env, so relying on per-registration env vars left rooms in mixed signed/unsigned mode —
@@ -398,7 +399,7 @@ was not written. Fix the relay and call hive_join again.`
     ? `\n\nMOVED: this folder pointed at ${migratedFrom}, a Hivecode relay that has been retired. ` +
       `It now uses ${relay}, and .hive.json has been updated, so this happens once.`
     : ''
-  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }
@@ -1385,7 +1386,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // answer to the second -- the public relay and a company's own are the same shape.
         const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs })
         return text({
-          room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION,
+          room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(updateNotice() ? { update: updateNotice() } : {}),
           privacy: pv.headline,
           ...(pv.warn ? { privacyWarning: pv.warn } : {}),
           ...(pv.pin && pv.pin.pinned ? { relayPin: pv.pin.origins.join(', ') } : {}),
@@ -1567,6 +1568,7 @@ if (isEntryPoint && process.argv[2] === 'setup') {
     setTimeout(() => process.exit(0), 500)
   }
   await server.connect(transport)
+  startUpdateCheck() // background, short timeout; hive_join and hive_status show what it finds
   // stderr is fine for logs; stdout is the JSON-RPC channel and must stay clean.
   console.error('[hive-mcp] Hivecode MCP server ready (stdio). Default relay:', DEFAULT_RELAY)
 }

@@ -39,6 +39,12 @@ shell, and on Windows `npx` is `npx.cmd`, so that entry fails with `spawn npx EN
 start also downloads the package, which can outlast an app's start-up limit (Claude Code allows
 30 seconds). If `setup` does not know your app, it prints the exact entry to use instead.
 
+Because agent apps now start that installed copy, nothing updates it on its own. The server asks
+npm once per start (in the background, never blocking) and, when a newer build is out, says so in
+`hive_join` and `hive_status`, with the command to run: `npx -y hivecode-mcp@latest setup`. Mixed
+versions in one room can lose data, so do not ignore it. `HIVE_PRIVATE=1` or
+`HIVE_NO_UPDATE_CHECK=1` turns the check off.
+
 ## Tools the agent gets
 
 | Tool | What it does |
