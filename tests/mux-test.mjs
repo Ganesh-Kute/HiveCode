@@ -27,6 +27,8 @@ import { sign, fileRoom } from '../token.js'
 import { startSync } from '../sync.js'
 import { createFileTransport } from '../hive-mux.js'
 import { F, encodeFrame, decodeFrame, muxPath } from '../hive-mux-proto.js'
+import { serveMux } from '../relay-mux.js'
+import { EventEmitter } from 'events'
 
 process.setMaxListeners(100)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -142,6 +144,58 @@ try {
   T('F4 a JSON /health without mux decides at once: a socket per file', d.mode === 'socket' && d.calls === 1, JSON.stringify(d))
   d = await detect(['down'], { detectForMs: 150 })
   T('F5 a relay that never answers gets the transport every relay speaks, in bounded time', d.mode === 'socket' && d.calls >= 2, JSON.stringify(d))
+
+  // ── G. two failure paths, driven without a network ──────────────────────────────────
+  console.log('\n# G  a channel whose accept throws, and a fallback with files still mid-sync')
+  class FakeSock extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.sent = [] }
+    send(b, _o, cb) { this.sent.push(decodeFrame(new Uint8Array(b))); if (cb) cb() }
+    ping() { } terminate() { this.close() } pause() { } resume() { }
+    close() { if (this.readyState === 3) return; this.readyState = 3; this.emit('close') }
+  }
+  const fsock = new FakeSock()
+  let opens = 0
+  const sess = serveMux(fsock, {
+    baseRoom: 'r',
+    openChannel: (id, name, se) => { opens++; se.makeConn(id, name); if (opens === 1) throw new Error('accept blew up'); se.opened(id); return { ok: true } },
+  })
+  fsock.emit('message', encodeFrame(F.OPEN, 7, 'r\u0001a.js'))
+  await sleep(30)
+  const refused7 = fsock.sent.find((f) => f.id === 7 && f.kind === F.REFUSED)
+  T('G1 a channel whose accept throws is refused AND unregistered', !!refused7 && refused7.code === 500 && sess.size === 0, JSON.stringify({ refused7, size: sess.size }))
+  fsock.emit('message', encodeFrame(F.OPEN, 7, 'r\u0001a.js'))
+  await sleep(30)
+  T('G2 ...so the retry under the same id is admitted, not refused 409 forever', fsock.sent.some((f) => f.id === 7 && f.kind === F.OPENED) && opens === 2,
+    JSON.stringify(fsock.sent.filter((f) => f.id === 7).map((f) => f.kind)))
+  fsock.close()
+
+  const made = []
+  class FakeWS {
+    constructor(url) {
+      this.url = url; this.readyState = 0; made.push(url)
+      // The relay turned mux off: the mux upgrade is refused 404. Per-file sockets just sit connecting.
+      if (url.includes('/_hive_mux/')) setTimeout(() => { if (this.onerror) this.onerror({ message: 'Unexpected server response: 404' }); if (this.onclose) this.onclose({ code: 1006 }) }, 5)
+    }
+    send() { } close() { this.readyState = 3 }
+  }
+  const fps = []
+  let trimmedFirst = null
+  const tr = createFileTransport({
+    relay: 'ws://relay.invalid', room: 'r', env: {}, wsOpts: { WebSocketPolyfill: FakeWS },
+    fetchImpl: async () => ({ ok: true, status: 200, text: async () => '{"mux":1}' }),
+    // What sync.js's trimForSockets does: close the files beyond the per-file bound -- here 7 of 10,
+    // none of which ever synced. It must run BEFORE anything is re-bound.
+    onFallback: () => { trimmedFirst = made.filter((u) => !u.includes('/_hive_mux/')).length === 0; for (const fp of fps.slice(0, 7)) fp.destroy() },
+  })
+  await tr.ready
+  for (let i = 0; i < 10; i++) fps.push(tr.provide(`r\u0001f${i}.js`, new Y.Doc()))
+  await waitFor(() => tr.mode === 'socket', 3000)
+  await sleep(50)
+  const perFile = made.filter((u) => !u.includes('/_hive_mux/'))
+  T('G3 a relay that answers the mux socket 404 moves the session to a socket per file', tr.mode === 'socket', tr.mode)
+  T('G4 ...trimming first, so only the files kept get a socket: no storm, even mid-sync', trimmedFirst === true && perFile.length === 3, `trimmedFirst=${trimmedFirst} perFileSockets=${perFile.length}`)
+  for (const fp of fps) { try { fp.destroy() } catch { } }
+  tr.stop()
 
   // ── A. the transport ────────────────────────────────────────────────────────────────
   console.log('\n# A  one socket per participant, files arrive, edits flow, old and new converge')

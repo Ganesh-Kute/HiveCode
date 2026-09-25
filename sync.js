@@ -983,9 +983,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // one through the same gates a per-file socket passes. Against a relay that does not offer it,
   // or with HIVE_MUX=0, every file gets its own WebsocketProvider exactly as before. Decided once,
   // before the first file opens, so a session never straddles the two transports.
-  // onFallback: the relay stopped offering it mid-session, so trim to the per-file bound (ignoring
-  // the grace window, keeping every NEVER-EVICT file) before each remaining file gets a socket.
-  const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => evictIfOverCap(null, 0) })
+  // onFallback: the relay stopped offering it mid-session, so trim to the per-file bound before
+  // each remaining file gets a socket of its own (trimForSockets, below).
+  const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets() })
   let stopped = false
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
   provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, passive: !!passive }) // identity is implicit in the client
@@ -1349,7 +1349,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const touched = new Map() // relPath -> last use (ms)
   const touchFile = (relPath) => { if (fileDocs.has(relPath)) touched.set(relPath, Date.now()) }
   let evicted = 0
-  function evictIfOverCap(keep, graceMs = EVICT_GRACE_MS) {
+  function evictIfOverCap(keep) {
     if (fileDocs.size <= maxOpen()) return
     const now = Date.now()
     const isClaimed = (r) => { try { return claims.has(r) } catch { return false } }
@@ -1360,11 +1360,36 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { if (e.conflict && e.conflict.size) continue } catch { }
       if (isClaimed(r)) continue
       const t = touched.get(r) || 0
-      if (now - t < graceMs) continue
+      if (now - t < EVICT_GRACE_MS) continue
       cand.push([r, t])
     }
     cand.sort((a, b) => a[1] - b[1]) // least recently used first
     let over = fileDocs.size - maxOpen()
+    for (const [r] of cand) {
+      if (over-- <= 0) break
+      closeFile(r); touched.delete(r); evicted++
+    }
+  }
+
+  // THE FALLBACK TRIM. The relay stopped offering one-socket mode mid-session, and every file still
+  // open is about to cost a socket of its own. Keep the most recently used up to the per-file bound
+  // and close the rest -- UNSYNCED ones too, unlike evictIfOverCap: on this path "unsynced" means
+  // "was waiting on the socket that just went away", and its bytes are on disk or still in the
+  // room, so closing it costs latency, not work. Conflicted and claimed files are kept whatever
+  // the count, because closing those could. Without this, a joiner mid-way through fetching 900
+  // files would open 900 sockets at once -- the storm the per-file bound exists to prevent.
+  function trimForSockets() {
+    const cap = maxOpen()
+    if (fileDocs.size <= cap) return
+    const isClaimed = (r) => { try { return claims.has(r) } catch { return false } }
+    const cand = []
+    for (const [r, e] of fileDocs) {
+      if (conflicted.has(r) || isClaimed(r)) continue
+      try { if (e.conflict && e.conflict.size) continue } catch { }
+      cand.push([r, touched.get(r) || 0])
+    }
+    cand.sort((a, b) => a[1] - b[1]) // least recently used first
+    let over = fileDocs.size - cap
     for (const [r] of cand) {
       if (over-- <= 0) break
       closeFile(r); touched.delete(r); evicted++

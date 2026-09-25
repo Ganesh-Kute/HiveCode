@@ -1270,6 +1270,10 @@ wss.on('connection', (conn, req) => {
   // somebody is actually paused -- writeBlockReason returns null for everyone else.
   else if (ENFORCE_CLAIMS !== 'off' || GOVERNOR !== 'off') installWriteGate(conn)
   if (GOVERNOR !== 'off' && conn._hive) { try { gov.attach(baseRoomOf(room), getYDoc(baseRoomOf(room))) } catch { /* room may be mid-teardown */ } }
+  // Every gate above wraps conn.on. EventEmitter's addListener is the same function under another
+  // name, NOT an alias of the instance property -- so a 'message' listener added by that name
+  // would skip every gate. Nothing does that today; this makes sure nothing can.
+  conn.addListener = conn.on
   setupWSConnection(conn, req, { docName: room })
   postNotice(room)                       // service notice, if one is set
   if (PROVENANCE !== 'off') installProvenanceGuard(room) // substrate: verify/enforce the file's provenance ledger (opt-in)

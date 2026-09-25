@@ -131,7 +131,14 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
       if (!openBucket.take(1)) return session.sendFrame(encodeFrame(F.REFUSED, f.id, 503, 'Q432 opening files too fast on one socket; backing off'))
       let r
       try { r = openChannel(f.id, f.docName, session) } catch (e) { r = { code: 500, reason: `open failed: ${e && e.message}` } }
-      if (!r || !r.ok) session.sendFrame(encodeFrame(F.REFUSED, f.id, (r && r.code) || 500, (r && r.reason) || 'refused'))
+      if (!r || !r.ok) {
+        // A throw can land AFTER makeConn: the channel would stay registered while the client is
+        // told REFUSED, and its retry under the same id would then meet 409 forever. Shut whatever
+        // was made (it emits close once, so any counter it took is given back) before refusing.
+        const made = channels.get(f.id)
+        if (made) { try { made._shut(false) } catch { } }
+        session.sendFrame(encodeFrame(F.REFUSED, f.id, (r && r.code) || 500, (r && r.reason) || 'refused'))
+      }
     } else if (f.kind === F.CLOSE) {
       const vc = channels.get(f.id)
       if (vc) vc._shut(false)
