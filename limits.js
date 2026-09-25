@@ -127,7 +127,14 @@ export const LIMITS = {
   // Retained CRDT size for one doc. A doc is one file in this design.
   maxDocBytes: num('HIVE_MAX_DOC_BYTES', 64 * 1024 * 1024),
   maxConnsPerRoom: num('HIVE_MAX_CONNS_PER_ROOM', 64),
-  maxConnsTotal: num('HIVE_MAX_CONNS_TOTAL', 512),
+  // The only cap that spans a whole project: a client holds one socket per open file (up to
+  // HIVE_MAX_OPEN_FILES=128) plus its base room, and each file is its own room as far as the
+  // per-room ceiling is concerned -- so a real team is bounded by THIS number and nothing else.
+  // It was 512: three participants on a 150-file room measured 409 connections, so a fourth
+  // was refused, on a relay already carrying other rooms. Measured cost 25 Sep 2026: ~56 KB of
+  // relay memory per connection (400 extra sockets to the same 400 docs: +22 MB), so 2048 is
+  // ~115 MB -- comfortable on a 512 MB free instance.
+  maxConnsTotal: num('HIVE_MAX_CONNS_TOTAL', 2048),
   // How long a client stays refused after tripping a rate limit. Long enough that a tight
   // loop actually yields, short enough that a human does not notice a one-off burst.
   cooloffMs: num('HIVE_RATE_COOLOFF_MS', 5000),
