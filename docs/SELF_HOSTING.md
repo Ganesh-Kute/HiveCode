@@ -201,7 +201,7 @@ relay. It is the evidence behind every claim on this page.
 |---|---|
 | `HIVE_AUTH_MODE=required` + `HIVE_JWT_SECRET=<secret>` | Every connection must present a valid token. This is your invite-only control. `npx hivecode-relay --secret <secret>` sets both. Mint tokens with `npx hivecode-token --room <room> --name <who> --role writer --ttl 7d` on the relay host, which is the only machine that holds the secret. See [RBAC.md](RBAC.md). |
 | `HIVE_PERSIST_DIR=/var/data/hive` | **Important.** Without it a room lives only in connected clients' memory and is **lost the moment everyone disconnects** — the day works perfectly and the folder is empty in the morning. `npx hivecode-relay` turns this on by default; `node server.js` does not. |
-| `HIVE_SEATS=<n>` | Connection budget for the whole relay. The default free-tier ceiling is 8 per room, which is **not** 8 people — see below. |
+| `HIVE_SEATS=<n>` | Per-room connection budget (8 per seat). It does **not** raise the whole-relay total — that is `HIVE_MAX_CONNS_TOTAL`. The free-tier ceiling is 8 per room, which is **not** 8 people — see below. |
 | `HIVE_AUDIT_FILE=./audit.log` | One line per admit and reject. This is your evidence of who connected and when. |
 | `RENDER_EXTERNAL_URL` (auto on Render) | Keeps a free-tier host warm so the first join is not a 30-second cold start. |
 
@@ -222,7 +222,7 @@ Two different ceilings refuse you, with two different remedies:
 
 | You see | Meaning | Fix |
 |---|---|---|
-| **Q430** (503) | the whole relay is at `maxConnsTotal` (512) | `HIVE_MAX_CONNS_TOTAL` — **`HIVE_SEATS` does not help here** |
+| **Q430** (503) | the whole relay is at `maxConnsTotal` (default 2048, ~56 KB of memory each) | `HIVE_MAX_CONNS_TOTAL` — **`HIVE_SEATS` does not help here** |
 | **Q431** (429) | one room is at its per-room cap | `HIVE_SEATS` |
 
 - **A focused team (~10 humans and their agents in one room): comfortably**, on a small

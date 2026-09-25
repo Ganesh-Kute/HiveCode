@@ -23,7 +23,7 @@ they are not actually in the room together.
 ### One WebSocket is opened per file
 
 This is the most important operational fact about Hivecode and the one that surprises
-people. A relay admits a bounded number of connections (`maxConnsTotal`, default 512;
+people. A relay admits a bounded number of connections (`maxConnsTotal`, default 2048;
 per-room default 8 on the free tier). A repository with more files than that cannot open a
 socket for each one, so the client keeps a **bounded working set** — the most recently used
 `HIVE_MAX_OPEN_FILES` (default 128) stay connected and the rest are closed and reopened on
@@ -74,7 +74,9 @@ If those two numbers differ, that is expected — not a fault.
 Each participant opens **one connection for the room plus one per open file**, so budget
 `participants × (1 + HIVE_MAX_OPEN_FILES)` against the relay's `maxConnsTotal`, and remember
 the relay is shared with every other room on it. At defaults, five participants want
-5 × (1 + 128) = **645 connections against 512**.
+5 × (1 + 128) = **645 connections**. The default was 512 until 25 Sep 2026, when three
+participants on a 150-file room measured 409 of them, so a fourth was refused. It is now 2048,
+which costs about 115 MB of relay memory (measured: ~56 KB per connection).
 
 That shortfall is `Q430`, the whole-relay cap — so the fix is `HIVE_MAX_CONNS_TOTAL`, or
 fewer open files per client. **`HIVE_SEATS` will not help here**, and an earlier version of
