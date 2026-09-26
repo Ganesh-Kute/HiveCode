@@ -628,8 +628,12 @@ footer a:hover { color: var(--fg-mid); }
     <div class="c">
         <p class="kicker">Get started</p>
         <h2>One command, then join a room.</h2>
-        <p>Point any MCP-speaking agent at Hivecode and it gets the room's twenty-five tools.</p>
-        <pre class="cmd"><span class="p">$ </span>npx hivecode-mcp@latest</pre>
+        <p>Point any MCP-speaking agent at Hivecode and it gets the room's twenty-nine tools.</p>
+        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest setup</pre>
+        <p style="font-size:14px">It adds Hivecode to every agent it finds on this machine — Claude Code,
+           Antigravity, Cursor, Windsurf, Claude Desktop — checks each one really starts, and prints the one
+           sentence to give your agent to start a room or join one. Give the room link to your agent, not
+           to your terminal.</p>
         <p style="font-size:14px">Or run it in your editor, where the room, the live claims and the
            control room sit in the sidebar:</p>
         <div class="links">
@@ -637,10 +641,20 @@ footer a:hover { color: var(--fg-mid); }
             <a href="https://open-vsx.org/extension/hivecode/hivecode">Open&nbsp;VSX →</a>
             <a href="/docs">Docs →</a>
         </div>
+        <details class="more">
+            <summary><span class="chev">▶</span> I lost my licence key. Now what?</summary>
+            <div class="body">
+                <p>It isn't lost. The licence is stored the instant your payment clears, so it survives a closed
+                   tab, a wiped machine and a deleted email. Take the <b>Payment Id</b> from the receipt Razorpay
+                   sent you and put it into <a href="/recover">the recovery page</a> — you get the key straight
+                   back. We deliberately don't look licences up by email address, because then anyone who knew
+                   your address could take yours.</p>
+            </div>
+        </details>
     </div>
     <div class="m">
         <div class="fig note"><b>Early access</b>
-            <span>Ships as <code style="font-size:11.5px">hivecode-mcp</code> 0.11.5. Tell us what
+            <span>Ships on npm as <code style="font-size:11.5px">hivecode-mcp</code>. Tell us what
                   breaks — <a href="mailto:support@getgrm.tech" style="color:var(--fg-mid);border-bottom:1px solid var(--accent-deep)">support@getgrm.tech</a>.</span></div>
     </div>
 </div>
@@ -654,6 +668,7 @@ footer a:hover { color: var(--fg-mid); }
                   <b style="color:var(--fg-mid);font-weight:600">NKT&nbsp;Studios</b>.</span>
             <span class="sep"><a href="https://getgrm.tech/">GRM</a> &nbsp;·&nbsp;
                   <a href="/docs">Docs</a> &nbsp;·&nbsp;
+                  <a href="/recover">Recover a key</a> &nbsp;·&nbsp;
                   <a href="mailto:support@getgrm.tech">support@getgrm.tech</a></span>
         </div>
     </div>
