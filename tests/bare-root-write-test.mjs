@@ -138,6 +138,21 @@ try {
   const scratchChat = chatScratch.find((m) => m && m.text && m.text.includes('scratch.tmp') && /ignored/i.test(m.text))
   T('P8-C2 ambient chat warning emitted for unclaimed ignored file scratch.tmp', !!scratchChat)
 
+  // P8-I: files under a PRUNED directory are not "born invisible", they were never walkable. The
+  // watcher names each file, and an npm install must not become a chat line per file (27 Sep 2026).
+  // The directories first, and settled: a new directory in the same watcher batch sends the whole
+  // batch to a full scan. And a few files, spaced out: a burst overflows the Windows watcher's
+  // buffer, which then reports one event with no name -- also a full scan. Either way this would
+  // pass without the per-file path ever running, which is the path under test.
+  for (const d of ['node_modules/pkg', 'build']) fs.mkdirSync(path.join(dir, d), { recursive: true })
+  await sleep(1500)
+  for (const d of ['node_modules/pkg', 'build']) {
+    for (let i = 0; i < 4; i++) { fs.writeFileSync(path.join(dir, d, `f${i}.js`), `module.exports = ${i}\n`); await sleep(120) }
+  }
+  await sleep(1500)
+  const flood = hive.doc.getArray('chat').toArray().filter((m) => m && m.text && /(node_modules\/pkg|build)\/f\d+\.js/.test(m.text))
+  T('P8-I no notice per file for a pruned directory (node_modules/, an ignored build/)', flood.length === 0, `${flood.length} lines`)
+
   // -----------------------------------------------------------------------------------------
   // P8-A: Claim "config" (allowed by P3), then write ./config which allow-list does not negate
   // -----------------------------------------------------------------------------------------

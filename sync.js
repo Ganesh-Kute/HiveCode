@@ -2552,40 +2552,53 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // fills with debts about paths that no longer exist, which is the noise the three-state
     // lifecycle exists to prevent. Its expiry cannot help here — that only covers names never seen
     // in the room, and this path was seen, on disk, by us.
-    for (const [r, id] of [...invisibleWarned]) {
-      if (ignoredRel.has(r)) continue
-      if (id) { try { OB.discharge(doc.getMap('obligations'), { id, by: ENGINE_ID }) } catch { } }
-      invisibleWarned.delete(r)
+    for (const r of [...invisibleWarned.keys()]) if (!ignoredRel.has(r)) dischargeInvisible(r)
+    for (const r of ignoredRel) noticeInvisibleOne(r)
+  }
+  function dischargeInvisible(r) {
+    if (!invisibleWarned.has(r)) return
+    const id = invisibleWarned.get(r)
+    if (id) { try { OB.discharge(doc.getMap('obligations'), { id, by: ENGINE_ID }) } catch { } }
+    invisibleWarned.delete(r)
+  }
+  // Would walk() list this path as an ignored FILE -- the only kind noticeBornInvisible speaks
+  // about? Not when a directory above it is pruned, as node_modules/ and .git/ are: an npm install
+  // must not become ten thousand chat lines because a watcher event named each file.
+  function walkSkipsAsIgnoredFile(r) {
+    const segs = r.split('/')
+    for (let i = 0; i < segs.length - 1; i++) {
+      if (IGNORE.has(segs[i]) || isIgnored(segs.slice(0, i + 1).join('/') + '/')) return false
     }
-    for (const r of ignoredRel) {
-      if (SKIP.has(r) || OWN_LOCAL.has(r)) continue // control files are ours and are supposed to be invisible
-      if (preexisting.has(r)) continue    // it was already here; nobody did this during the session
-      if (invisibleWarned.has(r)) continue // once per path, not once per scan tick
-      const holder = coordinator.sense(r)
-      if (holder && holder.by) {
-        let id = null
-        try {
-          const rec = OB.open(doc.getMap('obligations'), {
-            from: ENGINE_ID,
-            to: holder.by,
-            text: `${r} is on disk and claimed by you, but it is ignored by a .gitignore here — ` +
-              `no sync connection is opened for it, so nothing written to it will ever reach the room. ` +
-              `Add it to the allow-list, or confirm the work is deliberately local.`,
-            absent: false,
-            neverSeen: false,
-          })
-          id = rec && rec.id
-        } catch { }
-        invisibleWarned.set(r, id)
-        try {
-          say(`⛔ ${r} is claimed and on disk, but it is ignored by a .gitignore here — its bytes will never leave this folder.`)
-        } catch { }
-      } else {
-        invisibleWarned.set(r, null)
-        try {
-          say(`· ${r} was created here but is ignored by a .gitignore — it stays local, and no other agent will see it.`)
-        } catch { }
-      }
+    return !IGNORE.has(segs[segs.length - 1]) && isIgnored(r)
+  }
+  function noticeInvisibleOne(r) {
+    if (SKIP.has(r) || OWN_LOCAL.has(r)) return // control files are ours and are supposed to be invisible
+    if (preexisting.has(r)) return    // it was already here; nobody did this during the session
+    if (invisibleWarned.has(r)) return // once per path, not once per scan tick
+    const holder = coordinator.sense(r)
+    if (holder && holder.by) {
+      let id = null
+      try {
+        const rec = OB.open(doc.getMap('obligations'), {
+          from: ENGINE_ID,
+          to: holder.by,
+          text: `${r} is on disk and claimed by you, but it is ignored by a .gitignore here — ` +
+            `no sync connection is opened for it, so nothing written to it will ever reach the room. ` +
+            `Add it to the allow-list, or confirm the work is deliberately local.`,
+          absent: false,
+          neverSeen: false,
+        })
+        id = rec && rec.id
+      } catch { }
+      invisibleWarned.set(r, id)
+      try {
+        say(`⛔ ${r} is claimed and on disk, but it is ignored by a .gitignore here — its bytes will never leave this folder.`)
+      } catch { }
+    } else {
+      invisibleWarned.set(r, null)
+      try {
+        say(`· ${r} was created here but is ignored by a .gitignore — it stays local, and no other agent will see it.`)
+      } catch { }
     }
   }
 
@@ -2762,7 +2775,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
     let changes = 0
     for (const [r, evts] of entries) {
-      if (SKIP.has(r) || OWN_LOCAL.has(r) || isIgnored(r)) continue
+      if (SKIP.has(r) || OWN_LOCAL.has(r)) continue
+      if (isIgnored(r)) {
+        // Never reconciled -- but HIV-P8's born-invisible notice must not wait for the next full
+        // scan (up to 16 s away), and a deleted one takes its debt with it, exactly as scan() does.
+        if (walkSkipsAsIgnoredFile(r)) {
+          let isFile = false
+          try { isFile = fs.statSync(path.join(ROOT, r)).isFile() } catch { }
+          if (isFile) noticeInvisibleOne(r); else dischargeInvisible(r)
+        }
+        continue
+      }
       const full = path.join(ROOT, r)
       let st
       try {
