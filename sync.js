@@ -53,7 +53,7 @@ const PROTOCOL_VERSION = 2
 // Never sync these, even if not in .gitignore — secrets and obvious junk. This
 // prevents pushing a teammate's .env / private keys / build output to the room.
 const ALWAYS_IGNORE = [
-  '.git/', 'node_modules/', '.hive/',
+  '.git/', 'node_modules/',
   '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
   '.hive-id.json', // this client's substrate signing identity (holds a PRIVATE key) — never sync it
   // This client's own session + chat read cursor. Syncing it would push one agent's identity
@@ -159,7 +159,7 @@ const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, R
 // Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
 // here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
 // told the whole team about .hive-shadow.json, a file none of them had made.
-const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-mcp-session.json', '.hive-id.json', '.hive'])
+const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-mcp-session.json', '.hive-id.json'])
 
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the
@@ -2477,7 +2477,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       invisibleWarned.delete(r)
     }
     for (const r of ignoredRel) {
-      if (SKIP.has(r) || OWN_LOCAL.has(r) || r.startsWith('.hive/')) continue // control files are ours and are supposed to be invisible
+      if (SKIP.has(r) || OWN_LOCAL.has(r)) continue // control files are ours and are supposed to be invisible
       if (preexisting.has(r)) continue    // it was already here; nobody did this during the session
       if (invisibleWarned.has(r)) continue // once per path, not once per scan tick
       const holder = coordinator.sense(r)
@@ -2603,8 +2603,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function scheduleNextScan(ms) {
     if (stopped) return
     if (scanTimer) clearTimeout(scanTimer)
+    // Ref'd, like the setInterval it replaced: a headless client whose socket is down may have
+    // nothing else holding the process open, and an unref'd net would let it exit silently.
     scanTimer = setTimeout(runAdaptiveScan, ms)
-    if (scanTimer.unref) scanTimer.unref()
   }
 
   function runAdaptiveScan() {

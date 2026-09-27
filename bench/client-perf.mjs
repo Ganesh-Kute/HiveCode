@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
-const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // the repo, one up from bench/
 const { startSync } = await import(pathToFileURL(path.join(ROOT, 'sync.js')).href);
 
 async function run() {
