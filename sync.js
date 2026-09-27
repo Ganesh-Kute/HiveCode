@@ -2557,6 +2557,43 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     return changes
   }
 
+  // Non-blocking chunked file opening:
+  // When an existing room doc syncs on join, 150-900 files arrive in manifest at once.
+  // Opening them all synchronously inside Y.applyUpdate froze the Node event loop for
+  // 5-8+ seconds, blowing past hive_join's 8s sync timeout and causing false join failures.
+  // Chunking opens via setImmediate drains the batch smoothly in 32-file slices, firing
+  // provider.on('sync') within milliseconds while keeping single-file live edits instant.
+  const openQueue = []
+  let openTimer = null
+  function drainOpenQueue() {
+    openTimer = null
+    const BATCH = 32
+    let openedCount = 0
+    while (openQueue.length && openedCount < BATCH && !stopped) {
+      const key = openQueue.shift()
+      if (fileDocs.size >= maxOpen()) {
+        openQueue.length = 0
+        break
+      }
+      if (canOpen(key) && !SKIP.has(key) && !isIgnored(key) && !fileDocs.has(key)) {
+        openFile(key)
+        openedCount++
+      }
+    }
+    if (openQueue.length && !stopped && fileDocs.size < maxOpen()) {
+      openTimer = setImmediate(drainOpenQueue)
+    }
+  }
+
+  function queueOpenFile(key) {
+    if (fileDocs.has(key) || fileDocs.size >= maxOpen() || openQueue.includes(key)) return
+    if (fs.existsSync(path.join(ROOT, key))) openQueue.unshift(key)
+    else openQueue.push(key)
+    if (!openTimer && !stopped) {
+      openTimer = setImmediate(drainOpenQueue)
+    }
+  }
+
   // Manifest changes from OTHERS: a new path -> open its file-room (its sync pulls
   // the content); a removed path -> tear down + delete the local file.
   if (syncFiles) manifest.observe((ev, txn) => {
@@ -2568,15 +2605,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key)
         log(`[${name}] <- deleted ${key}`)
       } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
-        // Same rule as the initial sweep: a path this client ignores must not cost it a
-        // socket just because somebody else registered it.
-        //
-        // AND the same BOUND. This observer is how a joining client learns the room's whole
-        // manifest — every existing path arrives here as a remote change — so capping only
-        // the sweep achieved nothing: the first measurement of this cap showed a client with
-        // cap 8 holding 30 file docs, every one of them opened right here. A path we decline
-        // to open now is not lost; it opens when something touches it.
-        if (fileDocs.size < maxOpen()) openFile(key)
+        if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
+          openFile(key)
+        } else {
+          queueOpenFile(key)
+        }
       }
     })
   })
@@ -2677,7 +2710,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         return la - lb
       })
       const cap = maxOpen()
-      for (const key of localFirst.slice(0, cap)) openFile(key)
+      for (const key of localFirst.slice(0, cap)) queueOpenFile(key)
       if (final && localFirst.length > cap) {
         log(`[${name}] ${localFirst.length} files in this room, holding ${cap} open (HIVE_MAX_OPEN_FILES). The rest sync when touched.`)
       }
@@ -3019,6 +3052,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
     stop: () => {
+      if (openTimer) { clearImmediate(openTimer); openTimer = null }
+      openQueue.length = 0
       if (scanTimer) clearTimeout(scanTimer)
       if (debounce) clearTimeout(debounce)
       if (editingClearTimer) clearTimeout(editingClearTimer)
