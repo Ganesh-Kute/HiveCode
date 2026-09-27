@@ -3286,9 +3286,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // is the pair that was missing: what the ROOM has, and what this client actually HOLDS.
       flushRoomDoc()
       const roomFiles = (() => { try { return [...manifest.keys()].filter((r) => canOpen(r)).length } catch { return 0 } })()
+      // One directory walk, not one existsSync per file: that loop cost 292 ms a call in a
+      // 1,000-file room (dev machine) and blocked the loop throughout. walk() reads a directory
+      // per call; only a path the walk did not list (not on disk yet, or ignored since it was
+      // added) is still checked on its own, so the count means exactly what it meant before.
       const held = (() => {
         let n = 0
-        try { for (const r of manifest.keys()) { if (canOpen(r) && fs.existsSync(path.join(ROOT, r))) n++ } } catch { }
+        try {
+          const onDisk = new Set(walk(ROOT).map(rel))
+          for (const r of manifest.keys()) { if (canOpen(r) && (onDisk.has(r) || fs.existsSync(path.join(ROOT, r)))) n++ }
+        } catch { }
         return n
       })()
       return {
