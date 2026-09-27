@@ -535,6 +535,66 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // value would converge on whoever released last, silently erasing the disagreement that is the
   // entire signal. Two agents reporting different verdicts for one path both survive here.
   const gateResults = doc.getMap('gate_results')
+
+  // --- BATCHED ROOM-DOC MUTATIONS (manifest + historyMeta) ---
+  // A seeder publishing N files previously sent N manifest.set() updates and N historyMeta.set()
+  // updates — 2N distinct Yjs updates on the base-room socket. On the free tier (burst 600, 60/s)
+  // this throttled the base room at file ~300.
+  // We batch pending operations into a single doc.transact() flushed on setImmediate (or synchronously on stop()).
+  const pendingManifestOps = new Map() // relPath -> 'set' | 'delete'
+  const pendingHistoryMeta = new Map() // id -> { op: 'set' | 'delete', record?: any }
+  let roomFlushTimer = null
+
+  function inManifest(relPath) {
+    if (pendingManifestOps.has(relPath)) {
+      return pendingManifestOps.get(relPath) === 'set'
+    }
+    return manifest.has(relPath)
+  }
+
+  function flushRoomDoc() {
+    if (roomFlushTimer) {
+      clearImmediate(roomFlushTimer)
+      roomFlushTimer = null
+    }
+    if (!pendingManifestOps.size && !pendingHistoryMeta.size) return
+    doc.transact(() => {
+      for (const [r, op] of pendingManifestOps) {
+        if (op === 'set') manifest.set(r, 1)
+        else manifest.delete(r)
+      }
+      pendingManifestOps.clear()
+
+      for (const [id, item] of pendingHistoryMeta) {
+        if (item.op === 'set') historyMeta.set(id, item.record)
+        else historyMeta.delete(id)
+      }
+      pendingHistoryMeta.clear()
+      pruneMeta()
+    })
+  }
+
+  function scheduleRoomFlush() {
+    if (stopped) { flushRoomDoc(); return }
+    if (!roomFlushTimer) {
+      roomFlushTimer = setImmediate(flushRoomDoc)
+    }
+  }
+
+  function queueManifestSet(relPath) {
+    pendingManifestOps.set(relPath, 'set')
+    scheduleRoomFlush()
+  }
+
+  function queueManifestDelete(relPath) {
+    if (!manifest.has(relPath)) {
+      pendingManifestOps.delete(relPath)
+    } else {
+      pendingManifestOps.set(relPath, 'delete')
+    }
+    scheduleRoomFlush()
+  }
+
   // CLAIM LEASE. Expiry is evaluated lazily on read, so the moment a lease passes its TTL the
   // next agent that tries simply gets the file -- that is what stops a stalled agent
   // deadlocking the room.
@@ -1706,14 +1766,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         `priorShadow=${priorShadow.has(relPath)} inManifest=${manifest.has(relPath)} ` +
         `preexisting=${preexisting.has(relPath)}`)
     }
-    if (docText === '' && (!manifest.has(relPath) || (disk && noHistory))) {
+    if (docText === '' && (!inManifest(relPath) || (disk && noHistory))) {
       // the relay has no usable copy of this path -> publish ours (a genuinely new file,
       // or one whose registration outlived the join that promised it)
       if (disk === null) return
       if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=genesis-publish ${relPath}`)
       fe.doc.transact(() => applyDiff(fe.text, disk))
       stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)
-      manifest.set(relPath, 1)
+      queueManifestSet(relPath)
       known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk); shadow.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
       captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'created' }); snappedBase.add(relPath)
@@ -1847,7 +1907,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
             // bases to docText means the next normal edit will merge against the room's copy,
             // which is the same recovery path the normal-merge refusal uses.
             bases.set(relPath, docText); forkBases.set(relPath, docText); shadow.set(relPath, docText)
-            if (!manifest.has(relPath)) manifest.set(relPath, 1)
+            if (!inManifest(relPath)) queueManifestSet(relPath)
             if (icrWarned.get(relPath) !== why) {
               icrWarned.set(relPath, why)
               log(`[${name}] !! HIV-P17 REFUSED a fused creation-race merge of ${relPath}: ${why}`)
@@ -1862,7 +1922,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (r0.text !== disk) writeToDisk(relPath, r0.text)
         if (r0.conflict) conflicted.add(relPath)
         bases.set(relPath, r0.text); forkBases.set(relPath, r0.text); shadow.set(relPath, r0.text)
-        if (!manifest.has(relPath)) manifest.set(relPath, 1)
+        if (!inManifest(relPath)) queueManifestSet(relPath)
         try { say(`⚠ ${relPath} was created by two participants at once — both versions were merged${r0.conflict ? ', and CONFLICT markers need resolving' : ''}.`) } catch { }
         return
       }
@@ -1888,7 +1948,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (rj.text !== disk) writeToDisk(relPath, rj.text)
         if (rj.conflict) conflicted.add(relPath)
         bases.set(relPath, rj.text); forkBases.set(relPath, rj.text); shadow.set(relPath, rj.text)
-        if (!manifest.has(relPath)) manifest.set(relPath, 1)
+        if (!inManifest(relPath)) queueManifestSet(relPath)
         try { say(`⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`) } catch { }
         return
       }
@@ -2119,17 +2179,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (let i = 0; i < autos.length - SNAP_KEEP; i++) { snap.delete(autos[i].id); pruned.push(autos[i].id) }
     })
     if (kind === 'auto') lastSnapAt.set(relPath, now)
-    doc.transact(() => {
-      historyMeta.set(id, { id, file: relPath, by: byWho, at, ts: now, churn, kind, label }) // metadata only — no content
-      for (const pid of pruned) historyMeta.delete(pid) // keep the index in step with evicted content
-    })
-    pruneMeta()
+    pendingHistoryMeta.set(id, { op: 'set', record: { id, file: relPath, by: byWho, at, ts: now, churn, kind, label } })
+    for (const pid of pruned) pendingHistoryMeta.set(pid, { op: 'delete' })
+    scheduleRoomFlush()
     return id
   }
 
   // Find which file a restore-point id belongs to (via the index, else by scanning
   // open file docs as a fallback).
   function fileOfSnap(id) {
+    flushRoomDoc()
     const m = historyMeta.get(id)
     if (m && m.file) return m.file
     for (const [rp, fe] of fileDocs) if (fe.snap.has(id)) return rp
@@ -2177,6 +2236,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // For the dangerous case — an agent rewriting files — that's exactly right.
   function revertAuthor(who, sinceTs = 0, by = name) {
     if (!who) return { error: 'no author given' }
+    flushRoomDoc()
     const earliest = new Map() // file -> earliest meta authored by `who` in the window
     for (const m of historyMeta.values()) {
       if (m.by !== who || (m.ts || 0) < sinceTs) continue
@@ -2192,6 +2252,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   // The timeline (newest first), read from the parent index. Optional filters.
   function listHistory({ file = null, by = null, limit = 200 } = {}) {
+    flushRoomDoc()
     return [...historyMeta.values()]
       .filter((e) => (!file || e.file === file) && (!by || e.by === by))
       .sort((a, b) => (b.ts || 0) - (a.ts || 0))
@@ -2540,16 +2601,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (SKIP.has(r)) continue
       let mt
       try { mt = fs.statSync(full).mtimeMs } catch { continue }
-      if (mtimes.get(r) === mt && manifest.has(r)) continue
+      if (mtimes.get(r) === mt && inManifest(r)) continue
       if (readText(full) === null) continue
       mtimes.set(r, mt)
       reconcile(r, 'local')
       changes++
     }
-    const removed = [...known].filter((r) => !diskRel.has(r) && manifest.has(r))
+    const removed = [...known].filter((r) => !diskRel.has(r) && inManifest(r))
     if (removed.length) {
       changes += removed.length
-      doc.transact(() => { for (const r of removed) manifest.delete(r) })
+      for (const r of removed) queueManifestDelete(r)
+      flushRoomDoc()
       for (const r of removed) {
         closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
       }
@@ -2580,7 +2642,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // STILL WANTED? A key can wait here while a peer deletes the file. Its document still exists on
       // the relay, so opening it would bring the deleted file back to this disk and publish it again
       // for everyone. Wanted = still in the room, or on this disk (a new local file not yet published).
-      const wanted = manifest.has(key) || fs.existsSync(path.join(ROOT, key))
+      const wanted = inManifest(key) || fs.existsSync(path.join(ROOT, key))
       if (wanted && canOpen(key) && !SKIP.has(key) && !isIgnored(key) && !fileDocs.has(key)) {
         openFile(key)
         openedCount++
@@ -2606,6 +2668,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (txn.local) return
     ev.changes.keys.forEach((change, key) => {
       if (change.action === 'delete') {
+        pendingManifestOps.delete(key)
         closeFile(key)
         { const qi = openQueue.indexOf(key); if (qi >= 0) openQueue.splice(qi, 1) } // deleted while queued
         try { fs.rmSync(path.join(ROOT, key)) } catch { }
@@ -3027,6 +3090,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // So the trade stays and the reporting changes. `files` keeps meaning open docs, because
       // tests/open-file-cap-test.mjs:71 pins it as the proof the cap is respected. What is added
       // is the pair that was missing: what the ROOM has, and what this client actually HOLDS.
+      flushRoomDoc()
       const roomFiles = (() => { try { return [...manifest.keys()].filter((r) => canOpen(r)).length } catch { return 0 } })()
       const held = (() => {
         let n = 0
@@ -3059,13 +3123,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
     stop: () => {
+      stopped = true
+      try { flushRoomDoc() } catch { }
       if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
       openQueue.length = 0
       if (scanTimer) clearTimeout(scanTimer)
       if (debounce) clearTimeout(debounce)
       if (editingClearTimer) clearTimeout(editingClearTimer)
       try { watcher && watcher.close() } catch { }
-      stopped = true
       // The shared socket first: closing it ends every channel at once on the relay, instead of
       // one CLOSE frame per file down a socket that is about to go anyway.
       try { fileTransport.stop() } catch { }
