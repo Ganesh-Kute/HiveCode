@@ -20,7 +20,7 @@ console.log('\n=== TOKEN BUDGET ===')
 const r = spawnSync(process.execPath, [path.join(ROOT, 'bench', 'token-cost.mjs'), '--json'], { cwd: ROOT, encoding: 'utf8', timeout: 240000, windowsHide: true })
 let j = null
 try { j = JSON.parse(String(r.stdout || '').trim().split('\n').pop()) } catch { }
-T('the bench ran and measured every scenario (anti-vacuity)', !!j && j.rows.length >= 28 && ['every turn', 'join', 'ask/answer', 'idle', 'busy room', 'long reports'].every((s) => j.byScenario[s] > 0), j ? `${j.rows.length} rows` : String(r.stderr || '').slice(0, 300))
+T('the bench ran and measured every scenario (anti-vacuity)', !!j && j.rows.length >= 29 && ['every turn', 'join', 'ask/answer', 'idle', 'busy room', 'long reports', 'new project'].every((s) => j.byScenario[s] > 0), j ? `${j.rows.length} rows` : String(r.stderr || '').slice(0, 300))
 if (j) {
   const tok = (call) => { const x = j.rows.find((row) => row.call === call); return x ? x.tokens : Infinity }
   const within = (label, call, max) => T(`${label} <= ${max} tok`, tok(call) <= max, `${tok(call)} tok`)
@@ -31,6 +31,7 @@ if (j) {
   within("the asker's check after an answer (no false 'still waiting')", 'hive_check (the asker)', 60)
   within('an idle check', 'hive_check (nothing new)', 40)
   within('catching up on 10 long reports', 'hive_read_chat (10 long reports)', 1000)
+  within('ten claims of files not in the room yet (explained once, then one line)', 'hive_claim x10 (files not in the room yet)', 750)
   T('...and full:true still returns them whole (the cut is a default, not a loss)', tok('  same, full:true (the old behaviour)') > 2 * tok('hive_read_chat (10 long reports)'))
 }
 console.log(`\n=== TOKEN BUDGET: ${pass} passed, ${fail} failed ===`)

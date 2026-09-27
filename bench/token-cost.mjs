@@ -121,6 +121,11 @@ await sleep(1500)
 note('long reports', 'hive_read_chat (10 long reports)', await A.tool('hive_read_chat', { limit: 10 }))
 note('long reports', '  same, full:true (the old behaviour)', await A.tool('hive_read_chat', { limit: 10, full: true }))
 
+// --- a new project: one agent claims ten files nobody has created yet
+let claims = ''
+for (let i = 1; i <= 10; i++) claims += (await A.tool('hive_claim', { region: 'src/new/mod' + i + '.js', intent: 'scaffold' })) + '\n'
+note('new project', 'hive_claim x10 (files not in the room yet)', claims)
+
 for (const a of [A, B]) { try { a.p.stdin.end() } catch { } }
 setTimeout(() => { for (const a of [A, B]) { try { a.p.kill() } catch { } } relay.kill(); try { fs.rmSync(base, { recursive: true, force: true }) } catch { } }, 800)
 

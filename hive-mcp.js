@@ -1295,11 +1295,12 @@ Nothing was claimed. Put the path inside the room's sync scope, or pick one that
           try { fetched = await requireSession().hive.fetch(region) } catch { }
           const head = `claimed ${region} — it's yours.`
           if (fetched && fetched.notInRoom) {
-            return text(`${head}
-
-!! ${region} IS NOT IN THIS ROOM. No client has ever published it, so nothing will fetch it and it is NOT simply outside your working set. If you create it now you are creating a new file, not editing an existing one — which is correct only if that is what you intend. If you expected content here, the path is probably outside the room's sync scope: check that first, then ask whoever holds the file to write it into their synced folder.
-
-Edit it, then call hive_release.`)
+            // Explained once per session: an agent starting a new project claims one new file after
+            // another, and the paragraph cost ~120 tokens each time. The warning itself stays.
+            const why = firstTime('notInRoom')
+              ? `!! ${region} IS NOT IN THIS ROOM. No client has ever published it, so nothing will fetch it and it is NOT simply outside your working set. If you create it now you are creating a new file, not editing an existing one — which is correct only if that is what you intend. If you expected content here, the path is probably outside the room's sync scope: check that first, then ask whoever holds the file to write it into their synced folder.`
+              : `!! ${region} IS NOT IN THIS ROOM yet: claiming it means creating a new file. If you expected content here, the path is outside the room's sync scope.`
+            return text(`${head}\n\n${why}\n\nEdit it, then call hive_release.`)
           }
           if (fetched && fetched.ok === false) {
             return text(`${head}
