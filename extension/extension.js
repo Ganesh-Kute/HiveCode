@@ -1122,6 +1122,137 @@ function start(root, room, relay, linkToken) {
     const total = Math.max(b.length, n.length)
     return { isRewrite: total > 0 && churn >= 4 && churn / total >= 0.5, changedLines: churn, totalLines: total, symbols: symbolsIn(r.newLines.join('\n')) }
   }
+  // ── A REAL DIFF3 (27 Sep 2026) ─────────────────────────────────────────────────────────────────
+  // changedRange() is the span from a side's FIRST changed line to its LAST. That is the right
+  // answer to "how much changed" (summarizeChange) and the wrong one for a merge: two one-line edits
+  // 500 lines apart are one 500-line change to it, so the other side touching anything in between
+  // turned the whole span into a single conflict. Measured on a real cherry-pick of sync.js (a
+  // 5-line conflict to git's diff3): one conflict block of 2,140 lines. The same copy is merge3.js's
+  // "git-style" floor in icr-merge and extension.js's, and tests/diff3-test.mjs pins all three.
+  //
+  // lineHunks: Myers' O(ND) diff on what lies between the common prefix and suffix, each separate
+  // edit as its own hunk [baseStart, baseEnd, sideStart, sideEnd). Past `maxD` edits it returns null
+  // and merge3 keeps the one-range merge, which is coarse but never loses a line.
+  function lineHunks(a, b, maxD = 1000) {
+    let p = 0
+    while (p < a.length && p < b.length && a[p] === b[p]) p++
+    let s = 0
+    while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++
+    const n = a.length - p - s, m = b.length - p - s
+    if (n === 0 && m === 0) return []
+    if (n === 0 || m === 0) return [[p, p + n, p, p + m]]
+    const max = Math.min(n + m, maxD)
+    const off = max + 1
+    const v = new Int32Array(2 * max + 3) // v[k + off]: furthest x reached on diagonal k
+    const trace = []                       // v's window [-d, d] as it stood before step d
+    let found = -1
+    for (let d = 0; d <= max && found < 0; d++) {
+      trace.push(v.slice(off - d, off + d + 1))
+      for (let k = -d; k <= d; k += 2) {
+        let x = (k === -d || (k !== d && v[off + k - 1] < v[off + k + 1])) ? v[off + k + 1] : v[off + k - 1] + 1
+        let y = x - k
+        while (x < n && y < m && a[p + x] === b[p + y]) { x++; y++ }
+        v[off + k] = x
+        if (x >= n && y >= m) { found = d; break }
+      }
+    }
+    if (found < 0) return null
+    // Walk back from (n, m): each step d undoes one insertion or deletion, then its snake.
+    const steps = [] // [x0, y0, x1, y1], one edit each, collected last-first
+    let x = n, y = m
+    for (let d = found; d > 0; d--) {
+      const w = trace[d], at = (k) => w[k + d]
+      const k = x - y
+      const down = k === -d || (k !== d && at(k - 1) < at(k + 1)) // true: came by an insertion from b
+      const pk = down ? k + 1 : k - 1
+      const px = at(pk), py = px - pk
+      steps.push(down ? [px, py, px, py + 1] : [px, py, px + 1, py])
+      x = px; y = py
+    }
+    steps.reverse()
+    const hunks = []
+    for (const [x0, y0, x1, y1] of steps) {
+      const last = hunks[hunks.length - 1]
+      if (last && last[1] === p + x0 && last[3] === p + y0) { last[1] = p + x1; last[3] = p + y1 }
+      else hunks.push([p + x0, p + x1, p + y0, p + y1])
+    }
+    return hunks
+  }
+
+  // One side's version of base lines [rs, re) with its hunks inside that range applied.
+  function sideOfRegion(b, rs, re, hunks, src) {
+    const out = []
+    let cur = rs
+    for (const [bs, be, os, oe] of hunks) {
+      for (let i = cur; i < bs; i++) out.push(b[i])
+      for (let i = os; i < oe; i++) out.push(src[i])
+      cur = be
+    }
+    for (let i = cur; i < re; i++) out.push(b[i])
+    return out
+  }
+
+  // Where else a hunk could sit and mean the same edit: a pure insertion or deletion inside a run of
+  // identical lines ("}" "}" "}") can slide along it, and which position the diff chose is an
+  // accident of the algorithm. Two sides' edits count as touching if they COULD touch, so a merge
+  // that hinges on that accident conflicts instead of guessing (git reaches the same answer by
+  // sliding every hunk to one canonical end first). Returns [lo, hi] in base lines.
+  function slideSpan(b, [bs, be, os, oe], src) {
+    let lo = bs, hi = be
+    if (os === oe && be > bs) {                 // pure deletion of b[bs, be)
+      let s = bs, e = be
+      while (s > 0 && b[s - 1] === b[e - 1]) { s--; e-- }
+      lo = s
+      s = bs; e = be
+      while (e < b.length && b[s] === b[e]) { s++; e++ }
+      hi = e
+    } else if (bs === be && oe > os) {          // pure insertion at bs of src[os, oe)
+      const n = oe - os
+      let k = bs, r = 0 // r: how far the inserted block has rotated
+      while (k > 0 && b[k - 1] === src[os + ((n - 1 - r) % n + n) % n]) { k--; r++ }
+      lo = k
+      k = bs; r = 0
+      while (k < b.length && b[k] === src[os + (r % n)]) { k++; r++ }
+      hi = k
+    }
+    return [lo, hi]
+  }
+
+  // diff3 over line arrays: hunks from the two sides that overlap OR TOUCH form one region (touching
+  // changes conflict, as in git: two edits with no unchanged line between them are one decision). A
+  // region only one side changed takes that side; both sides making the same change takes it once;
+  // anything else is a conflict of THAT region only. Null when either diff is past the work bound.
+  function diff3Lines(b, mine, theirs) {
+    const hm = lineHunks(b, mine), ht = lineHunks(b, theirs)
+    if (!hm || !ht) return null
+    const sm = hm.map((h) => slideSpan(b, h, mine)), st = ht.map((h) => slideSpan(b, h, theirs))
+    const out = []
+    let conflict = false, pos = 0, i = 0, j = 0
+    while (i < hm.length || j < ht.length) {
+      const fromMine = j >= ht.length || (i < hm.length && hm[i][0] <= ht[j][0])
+      const first = fromMine ? hm[i] : ht[j]
+      let reach = fromMine ? sm[i++][1] : st[j++][1] // how far this region's edits could extend
+      const rm = fromMine ? [first] : [], rt = fromMine ? [] : [first]
+      const rs = first[0]
+      let re = first[1]
+      for (;;) {
+        if (i < hm.length && sm[i][0] <= reach) { re = Math.max(re, hm[i][1]); reach = Math.max(reach, sm[i][1]); rm.push(hm[i++]); continue }
+        if (j < ht.length && st[j][0] <= reach) { re = Math.max(re, ht[j][1]); reach = Math.max(reach, st[j][1]); rt.push(ht[j++]); continue }
+        break
+      }
+      for (let x = pos; x < rs; x++) out.push(b[x])
+      if (!rt.length) out.push(...sideOfRegion(b, rs, re, rm, mine))
+      else if (!rm.length) out.push(...sideOfRegion(b, rs, re, rt, theirs))
+      else {
+        const vm = sideOfRegion(b, rs, re, rm, mine), vt = sideOfRegion(b, rs, re, rt, theirs)
+        if (vm.length === vt.length && vm.every((l, k) => l === vt[k])) out.push(...vm)
+        else { conflict = true; out.push('<<<<<<< local (yours)', ...vm, '=======', ...vt, '>>>>>>> incoming (theirs)') }
+      }
+      pos = re
+    }
+    for (let x = pos; x < b.length; x++) out.push(b[x])
+    return { lines: out, conflict }
+  }
   // 3-way merge: disjoint edits merge cleanly; overlapping edits get git-style
   // markers so BOTH versions survive (nobody's work is silently lost).
   function merge3(base, mine, theirs) {
@@ -1146,6 +1277,9 @@ function start(root, room, relay, linkToken) {
 
     base = cleanBase; mine = cleanMine; theirs = cleanTheirs
     const b = base.split('\n')
+    const d3 = diff3Lines(b, mine.split('\n'), theirs.split('\n'))
+    if (d3) return { text: d3.lines.join('\n'), conflict: d3.conflict }
+    // Past diff3's work bound (two sides that share almost nothing): one range per side.
     const mr = changedRange(b, mine.split('\n'))
     const tr = changedRange(b, theirs.split('\n'))
     if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
