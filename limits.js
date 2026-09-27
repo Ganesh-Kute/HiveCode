@@ -148,6 +148,8 @@ export const LIMITS = {
   // can take more than half the relay.
   maxChannelsTotal: num('HIVE_MAX_CHANNELS_TOTAL', 8192),
   maxChannelsPerSocket: num('HIVE_MUX_MAX_DOCS', 4096),
+  // How many channel OPENs one participant's socket gets per event-loop turn (relay-mux.js).
+  opensPerTurn: num('HIVE_MUX_OPENS_PER_TURN', 64),
   // UNUSED since 27 Sep 2026, kept so a relay configured with it still starts. It was how long
   // a client stayed refused after tripping a rate limit; a frame over the rate now waits and
   // drains at the tier's rate instead (attachRateLimit), so there is nothing to cool off from.

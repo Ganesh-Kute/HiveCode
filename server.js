@@ -627,6 +627,36 @@ function audit(event, fields) {
   else console.log('[relay][audit]', line)
 }
 
+// ONE LINE PER PARTICIPANT PER BURST, NOT ONE PER FILE (27 Sep 2026). A mux channel is a file, so a
+// 1,000-file join logged 1,000 'connect' lines, each a synchronous console write: in a relay CPU
+// profile of that join, 7.7 s of the main thread -- a third of it -- was console.log from here,
+// and every room on the relay waited behind it. Channel opens and closes are now tallied per
+// (workspace, participant) and written as one 'channels' line 2 s after a burst begins: counts,
+// three sample paths, and the workspace census as it stood last. An operator who set
+// HIVE_AUDIT_FILE asked for a full trail, so there every channel still gets its own line.
+const channelTallies = new Map() // `${baseRoom}\0${name}` -> tally
+function auditChannel(kind, baseRoom, identity, file, census) {
+  if (AUDIT_FILE) return audit(kind === 'opened' ? 'connect' : 'disconnect', { baseRoom, file, identity, via: 'mux', ...census })
+  const k = `${baseRoom}\u0000${(identity && identity.name) || 'anon'}`
+  let t = channelTallies.get(k)
+  if (!t) {
+    t = { baseRoom, identity, opened: 0, closed: 0, files: [], census: null, timer: null }
+    channelTallies.set(k, t)
+    t.timer = setTimeout(() => flushChannelTally(k), 2000)
+    if (t.timer.unref) t.timer.unref()
+  }
+  t[kind]++
+  if (file && t.files.length < 3) t.files.push(file)
+  t.census = census
+}
+function flushChannelTally(k) {
+  const t = channelTallies.get(k)
+  if (!t) return
+  channelTallies.delete(k)
+  clearTimeout(t.timer)
+  audit('channels', { baseRoom: t.baseRoom, identity: t.identity, opened: t.opened, closed: t.closed, files: t.files, via: 'mux', ...t.census })
+}
+
 // Per-room revocation, set live by the owner via POST /__hive/revoke. Persisted to
 // a JSON file (HIVE_ROOM_REVOKED_FILE, default ./hive-room-revoked.json) so a
 // revoked agent stays cut off across a relay restart — not just for the session.
@@ -1288,7 +1318,8 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
     }
     leaveWorkspace(baseRoom, agentId)
     const c = census(baseRoom)
-    audit('disconnect', {
+    if (channel) auditChannel('closed', baseRoom, auth.identity, pathOf(room), { stillInWorkspace: c.peers, workspace: c })
+    else audit('disconnect', {
       room,
       baseRoom,
       file: pathOf(room),
@@ -1297,12 +1328,12 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
       stillInRoom: (roomAgents.get(room) || new Set()).size,
       stillInWorkspace: c.peers,
       workspace: c,
-      ...(channel ? { via: 'mux' } : {}),
     })
   })
 
   const c = census(baseRoom)
-  audit('connect', {
+  if (channel) auditChannel('opened', baseRoom, auth.identity, pathOf(room), { inWorkspace: c.peers, workspace: c })
+  else audit('connect', {
     room,
     // Split out so the log is greppable without anyone having to know that the room
     // name is two values joined by a control character.
@@ -1316,7 +1347,6 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
     inRoom: (roomAgents.get(room) || new Set()).size,
     inWorkspace: c.peers,
     workspace: c,
-    ...(channel ? { via: 'mux' } : {}),
   })
   wss.emit('connection', conn, req)
 }
@@ -1351,7 +1381,7 @@ async function upgradeMux(req, socket, head, q) {
     serveMux(ws, {
       baseRoom,
       audit,
-      limits: { maxChannelsPerSocket: LIMITS.maxChannelsPerSocket },
+      limits: { maxChannelsPerSocket: LIMITS.maxChannelsPerSocket, opensPerTurn: LIMITS.opensPerTurn },
       openChannel: (id, docName, session) => {
         // Only files of THIS socket's room: a grant for one room must not open another's.
         // The name is used EXACTLY as sent. A per-file client puts it raw into a URL, where '#',
@@ -1395,10 +1425,13 @@ wss.on('connection', (conn, req) => {
   // an oversized payload) -- and nothing else catches it, so one bad client took down the
   // relay and every room on it. The socket still closes; the process no longer dies.
   if (!conn.isVirtual) conn.on('error', (e) => { try { audit('socket-error', { room, reason: e && e.message }) } catch { } })
-  // One line per file is unavoidable (a room IS a file), but it should at least say
-  // what is being opened and by how many people -- the previous version printed the
-  // raw joined room name, control character and all, and no occupancy at all.
-  if (conn._hive) {
+  // One line per file, but it should at least say what is being opened and by how many people
+  // -- the previous version printed the raw joined room name, control character and all, and
+  // no occupancy at all. Not for a mux channel: those are one 'channels' line per burst
+  // (auditChannel), because a 1,000-file join is otherwise 1,000 synchronous console writes.
+  if (conn.isVirtual) {
+    // counted by auditChannel
+  } else if (conn._hive) {
     const c = census(baseRoomOf(room))
     const f = pathOf(room)
     console.log(`[relay] ${conn._hive.identity.name} (${conn._hive.role}) opened ${f ? `"${f}"` : 'the workspace'} in ${baseRoomOf(room)} -- ${c.peers} in workspace [${c.human}h/${c.ai}ai/${c.unattested}?]`)
@@ -1460,6 +1493,7 @@ server.listen(PORT, () => {
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     meter.stop()
+    for (const k of [...channelTallies.keys()]) flushChannelTally(k)
     Promise.race([Promise.all([meter.flush(), persistFlushAll()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => process.exit(0))
   })
 }
