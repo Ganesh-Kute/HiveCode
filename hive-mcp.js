@@ -405,6 +405,9 @@ was not written. Fix the relay and call hive_join again.`
   return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : ''}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
+// Connected-or-not without status()'s file counts, which stat every file in the room. Falls back
+// to status() for a hive that predates connection() (a test double, an older engine).
+const connectionOf = (hive) => (typeof hive.connection === 'function' ? hive.connection() : hive.status())
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }
 /** The read cursor for this participant. Lazily built if a session predates it. */
 function mailbox() {
@@ -762,7 +765,7 @@ async function dispatch(req) {
         // literal sense: the bytes are in a local Yjs doc, the relay has never seen them, and the
         // word the agent reads is the same word it reads on success. status().connected was
         // right there and free the whole time.
-        const sendConn = (() => { try { return requireSession().hive.status() } catch { return null } })()
+        const sendConn = (() => { try { return connectionOf(requireSession().hive) } catch { return null } })()
         const sendWarn = RC.sendWarning({ connected: !sendConn || !!sendConn.connected })
         const stamp = (t) => (sendWarn ? `${sendWarn}\n\n${t}` : t)
         const raw = String(args.text || '')
@@ -1073,7 +1076,7 @@ async function dispatch(req) {
         // provider reconnects on its own with backoff, so the correct action is to do
         // nothing; the agent just has to be told that, in the one place it is looking.
         const conn = (() => {
-          try { return requireSession().hive.status() } catch { return null }
+          try { return connectionOf(requireSession().hive) } catch { return null }
         })()
         const connStr = (conn && !conn.connected)
           ? `\n[CONNECTION] ${conn.connecting ? 'reconnecting' : 'offline'} — this heals itself, the client retries automatically. Do NOT call hive_join; that tears down the session and can overwrite your local edits. Keep calling hive_wait.\n`
@@ -1128,7 +1131,7 @@ async function dispatch(req) {
       }
       case 'hive_delivered': {
         const s2 = requireSession()
-        const conn = (() => { try { return s2.hive.status() } catch { return null } })()
+        const conn = (() => { try { return connectionOf(s2.hive) } catch { return null } })()
         const connected = !conn || !!conn.connected
         const here = new Set(s2.hive.members().map((m) => String(m.name).toLowerCase()))
         const rs = RC.receipts({

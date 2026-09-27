@@ -1311,12 +1311,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
     e = { doc: fdoc, provider: fprovider, text, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
     fileDocs.set(relPath, e)
-    if (!createdTimes.has(relPath)) {
-      try {
-        const full = path.join(ROOT, relPath)
-        if (fs.existsSync(full)) createdTimes.set(relPath, fs.statSync(full).mtimeMs)
-      } catch { }
-    }
+    // From the mtime scan() already took, not two more syscalls per open: a 1,000-file join opens
+    // 1,000 files, and fileCreationTs() still falls back to a stat for any file this missed.
+    if (!createdTimes.has(relPath) && mtimes.has(relPath)) createdTimes.set(relPath, mtimes.get(relPath))
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
     // A divergent receipt can arrive slightly after (or before) the fused content — so
     // re-run the fork check whenever the provenance ledger changes too, not only on edits.
@@ -2998,9 +2995,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fileTransport.ready.then(() => setTimeout(() => {
       try {
         const want = [...manifest.keys()].filter((r) => canOpen(r) && !SKIP.has(r))
+        if (want.length <= maxOpen() || stopped) return // the bound leaves nothing out: no need to stat every file
         const have = want.filter((r) => fs.existsSync(path.join(ROOT, r)))
         const short = want.length - have.length
-        if (short <= 0 || want.length <= maxOpen() || stopped) return
+        if (short <= 0) return
         log(`[${name}] !! THIS FOLDER IS INCOMPLETE ON PURPOSE. The room has ${want.length} files; ` +
           `${have.length} are on disk here and ${short} are NOT. The working set is bounded to ` +
           `${maxOpen()} open files (HIVE_MAX_OPEN_FILES), because ` +
@@ -3308,6 +3306,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
+    // Just the two booleans hive_say, hive_check/hive_wait and hive_delivered need on every call.
+    // status() also counts filesHeld, one existsSync per file in the room -- 1,000 on a 1,000-file
+    // room, every call; in one profile 0.8 s of a 12 s publish went to polling status() alone.
+    connection: () => ({ connected: !!provider.wsconnected, connecting: !!provider.wsconnecting }),
     _openTurns: () => openTurns,
     _scanCount: () => scanCount,
     stop: () => {
