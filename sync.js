@@ -2565,6 +2565,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // provider.on('sync') within milliseconds while keeping single-file live edits instant.
   const openQueue = []
   let openTimer = null
+  // Test-only: hold the first drain this long, so a test can land a peer's delete while a key waits.
+  const OPEN_DELAY_MS = Number(process.env.HIVE_TEST_OPEN_DELAY_MS) || 0
   function drainOpenQueue() {
     openTimer = null
     const BATCH = 32
@@ -2575,7 +2577,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         openQueue.length = 0
         break
       }
-      if (canOpen(key) && !SKIP.has(key) && !isIgnored(key) && !fileDocs.has(key)) {
+      // STILL WANTED? A key can wait here while a peer deletes the file. Its document still exists on
+      // the relay, so opening it would bring the deleted file back to this disk and publish it again
+      // for everyone. Wanted = still in the room, or on this disk (a new local file not yet published).
+      const wanted = manifest.has(key) || fs.existsSync(path.join(ROOT, key))
+      if (wanted && canOpen(key) && !SKIP.has(key) && !isIgnored(key) && !fileDocs.has(key)) {
         openFile(key)
         openedCount++
       }
@@ -2590,7 +2596,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (fs.existsSync(path.join(ROOT, key))) openQueue.unshift(key)
     else openQueue.push(key)
     if (!openTimer && !stopped) {
-      openTimer = setImmediate(drainOpenQueue)
+      openTimer = OPEN_DELAY_MS ? setTimeout(drainOpenQueue, OPEN_DELAY_MS) : setImmediate(drainOpenQueue)
     }
   }
 
@@ -2601,6 +2607,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     ev.changes.keys.forEach((change, key) => {
       if (change.action === 'delete') {
         closeFile(key)
+        { const qi = openQueue.indexOf(key); if (qi >= 0) openQueue.splice(qi, 1) } // deleted while queued
         try { fs.rmSync(path.join(ROOT, key)) } catch { }
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key)
         log(`[${name}] <- deleted ${key}`)
@@ -3052,7 +3059,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
     stop: () => {
-      if (openTimer) { clearImmediate(openTimer); openTimer = null }
+      if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
       openQueue.length = 0
       if (scanTimer) clearTimeout(scanTimer)
       if (debounce) clearTimeout(debounce)
