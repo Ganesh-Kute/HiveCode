@@ -235,18 +235,30 @@ export function unansweredFor(messages, me) {
   const AUTO = /^(⚠ MERGE CONFLICT|✓ conflict|↓ )/ // posted by the sync client, not by a person
 
   const owed = new Map()   // sender (lowercased) -> the message I owe a reply to
+  // TURNS, NOT MENTIONS (27 Sep 2026). Every mention used to open a debt, so an ANSWER opened one
+  // against the person who asked: Ada asks Bo, Bo says "on it", and Ada is told on every hive_check
+  // that she owes Bo a reply -- which she pays ("thanks"), which opens one against Bo. A politeness
+  // loop, paid in tokens and chat by both. So it goes by whose turn it is between two people: a
+  // message from someone I spoke to last is their reply, and opens a debt only if it asks something
+  // back or is urgent. Anything else still counts, question mark or not -- "can you take it" has none.
+  const turn = new Map()   // other person (lowercased) -> 'me' when I spoke to them last, else 'them'
+  const asks = (t) => /\?(\s|$)/.test(String(t || '')) || priorityOf(t) === 'stop'
   for (const m of list) {
     if (!m || m.kind === 'system' || AUTO.test(String(m.text || ''))) continue
     if (low(m.by) === mine) {
       // Anything I name is discharged. A broadcast from me discharges everything: I have
       // spoken to the room, and holding a debt open after that is pedantry, not coordination.
       if (mentionsAll(m.text)) { owed.clear(); continue }
-      for (const n of mentionedNames(m.text)) owed.delete(low(n))
+      for (const n of mentionedNames(m.text)) { const k = low(n); if (k === mine) continue; owed.delete(k); turn.set(k, 'me') }
       continue
     }
     // Directly addressed, not merely broadcast to.
     if (mentionsAll(m.text)) continue
-    if (mentionsName(m.text, me)) owed.set(low(m.by), { from: m.by, at: m.at || '', text: m.text || '' })
+    if (mentionsName(m.text, me)) {
+      const k = low(m.by)
+      if (turn.get(k) !== 'me' || asks(m.text)) owed.set(k, { from: m.by, at: m.at || '', text: m.text || '' })
+      turn.set(k, 'them')
+    }
   }
   return [...owed.values()]
 }

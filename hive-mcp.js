@@ -542,6 +542,12 @@ function waitForWork(timeoutMs, opts = {}) {
   })
 }
 
+// SAID ONCE, THEN SHORT (27 Sep 2026). An explanation is worth its tokens the first time an agent
+// meets a rule in a session and nothing after that: results stay in the transcript, so a paragraph
+// repeated on every call is paid again on every later turn. The warning itself always stays.
+const explained = new Set()
+const firstTime = (key) => (explained.has(key) ? false : (explained.add(key), true))
+
 const TOOLS = [
   { name: 'hive_join', description: 'Join a Hivecode room, or host a new one, for a folder. Uses the join link if given, else <dir>/.hive.json, else hosts. Returns the room details and the rules you must follow.',
     inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' } } } },
@@ -907,13 +913,17 @@ async function dispatch(req) {
           const opened = [...openedActive, ...openedAway]
 
           if (opened.length) {
-            obStr += `\n\nYOU ARE OWED AN ANSWER — ${opened.map((o) => `${o.id} (${o.to})`).join(', ')}\n` +
-              `This stays open until YOU call hive_answered. The agent you asked cannot close it, and ` +
-              `a reply does not close it either — you decide whether you were actually answered. If it ` +
-              `is still open in ${Math.round(dueMs / 60000)} min you will be reminded on your next hive_wait.`
+            const ids = opened.map((o) => `${o.id} (${o.to})`).join(', ')
+            obStr += firstTime('obligation')
+              ? `\n\nYOU ARE OWED AN ANSWER — ${ids}\n` +
+                `This stays open until YOU call hive_answered. The agent you asked cannot close it, and ` +
+                `a reply does not close it either — you decide whether you were actually answered. If it ` +
+                `is still open in ${Math.round(dueMs / 60000)} min you will be reminded on your next hive_wait.`
+              : `\n\nYOU ARE OWED AN ANSWER — ${ids}. Close it with hive_answered once answered; reminder in ${Math.round(dueMs / 60000)} min.`
           }
         }
-        return text(stamp(`sent to ${to}: ${body}`) + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
+        // The sender wrote it: echo enough to prove what went out, not all of it again.
+        return text(stamp(`sent to ${to} (${body.length} chars): ${body.length > 90 ? body.slice(0, 90) + '…' : body}`) + (notes.length ? '\n\n' + notes.join('\n') : '') + obStr)
       }
       case 'hive_busy': {
         const s = requireSession()
@@ -962,9 +972,9 @@ async function dispatch(req) {
         // Derived from the log, so it needs no state and cannot drift.
         const owed = unansweredFor(all, s.name)
         const owedLine = owed.length
-          ? `\n\n⏳ STILL WAITING ON A REPLY FROM YOU: ${owed.map((o) => '@' + o.from).join(', ')}. ` +
-            `Answer with hive_say (name them), even if the answer is "not yet, I am on X" — ` +
-            `silence is the one thing they cannot act on.`
+          ? `\n\n⏳ STILL WAITING ON A REPLY FROM YOU: ${owed.map((o) => '@' + o.from).join(', ')}.` +
+            (firstTime('owed') ? ` Answer with hive_say (name them), even if the answer is "not yet, I am on X" — ` +
+            `silence is the one thing they cannot act on.` : '')
           : ''
         if (!got.unreadCount && !tasks.length) {
           return text(owed.length
