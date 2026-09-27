@@ -95,6 +95,7 @@
     "test:extension": "node tests/extension-parity-test.mjs && node tests/extension-privacy-parity-test.mjs",
     "test:ceiling": "node tests/refused-visible-test.mjs && node tests/ceiling-no-data-loss-test.mjs",
     "test:mux": "node tests/mux-test.mjs",
+    "test:live": "node scripts/live-stranger.mjs",
     "test:identity": "node tests/identity-audit-test.mjs",
     "test:billing": "node tests/billing-test.mjs",
     "test:license": "node tests/hive-license-test.js",
