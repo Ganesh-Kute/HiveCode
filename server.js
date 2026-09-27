@@ -59,11 +59,21 @@ import * as decoding from 'lib0/decoding'
 // signature checks). If a flood reaches them, the limits have already failed. This wrapper
 // runs before y-websocket's handler is registered, so a refused frame costs a length check.
 //
-// A refusal is ANNOUNCED to the offending client over the room chat and never silently
-// dropped -- an agent whose writes vanish retries forever and reads as a broken product,
-// whereas one told `Q432 over the message rate` can back off. Reads are never throttled.
+// OVER THE RATE, A FRAME WAITS. IT IS NEVER DROPPED (27 Sep 2026). This used to drop it, and a
+// dropped Yjs update is not one lost message but a GAP: every later update from that client
+// builds on it, so the relay parks them all as pending and the document silently stops moving
+// for that client until it reconnects. A 1,000-file first publish on the free tier froze the
+// room's file list at 305 entries that way, with every socket reporting healthy. Now the frame
+// waits in order, the connection stops being READ (so TCP pushes back on the sender), and the
+// queue drains at the tier's rate: the same budget, nothing lost. What can pile up is what
+// arrived between pause() and the socket actually stopping -- about one read -- and the
+// backstop closes a connection that keeps pushing anyway, which is lossless too: the reconnect
+// resyncs everything the relay lacks.
+//
 // A doc past its size cap keeps serving reads and refuses writes: closing the socket would
 // take the client's unsaved work with it.
+const HOLD_TICK_MS = 50
+const HOLD_MAX_FRAMES = Number(process.env.HIVE_HOLD_MAX_FRAMES || 20000)
 function installUsageLimits(conn) {
   const room = (conn._hive && conn._hive.room) || 'default'
   const who = (conn._hive && conn._hive.identity && conn._hive.identity.name) || 'a client'
@@ -74,22 +84,70 @@ function installUsageLimits(conn) {
   const tier = (conn._hive && conn._hive.tier) || null
   const account = (conn._hive && conn._hive.account) || null
   const limiter = attachRateLimit(conn, tier)
-  let told = 0
-  const tell = (reason) => {
-    // Announce at most twice per connection. A tight loop trips the limit hundreds of times
-    // and a message per refusal would make the relay the flooder.
-    if (told >= 2) return
-    told++
+  const told = new Map() // Q-code -> times said on this connection
+  // A REFUSED WRITE IS TOLD TO THE WRITER, IN THE ROOM (27 Sep 2026). This only ever reached the
+  // relay's own log, so a client whose writes were refused -- a file at its size cap (Q435), a free
+  // workspace past its allowance (Q436), an oversized frame (Q433) -- learned nothing: the file just
+  // stopped moving for everyone, and the one message saying what to do was printed where only the
+  // operator could read it. `toRoom` posts it to the room chat addressed to the writer, so it lands
+  // as their mail; a system notice opens no reply debt. A wait over the rate (Q432/Q434) loses
+  // nothing, so it stays in the log.
+  const tell = (reason, { toRoom = false } = {}) => {
+    // At most twice per code per connection. A tight loop trips a limit hundreds of times and a
+    // message per refusal would make the relay the flooder; per CODE, so a burst of waits cannot
+    // use up the announcement of a refusal that follows it.
+    const code = (/^Q\d{3}/.exec(reason) || ['other'])[0]
+    const n = told.get(code) || 0
+    if (n >= 2) return
+    told.set(code, n + 1)
     try { console.warn(`[relay] ${who} in ${baseRoomOf(room)}: ${reason}`) } catch { }
     try { audit('rate-limit', { room, identity: who, reason }) } catch { }
+    if (toRoom) {
+      const name = conn._hive && conn._hive.identity && conn._hive.identity.name
+      const at = name && name !== 'anon' && /^[\w-]+$/.test(name) ? `@${name} ` : ''
+      try { postNoticeText(baseRoomOf(room), `${at}${reason}`) } catch { }
+    }
   }
   const realOn = conn.on.bind(conn)
+  // One queue per connection, in arrival order. Only one 'message' handler is ever registered
+  // through this wrapper (y-websocket's, via the gates stacked on top of it).
+  const held = []
+  let heldBytes = 0
+  let drainTimer = null
+  let paused = false
+  let dead = false
+  const holdMaxBytes = 2 * ((tier && tier.maxFrameBytes) || LIMITS.maxFrameBytes)
+  const pauseReads = () => {
+    if (paused || typeof conn.pause !== 'function') return
+    paused = true
+    try { conn.pause() } catch { }
+  }
+  const resumeReads = () => {
+    if (!paused) return
+    paused = false
+    try { conn.resume() } catch { }
+  }
+  realOn('close', () => {
+    dead = true
+    held.length = 0; heldBytes = 0
+    if (drainTimer) { clearTimeout(drainTimer); drainTimer = null }
+  })
   conn.on = (event, handler) => {
     if (event !== 'message') return realOn(event, handler)
-    return realOn('message', (data, ...rest) => {
-      const len = data && (data.byteLength ?? data.length) || 0
-      const bad = limiter.check(len)
-      if (bad) { tell(bad.reason); return }
+    const drain = () => {
+      drainTimer = null
+      while (held.length && !dead) {
+        const h = held[0]
+        const bad = limiter.check(h.len)
+        if (bad && bad.hold) { drainTimer = setTimeout(drain, Math.max(HOLD_TICK_MS, bad.retryMs)); return }
+        held.shift(); heldBytes -= h.len
+        if (bad) { tell(bad.reason, { toRoom: true }); continue }
+        // From a timer, so a throw here would take the whole relay down, not one frame.
+        try { admit(h.data, h.rest, h.len) } catch (e) { try { console.error(`[relay] a held frame failed in ${baseRoomOf(room)}: ${e && e.message}`) } catch { } }
+      }
+      resumeReads()
+    }
+    const admit = (data, rest, len) => {
       // Only WRITES are refused past the doc cap; step1/awareness must keep flowing or the
       // client cannot even see the state it is being told it may not grow.
       if (len > 0) {
@@ -104,7 +162,7 @@ function installUsageLimits(conn) {
         if (isWrite) {
           if (docOverCap(room, tier)) {
             const cap = (tier && tier.maxDocBytes) || LIMITS.maxDocBytes
-            tell(`Q435 ${pathOf(room) || 'this room'} has reached the ${Math.round(cap / 1048576)} MB size limit${tier ? ` for the ${tier.tier} tier` : ''}; writes refused, reads still served`)
+            tell(`Q435 ${pathOf(room) || 'this room'} has reached the ${cap >= 1048576 ? Math.round(cap / 1048576) + " MB" : Math.ceil(cap / 1024) + " KB"} size limit${tier ? ` for the ${tier.tier} tier` : ''}; writes refused, reads still served`, { toRoom: true })
             return
           }
           // THE AUTO-LOCK. A free account past its monthly allowance stops being able to
@@ -117,7 +175,7 @@ function installUsageLimits(conn) {
             // both the wrong domain (the site is hivecode.getgrm.tech) and a page that has since
             // been retired -- so the one message a blocked customer reads sent them to a 404.
             // An email address cannot go stale the way a route can.
-            tell(`Q436 this workspace has used its free monthly allowance (${Math.round(meter.FREE_PERIOD.writeBytes / 1048576)} MB of writes). Reads still work. Email support@getgrm.tech to lift the limit.`)
+            tell(`Q436 this workspace has used its free monthly allowance (${Math.round(meter.FREE_PERIOD.writeBytes / 1048576)} MB of writes). Reads still work. Email support@getgrm.tech to lift the limit.`, { toRoom: true })
             return
           }
           noteDocBytes(room, len)
@@ -136,6 +194,35 @@ function installUsageLimits(conn) {
         }
       }
       return handler(data, ...rest)
+    }
+    return realOn('message', (data, ...rest) => {
+      if (dead) return
+      const len = data && (data.byteLength ?? data.length) || 0
+      if (!held.length) {
+        const bad = limiter.check(len)
+        if (!bad) return admit(data, rest, len)
+        if (!bad.hold) { tell(bad.reason, { toRoom: true }); return }
+        tell(`${bad.reason}; reading paused until it drains, nothing dropped`)
+        drainTimer = setTimeout(drain, Math.max(HOLD_TICK_MS, bad.retryMs))
+      }
+      // Behind whatever is already waiting, even if this frame alone would fit: order is the
+      // whole point, since a later update admitted ahead of an earlier one is the same gap.
+      held.push({ data, rest, len }); heldBytes += len
+      limiter.noteThrottled()
+      pauseReads()
+      if (held.length > HOLD_MAX_FRAMES || heldBytes > holdMaxBytes) {
+        // Still pushing past a paused read: stop holding and let the client resync.
+        dead = true
+        held.length = 0; heldBytes = 0
+        if (drainTimer) { clearTimeout(drainTimer); drainTimer = null }
+        try { console.warn(`[relay] ${who} in ${baseRoomOf(room)}: Q432 kept sending past a paused read; closing so it resyncs`) } catch { }
+        try { audit('rate-limit-close', { room, identity: who, held: HOLD_MAX_FRAMES }) } catch { }
+        // terminate, not close: a close handshake needs the client's reply READ, and this
+        // socket is paused, so close() would leave it half-open for ws's 30 s timeout with the
+        // client neither connected nor reconnecting.
+        resumeReads()
+        try { if (typeof conn.terminate === 'function') conn.terminate(); else conn.close(1013, 'Q432 over the rate; reconnect to resync') } catch { }
+      }
     })
   }
 }

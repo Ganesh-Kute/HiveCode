@@ -43,12 +43,20 @@ export class VirtualConn extends EventEmitter {
     if (this.readyState !== OPEN) return
     setImmediate(() => { if (this.readyState === OPEN) this.emit('pong') })
   }
+  /**
+   * A channel over its own rate stops the PHYSICAL socket being read (installUsageLimits in
+   * server.js), since one channel cannot be paused on a shared socket. That stalls only this
+   * participant, only until the channel's held frames drain -- the other way is dropping them.
+   */
+  pause() { this._session.hold(this, true) }
+  resume() { this._session.hold(this, false) }
   close(_code, reason) { this._shut(true, reason) }
   terminate() { this._shut(true) }
   /** The relay side closed it: tell the client, which will reopen it after a back-off. */
   _shut(notifyClient, reason = '') {
     if (this.readyState === CLOSED) return
     this.readyState = CLOSED
+    this._session.hold(this, false) // a channel closed while paused must not leave the socket paused
     this._session.forget(this._id, this)
     if (notifyClient) this._session.sendFrame(encodeFrame(F.CLOSED, this._id, reason || ''))
     setImmediate(() => this.emit('close', 1000, Buffer.alloc(0)))
@@ -75,6 +83,11 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
   let closed = false
   let throttled = 0
   let paused = false
+  // Everything currently asking for the socket not to be read: the aggregate budget below and
+  // any channel over its own rate. Reading resumes only when NONE of them still holds it, so
+  // one holder's resume can never undo another's pause.
+  const holders = new Set()
+  const AGGREGATE = 'aggregate'
   // ONE WRITE PER TURN, NOT PER FRAME (27 Sep 2026). Every channel of a participant rides this one
   // socket, so a burst -- a first sync, a fan-out of many files' updates -- cost one socket write per
   // frame; a relay profile under 5,000 edits put 30% of its CPU in writev. The socket is corked for
@@ -100,6 +113,13 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
     forget(id, vc) { if (channels.get(id) === vc) channels.delete(id) },
     /** Sent BEFORE the accept path runs, so OPENED reaches the client ahead of the relay's step 1. */
     opened(id) { session.sendFrame(encodeFrame(F.OPENED, id)) },
+    hold(who, on) {
+      const before = holders.size
+      if (on) holders.add(who); else holders.delete(who)
+      if (!before && holders.size) { try { ws.pause() } catch { } }
+      else if (before && !holders.size) { try { ws.resume() } catch { } }
+    },
+    get holding() { return holders.size },
   }
 
   ws.on('error', (e) => { audit('mux-socket-error', { baseRoom, reason: e && e.message }) })
@@ -129,8 +149,8 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
       if (!msgBucket.take(1) && !paused) {
         paused = true
         if (throttled++ < 2) audit('mux-rate-limit', { baseRoom, reason: 'Q432 aggregate message rate on one participant socket; reading paused' })
-        try { ws.pause() } catch { }
-        const t = setTimeout(() => { paused = false; try { ws.resume() } catch { } }, 250)
+        session.hold(AGGREGATE, true)
+        const t = setTimeout(() => { paused = false; session.hold(AGGREGATE, false) }, 250)
         if (t.unref) t.unref()
       }
       vc._deliver(f.payload)
