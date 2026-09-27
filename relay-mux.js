@@ -75,12 +75,21 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
   let closed = false
   let throttled = 0
   let paused = false
+  // ONE WRITE PER TURN, NOT PER FRAME (27 Sep 2026). Every channel of a participant rides this one
+  // socket, so a burst -- a first sync, a fan-out of many files' updates -- cost one socket write per
+  // frame; a relay profile under 5,000 edits put 30% of its CPU in writev. The socket is corked for
+  // the rest of the current event-loop turn and uncorked on the next tick, so everything queued in
+  // one turn leaves as one write. Node counts cork() calls, so ws's own per-frame cork nests inside.
+  let corked = false
+  const uncork = () => { corked = false; try { if (ws._socket) ws._socket.uncork() } catch { } }
 
   const session = {
     baseRoom,
     get size() { return channels.size },
     sendFrame(bytes, cb) {
       if (ws.readyState !== 1) { if (cb) process.nextTick(cb, new Error('socket closed')); return }
+      const sock = ws._socket
+      if (sock && !corked) { corked = true; sock.cork(); process.nextTick(uncork) }
       try { ws.send(bytes, { binary: true }, cb) } catch (e) { if (cb) process.nextTick(cb, e) }
     },
     makeConn(id, docName) {
