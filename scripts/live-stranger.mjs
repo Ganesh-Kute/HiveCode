@@ -29,7 +29,8 @@ const HTTP = RELAY.replace(/^ws/, 'http')
 const ROOM = `e2e-stranger-${process.pid.toString(36)}${(Date.now() % 1e6).toString(36)}`
 const LINK = `${RELAY}|${ROOM}`
 const N = Number(process.argv[2] || 150)
-const EXPECT_VERSION = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version
+// LIVE_PKG=0.12.1 tests that exact published version; otherwise npx must fetch this repo's version
+const EXPECT_VERSION = /^\d+\.\d+\.\d+$/.test(process.env.LIVE_PKG || '') ? process.env.LIVE_PKG : JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version
 const EXPECT_TOOLS = (fs.readFileSync(path.join(REPO, 'hive-mcp.js'), 'utf8').match(/\{ name: 'hive_[a-z_]+', description:/g) || []).length
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const T0 = Date.now()
