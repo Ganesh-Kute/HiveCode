@@ -235,5 +235,15 @@ section('hive_read_chat keeps other people\'s long messages short (27 Sep 2026)'
   T('full:true returns every message whole', full.includes(`status report ${essay}`))
 }
 
+section('hive_wait default by app (27 Sep 2026)')
+{
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.0' } })
+  T('Claude Code waits 110s by default: under its two-minute move-to-background line', _test.waitDefaultSeconds() === 110)
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'cursor', version: '1.0' } })
+  T('an app whose limit is unverified keeps 60s', _test.waitDefaultSeconds() === 60)
+  await _test.initialize({ protocolVersion: '2025-06-18' })
+  T('no clientInfo at all keeps 60s', _test.waitDefaultSeconds() === 60)
+}
+
 console.log(`\n=== MCP WAIT: ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

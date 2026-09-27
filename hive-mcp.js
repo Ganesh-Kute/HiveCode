@@ -556,7 +556,7 @@ const TOOLS = [
   { name: 'hive_read_tasks', description: 'Tasks aimed at you (act only on accepted ones) and all pending tasks awaiting approval.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_wait', description: 'Your idle state. Blocks until there is approved work, mail for you, or a state flag you named reaches its value, then returns all of it; returns at once if any is already true. Loop: hive_wait -> work -> hive_complete -> hive_wait.',
-    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: '"any" (default), or "mention" = wake only when @mentioned or assigned; other mail still arrives on the next wake' }, until: { type: 'object', description: 'wake when a project state key reaches a value: {key, is}, {key, in: [...]}, {key, not} (unset counts as not), or {key} = set at all. The result carries stateReached.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
+    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60; 110 in Claude Code; max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: '"any" (default), or "mention" = wake only when @mentioned or assigned; other mail still arrives on the next wake' }, until: { type: 'object', description: 'wake when a project state key reaches a value: {key, is}, {key, in: [...]}, {key, not} (unset counts as not), or {key} = set at all. The result carries stateReached.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
   { name: 'hive_check', description: 'Non-blocking check for use mid-task: unread mail for you and approved work, returned at once. Call it between edits; if it reports priority "stop", handle that first.',
     inputSchema: { type: 'object', properties: { peek: { type: 'boolean', description: 'true = look without marking messages read' } } } },
   { name: 'hive_approve', description: 'Approve a pending task for an AI you own; it may then act on it.',
@@ -1034,7 +1034,7 @@ async function dispatch(req) {
         return text(`TASKS FOR YOU (act only on 'accepted'):\n${mine.map(fmtTask).join('\n') || '(none)'}\n\nPENDING (awaiting approval):\n${pending.map(fmtTask).join('\n') || '(none)'}`)
       }
       case 'hive_wait': {
-        const ms = Math.min(Math.max(Number(args.timeoutSeconds) || 60, 1), 300) * 1000
+        const ms = Math.min(Math.max(Number(args.timeoutSeconds) || waitDefaultSeconds(), 1), 300) * 1000
         // HIV-P11. `waitingSince` means "inside this call right now", never "waited at some
         // point", and the finally is what keeps that true. A wait that returns or throws while
         // leaving the flag set describes an agent parked in a call it has already left -- and
@@ -1609,7 +1609,20 @@ if (isEntryPoint && process.argv[2] === 'setup') {
 }
 
 /** Test seam: drive the real wait/delivery logic against a doc, with no relay and no stdio. */
+// THE IDLE LOOP'S DEFAULT, BY APP (27 Sep 2026). Every hive_wait that times out is a whole model
+// turn spent learning that nothing happened, so a longer default is fewer paid turns for an idle
+// agent -- a night shift is hundreds of them. It is capped by what the app tolerates: Claude Code
+// lets a tool call run for hours but moves one that passes TWO MINUTES to a background task
+// (code.claude.com/docs/en/mcp), so 110s stays an ordinary blocking call there, ~45% fewer idle
+// turns than 60s. Apps whose limits we have not verified keep 60s.
+function waitDefaultSeconds() {
+  const c = (server && server.getClientVersion && server.getClientVersion()) || {}
+  return /claude-code/i.test(String(c.name || '')) ? 110 : 60
+}
+
 export const _test = {
+  waitDefaultSeconds,
+  initialize: (params = {}) => server._requestHandlers.get('initialize')({ method: 'initialize', params }, {}),
   waitForWork,
   defaultJoinTarget,
   mailbox,
