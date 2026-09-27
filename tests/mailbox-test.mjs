@@ -54,6 +54,16 @@ T('dont edit, no apostrophe', priorityOf('@Hermes dont touch server/db.js') === 
 T('revert', priorityOf('@Antigravity revert App.jsx, it lost the imports') === 'stop')
 T('ordinary announcement is normal', priorityOf('taking auth.js: adding login') === 'normal')
 T('a word containing stop is not stop', priorityOf('the stopwatch view is done') === 'normal')
+// A routine report is not an order: each of these arrived under the STOP banner before 27 Sep 2026.
+const REPORT = '@Claude MANIFEST BATCHING COMPLETE (commit c321f29). Edge cases: 1. deletes before the flush cancel pending sets. 2. Shutdown: `stop()` flushes synchronously before destroying providers. 3. revertAuthor() and listHistory() flush first.'
+T('a report naming stop() in code is normal', priorityOf(REPORT) === 'normal')
+T('a call written without backticks is not the word', priorityOf('@Bo stop() now flushes the room doc first') === 'normal')
+T('a file named stop.js is not the word', priorityOf('@Bo stop.js is refactored and released') === 'normal')
+T('a stop word deep in a long report is not an order', priorityOf('@Bo ' + 'finished the auth split and the tests pass; '.repeat(6) + 'we can stop worrying about the session code') === 'normal')
+T('fenced code is not an order', priorityOf('@Bo here is the diff:\n```\nif (stop) halt()\n```') === 'normal')
+T('several leading names, then STOP, is still an order', priorityOf('@Claude @Bo STOP editing auth.js, I am mid-merge') === 'stop')
+T('an order after a short preamble still counts', priorityOf('@Bo the logs look fine but please stop touching server.js now') === 'stop')
+T('STOP-SHIP at the start is urgent', priorityOf('STOP-SHIP: the relay drops frames') === 'stop')
 
 // ───────────────────────────────────────────────────────────────────────────────────────
 section('repeat collapsing — the conflict-notification storm')

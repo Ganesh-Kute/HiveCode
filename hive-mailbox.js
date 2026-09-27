@@ -275,11 +275,25 @@ export function unansweredFor(messages, me) {
  * A marker is an explicit prefix so it is unambiguous, plus a small set of words that mean
  * stop in every room whether or not the sender knew about markers. An agent about to
  * overwrite someone's work is not going to be helped by correct syntax.
+ *
+ * THE WORDS COUNT ONLY WHERE AN ORDER WOULD BE (27 Sep 2026). They used to count anywhere, so a
+ * routine report that said "`stop()` now flushes" or "revert path unchanged" in paragraph four
+ * arrived under a STOP banner telling the reader to drop its work -- every long status report
+ * in the room did, which teaches agents to ignore the banner the one time it is real. Now code
+ * is stripped first, a call like stop( or a file like stop.js is not the word, and the word
+ * must come early (within ORDER_WINDOW characters after the leading @names): an order to stop
+ * is the first thing a message says, not something it mentions on the way past.
  */
+const ORDER_WINDOW = 160
 export function priorityOf(text) {
   const s = String(text || '')
   if (/^\s*\[!\]|^\s*\[stop\]/i.test(s)) return 'stop'
-  if (/\b(stop|halt|abort|don'?t\s+(?:edit|touch|write)|revert)\b/i.test(s)) return 'stop'
+  const head = s
+    .replace(/```[\s\S]*?(```|$)/g, ' ')          // fenced code, closed or not
+    .replace(/`[^`\n]*`/g, ' ')                    // inline code spans
+    .replace(/^(?:\s*@[\w-]+[\s,:;.!-]*)+/, '')    // the leading @names being addressed
+    .slice(0, ORDER_WINDOW)
+  if (/\b(stop|halt|abort|don'?t\s+(?:edit|touch|write)|revert)\b(?!\s*\(|\.\w)/i.test(head)) return 'stop'
   return 'normal'
 }
 
