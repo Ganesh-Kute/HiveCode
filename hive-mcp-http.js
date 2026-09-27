@@ -1,7 +1,7 @@
 // hive-mcp-http — Hivecode as a REMOTE MCP server, so Slackbot can drive a room.
 //
-//   node hive-mcp-http.js "<relay|room>" --port 8790 [--name Hivecode] [--auth slack|none]
-//   env: SLACK_SIGNING_SECRET (required for --auth slack), HIVE_TOKEN
+//   node hive-mcp-http.js "<relay|room>" --port 8790 [--name Hivecode] [--auth slack|none] [--trust-proxy]
+//   env: SLACK_SIGNING_SECRET (required for --auth slack), HIVE_TOKEN, HIVE_TRUST_PROXY=1 (behind a proxy)
 //
 // WHY A SECOND MCP SERVER. hive-mcp.js speaks stdio, which is what a local agent needs and what
 // Slack explicitly does not accept: the Slackbot MCP Client connects OUT over Streamable HTTP,
@@ -206,10 +206,25 @@ export function actorOf(msg, verified) {
   return 'slack'
 }
 
-export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '', now = Date.now, tier = null }) {
+// WHOSE ADDRESS IS IT (27 Sep 2026). The per-IP limit keyed on the FIRST X-Forwarded-For entry,
+// which is whatever the caller wrote: a flood that sent a different made-up address on every
+// request got a fresh budget every time, and each made-up address was a new entry in a map that
+// never shrank. X-Forwarded-For is now read only when this sits behind a proxy the operator
+// names (HIVE_TRUST_PROXY=1 or --trust-proxy), and then its LAST entry -- the hop that proxy
+// appended, not one the client typed. Otherwise the socket's own address.
+const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.HIVE_TRUST_PROXY || '')
+const MAX_LIMITERS = 10000
+export function clientAddress(req, trustProxy = TRUST_PROXY) {
+  const sock = String((req.socket && req.socket.remoteAddress) || '127.0.0.1')
+  if (!trustProxy) return sock
+  const hops = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean)
+  return hops.length ? hops[hops.length - 1] : sock
+}
+
+export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '', now = Date.now, tier = null, trustProxy = TRUST_PROXY }) {
   const tools = makeTools(hive, room)
   const sessions = new Set()
-  const limiters = new Map()
+  const limiters = new Map() // insertion order = age, so the oldest address is the first key
 
   function limiterFor(ip) {
     let l = limiters.get(ip)
@@ -217,11 +232,14 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
       const conn = {}
       l = attachRateLimit(conn, tier)
       limiters.set(ip, l)
+      if (limiters.size > MAX_LIMITERS) limiters.delete(limiters.keys().next().value)
     }
     return l
   }
 
-  return async function handle(req, res) {
+  handle.limiterCount = () => limiters.size
+  return handle
+  async function handle(req, res) {
     const send = (code, obj, headers = {}) => {
       const body = obj === null ? '' : JSON.stringify(obj)
       res.writeHead(code, { 'Content-Type': 'application/json', ...headers })
@@ -231,7 +249,7 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
     if (req.method !== 'POST') return send(405, { error: 'Q518 this endpoint takes POST' })
 
     // Rate limiting (HIV-15): per-IP rate limit applied BEFORE signature verification
-    const ip = (req.headers['x-forwarded-for']?.split(',')[0] || req.socket?.remoteAddress || '127.0.0.1').trim()
+    const ip = clientAddress(req, trustProxy)
     const limiter = limiterFor(ip)
     const rateRefusal = limiter.check(1)
     if (rateRefusal) {
@@ -287,8 +305,8 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
   }
 }
 
-export function serve({ hive, room = '', port, auth, signingSecret, now, tier = null }) {
-  const handle = makeHandler({ hive, room, auth, signingSecret, now, tier })
+export function serve({ hive, room = '', port, auth, signingSecret, now, tier = null, trustProxy = TRUST_PROXY }) {
+  const handle = makeHandler({ hive, room, auth, signingSecret, now, tier, trustProxy })
   const server = http.createServer((req, res) => {
     handle(req, res).catch(() => { try { res.writeHead(500); res.end('{}') } catch { /* already sent */ } })
   })
@@ -308,7 +326,7 @@ if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\
   const AUTH = flag('auth', 'slack')
   const SECRET = process.env.SLACK_SIGNING_SECRET || ''
   if (!LINK) {
-    console.error('usage: node hive-mcp-http.js "<relay|room>" --port 8790 [--auth slack|none]')
+    console.error('usage: node hive-mcp-http.js "<relay|room>" --port 8790 [--auth slack|none] [--trust-proxy]')
     process.exit(2)
   }
   // Fail closed. Starting in `slack` mode without a secret would silently serve an OPEN control
@@ -322,7 +340,7 @@ if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\
     relay, room, dir: (process.env.TEMP || '.') + '/hive-mcp-http-' + room,
     name: flag('name', 'Hivecode'), kind: 'human', token: process.env.HIVE_TOKEN || '', syncFiles: false, log: () => {},
   })
-  serve({ hive, room, port: PORT, auth: AUTH, signingSecret: SECRET }).then(() => {
+  serve({ hive, room, port: PORT, auth: AUTH, signingSecret: SECRET, trustProxy: TRUST_PROXY || argv.includes('--trust-proxy') }).then(() => {
     console.log(`[hive-mcp-http] room ${room} on :${PORT}/  auth=${AUTH}`)
     if (AUTH === 'none') console.log('  auth=none: do NOT expose this beyond localhost.')
   })

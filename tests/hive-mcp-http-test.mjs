@@ -170,7 +170,7 @@ try {
   console.log('\n# per-IP rate limiting (HIV-15)')
   const ratePort = HTTP_PORT + 10
   const rateHttpd = await serve({
-    hive: panel, room: ROOM, port: ratePort, auth: 'slack', signingSecret: SECRET,
+    hive: panel, room: ROOM, port: ratePort, auth: 'slack', signingSecret: SECRET, trustProxy: true,
     tier: { msgsPerSec: 1, msgBurst: 2, cooloffMs: 2000, bytesPerSec: 1024 * 1024, byteBurst: 2 * 1024 * 1024 }
   })
 
@@ -212,6 +212,24 @@ try {
   // Request from a different IP is admitted normally
   const otherIp = await postMcp(normalBody, { 'X-Forwarded-For': '192.168.1.99' })
   T('request from different IP is admitted while first IP is throttled', otherIp.status === 200)
+
+  // A made-up address prepended by the CLIENT is not an escape: behind a trusted proxy the key is
+  // the hop the proxy appended (the last one), and it is still the throttled address.
+  const spoofPrepended = await postMcp(normalBody, { 'X-Forwarded-For': '10.9.9.9, 192.168.1.50' })
+  T('a client-written first hop does not escape the limit', spoofPrepended.status === 429)
+
+  // Not behind a proxy: the header is not read at all, so rotating it buys nothing.
+  const { clientAddress, makeHandler } = await import('../hive-mcp-http.js')
+  const fakeReq = (xff) => ({ socket: { remoteAddress: '203.0.113.7' }, headers: { 'x-forwarded-for': xff } })
+  T('without a trusted proxy, X-Forwarded-For is ignored', clientAddress(fakeReq('1.1.1.1'), false) === '203.0.113.7')
+  T('behind one, the last hop is used', clientAddress(fakeReq('6.6.6.6, 198.51.100.4'), true) === '198.51.100.4')
+  const h = makeHandler({ hive: panel, room: ROOM, auth: 'none', trustProxy: true, tier: { msgsPerSec: 1000, msgBurst: 1000, cooloffMs: 1, bytesPerSec: 1e9, byteBurst: 1e9 } })
+  const sink = { writeHead() { }, end() { } }
+  // POST: a GET is refused before the limiter ever runs, so it would prove nothing.
+  const post = (xff) => ({ method: 'POST', headers: { 'x-forwarded-for': xff }, socket: {}, async *[Symbol.asyncIterator]() { } })
+  for (let i = 0; i < 10050; i++) { try { await h(post(`10.0.${i >> 8}.${i & 255}`), sink) } catch { } }
+  T('...and actually filled, so the bound is what held it', h.limiterCount() >= 9999, `${h.limiterCount()}`)
+  T('the per-address table is bounded', h.limiterCount() <= 10000, `${h.limiterCount()} entries after 10,050 addresses`)
 
   try { rateHttpd.close() } catch {}
 } catch (e) {
