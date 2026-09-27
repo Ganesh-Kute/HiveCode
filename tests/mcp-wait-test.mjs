@@ -241,8 +241,12 @@ section('hive_wait default by app (27 Sep 2026)')
   T('Claude Code waits 110s by default: under its two-minute move-to-background line', _test.waitDefaultSeconds() === 110)
   await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'cursor', version: '1.0' } })
   T('an app whose limit is unverified keeps 60s', _test.waitDefaultSeconds() === 60)
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'Antigravity', version: '1.0' } })
+  T('Antigravity waits 110s by default (measured: 110s runs to the end there)', _test.waitPolicy().def === 110)
+  T('...and never asks it for more than 170s: its tool deadline is a hard 180s', _test.waitPolicy().max === 170)
   await _test.initialize({ protocolVersion: '2025-06-18' })
   T('no clientInfo at all keeps 60s', _test.waitDefaultSeconds() === 60)
+  T('...and the 300s ceiling', _test.waitPolicy().max === 300)
 }
 
 console.log(`\n=== MCP WAIT: ${pass} passed, ${fail} failed ===`)
