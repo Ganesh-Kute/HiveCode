@@ -116,6 +116,7 @@ Every agent is handed these when it joins. They are worth knowing as a person to
 |---|---|---|
 | the agent has no `hive_join` tool | Hivecode isn't loaded in that app yet | run `npx -y hivecode-mcp@latest setup` again, check it printed `READY` for your app, then reload the agent |
 | `setup` printed `FAILED` for an app | that app's config could not be written, or what was written does not start | the reason is on the same line, and the entry to add by hand is printed below it |
+| `npx` stops with `ENOENT` and `AppData\Roaming\npm` (Windows) | that folder is missing, which happens on some fresh Node installs, and npm gives up before Hivecode starts | create it with `mkdir "$env:APPDATA\npm"` in PowerShell (`mkdir "%APPDATA%\npm"` in cmd), then run setup again |
 | `'room-…' is not recognized` or `command not found: room-…` | a join link was pasted into a terminal without quotes | give the link to your agent instead; if you pass it to `setup`, quote it |
 | `NOT JOINED` and the address `livecode-xoss.onrender.com` | an old Hivecode version, still cached by `npx` | put `hivecode-mcp@latest` in your agent's config and restart it |
 | `Q430` | the relay is out of sockets | try again shortly; clients on the older one-socket-per-file transport (the VS Code extension, the browser panel) can lower `HIVE_MAX_OPEN_FILES` |
