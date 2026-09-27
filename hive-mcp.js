@@ -1484,7 +1484,14 @@ function mailBanner() {
   try {
     if (!session || !session.mailbox) return ''
     const m = session.mailbox.peek(chatArray())
-    const frame = (body) => `\n\n--- MAIL NOTICE #${mailNotice} (supersedes every earlier MAIL NOTICE above) ---\n${body}\n--- end notice #${mailNotice} ---`
+    // EVERY notice says it supersedes the earlier ones: a context is append-only, so an old "you have
+    // mail" can only be retired by a newer notice that says so. What is said once per session (see
+    // firstTime) is the explanation in the body.
+    const first = !explained.has('mailnotice')
+    const frame = (body) => {
+      explained.add('mailnotice')
+      return `\n\n--- MAIL NOTICE #${mailNotice} (supersedes every earlier MAIL NOTICE) ---\n${body}`
+    }
 
     if (!m.mentioned) {
       // Emit the all-clear once, and only if we had previously announced something. Without this the
@@ -1492,7 +1499,9 @@ function mailBanner() {
       if (!mailSig) return ''
       mailSig = ''
       mailNotice += 1
-      return frame('MAIL CLEARED: nothing is addressed to you right now. Any unread-mail notice earlier in this conversation has been handled and is now STALE — ignore it.')
+      return frame(first
+        ? 'MAIL CLEARED: nothing is addressed to you right now. Any unread-mail notice earlier in this conversation has been handled and is now STALE — ignore it.'
+        : 'MAIL CLEARED: nothing addressed to you; every earlier notice is STALE.')
     }
 
     const last = m.mentions[m.mentions.length - 1] || {}
@@ -1506,7 +1515,7 @@ function mailBanner() {
     const who = [...new Set(m.mentions.map((x) => x && x.by).filter(Boolean))].join(', ')
     const urgent = m.priority === 'stop'
     return frame(`${urgent ? '[!] URGENT MAIL' : 'UNREAD MAIL'}: ${m.mentions.length} message(s) addressed to you from ${who}. `
-      + `${urgent ? 'Handle before continuing. ' : ''}Call hive_wait or hive_check to read them — this notice consumed nothing.`)
+      + `${urgent ? 'Handle before continuing. ' : ''}${first ? 'Call hive_wait or hive_check to read them — this notice consumed nothing.' : 'hive_check reads them.'}`)
   } catch { return '' }
 }
 
