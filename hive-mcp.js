@@ -20,12 +20,14 @@
 // it returns (read chat + board before editing, announce intent, prefer patches).
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+// The stdio server is our own, not @modelcontextprotocol/sdk's: the SDK drags express, hono, zod
+// and ~85 more packages into every install for a slice this small. See hive-stdio.js.
+import { Server, StdioServerTransport, ListToolsRequestSchema, CallToolRequestSchema } from './hive-stdio.js'
+import { startUpdateCheck, updateNotice } from './hive-update.js'
 // Substrate defaults for MCP agents: signed provenance + the silent-fork gate are ON
 // unless explicitly disabled. Agents register this server with arbitrary (often empty)
 // env, so relying on per-registration env vars left rooms in mixed signed/unsigned mode —
@@ -114,7 +116,49 @@ async function tryResumeSession() {
   } catch { /* resume is best-effort; the agent can always hive_join explicitly */ }
 }
 
-async function joinRoom({ link = '', dir = './workspace', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false }) {
+// WHERE AN AGENT'S FILES GO WHEN NOBODY SAID. This was './workspace', resolved against the
+// directory the agent app happened to start this server in: the user's project for Claude Code,
+// something unwritable or unguessable for others -- and the SAME folder for two agents started
+// alike, which is the one thing a room must never have (one folder per participant). Now it is
+// ~/hivecode/<room>/<name>: absolute, writable, and different for every name.
+//
+// One exception keeps returning users whole: an agent that joined the old way and now calls
+// hive_join with nothing, expecting its room back from ./workspace/.hive.json, still gets it.
+// Sending it to a new folder instead would host a brand-new room and report success -- the agent
+// would be alone, told it was joined.
+const HIVE_HOME = process.env.HIVE_HOME || path.join(os.homedir(), 'hivecode')
+const LEGACY_DIR = './workspace'
+function safeSegment(s) {
+  const t = String(s || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[.]+/, '_').slice(0, 64) || '_'
+  return /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(t) ? '_' + t : t
+}
+function roomIn(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(path.resolve(dir), '.hive.json'), 'utf8')).room || null } catch { return null }
+}
+function defaultJoinTarget(link, name) {
+  // The folders this agent already has a room in: the one its last session used (hive_leave
+  // deletes that record, so it only survives a disconnect or a restart), then the old default.
+  const prev = readSessionFile()
+  const prevDir = prev && prev.dir && roomIn(prev.dir) ? prev.dir : null
+  const legacy = roomIn(LEGACY_DIR) ? LEGACY_DIR : null
+  if (!link) {
+    // "No link, no folder" has always meant "my room, if I have one". Hosting a new one instead
+    // would leave an agent that meant to rejoin alone in an empty room, told it had joined.
+    const back = prevDir || legacy
+    if (back) return { dir: back, link, hostedHere: false }
+    const room = 'room-' + crypto.randomBytes(13).toString('base64url')
+    return { dir: path.join(HIVE_HOME, room, safeSegment(name)), link: `${DEFAULT_RELAY}|${room}`, hostedHere: true }
+  }
+  const room = parseLink(link).room
+  if (!room) return { dir: LEGACY_DIR, link, hostedHere: false }
+  // Rejoining a room this agent was already in lands in the folder it used, files and all. The
+  // session record must be under THIS name: two runtimes started in one directory share it.
+  if (prevDir && prev.name === name && roomIn(prevDir) === room) return { dir: prevDir, link, hostedHere: false }
+  if (legacy && roomIn(legacy) === room) return { dir: legacy, link, hostedHere: false }
+  return { dir: path.join(HIVE_HOME, safeSegment(room), safeSegment(name)), link, hostedHere: false }
+}
+
+async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false }) {
   // REFUSED BEFORE THE OLD SESSION IS TORN DOWN. joinRoom's first act is to stop whatever session
   // exists, so validating after that point would leave an agent with a bad name holding nothing at
   // all -- it would lose a working room to a refusal it could have been given for free.
@@ -127,9 +171,12 @@ Nothing was joined and your current session is untouched. Re-run hive_join with 
 This is refused rather than fixed for you because renaming silently is worse: if another member is already called "${nameCheck.suggested}", you would be merged into them -- one awareness entry, one read cursor, one mailbox -- and neither of you would be told. Your own prompt would also still say your name is "${name}", so you would stop recognising messages about yourself.`
   }
   if (session) { try { session.hive.stop() } catch {} ; session = null }
+  let hostedHere = false
+  if (!dir) ({ dir, link, hostedHere } = defaultJoinTarget(link, name))
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
-  const { relay, room, token: linkToken, mode, migratedFrom } = resolveRoom(link, dir)
+  const { relay, room, token: linkToken, mode: resolvedMode, migratedFrom } = resolveRoom(link, dir)
+  const mode = hostedHere ? 'HOSTED (new room)' : resolvedMode
   // THE PRIVACY GATE, and note where it sits: after the relay is resolved, BEFORE the
   // .hive.json write below and before startSync opens a socket. A refused join must leave
   // nothing behind -- no config pointing at the wrong relay for the next process to find,
@@ -352,7 +399,7 @@ was not written. Fix the relay and call hive_join again.`
     ? `\n\nMOVED: this folder pointed at ${migratedFrom}, a Hivecode relay that has been retired. ` +
       `It now uses ${relay}, and .hive.json has been updated, so this happens once.`
     : ''
-  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }
@@ -494,7 +541,7 @@ function waitForWork(timeoutMs, opts = {}) {
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join (or host) a Hivecode room for a project folder. Joins automatically as an AI participant. If a join link is given, uses it; else reads <dir>/.hive.json; else hosts a new room. Returns the room info and the HIVE_RULES you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'project folder to sync (default ./workspace)' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' }, token: { type: 'string', description: 'access token for a secured room (else uses $HIVE_TOKEN). Required only if the relay runs in auth-required mode.' }, kind: { type: 'string', description: 'participant kind (ai or human)' }, passive: { type: 'boolean', description: 'true = this participant is a passive listener or bot daemon and does not take turns or answer questions' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'optional join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync. Leave it out and Hivecode uses ~/hivecode/<room>/<your name>, a folder of your own. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human responsible for you — only they may approve tasks directed at you' }, token: { type: 'string', description: 'access token for a secured room (else uses $HIVE_TOKEN). Required only if the relay runs in auth-required mode.' }, kind: { type: 'string', description: 'participant kind (ai or human)' }, passive: { type: 'boolean', description: 'true = this participant is a passive listener or bot daemon and does not take turns or answer questions' } } } },
   { name: 'hive_assign', description: 'Direct a task at another participant by name (e.g. ask another agent to work on a file). If the target is an AI with an owner, it stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name to assign to' }, text: { type: 'string', description: 'what to do' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Read tasks. Shows tasks directed at YOU (act only on accepted ones) and all pending tasks awaiting approval.',
@@ -1339,7 +1386,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // answer to the second -- the public relay and a company's own are the same shape.
         const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs })
         return text({
-          room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION,
+          room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(updateNotice() ? { update: updateNotice() } : {}),
           privacy: pv.headline,
           ...(pv.warn ? { privacyWarning: pv.warn } : {}),
           ...(pv.pin && pv.pin.pinned ? { relayPin: pv.pin.origins.join(', ') } : {}),
@@ -1491,10 +1538,37 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 // Only claim stdio when this file IS the program. Importing it (a test, a tool) must not
 // hijack the JSON-RPC channel — that is what made the wait/mailbox logic untestable before.
-const isEntryPoint = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
-if (isEntryPoint) {
+//
+// COMPARED AS REAL PATHS. On macOS and Linux, npx starts a package's bin through the symlink in
+// node_modules/.bin. Node resolves that symlink for import.meta.url and NOT for argv[1], so the
+// plain comparison this used to make was false there: the server never started, the process
+// exited 0 with no output, and the agent app showed nothing but "failed to start". Reproduced on
+// 25 Sep 2026 through a Windows junction, which Node treats the same way.
+function isMainModule() {
+  if (!process.argv[1]) return false
+  const me = fileURLToPath(import.meta.url)
+  try { return fs.realpathSync(process.argv[1]) === fs.realpathSync(me) } catch { return path.resolve(process.argv[1]) === path.resolve(me) }
+}
+const isEntryPoint = isMainModule()
+if (isEntryPoint && process.argv[2] === 'setup') {
+  // `npx -y hivecode-mcp@latest setup` -- configures every agent app on this machine and checks
+  // each one starts. It never opens stdio: nobody is speaking JSON-RPC to a setup run.
+  const { main } = await import('./hive-setup.js')
+  process.exit(await main(process.argv.slice(3)))
+} else if (isEntryPoint && (process.argv[2] === '--version' || process.argv[2] === '-v')) {
+  console.log(VERSION)
+  process.exit(0)
+} else if (isEntryPoint) {
   const transport = new StdioServerTransport()
+  // STDIN CLOSING IS THE AGENT APP SAYING GOODBYE -- the MCP spec's stdio shutdown. Leave the
+  // room and exit. The SDK kept this process alive on its open sockets instead, holding a seat
+  // and a presence entry for a member that was gone, until something killed it.
+  server.onclose = () => {
+    try { if (session) session.hive.stop() } catch { /* leaving is best-effort; exiting is not */ }
+    setTimeout(() => process.exit(0), 500)
+  }
   await server.connect(transport)
+  startUpdateCheck() // background, short timeout; hive_join and hive_status show what it finds
   // stderr is fine for logs; stdout is the JSON-RPC channel and must stay clean.
   console.error('[hive-mcp] Hivecode MCP server ready (stdio). Default relay:', DEFAULT_RELAY)
 }
@@ -1502,6 +1576,7 @@ if (isEntryPoint) {
 /** Test seam: drive the real wait/delivery logic against a doc, with no relay and no stdio. */
 export const _test = {
   waitForWork,
+  defaultJoinTarget,
   mailbox,
   // Exposed so the throttle's saving is asserted against the counter itself rather than inferred
   // from what happened not to appear in a tool result. Counting absences is how you prove a thing

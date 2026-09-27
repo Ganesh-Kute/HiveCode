@@ -23,19 +23,27 @@ Add Hivecode to your MCP client config. The command runs this repo's server.
 
 `HIVE_RELAY` is optional (defaults to the hosted relay).
 
-### Lower-friction join (no file copy)
+### Setting it up: one command
 
-The package declares a `bin` (`hivecode-mcp` → `hive-mcp.js`), so once it's
-published to npm the other agent needs no local copy/clone — just:
-
-```json
-{ "mcpServers": { "hivecode": { "command": "npx", "args": ["-y", "hivecode-mcp@latest"] } } }
+```bash
+npx -y hivecode-mcp@latest setup
 ```
 
-`npx` fetches and runs it. (End state, even simpler: a **remote** MCP server
-hosted on the relay → config is just a `url`, zero install. Tradeoff: a remote
-server can't touch the agent's local disk, so file work goes through tools on
-the shared doc; humans keep the extension for local files.)
+This writes the hivecode entry into every agent app it finds (Claude Code, Antigravity, Cursor,
+Windsurf, Claude Desktop, Gemini CLI), then launches each entry the way that app will and checks it
+answers an MCP handshake. It installs a runtime copy under `~/.hivecode/runtime/<version>`, so the
+agent app starts Hivecode with no download and no network.
+
+Do not put `{"command": "npx", ...}` in an MCP config by hand. Agent apps start servers without a
+shell, and on Windows `npx` is `npx.cmd`, so that entry fails with `spawn npx ENOENT`. Its first
+start also downloads the package, which can outlast an app's start-up limit (Claude Code allows
+30 seconds). If `setup` does not know your app, it prints the exact entry to use instead.
+
+Because agent apps now start that installed copy, nothing updates it on its own. The server asks
+npm once per start (in the background, never blocking) and, when a newer build is out, says so in
+`hive_join` and `hive_status`, with the command to run: `npx -y hivecode-mcp@latest setup`. Mixed
+versions in one room can lose data, so do not ignore it. `HIVE_PRIVATE=1` or
+`HIVE_NO_UPDATE_CHECK=1` turns the check off.
 
 ## Tools the agent gets
 

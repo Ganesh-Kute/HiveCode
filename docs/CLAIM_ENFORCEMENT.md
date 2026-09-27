@@ -28,14 +28,14 @@ Generalize `makeReadOnly()` into a **dynamic write-gate**: on every inbound writ
 
 - **Per-file rooms.** A project is `<base>` + per-file rooms `<base>␁<path>`. Each connection is to one room; `pathOf(room)` / `baseRoomOf(room)` (token.js) already split them.
 - **The write-drop hook.** `makeReadOnly(conn)` already wraps `conn.on('message')` and detects writes (sync `step2`=1 / `update`=2) via `lib0/decoding`. We reuse that decoder verbatim.
-- **Server-side doc access.** `y-websocket/bin/utils` exposes `getYDoc(name)`; the relay can read the base doc's `claims` and `swarm_state` maps server-side — no new storage.
+- **Server-side doc access.** `vendor/y-websocket/utils.cjs` (y-websocket v2's server half, kept in-repo) exposes `getYDoc(name)`; the relay can read the base doc's `claims` and `swarm_state` maps server-side — no new storage.
 - **The state to read already exists.** `claims` (hive-coord.js, `{by,intent,at,ttl}`, 5-min TTL) and `swarm_state` (DCO). Nothing new to persist.
 - **Identity is on the connection.** `conn._hive = { room, identity:{name,kind,owner}, role }`.
 
 ## Implementation sketch (server.js)
 
 ```js
-import { setupWSConnection, getYDoc } from 'y-websocket/bin/utils'
+import { setupWSConnection, getYDoc } from './vendor/y-websocket/utils.cjs'
 import * as decoding from 'lib0/decoding'
 
 // opt-in, off by default — like HIVE_AUTH_MODE. off | warn | block | queue

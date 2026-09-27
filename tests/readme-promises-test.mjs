@@ -232,5 +232,18 @@ console.log('\n# H. every install instruction names a version npx will actually 
     `${seen.length} versioned instructions across ${new Set(seen).size} files`)
 }
 
+console.log('\n# I. the setup the README gives is one that actually starts')
+// MEASURED 25 Sep 2026, after a tester needed an hour to join one room: the README's own config,
+// {"command":"npx"}, cannot start on Windows -- agent apps launch MCP servers without a shell and
+// npx is npx.cmd, so it dies with `spawn npx ENOENT` and the agent simply never gets the tools.
+// `claude mcp add ... -- npx ...` is the same launch. The README now gives one command that writes
+// a config which does start, and checks it by starting it (tests/setup-test.mjs).
+{
+  const R = read('README.md')
+  T('I1 the README sets agents up with the setup command', /npx -y hivecode-mcp@latest setup/.test(R))
+  T('I2 it never tells anyone to put "command": "npx" in a config (spawn npx ENOENT on Windows)', !/"command"\s*:\s*"npx"/.test(R))
+  T('I3 nor to register npx with Claude Code, the same launch', !/claude mcp add[^\n]*npx/.test(R))
+}
+
 console.log(`\n=== HIV-P19 README PROMISES: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

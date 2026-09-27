@@ -34,6 +34,11 @@ services:
       # instead of landing on top of their work.
       - key: HIVE_ENFORCE_CLAIMS
         value: queue
+      # The relay-wide connection cap -- the one a team actually hits. Each participant holds one
+      # socket per open file (up to 128) plus one, so 512 fit only ~4 people on a big repo across
+      # the WHOLE relay. Measured ~56 KB per connection: 2048 is ~115 MB on this 512 MB instance.
+      - key: HIVE_MAX_CONNS_TOTAL
+        value: "2048"
       # --- optional, off unless you set them (secrets go in the dashboard, never here) ---
       # - key: HIVE_PERSIST_DIR    # needs a paid disk mounted at this path
       #   value: /var/data/hive
