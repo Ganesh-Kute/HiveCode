@@ -781,13 +781,64 @@ async function handleRevoke(req, res) {
 const PERSIST_DIR = process.env.HIVE_PERSIST_DIR === 'off'
   ? null
   : (process.env.HIVE_PERSIST_DIR || (process.env.RENDER ? path.join(__dirname, '.hive-relay-data') : null))
+// Everything persistence still owes the disk, for the shutdown handler below. A no-op without it.
+let persistFlushAll = async () => { }
 if (PERSIST_DIR) {
   fs.mkdirSync(PERSIST_DIR, { recursive: true })
   const fileFor = (docName) => path.join(PERSIST_DIR, encodeURIComponent(docName) + '.bin')
-  const flush = (docName, ydoc) => { try { fs.writeFileSync(fileFor(docName), Buffer.from(Y.encodeStateAsUpdate(ydoc))) } catch (e) { console.error('[relay] persist write failed', e.message) } }
+  // IN SMALL TURNS, AND NEVER HALF-WRITTEN (27 Sep 2026). Every flush was a writeFileSync straight
+  // onto the snapshot, straight from its debounce timer. A first publish of 1,000 files arms 1,000
+  // timers that fire about a second later, so the relay did 1,001 synchronous writes in a row and
+  // answered no room in the meantime (1,000 such writes: 4.9 s on the dev machine; in a relay
+  // profile, open/write/close were 28% of the main thread across a publish). And a relay killed
+  // mid-write -- a deploy, an OOM -- left a truncated snapshot, which bindState reads as "no prior
+  // state". Now a due flush joins a queue drained PERSIST_BATCH docs per event-loop turn, so other
+  // rooms are served between batches; every write goes to a temp file renamed over the snapshot.
+  // Writes stay synchronous on purpose: fs.promises moved the work to a 4-thread pool that fell
+  // behind (303 of 1,001 snapshots written six seconds after a publish), which is the durability
+  // this exists for.
+  const PERSIST_BATCH = 16
+  // Which docs have a snapshot at all, read once. bindState used to try a readFileSync for every
+  // doc it created, and on a first publish every one of those is a miss: 1,000 failed reads, all
+  // inside the burst of 1,000 channel opens.
+  const persisted = new Set()
+  try { for (const f of fs.readdirSync(PERSIST_DIR)) if (f.endsWith('.bin')) persisted.add(f) } catch { }
+  const writeSync = (docName, ydoc) => {
+    const f = fileFor(docName), tmp = f + '.tmp'
+    try { fs.writeFileSync(tmp, Buffer.from(Y.encodeStateAsUpdate(ydoc))); fs.renameSync(tmp, f); persisted.add(path.basename(f)) }
+    catch (e) { console.error('[relay] persist write failed', e.message) }
+  }
+  const due = new Map() // docName -> ydoc, oldest first; a doc already waiting keeps its place
+  let draining = false
+  const drain = () => {
+    draining = false
+    let n = 0
+    for (const [docName, ydoc] of due) {
+      due.delete(docName)
+      writeSync(docName, ydoc)
+      if (++n >= PERSIST_BATCH && due.size) { draining = true; setImmediate(drain); return }
+    }
+  }
+  const enqueue = (docName, ydoc) => {
+    due.set(docName, ydoc)
+    if (!draining) { draining = true; setImmediate(drain) }
+  }
+  const pendingTimers = new Map() // docName -> { timer, ydoc }
+  // Now, synchronously, for one doc: its timer and its place in the queue are both spent.
+  const flushNow = (docName, ydoc) => {
+    const p = pendingTimers.get(docName)
+    if (p) { clearTimeout(p.timer); pendingTimers.delete(docName) }
+    due.delete(docName)
+    writeSync(docName, ydoc)
+  }
+  persistFlushAll = async () => {
+    for (const [docName, p] of [...pendingTimers]) flushNow(docName, p.ydoc)
+    for (const [docName, ydoc] of [...due]) flushNow(docName, ydoc)
+  }
   setPersistence({
     bindState: async (docName, ydoc) => {
       try {
+        if (!persisted.has(path.basename(fileFor(docName)))) throw new Error('no snapshot')
         const buf = fs.readFileSync(fileFor(docName))
         Y.applyUpdate(ydoc, new Uint8Array(buf))
         // Seed the size counter from what we just loaded. Without this a restart resets
@@ -795,10 +846,14 @@ if (PERSIST_DIR) {
         // grow again -- the limit would only ever hold until the next deploy.
         setDocBytes(docName, buf.length)
       } catch { /* no prior state */ }
-      let pending = null
-      ydoc.on('update', () => { if (pending) return; pending = setTimeout(() => { pending = null; flush(docName, ydoc) }, 1000) })
+      ydoc.on('update', () => {
+        if (pendingTimers.has(docName)) return
+        const timer = setTimeout(() => { pendingTimers.delete(docName); enqueue(docName, ydoc) }, 1000)
+        pendingTimers.set(docName, { timer, ydoc })
+      })
     },
-    writeState: async (docName, ydoc) => flush(docName, ydoc),
+    // The last connection leaving: now, as it always was -- the doc is destroyed right after.
+    writeState: async (docName, ydoc) => flushNow(docName, ydoc),
   })
   console.log(`[relay] persistence ON -> ${PERSIST_DIR}`)
 }
@@ -1400,11 +1455,12 @@ server.listen(PORT, () => {
 })
 
 // Flush on the way out so the last minute of a shut-down relay is not lost. Best-effort and
-// time-boxed: a slow meter must never hold a deploy open.
+// time-boxed: a slow meter must never hold a deploy open. The documents too: a doc edited in the
+// second before a deploy's SIGTERM sat in its debounce timer and never reached the disk.
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     meter.stop()
-    Promise.race([meter.flush(), new Promise((r) => setTimeout(r, 2500))]).finally(() => process.exit(0))
+    Promise.race([Promise.all([meter.flush(), persistFlushAll()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => process.exit(0))
   })
 }
 
