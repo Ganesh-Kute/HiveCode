@@ -241,8 +241,11 @@ export function unansweredFor(messages, me) {
   // loop, paid in tokens and chat by both. So it goes by whose turn it is between two people: a
   // message from someone I spoke to last is their reply, and opens a debt only if it asks something
   // back or is urgent. Anything else still counts, question mark or not -- "can you take it" has none.
+  // A PERSON is always answered (Antigravity1's review): humans type directives, not needsReply flags,
+  // and "deploy to staging and run the smoke tests" right after an agent's report is an order, not a
+  // reply. Any '?' counts, so 'the port?"' and 'ready? (check it)' are questions too.
   const turn = new Map()   // other person (lowercased) -> 'me' when I spoke to them last, else 'them'
-  const asks = (t) => /\?(\s|$)/.test(String(t || '')) || priorityOf(t) === 'stop'
+  const asks = (t) => /\?/.test(String(t || '')) || priorityOf(t) === 'stop'
   for (const m of list) {
     if (!m || m.kind === 'system' || AUTO.test(String(m.text || ''))) continue
     if (low(m.by) === mine) {
@@ -256,7 +259,7 @@ export function unansweredFor(messages, me) {
     if (mentionsAll(m.text)) continue
     if (mentionsName(m.text, me)) {
       const k = low(m.by)
-      if (turn.get(k) !== 'me' || asks(m.text)) owed.set(k, { from: m.by, at: m.at || '', text: m.text || '' })
+      if (turn.get(k) !== 'me' || m.kind === 'human' || asks(m.text)) owed.set(k, { from: m.by, at: m.at || '', text: m.text || '' })
       turn.set(k, 'them')
     }
   }

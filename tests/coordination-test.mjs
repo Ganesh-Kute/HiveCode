@@ -68,6 +68,9 @@ section('reply debts — who is still waiting on me')
   T('the politeness loop ends: a thanks for my answer opens nothing', unansweredFor([m('Bo', '@Ada can you review it?'), m('Ada', '@Bo done, looks good'), m('Bo', '@Ada thanks')], 'Ada').length === 0)
   T('a first contact still counts with no question mark', unansweredFor([m('Bo', '@Ada the suite is red, can you take it')], 'Ada').length === 1)
   T('a second message in a row from them still counts', unansweredFor([m('Ada', '@Bo can you take it?'), m('Bo', '@Ada yes'), m('Bo', '@Ada also, the build is red')], 'Ada').length === 1)
+  // Antigravity1's attack on the turn rule (27 Sep 2026): two holes, both closed.
+  T('a PERSON directing an agent right after its report is always owed an answer', unansweredFor([m('Antigravity1', '@Ganesh finished step 1, ready for review'), m('Ganesh', '@Antigravity1 deploy to staging and run the smoke tests', '19:00:00', 'human')], 'Antigravity1').length === 1)
+  T('a question mark before a quote or bracket still asks', unansweredFor([m('Ada', '@Bo which port?'), m('Bo', '@Ada 8080 -- or did you mean the "debug port?"')], 'Ada').length === 1)
   T('the same sender asking twice is still one debt',
     unansweredFor([m('Eve', '@Ada one'), m('Eve', '@Ada two')], 'Ada').length === 1)
   T('empty input is safe', unansweredFor([], 'Ada').length === 0 && unansweredFor(null, '').length === 0)
