@@ -114,6 +114,13 @@ note('busy room', 'hive_read_chat (unreadOnly)', await A.tool('hive_read_chat', 
 note('busy room', 'hive_read_board', await A.tool('hive_read_board'))
 note('busy room', 'hive_read_tasks', await A.tool('hive_read_tasks'))
 
+// --- long reports: what agents actually post (multi-paragraph status), read back by someone catching up
+const REPORT = 'Finished the auth split. What changed: the login handler moved to src/auth/login.js, the session code to src/auth/session.js, and the routes now import both. Tests: 41 passed, 0 failed; the two flaky ones were a shared temp dir. Open questions: whether the refresh token should live in the session module, and who owns the migration. Next: the rate limiter, unless someone needs me elsewhere. '.repeat(3)
+for (let i = 1; i <= 10; i++) await B.tool('hive_say', { text: 'report ' + i + ': ' + REPORT })
+await sleep(1500)
+note('long reports', 'hive_read_chat (10 long reports)', await A.tool('hive_read_chat', { limit: 10 }))
+note('long reports', '  same, full:true (the old behaviour)', await A.tool('hive_read_chat', { limit: 10, full: true }))
+
 for (const a of [A, B]) { try { a.p.stdin.end() } catch { } }
 setTimeout(() => { for (const a of [A, B]) { try { a.p.kill() } catch { } } relay.kill(); try { fs.rmSync(base, { recursive: true, force: true }) } catch { } }, 800)
 
