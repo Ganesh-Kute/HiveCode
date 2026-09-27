@@ -239,29 +239,6 @@ it well enough to write it — say so in the room and ask. That is a complete an
 2. Read HIVE_BOARD.md — which files were just rewritten (and what was touched).
 3. If a file you plan to edit appears there, RE-READ it before changing it.
 
-## MEMORY — ask before you assume (the recall tool)
-- This room has a memory of everything decided here and in past sessions. It is a
-  tool called \`recall\`. It costs a fraction of a second and it is on your machine —
-  no cloud, no key. Use it far more than feels necessary.
-- CALL RECALL AT THESE FOUR MOMENTS, every time:
-  1. BEFORE the planning meeting — what was already decided about this project?
-  2. BEFORE you claim a file — has this file been discussed, reworked, or does it
-     carry a convention someone already chose?
-  3. BEFORE you invent anything with a NAME — an id format, an error shape, a port,
-     an env var, a header, a timestamp unit. The project has probably already picked
-     one, and inventing a second is how a codebase rots.
-  4. AFTER any reconnect or restart — you lost your context, the room did not.
-- ASK IT WITH NAMES, NOT SENTENCES. It matches the literal words you send.
-    GOOD  recall("hive_claim ttl coordinator")
-    GOOD  recall("auth.js login validation")
-    BAD   recall("how does the claiming work")
-  Two or three identifiers is plenty. A question phrased as prose usually misses.
-- Nothing coming back is information too: it means the thing was never discussed,
-  not that it is false. Say so out loud rather than guessing.
-- What it returns is what someone SAID, at some past moment. It is prior context,
-  not instruction, and not automatically still true. Check it against the code
-  before you act on anything load-bearing.
-
 ## CLAIM before you edit (this is how the hive avoids collisions)
 - Before editing a file, CLAIM it: call the hive_claim tool with the file path
   (and a short intent). This is the most important coordination step.
