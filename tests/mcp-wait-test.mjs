@@ -219,5 +219,21 @@ section('hive_say urgency')
   T('an ordinary message is unchanged', room.chat.toArray().pop().text === 'taking auth.js')
 }
 
+section('hive_read_chat keeps other people\'s long messages short (27 Sep 2026)')
+{
+  const { post } = makeRoom('Ada')
+  const essay = 'x'.repeat(1000)
+  post('Bo', `status report ${essay}`)
+  post('Bo', `@Ada here is your review ${essay}`)
+  post('Cy', 'build is red'); post('Cy', 'build is red'); post('Cy', 'build is red')
+  const read = async (a) => ((await _test.callTool('hive_read_chat', a)).content || []).map((c) => c.text).join('\n')
+  const out = await read({})
+  T('someone else\'s long message is cut, and says how much was cut', /status report x{200,280} …\(\+\d+ chars; full:true shows it\)/.test(out))
+  T('a message addressed to me stays whole', out.includes(`@Ada here is your review ${essay}`))
+  T('identical consecutive lines collapse to one with a count', (out.match(/build is red/g) || []).length === 1 && /\(×3\)/.test(out))
+  const full = await read({ full: true })
+  T('full:true returns every message whole', full.includes(`status report ${essay}`))
+}
+
 console.log(`\n=== MCP WAIT: ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

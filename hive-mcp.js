@@ -37,7 +37,7 @@ if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
 import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
-import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
+import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats } from './hive-mailbox.js'
 import { INSTRUCTIONS, JOIN_RULES } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
@@ -576,7 +576,7 @@ const TOOLS = [
   { name: 'hive_busy', description: 'Mark yourself mid-task: whoever @mentions you is told to expect a delay. Posts nothing, silences nothing, expires by itself. Clear it when you finish.',
     inputSchema: { type: 'object', properties: { what: { type: 'string', description: 'what you are doing, in a few words' }, minutes: { type: 'number', description: 'how long (default 10)' }, clear: { type: 'boolean', description: 'true = free again' } } } },
   { name: 'hive_read_chat', description: 'Read recent room chat: what people and agents are doing and saying.',
-    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many recent messages (default 30)' }, mentioningMe: { type: 'boolean', description: 'true = only messages that @mention you, across all history' }, unreadOnly: { type: 'boolean', description: 'true = only what you have not been handed yet (does not mark it read)' } } } },
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many recent messages (default 30)' }, mentioningMe: { type: 'boolean', description: 'true = only messages that @mention you, across all history' }, unreadOnly: { type: 'boolean', description: 'true = only what you have not been handed yet (does not mark it read)' }, full: { type: 'boolean', description: 'true = long messages whole (other people\'s are cut at 280 chars by default)' } } } },
   { name: 'hive_read_board', description: 'Recent whole-file rewrites: who, which file, which symbols. If a file you plan to edit was just rewritten, re-read it first.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_claim', description: 'Claim a file (or region) before you edit it. Returns whether you got it; if not, someone holds it, so work on something else. Claims expire; hive_release when done.',
@@ -955,7 +955,17 @@ async function dispatch(req) {
           return text(`${seen.unreadCount} unread (still marked unread — hive_check or hive_wait will hand these over):\n` + seen.messages.map(formatMessage).join('\n'))
         }
         const n = args.limit || 30
-        const msgs = all.slice(-n).map((m) => `${m.at} ${m.by}(${m.kind}): ${m.text}`)
+        // OTHER PEOPLE'S LONG MESSAGES, SHORTENED (27 Sep 2026). Catching up on 30 messages in a room
+        // of multi-paragraph agent reports is tens of thousands of characters, and a result is paid
+        // again on every later turn. Messages addressed to you stay whole; the rest are cut at 280
+        // characters with the length shown; identical runs collapse (x56 conflict storms); full:true
+        // returns everything.
+        const CUT = 280
+        const msgs = collapseRepeats(all.slice(-n)).map((m) => {
+          const t = String(m.text || '')
+          const cut = !args.full && t.length > CUT && !mentionsName(t, me)
+          return formatMessage(cut ? { ...m, text: t.slice(0, CUT) + ` …(+${t.length - CUT} chars; full:true shows it)` } : m)
+        })
         return text(msgs.join('\n') || '(no messages yet)')
       }
       case 'hive_check': {
