@@ -300,7 +300,16 @@ const proc = spawn(process.execPath, ['hive-relay.js', '--room', 'smoke'], { cwd
 let boot = ''
 proc.stdout.on('data', (d) => { boot += d })
 proc.stderr.on('data', (d) => { boot += d })
-await new Promise((r) => setTimeout(r, 3000))
+// POLL FOR THE RELAY, DO NOT SLEEP A FIXED 3 s (27 Sep 2026). The staged relay took 2.7 s to answer
+// on a loaded dev machine, so the fixed wait turned a healthy package into "Q482 not fit to
+// publish" -- a false failure in the one gate between a build and npm. Up to 20 s; a relay that
+// dies says why.
+let exited = null
+proc.on('exit', (c) => { exited = c })
+for (const t0 = Date.now(); Date.now() - t0 < 20000 && exited === null;) {
+  try { await fetch(`http://127.0.0.1:${PORT}/health`); break } catch { await new Promise((r) => setTimeout(r, 200)) }
+}
+if (exited !== null) console.log(`  the staged relay exited (${exited}) before answering:\n${boot.slice(0, 2000)}`)
 
 let ok = true
 const check = (name, cond, detail) => { console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${name}${detail ? '  ' + detail : ''}`); if (!cond) ok = false }
