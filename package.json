@@ -1,6 +1,6 @@
 {
   "name": "hivecode-mcp",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
@@ -91,7 +91,7 @@
     "test:liveness": "node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs",
     "build:ext": "node scripts/build-icr-cjs.cjs && node scripts/build-privacy-cjs.cjs",
     "test:selfhost": "node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs",
-    "test:hardening": "node tests/genesis-claim-test.mjs && node tests/bare-root-write-test.mjs && node tests/version-truth-test.mjs && node tests/room-repo-drift-test.mjs && node tests/first-contact-refusal-test.mjs && node tests/open-file-cap-test.mjs && node tests/learnings-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs && node tests/join-honesty-test.mjs && node tests/relay-diagnosis-test.mjs && node tests/blind-recreate-test.mjs && node tests/genesis-collision-test.mjs && node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs && node tests/readme-promises-test.mjs && node tests/setup-test.mjs && node tests/mcp-conformance-test.mjs && node tests/update-notice-test.mjs && node tests/mux-test.mjs",
+    "test:hardening": "node tests/genesis-claim-test.mjs && node tests/bare-root-write-test.mjs && node tests/version-truth-test.mjs && node tests/room-repo-drift-test.mjs && node tests/first-contact-refusal-test.mjs && node tests/open-file-cap-test.mjs && node tests/learnings-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs && node tests/join-honesty-test.mjs && node tests/relay-diagnosis-test.mjs && node tests/blind-recreate-test.mjs && node tests/genesis-collision-test.mjs && node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs && node tests/readme-promises-test.mjs && node tests/setup-test.mjs && node tests/mcp-conformance-test.mjs && node tests/update-notice-test.mjs && node tests/mux-test.mjs && node tests/own-files-quiet-test.mjs",
     "test:extension": "node tests/extension-parity-test.mjs && node tests/extension-privacy-parity-test.mjs",
     "test:ceiling": "node tests/refused-visible-test.mjs && node tests/ceiling-no-data-loss-test.mjs",
     "test:mux": "node tests/mux-test.mjs",

@@ -64,6 +64,8 @@ const ALWAYS_IGNORE = [
   // to tell an authored edit from its own write after a restart (see SHADOW_FILE). It is
   // per-client by definition: syncing it would hand every peer a false ancestor.
   '.hive-shadow.json',
+  // ...and its write-then-rename temp, which exists for an instant but is the same file.
+  '.hive-shadow.json.tmp',
   // Names a PID on THIS machine. Syncing it would tell every peer their folder is locked by
   // a process that does not exist for them.
   '.hive-lock.json',
@@ -154,6 +156,10 @@ const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder 
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
 const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
+// Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
+// here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
+// told the whole team about .hive-shadow.json, a file none of them had made.
+const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-mcp-session.json', '.hive-id.json'])
 
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the
@@ -2476,7 +2482,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       invisibleWarned.delete(r)
     }
     for (const r of ignoredRel) {
-      if (SKIP.has(r)) continue           // control files are ours and are supposed to be invisible
+      if (SKIP.has(r) || OWN_LOCAL.has(r)) continue // control files are ours and are supposed to be invisible
       if (preexisting.has(r)) continue    // it was already here; nobody did this during the session
       if (invisibleWarned.has(r)) continue // once per path, not once per scan tick
       const holder = coordinator.sense(r)
