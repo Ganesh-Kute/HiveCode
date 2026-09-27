@@ -123,7 +123,13 @@ const updateHandler = (update, _origin, doc, _tr) => {
   encoding.writeVarUint(encoder, messageSync)
   syncProtocol.writeUpdate(encoder, update)
   const message = encoding.toUint8Array(encoder)
-  doc.conns.forEach((_, conn) => send(doc, conn, message))
+  // NOT BACK TO THE CONNECTION THAT SENT IT (Hivecode, 27 Sep 2026). readSyncMessage applies a
+  // client's update with that connection as the transaction origin, and stock y-websocket then sent
+  // the update straight back to it: a write on the relay and a decode on the client, for an edit the
+  // client made itself. Under a 5,000-edit load, 30% of the relay's CPU was socket writes. An update
+  // the RELAY makes (a replayed held write, a reverted head, the governor) has another origin and
+  // still reaches everyone.
+  doc.conns.forEach((_, conn) => { if (conn !== _origin) send(doc, conn, message) })
 }
 
 /**
