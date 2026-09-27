@@ -2121,6 +2121,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     board.set(relPath, { by: name, at: fmtTime(), ts: Date.now(), churn: `${s.changedLines}/${s.totalLines} lines`, symbols: s.symbols, rewrite: s.isRewrite })
     if (s.isRewrite) log(`[${name}] board: logged REWRITE of ${relPath} (${s.changedLines}/${s.totalLines} lines; touched ${s.symbols.join(', ') || 'n/a'})`)
   }
+  let renderBoardTimer = null
+  function renderBoardSoon() {
+    if (stopped) return
+    if (!renderBoardTimer) {
+      renderBoardTimer = setImmediate(() => {
+        renderBoardTimer = null
+        renderBoard()
+        linkMemory()
+      })
+    }
+  }
   function renderBoard() {
     // HIVE_BOARD.md is the coordination doc: full-file REWRITES only (small edits
     // live in the activity feed via the board map, but don't clutter this file).
@@ -2134,7 +2145,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     for (const e of entries) out.push(`- ${e.at}  ${e.by} rewrote \`${e.file}\` (${e.churn}) — touched: ${(e.symbols || []).join(', ') || 'n/a'}`)
     writeToDisk(BOARD_FILE, out.join('\n') + '\n')
   }
-  if (syncFiles) board.observe(() => { renderBoard(); linkMemory() })
+  if (syncFiles) board.observe(renderBoardSoon)
 
   // --- rollback: restore points + per-author revert + undo --------------------
   // Every meaningful change captures a RESTORE POINT: the file's content from JUST
@@ -2312,10 +2323,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // compares before it writes, so calling it per message costs four stat() calls and no
   // disk write, and the relay watcher never sees needless churn.
   let memoryLinked = false
+  let lastLinkedFilesCount = 0
   function linkMemory() {
     if (!syncFiles) return
+    let count = 0
+    for (const f of ['HIVE_CHAT.md', 'HIVE_BOARD.md', 'HIVE_TASKS.md', 'HIVE_MEMBERS.md']) {
+      try { if (fs.existsSync(path.join(ROOT, f))) count++ } catch { }
+    }
+    if (count === 0 || (memoryLinked && count === lastLinkedFilesCount)) return
     const r = grmLink.linkRoom(ROOT, memoryLinked ? () => {} : log) // announce once, not per message
-    if (r.linked) memoryLinked = true
+    if (r.linked) {
+      memoryLinked = true
+      lastLinkedFilesCount = (r.files && r.files.length) || count
+    }
   }
 
   if (syncFiles) chat.observe(() => { renderChat(); linkMemory() })
@@ -2569,7 +2589,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
   }
 
+  let scanCount = 0
   function scan() {
+    scanCount++
     const skippedFulls = []
     const diskFulls = walk(ROOT, [], skippedFulls)
     const diskRel = new Set(diskFulls.map(rel))
@@ -2721,9 +2743,77 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     scanTimer = setTimeout(runAdaptiveScan, ms)
   }
 
+  const pendingFsEvents = new Map() // relPath -> Set<'change'|'rename'>
+  let pendingFsFullScan = false
+
+  function flushFsEvents() {
+    debounce = null
+    if (stopped) return
+    if (!firstScanDone || pendingFsFullScan || pendingFsEvents.size > 256) {
+      pendingFsEvents.clear()
+      pendingFsFullScan = false
+      scan()
+      return
+    }
+
+    const entries = [...pendingFsEvents.entries()]
+    pendingFsEvents.clear()
+    pendingFsFullScan = false
+
+    let changes = 0
+    for (const [r, evts] of entries) {
+      if (SKIP.has(r) || OWN_LOCAL.has(r) || isIgnored(r)) continue
+      const full = path.join(ROOT, r)
+      let st
+      try {
+        st = fs.statSync(full)
+      } catch {
+        // Path does not exist on disk (deleted file or directory)
+        if (known.has(r) && inManifest(r)) {
+          changes++
+          queueManifestDelete(r)
+          flushRoomDoc()
+          closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
+          continue
+        }
+        // Check if r might have been a directory containing tracked files
+        const dirPrefix = r + '/'
+        let wasKnownDir = false
+        for (const k of known) {
+          if (k.startsWith(dirPrefix)) { wasKnownDir = true; break }
+        }
+        if (wasKnownDir) {
+          scan()
+          return
+        }
+        continue
+      }
+
+      if (st.isDirectory()) {
+        // If a directory was created/renamed or received a 'rename' event, fall back to full scan
+        if (evts.has('rename')) {
+          scan()
+          return
+        }
+        // On Windows (and some other OSes), writing to a file inside a directory also emits 'change' on the directory.
+        // Ignore the directory 'change' event; the file itself is processed in this batch.
+        continue
+      }
+
+      if (!st.isFile()) continue
+      if (mtimes.get(r) === st.mtimeMs && inManifest(r)) continue
+      if (readText(full) === null) continue
+      mtimes.set(r, st.mtimeMs)
+      reconcile(r, 'local')
+      changes++
+    }
+  }
+
   function runAdaptiveScan() {
     scanTimer = null
     if (debounce) { clearTimeout(debounce); debounce = null }
+    pendingFsEvents.clear()
+    pendingFsFullScan = false
     const changes = scan()
     if (!watcher) {
       scanInterval = SCAN_NO_WATCHER_MS
@@ -2740,10 +2830,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     scheduleNextScan(scanInterval)
   }
 
-  const onFsEvent = (_evt, fname) => {
+  const onFsEvent = (evt, fname) => {
     if (fname && String(fname).endsWith('.gitignore')) reloadIgnores()
+    if (!fname) {
+      pendingFsFullScan = true
+    } else {
+      const norm = String(fname).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+      if (!norm || norm === '.') {
+        pendingFsFullScan = true
+      } else {
+        let set = pendingFsEvents.get(norm)
+        if (!set) {
+          set = new Set()
+          pendingFsEvents.set(norm, set)
+        }
+        set.add(evt)
+        if (pendingFsEvents.size > 256) pendingFsFullScan = true
+      }
+    }
     if (debounce) return
-    debounce = setTimeout(() => { debounce = null; scan() }, 40)
+    debounce = setTimeout(flushFsEvents, 40)
   }
   function startWatch() {
     try { watcher = fs.watch(ROOT, { recursive: true }, onFsEvent) }
@@ -3133,13 +3239,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
     _openTurns: () => openTurns,
+    _scanCount: () => scanCount,
     stop: () => {
       stopped = true
       try { flushRoomDoc() } catch { }
       if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
+      if (renderBoardTimer) { clearImmediate(renderBoardTimer); renderBoardTimer = null }
       openQueue.length = 0
       if (scanTimer) clearTimeout(scanTimer)
-      if (debounce) clearTimeout(debounce)
+      if (debounce) { clearTimeout(debounce); debounce = null }
+      pendingFsEvents.clear()
+      pendingFsFullScan = false
       if (editingClearTimer) clearTimeout(editingClearTimer)
       try { watcher && watcher.close() } catch { }
       // The shared socket first: closing it ends every channel at once on the relay, instead of

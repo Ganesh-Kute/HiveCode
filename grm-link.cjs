@@ -102,7 +102,7 @@ function linkRoom(dir, log = () => {}) {
     const tag = tagFor(dir)
     const { bom, body } = readRoots(p)
     const stripped = stripBlock(body, tag)
-    const next = stripped.replace(/\s*$/, '') + '\n\n' + blockFor(dir, tag, files) + '\n'
+    const next = stripped.trimEnd() + '\n\n' + blockFor(dir, tag, files) + '\n'
 
     if (bom + next === bom + body) return { linked: true, files, reason: 'already linked' } // no write, no watcher churn
     writeRootsAtomic(p, bom, next)
@@ -125,7 +125,7 @@ function unlinkRoom(dir, log = () => {}) {
     const tag = tagFor(dir)
     const { bom, body } = readRoots(p)
     if (!body.includes('# >>> ' + tag)) return { unlinked: false, reason: 'was not linked' }
-    writeRootsAtomic(p, bom, stripBlock(body, tag).replace(/\s*$/, '') + '\n')
+    writeRootsAtomic(p, bom, stripBlock(body, tag).trimEnd() + '\n')
     log('[hive] room history removed from GRM.')
     return { unlinked: true, reason: 'unlinked' }
   } catch (e) {
