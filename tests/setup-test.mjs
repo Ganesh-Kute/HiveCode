@@ -106,6 +106,21 @@ const lone = tmp('lone')
 put(path.join(lone, '.gemini', 'antigravity', 'mcp_config.json'), '{}')
 const r5 = runSetup(lone, ['--name', 'Tester'])
 T('A20 an app\'s second config path is never printed as an app that is "not installed"', r5.code === 0 && !/\(2nd\)/.test(r5.out) && /READY/.test(lineFor(r5.out, 'Antigravity')), r5.out)
+// Antigravity1's second stranger run (27 Sep): "Antigravity (2nd) READY" as an app of its own, and a
+// numbered restart for every installed app, including ones that were already right.
+const foldHome = tmp('both')
+put(path.join(foldHome, '.claude.json'), '{}')
+put(path.join(foldHome, '.gemini', 'antigravity', 'mcp_config.json'), '{}')
+put(path.join(foldHome, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: { hivecode: { command: 'node', args: ['old-hive-mcp.js'] } } }))
+const rFold1 = runSetup(foldHome, ['--name', 'Tester'])
+const nextFold1 = rFold1.out.split('NEXT')[1] || ''
+T('A25 two config files of one app print as ONE line, never as an app of their own', rFold1.code === 0 && !/\(2nd\)/.test(rFold1.out) && /2 config files/.test(lineFor(rFold1.out, 'Antigravity')), rFold1.out)
+T('A26 a first run numbers a restart for every app it wrote', /1\. Claude Code:/.test(nextFold1) && /2\. Antigravity:/.test(nextFold1) && !/Already set up/.test(nextFold1), nextFold1)
+const rFold2 = runSetup(foldHome, ['--name', 'Tester'])
+const nextFold2 = rFold2.out.split('NEXT')[1] || ''
+T('A27 a second run numbers no restart, and still names the unchanged apps (never silence)', rFold2.code === 0 && !/^\s+\d+\. /m.test(nextFold2) && /Already set up: Claude Code, Antigravity\. Restart them only if the hivecode tools are missing there\./.test(nextFold2), nextFold2)
+const rFoldLink = runSetup(foldHome, ['ws://127.0.0.1:9|room-probe', '--name', 'Tester'])
+T('A28 with a link, people get a clickable Control Room on THAT relay, not the public one', rFoldLink.out.includes('http://127.0.0.1:9/control#' + encodeURIComponent('ws://127.0.0.1:9|room-probe')), rFoldLink.out.split('\n').filter((l) => /browser/.test(l)).join(' | '))
 // The paste-by-hand entry is all a user of any other MCP app gets. Parse it the way a person
 // would -- the brace-balanced block -- and then LAUNCH it: a snippet that parses but does not
 // start is the old README all over again.
@@ -187,6 +202,7 @@ if (up) {
   const out = await M._test.callTool('hive_join', { link: `ws://localhost:${PORT}|room-nodir`, name: 'Solo' })
   const text = (out.content || []).map((c) => c.text).join('\n')
   T('D8 hive_join with no dir writes the room into ~/hivecode/<room>/<name>', fs.existsSync(path.join(dHome, 'room-nodir', 'Solo', '.hive.json')), text.split('\n').slice(0, 4).join(' | '))
+  T('D8b hive_join hands a person a clickable Control Room link on the same relay', text.includes(`browser (people without an agent): http://localhost:${PORT}/control#` + encodeURIComponent(`ws://localhost:${PORT}|room-nodir`)), text.split('\n').slice(0, 9).join(' | '))
   T('D9 ...and not into ./workspace under whatever directory the server started in', !fs.existsSync(path.join(dCwd, 'workspace', 'Solo')) && json(path.join(dCwd, 'workspace', '.hive.json')).room === 'room-old')
   // The rejoin cases, read while the session record exists -- as it does after a disconnect or a
   // restart. hive_leave deletes it, which is what makes a later bare hive_join host a new room.

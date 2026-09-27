@@ -137,6 +137,17 @@ function isPublicTunnel(host) {
  * 'own' does not mean audited -- it means "not the relay we ship". A team that pastes a
  * link from a blog post lands in 'own' too, which is exactly why the pin exists.
  */
+// Where a PERSON opens a room: the relay's own Control Room, with the room's link in the hash.
+// The host comes from the link, never from a default -- a self-hosted room printed with the
+// public panel's address would send them to the wrong relay -- and a URL hash is never sent to
+// any server, so a token in the link stays in the browser. null when there is no room to open.
+function controlUrl(link) {
+  const s = String(link || '').trim()
+  const [relay = '', room = ''] = s.split('|')
+  if (!/^wss?:\/\//i.test(relay.trim()) || !room.trim()) return null
+  return `${relay.trim().replace(/^ws/i, 'http').replace(/\/+$/, '')}/control#${encodeURIComponent(s)}`
+}
+
 function classifyRelay(url) {
   const origin = relayOrigin(url)
   if (!origin) return { kind: 'unknown', origin: null, host: null, encrypted: false, url: String(url || '') }
@@ -291,4 +302,4 @@ function privacyLine(relay, opts = {}) {
   return `relay: ${relay}  [${v.headline}]`
 }
 
-module.exports = { PUBLIC_DEFAULT_RELAY, RETIRED_PUBLIC_RELAYS, currentRelayFor, relayOrigin, classifyRelay, readPin, checkRelay, privacyLine }
+module.exports = { PUBLIC_DEFAULT_RELAY, RETIRED_PUBLIC_RELAYS, currentRelayFor, relayOrigin, controlUrl, classifyRelay, readPin, checkRelay, privacyLine }

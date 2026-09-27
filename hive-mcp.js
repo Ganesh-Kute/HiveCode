@@ -36,7 +36,7 @@ import { startUpdateCheck, updateNotice } from './hive-update.js'
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { checkRelay, currentRelayFor, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
+import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName } from './hive-mailbox.js'
 import { INSTRUCTIONS } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
@@ -388,6 +388,8 @@ was not written. Fix the relay and call hive_join again.`
   // The invite link carries the token when there is one — without it a secured room rejects
   // whoever you hand it to, and the Control Room says the link is missing its token.
   const inviteLink = `${relay}|${room}${useToken ? `|${useToken}` : ''}`
+  // What a person without an agent clicks. Pasting wss:// into a browser's address bar searches for it.
+  const browserUrl = controlUrl(inviteLink)
   // THE VERDICT, NOT JUST THE URL. `relay: wss://...` on its own is unreadable to anybody
   // who has not run a relay -- the public one and a company's own look identical. The
   // bracketed verdict is what makes "did my source just leave the building?" answerable
@@ -399,7 +401,7 @@ was not written. Fix the relay and call hive_join again.`
     ? `\n\nMOVED: this folder pointed at ${migratedFrom}, a Hivecode relay that has been retired. ` +
       `It now uses ${relay}, and .hive.json has been updated, so this happens once.`
     : ''
-  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : ''}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 function requireSession() { if (!session) throw new Error('not in a room — call hive_join first'); return session }

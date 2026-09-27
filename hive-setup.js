@@ -37,7 +37,7 @@ import path from 'path'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { VERSION } from './hive-version.js'
-import { currentRelayFor, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
+import { currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { validateMemberName } from './hive-mailbox.js'
 
 export const SERVER_KEY = 'hivecode'
@@ -59,7 +59,7 @@ export function agentTargets(home = os.homedir(), env = process.env, platform = 
     // Antigravity also reads this one. It is only touched when it ALREADY has a hivecode entry --
     // a stale one there could shadow the fresh one above -- and never created.
     { id: 'antigravity-2', label: 'Antigravity (2nd)', file: path.join(home, '.gemini', 'config', 'mcp_config.json'), present: path.join(home, '.gemini', 'config', 'mcp_config.json'),
-      onlyIfHasEntry: true, restart: 'same refresh as above' },
+      onlyIfHasEntry: true, secondaryOf: 'antigravity', restart: 'same refresh as above' },
     { id: 'cursor', label: 'Cursor', file: path.join(home, '.cursor', 'mcp.json'), present: path.join(home, '.cursor'),
       restart: 'Cursor Settings > MCP, then turn hivecode off and on (or restart Cursor)' },
     { id: 'windsurf', label: 'Windsurf', file: path.join(home, '.codeium', 'windsurf', 'mcp_config.json'), present: path.join(home, '.codeium', 'windsurf'),
@@ -386,7 +386,13 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
 
   let failed = 0
   const ready = []
+  // A second config file of an app is not an app of its own. A READY one folds into its app's line
+  // ("Antigravity (2nd) READY" under "Antigravity READY" made a stranger ask which one was real);
+  // a FAILED one is never folded -- it keeps a line of its own.
+  const isReady = (r) => (r.status === 'written' || r.status === 'unchanged') && r.verify && r.verify.ok
+  const folded = new Set(results.filter((r) => r.t.secondaryOf && isReady(r) && results.some((p) => p.t.id === r.t.secondaryOf && isReady(p))))
   for (const r of results) {
+    if (folded.has(r)) continue
     const where = r.t.file
     if (r.status === 'absent') { log(`  ${pad(r.t.label, 15)} not installed`); continue }
     if (r.status === 'refused' || r.status === 'error') {
@@ -399,9 +405,12 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
       log(`  ${pad(r.t.label, 15)} FAILED  ${where}\n  ${' '.repeat(15)}         written, but it does not start: ${r.verify.error}`)
       continue
     }
+    const extra = results.filter((x) => folded.has(x) && x.t.secondaryOf === r.t.id)
+    r.changed = r.status === 'written' || extra.some((x) => x.status === 'written')
     ready.push(r)
     const how = r.verify.skipped ? 'dry run, nothing written' : `starts in ${(r.verify.ms / 1000).toFixed(1)}s`
-    log(`  ${pad(r.t.label, 15)} READY   ${r.status === 'unchanged' ? 'already set up' : r.detail}  (${how})`)
+    const what = r.status === 'written' ? r.detail : r.changed ? 'updated its second config file' : 'already set up'
+    log(`  ${pad(r.t.label, 15)} READY   ${what}  (${how}${extra.length ? `, ${extra.length + 1} config files` : ''})`)
   }
 
   const manual = { mcpServers: { [SERVER_KEY]: serverEntry(runtime.js) } }
@@ -429,7 +438,13 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
 
   if (ready.length) {
     log(`\nNEXT\n`)
-    ready.forEach((r, i) => log(`  ${i + 1}. ${r.t.label}: ${r.t.restart}.`))
+    // Numbered steps only where this run wrote something. An entry that was already right says
+    // nothing about whether the RUNNING app has loaded it -- "run setup again, then reload the agent"
+    // is the README's first fix for a missing hive_join -- so those apps get one line, never silence.
+    const toRestart = ready.filter((r) => r.changed)
+    const already = ready.filter((r) => !r.changed)
+    toRestart.forEach((r, i) => log(`  ${i + 1}. ${r.t.label}: ${r.t.restart}.`))
+    if (already.length) log(`  Already set up: ${already.map((r) => r.t.label).join(', ')}. Restart ${already.length === 1 ? 'it' : 'them'} only if the hivecode tools are missing there.`)
     if (link) {
       log(`\n  Then paste this to your agent:\n`)
       log(`    Use your hive_join tool to join the Hivecode room ${link} as ${name}. Then follow the rules it gives you.`)
@@ -439,7 +454,10 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
       log(`    Use your hive_join tool to host a new Hivecode room as ${name}, then give me the join link.`)
     }
     log(`\n  Its files go in ${path.join(home, 'hivecode', '<room>', name)} unless you name a folder.`)
-    log(`  People join from a browser, no install: ${PUBLIC_DEFAULT_RELAY.replace(/^wss:/, 'https:')}/control\n`)
+    // With a link, the room itself: its relay's Control Room with the link in the hash, so a person
+    // never pastes wss:// into an address bar. Without one, the panel they paste a link into.
+    const panel = (link && controlUrl(link)) || `${(process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY).replace(/^ws/, 'http').replace(/\/+$/, '')}/control`
+    log(`  People join from a browser, no install: ${panel}\n`)
   }
   return failed ? 1 : 0
 }

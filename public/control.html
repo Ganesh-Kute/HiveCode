@@ -686,7 +686,9 @@ $('theme').addEventListener('click',()=>{theme=theme==='light'?'dark':'light';lo
 let _qName='';try{_qName=(new URLSearchParams(location.search).get('name')||'').trim()}catch{}
 if(_qName){try{localStorage.setItem('hc-name',_qName)}catch{}}
 $('uname').value=_qName||$('uname').value||localStorage.getItem('hc-name')||''
-const h=sanitize(decodeURIComponent(location.hash.slice(1)))
+const _h=sanitize(decodeURIComponent(location.hash.slice(1)))
+// A bare room (#room-x) is a room on THIS relay: the page is served by the relay it belongs to.
+const h=_h&&!_h.includes('|')&&/^[A-Za-z0-9._-]{1,128}$/.test(_h)?(location.origin+location.pathname.replace(/\/control(\.html)?\/?$/,'')).replace(/^http/,'ws')+'|'+_h:_h
 if(h&&h.includes('|')){$('link').value=h;if($('uname').value.trim())connect(h);else{err('Pick the name the crew should see, then Join.');$('uname').focus()}}
 </script>
 </body>
