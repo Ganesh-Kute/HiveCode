@@ -2629,11 +2629,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let openTimer = null
   // Test-only: hold the first drain this long, so a test can land a peer's delete while a key waits.
   const OPEN_DELAY_MS = Number(process.env.HIVE_TEST_OPEN_DELAY_MS) || 0
+  let openTurns = 0 // drains run; tests/join-scale-test.mjs pins how few a big join takes
   function drainOpenQueue() {
     openTimer = null
-    const BATCH = 32
+    openTurns++
+    // 256 A TURN ON ONE SOCKET, 32 ON A SOCKET PER FILE (27 Sep 2026). Each turn boundary waits
+    // behind whatever else the loop runs in between, and during a big join that is a lot: measured
+    // on a 1,000-file room arriving in one manifest event, every 32-file turn ran 1.1-1.4 s after
+    // the last, so the joiner took ~49 s to have the files on disk; 256 a turn, 25 s. On the mux
+    // transport an OPEN is one frame on a socket that already exists; on per-file sockets each is
+    // a new connection, so that path keeps 32. The 100 ms ceiling keeps a slow machine from
+    // holding the loop through a turn -- past the first 32, a turn stops when it runs out of time.
+    const BATCH = fileTransport.mode === 'mux' ? 256 : 32
+    const t0 = Date.now()
     let openedCount = 0
-    while (openQueue.length && openedCount < BATCH && !stopped) {
+    while (openQueue.length && openedCount < BATCH && !stopped && (openedCount < 32 || Date.now() - t0 < 100)) {
       const key = openQueue.shift()
       if (fileDocs.size >= maxOpen()) {
         openQueue.length = 0
@@ -3122,6 +3132,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     },
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
+    _openTurns: () => openTurns,
     stop: () => {
       stopped = true
       try { flushRoomDoc() } catch { }

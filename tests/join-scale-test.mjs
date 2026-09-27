@@ -99,6 +99,17 @@ try {
   }
   T('4 joiner recognizes all 900 room files', finalFiles === NUM_FILES, `roomFiles=${finalFiles}`)
 
+  // 5. FEW TURNS, NOT ONE PER 32 FILES. Every turn boundary waits behind whatever else the loop
+  // runs, so a join paid that wait ~29 times for 900 files. On one socket a turn now opens 256.
+  let opened = 0
+  for (let i = 0; i < 200; i++) {
+    opened = joiner.status().files
+    if (opened >= NUM_FILES) break
+    await sleep(50)
+  }
+  const turns = joiner._openTurns()
+  T('5 the joiner opens 900 files in a handful of turns', opened >= NUM_FILES && turns <= 16, `opened=${opened} turns=${turns} transport=${joiner.status().transport}`)
+
 } finally {
   if (seeder) try { seeder.stop() } catch {}
   if (joiner) try { joiner.stop() } catch {}
