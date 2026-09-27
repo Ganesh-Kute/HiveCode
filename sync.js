@@ -1311,6 +1311,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
     e = { doc: fdoc, provider: fprovider, text, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
     fileDocs.set(relPath, e)
+    if (!createdTimes.has(relPath)) {
+      try {
+        const full = path.join(ROOT, relPath)
+        if (fs.existsSync(full)) createdTimes.set(relPath, fs.statSync(full).mtimeMs)
+      } catch { }
+    }
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
     // A divergent receipt can arrive slightly after (or before) the fused content — so
     // re-run the fork check whenever the provenance ledger changes too, not only on edits.
@@ -1535,6 +1541,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   const known = new Set()
   const mtimes = new Map()
+  const createdTimes = new Map() // relPath -> timestamp of creation/genesis publish
   // Paths that already existed on disk when this client STARTED. This is the
   // discriminator between "I cloned a repo and joined a room that already has these
   // files" (adopt the room's copy) and "this file was created during the session"
@@ -1770,13 +1777,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // the relay has no usable copy of this path -> publish ours (a genuinely new file,
       // or one whose registration outlived the join that promised it)
       if (disk === null) return
-      if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=genesis-publish ${relPath}`)
-      fe.doc.transact(() => applyDiff(fe.text, disk))
+      const now = Date.now()
+      createdTimes.set(relPath, now)
+      fe.doc.transact(() => {
+        applyDiff(fe.text, disk)
+        if (fe.head && !fe.head.has('genesis')) fe.head.set('genesis', { at: now, by: name })
+      })
       stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)
       queueManifestSet(relPath)
       known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk); shadow.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
-      captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'created' }); snappedBase.add(relPath)
       return
     }
     const yt = fe.text
@@ -1798,7 +1808,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // THIS author's fork on first sight or our own local activity (a remote
       // change landing on disk doesn't mean the local author has seen it).
       if (!forkBases.has(relPath) || origin === 'local') forkBases.set(relPath, disk)
-      if (!snappedBase.has(relPath) && disk) { captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'baseline' }); snappedBase.add(relPath) }
       return
     }
     // FIRST-CONTACT ADOPT (no common ancestor). We have never reconciled this file
@@ -1937,7 +1946,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           // the room's copy is strictly newer and adopting it loses nothing.
           writeToDisk(relPath, docText)
           bases.set(relPath, docText); forkBases.set(relPath, docText)
-          if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'room copy adopted on rejoin (local was unchanged)' }); snappedBase.add(relPath) }
           return
         }
         // Divergent AND we know the ancestor: merge the two, do not pick a winner. Snapshot
@@ -1963,7 +1971,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
         writeToDisk(relPath, docText)
         bases.set(relPath, docText); forkBases.set(relPath, docText)
-        if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(relPath) }
         try { say(`↓ ${relPath} already existed in this room — ${name} adopted the room's copy. The local version before joining is saved in the file's history.`) } catch { }
         return
       }
@@ -2050,6 +2057,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // Snapshot the state JUST BEFORE this author's edit lands, attributed to them —
     // captured only on local origin so each change is recorded once, by its author.
     if (origin === 'local' && res.text !== docText) {
+      let hasBase = false
+      for (const e of fe.snap.values()) {
+        if (e.kind === 'base') { hasBase = true; break }
+      }
+      if (!hasBase) {
+        const createTs = fileCreationTs(fe, relPath)
+        captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'created', ts: createTs })
+      }
       const sc = summarizeChange(docText, res.text)
       captureSnapshot(relPath, docText, name, { force: sc.isRewrite, churn: `${sc.changedLines}/${sc.totalLines} lines` })
       lastLocalEdit = relPath
@@ -2109,7 +2124,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     detectFork(relPath)
   }
 
-  const fmtTime = () => new Date().toTimeString().slice(0, 8)
+  const fmtTime = (d = Date.now()) => new Date(d).toTimeString().slice(0, 8)
   // Log file activity to the shared board: EVERY meaningful edit (so the live
   // activity feed reflects ongoing work), tagged with whether it was a full-file
   // `rewrite` and a numeric `ts` for ordering. HIVE_BOARD.md stays rewrites-only
@@ -2158,7 +2173,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const SNAP_MIN_GAP_MS = 4000  // throttle auto-capture per file (fine-grained undo is the editor's job)
   const META_KEEP = 400         // global cap on the parent timeline index
   const lastSnapAt = new Map()  // relPath -> ts of last auto-capture
-  const snappedBase = new Set() // files we've already floored with a baseline snapshot
   const snapId = () => 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 
   function pruneMeta() {
@@ -2169,20 +2183,43 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     doc.transact(() => { for (let i = 0; i < Math.min(overflow, all.length); i++) historyMeta.delete(all[i].id) })
   }
 
+  // Find file creation timestamp from createdTimes, genesis head, provenance ledger, head cur, mtimes, or disk stat.
+  function fileCreationTs(fe, relPath) {
+    if (createdTimes.has(relPath)) return createdTimes.get(relPath)
+    try {
+      const g = fe && fe.head ? fe.head.get('genesis') : null
+      if (g && typeof g.at === 'number' && !isNaN(g.at)) return g.at
+    } catch { }
+    try {
+      const l0 = fe && fe.ledger && fe.ledger.length > 0 ? fe.ledger.get(0) : null
+      if (l0 && typeof l0.at === 'number' && !isNaN(l0.at)) return l0.at
+    } catch { }
+    try {
+      const cur = fe && fe.head ? fe.head.get('cur') : null
+      if (cur && typeof cur.at === 'number' && !isNaN(cur.at)) return cur.at
+    } catch { }
+    if (mtimes.has(relPath)) return mtimes.get(relPath)
+    try {
+      const full = path.join(ROOT, relPath)
+      if (fs.existsSync(full)) return fs.statSync(full).mtimeMs
+    } catch { }
+    return Date.now()
+  }
+
   // Capture `content` as a restore point for relPath, attributed to `byWho`.
   // kind: 'auto' (an ordinary edit), 'base' (a file's floor), 'manual' (a named
   // checkpoint), 'restore' (the pre-restore state, kept so restore is reversible).
-  function captureSnapshot(relPath, content, byWho, { force = false, churn = '', kind = 'auto', label = '' } = {}) {
+  function captureSnapshot(relPath, content, byWho, { force = false, churn = '', kind = 'auto', label = '', ts = null } = {}) {
     if (content == null) return null
     const fe = fileDocs.get(relPath); if (!fe) return null
-    const now = Date.now()
+    const now = (typeof ts === 'number' && !isNaN(ts)) ? ts : Date.now()
     if (kind === 'auto' && !force && now - (lastSnapAt.get(relPath) || 0) < SNAP_MIN_GAP_MS) return null
     const snap = fe.snap
     let latest = null
     for (const e of snap.values()) if (!latest || (e.ts || 0) > (latest.ts || 0)) latest = e
     if (latest && latest.content === content) return null // identical to the most recent point — nothing to keep
     const id = snapId()
-    const at = fmtTime()
+    const at = fmtTime(now)
     const pruned = []
     fe.doc.transact(() => {
       snap.set(id, { id, file: relPath, by: byWho, at, ts: now, content, churn, kind, label })
@@ -2236,7 +2273,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!fe) return { error: 'file not open' }
     let best = null
     for (const e of fe.snap.values()) if ((e.ts || 0) <= ts && (!best || (e.ts || 0) > (best.ts || 0))) best = e
-    if (!best) return { error: 'no restore point at/before that time' }
+    if (!best) {
+      if (fe.snap.size === 0) {
+        const createTs = fileCreationTs(fe, relPath)
+        if (typeof ts === 'number' && ts >= createTs) {
+          return { ok: true, unchanged: true, file: relPath }
+        }
+      }
+      return { error: 'no restore point at/before that time' }
+    }
     return restore(best.id, by)
   }
 
@@ -3259,6 +3304,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         scanInterval,
       }
     },
+    _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
+    _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
     _openTurns: () => openTurns,
