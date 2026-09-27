@@ -91,14 +91,16 @@ try {
   const deadline = Date.now() + 45000
   while (Date.now() < deadline) {
     chatB = mentions(CONFLICT)
-    if (chatB.some((t) => /fused rather than merged/.test(t))) break
+    if (chatB.some((t) => /fused rather than merged|would fuse them/.test(t))) break
     await sleep(500)
   }
   T('B1 a REFUSED announcement was posted for the conflicting merge',
     chatB.some((t) => /REFUSED/.test(t)),
     chatB.map((t) => t.slice(0, 100)).join(' || '))
+  // Either reason is a refusal that says why: the merge fused the two, or (real diff3, 27 Sep
+  // 2026) they conflict and landing both would. What must not appear is a plain conflict notice.
   T('B2 the announcement mentions fusion, not just conflict markers',
-    chatB.some((t) => /fused rather than merged/.test(t)),
+    chatB.some((t) => /fused rather than merged|would fuse them/.test(t)) && !chatB.some((t) => /CONFLICT markers need resolving/.test(t)),
     chatB.map((t) => t.slice(0, 100)).join(' || '))
 
   // ─── C. Non-code files: MUST stay silent ────────────────────────────────────────────────

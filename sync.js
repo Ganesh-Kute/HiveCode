@@ -1904,8 +1904,18 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // rewrites of the same module and nobody was told. Now we run the same check:
         // if both inputs parsed but the merged result does not, or if the merge duplicated
         // structure, refuse it — keep both sides intact and announce loudly.
-        if (!r0.conflict) {
-          const why = fusionReason(r0.text, nl(disk), nl(docText), supports(relPath) ? languageFor(relPath) : null)
+        //
+        // A CONFLICTED race is refused the same way (27 Sep 2026). Two different whole files at one
+        // point used to reach this check "clean": the old one-range merge3 treated two insertions
+        // at the same place as disjoint and CONCATENATED them, and fusionReason caught the result.
+        // The real diff3 (d487e0e) reports them as the conflict they are -- and the lines below
+        // would then have landed both whole files, with markers, in the room's copy. HIV-P17's
+        // answer to a creation race of CODE that cannot merge is to land nothing; that holds
+        // either way. Same scope as the parse check: a file with no language (Markdown) is not
+        // refused, and keeps both versions visibly, with markers, as any other conflict does.
+        {
+          const code = supports(relPath)
+          const why = r0.conflict ? (code ? 'CONFLICT' : '') : fusionReason(r0.text, nl(disk), nl(docText), code ? languageFor(relPath) : null)
           if (why) {
             conflicted.add(relPath)
             // Do NOT write the fused result to doc or disk. The doc already holds docText
@@ -1916,9 +1926,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
             if (!inManifest(relPath)) queueManifestSet(relPath)
             if (icrWarned.get(relPath) !== why) {
               icrWarned.set(relPath, why)
-              log(`[${name}] !! HIV-P17 REFUSED a fused creation-race merge of ${relPath}: ${why}`)
+              log(`[${name}] !! HIV-P17 REFUSED a ${why === 'CONFLICT' ? 'conflicting' : 'fused'} creation-race merge of ${relPath}${why === 'CONFLICT' ? '' : `: ${why}`}`)
               try {
-                say(`[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+                say(why === 'CONFLICT'
+                  ? `[!] @all ${relPath}: a creation-race merge was REFUSED — two participants created it with conflicting content, and landing both whole files in the room's copy would fuse them. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`
+                  : `[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
               } catch { /* the log still carries it */ }
             }
             return
