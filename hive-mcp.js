@@ -1058,11 +1058,10 @@ async function dispatch(req) {
         // time AND enough output have passed that it is probably no longer in context.
         const stateBody = Object.keys(globalState).length ? `\n[GLOBAL PROJECT STATE]\n${JSON.stringify(globalState, null, 2)}\n` : ''
         const stateStr = stateBody && throttle.send('state', stateBody) ? stateBody : ''
-        // The room rules went the other way: 6 KB handed over ONCE in the hive_join result, where
-        // compaction reaches them first. They are the ROOM-specific half -- lanes, gate command,
-        // ownership -- so the general rules in the system prompt do not cover them. A pointer is
-        // re-sent, never a copy: the file is on this agent's own disk, and a second summary here
-        // would be one more description to drift out of date.
+        // The rules went the other way: hive_join hands over their core ONCE (JOIN_RULES; until 27 Sep
+        // 2026 it pasted all 6 KB of HIVE_RULES.md), and compaction reaches that first. When it has
+        // probably been compacted away, a pointer is re-sent, never a copy: HIVE_RULES.md is on this
+        // agent's own disk, and a second summary here would be one more description to drift.
         const rulesStr = throttle.should('rules', RULES_NUDGE).why === 'likely-compacted'
           ? (throttle.sent('rules', RULES_NUDGE), `\n${RULES_NUDGE}\n`)
           : ''
