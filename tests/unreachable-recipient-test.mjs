@@ -35,8 +35,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
 
-const PARKED_MS = 2500
-process.env.HIVE_PARKED_AFTER_MIN = String(PARKED_MS / 60000)
+// ASK FOR 2.5 s, WAIT FOR WHAT THE ENGINE ACTUALLY USES. parkedAfterMs() clamps to a 5 s floor, so
+// this suite used to wait ~4.9 s for a 5 s threshold and passed or failed on machine load: measured
+// 29 Sep 2026, the same commit gave "ageMs 4980 -> WORKING" on one run and "5008 -> PARKED" on the
+// next. The wait is now derived from the engine's own answer, so the two cannot drift apart again.
+process.env.HIVE_PARKED_AFTER_MIN = String(2500 / 60000)
+const { parkedAfterMs } = await import('../hive-activity.js')
+const PARKED_MS = parkedAfterMs()
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-unreach-'))
