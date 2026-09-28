@@ -35,7 +35,13 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 // ReferenceError and killed the sync process outright. Nothing caught it -- the client
 // simply died mid-session, which reads to a user as "sync stopped working". Rewriting a
 // whole file is the most common thing an agent does, so this fired constantly.
-import grmLink from './grm-link.cjs' // hands this room's history to GRM, so the ROOM has a memory
+import { createRequire } from 'module'
+// GRM STAYS PRIVATE (29 Sep 2026). grm-link.cjs hands this room's history to a LOCAL GRM, so the room
+// has a memory -- and it is not in the published package: GRM never goes on the internet. A checkout
+// that has the file links the room; an npm install simply has no room-memory link, and nothing else
+// changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
+let grmLink = null
+try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
 import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from './hive-pr-staleness.js' // room-versus-branch provenance staleness checks (HIV-P9)
 // HIV-P8. The map key MUST be the string 'obligations' — hive-mcp.js:656 reads that exact key, and
@@ -2494,6 +2500,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { if (fs.existsSync(path.join(ROOT, f))) count++ } catch { }
     }
     if (count === 0 || (memoryLinked && count === lastLinkedFilesCount)) return
+    if (!grmLink) return
     const r = grmLink.linkRoom(ROOT, memoryLinked ? () => {} : log) // announce once, not per message
     if (r.linked) {
       memoryLinked = true
@@ -3477,7 +3484,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { provider.destroy() } catch { }
       try { doc.destroy() } catch { }
       // A room you have left should stop colouring what your agents recall.
-      if (memoryLinked) try { grmLink.unlinkRoom(ROOT, log) } catch { }
+      if (memoryLinked && grmLink) try { grmLink.unlinkRoom(ROOT, log) } catch { }
       // Last, so a crash anywhere above still frees the folder on the next run via the
       // stale-PID path rather than leaving it locked.
       try { releaseLock() } catch { }
