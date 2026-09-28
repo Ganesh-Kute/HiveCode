@@ -136,6 +136,35 @@ export function fusionReason(merged, mine, theirs, lang) {
   return ''
 }
 
+const endNl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
+
+// HIV-P17. Why a creation race of relPath must NOT land, '' when it may: 'CONFLICT' when two whole
+// files collide in a file with a language, else fusionReason's answer when a clean-looking union
+// broke code both sides could parse. No language (Markdown) is never refused.
+export function creationRaceVerdict(r0, mine, theirs, relPath) {
+  const code = supports(relPath)
+  return r0.conflict ? (code ? 'CONFLICT' : '') : fusionReason(r0.text, endNl(mine), endNl(theirs), code ? languageFor(relPath) : null)
+}
+
+// HIV-P17 dead heat: several clients published one file into an empty doc before any saw another, and
+// the CRDT unioned them. textsByClient = each creator's live text, keyed by Yjs client id. The winner
+// is the lowest id -- every peer holds the same union, so every peer picks the same one. The creators
+// are folded in ONE BY ONE and each step is judged, because the union is what would land: with three
+// creators, two can each merge cleanly with the winner and still fuse with each other.
+export function deadHeatVerdict(textsByClient, relPath) {
+  const [winner, ...others] = [...textsByClient.keys()].sort((a, b) => a - b)
+  const winnerText = textsByClient.get(winner) || ''
+  let acc = winnerText
+  for (const c of others) {
+    const t = textsByClient.get(c) || ''
+    const r = icrMerge3('', endNl(acc), endNl(t), relPath)
+    const why = creationRaceVerdict(r, acc, t, relPath)
+    if (why) return { winner, winnerText, why }
+    acc = r.text
+  }
+  return { winner, winnerText, why: '' }
+}
+
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
 const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
@@ -1539,6 +1568,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const known = new Set()
   const mtimes = new Map()
   const createdTimes = new Map() // relPath -> timestamp of creation/genesis publish
+  const genesisPublished = new Set() // relPath -> files THIS client genesis-published this session
+  const deadHeatResolved = new Set() // relPath -> files where dead-heat creation-race detection already resolved
   // Paths that already existed on disk when this client STARTED. This is the
   // discriminator between "I cloned a repo and joined a room that already has these
   // files" (adopt the room's copy) and "this file was created during the session"
@@ -1624,11 +1655,24 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       return buf.toString('utf8')
     } catch { return null }
   }
+  const ensuredDirs = new Set()
   function writeToDisk(relPath, content) {
     if (!isSafeRelPath(relPath)) return // never write a path that could escape ROOT (defense in depth)
     const full = path.join(ROOT, relPath)
-    fs.mkdirSync(path.dirname(full), { recursive: true })
-    fs.writeFileSync(full, content)
+    const dir = path.dirname(full)
+    if (!ensuredDirs.has(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+      ensuredDirs.add(dir)
+    }
+    try { fs.writeFileSync(full, content) } catch (e) {
+      // The cache only skips mkdir; it must never lose a write. A folder someone deleted or renamed
+      // since we made it is simply made again.
+      if (e.code !== 'ENOENT') throw e
+      ensuredDirs.delete(dir)
+      fs.mkdirSync(dir, { recursive: true })
+      ensuredDirs.add(dir)
+      fs.writeFileSync(full, content)
+    }
     shadow.set(relPath, content) // record what THE ENGINE wrote — any later disk divergence is an authored edit
     saveShadowSoon()             // ...and survive a restart, or the next join has no ancestor
     known.add(relPath)
@@ -1677,6 +1721,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   const conflicted = new Set() // files currently holding unresolved <<<<<<< markers
   const icrWarned = new Map()  // relPath -> last ICR semantic warning announced (dedupe)
+  // HIV-P17: a creation race of CODE that cannot merge lands NOTHING. The doc keeps roomText, the disk
+  // keeps the local draft (also saved as a manual snapshot, so it survives whatever happens next), and
+  // the bases point at roomText, so the next normal edit merges against the room's copy. One function
+  // for all three race paths -- first contact, a dead heat, and a dead heat the peer already resolved
+  // -- so their recovery and their announcement cannot drift apart.
+  function refuseCreationRace(relPath, why, disk, roomText) {
+    conflicted.add(relPath)
+    captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local draft preserved (creation-race refused)' })
+    bases.set(relPath, roomText); forkBases.set(relPath, roomText); shadow.set(relPath, roomText)
+    if (!inManifest(relPath)) queueManifestSet(relPath)
+    if (icrWarned.get(relPath) === why) return
+    icrWarned.set(relPath, why)
+    const conflict = why === 'CONFLICT'
+    log(`[${name}] !! HIV-P17 REFUSED a ${conflict ? 'conflicting' : 'fused'} creation-race merge of ${relPath}${conflict ? '' : `: ${why}`}`)
+    try {
+      say(conflict
+        ? `[!] @all ${relPath}: a creation-race merge was REFUSED — two participants created it with conflicting content, and landing both whole files in the room's copy would fuse them. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`
+        : `[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+    } catch { /* the log still carries it */ }
+  }
   function reconcile(relPath, origin = 'local') {
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
     if (!canOpen(relPath)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
@@ -1776,6 +1840,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (disk === null) return
       const now = Date.now()
       createdTimes.set(relPath, now)
+      genesisPublished.add(relPath)
       fe.doc.transact(() => {
         applyDiff(fe.text, disk)
         if (fe.head && !fe.head.has('genesis')) fe.head.set('genesis', { at: now, by: name })
@@ -1914,25 +1979,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // either way. Same scope as the parse check: a file with no language (Markdown) is not
         // refused, and keeps both versions visibly, with markers, as any other conflict does.
         {
-          const code = supports(relPath)
-          const why = r0.conflict ? (code ? 'CONFLICT' : '') : fusionReason(r0.text, nl(disk), nl(docText), code ? languageFor(relPath) : null)
+          const why = creationRaceVerdict(r0, disk, docText, relPath)
           if (why) {
-            conflicted.add(relPath)
-            // Do NOT write the fused result to doc or disk. The doc already holds docText
-            // (the room's copy) and disk holds the local draft — both are intact. Setting
-            // bases to docText means the next normal edit will merge against the room's copy,
-            // which is the same recovery path the normal-merge refusal uses.
-            bases.set(relPath, docText); forkBases.set(relPath, docText); shadow.set(relPath, docText)
-            if (!inManifest(relPath)) queueManifestSet(relPath)
-            if (icrWarned.get(relPath) !== why) {
-              icrWarned.set(relPath, why)
-              log(`[${name}] !! HIV-P17 REFUSED a ${why === 'CONFLICT' ? 'conflicting' : 'fused'} creation-race merge of ${relPath}${why === 'CONFLICT' ? '' : `: ${why}`}`)
-              try {
-                say(why === 'CONFLICT'
-                  ? `[!] @all ${relPath}: a creation-race merge was REFUSED — two participants created it with conflicting content, and landing both whole files in the room's copy would fuse them. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`
-                  : `[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
-              } catch { /* the log still carries it */ }
-            }
+            refuseCreationRace(relPath, why, disk, docText)
             return
           }
         }
@@ -1994,6 +2043,66 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         say(`⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted. Local disk was preserved. Resolve deliberately.`)
       } catch { }
       return
+    }
+    // DEAD-HEAT GENESIS COLLISION DETECTION & RESOLUTION.
+    // When two peers publish to an empty document at genesis concurrently before either
+    // sees the other, both set bases to their own genesis text. When the remote update
+    // lands, bases.has(relPath) is true on both peers, so neither enters the first-contact
+    // creation race branch above. The CRDT unions both inserts. Normal diff3 merge against
+    // base === disk accepts docText (the union), and fusionReason is blinded because 'theirs'
+    // is already the invalid union. Both peers silently write the broken union to disk.
+    //
+    // Detection (bounded): only runs for files THIS client genesis-published this session,
+    // on remote reconciles before anything writes to disk, and at most once per file.
+    if (origin === 'remote' && genesisPublished.has(relPath) && !deadHeatResolved.has(relPath)) {
+      const allGenesisClients = new Set()
+      const liveGenesisClients = new Set()
+      const liveTexts = new Map()
+
+      let it = fe.text._start
+      while (it) {
+        if (it.origin === null && it.rightOrigin === null) {
+          allGenesisClients.add(it.id.client)
+          if (!it.deleted) liveGenesisClients.add(it.id.client)
+        }
+        if (!it.deleted) {
+          const c = it.id.client
+          const s = typeof it.content?.str === 'string'
+            ? it.content.str
+            : (Array.isArray(it.content?.getContent?.()) ? it.content.getContent().join('') : '')
+          liveTexts.set(c, (liveTexts.get(c) || '') + s)
+        }
+        it = it.right
+      }
+
+      if (liveGenesisClients.size >= 2) {
+        deadHeatResolved.add(relPath)
+        const { winner: winnerClient, winnerText, why } =
+          deadHeatVerdict(new Map([...liveGenesisClients].map((c) => [c, liveTexts.get(c) || ''])), relPath)
+        // DISJOINT = LEAVE THE UNION ALONE. The CRDT union already holds every author's work.
+        if (why) {
+          // Conflicting or fused: the room keeps ONE whole file, the winner's; the losers keep theirs on disk.
+          fe.doc.transact(() => applyDiff(fe.text, winnerText))
+          if (fe.doc.clientID === winnerClient || disk === winnerText) {
+            // The winner's disk already holds winnerText. Nothing to write, nothing to refuse, and not
+            // marked conflicted: its next clean edit would otherwise announce a "resolved" conflict.
+            bases.set(relPath, winnerText); forkBases.set(relPath, winnerText); shadow.set(relPath, winnerText)
+            if (!inManifest(relPath)) queueManifestSet(relPath)
+            log(`[${name}] HIV-P17 creation-race dead heat resolved: kept local genesis as winner for ${relPath}`)
+            return
+          }
+          refuseCreationRace(relPath, why, disk, winnerText)
+          return
+        }
+      } else if (allGenesisClients.size >= 2 && allGenesisClients.has(fe.doc.clientID) && disk !== docText) {
+        // The winner resolved before this client reconciled: this client's genesis item is already deleted.
+        const why = creationRaceVerdict(icrMerge3('', endNl(disk), endNl(docText), relPath), disk, docText, relPath)
+        if (why) {
+          deadHeatResolved.add(relPath)
+          refuseCreationRace(relPath, why, disk, docText)
+          return
+        }
+      }
     }
     const base = bases.has(relPath) ? bases.get(relPath) : disk
     const fork = forkBases.has(relPath) ? forkBases.get(relPath) : base
@@ -2715,6 +2824,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // Chunking opens via setImmediate drains the batch smoothly in 32-file slices, firing
   // provider.on('sync') within milliseconds while keeping single-file live edits instant.
   const openQueue = []
+  const openQueueSet = new Set()
   let openTimer = null
   // Test-only: hold the first drain this long, so a test can land a peer's delete while a key waits.
   const OPEN_DELAY_MS = Number(process.env.HIVE_TEST_OPEN_DELAY_MS) || 0
@@ -2734,8 +2844,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let openedCount = 0
     while (openQueue.length && openedCount < BATCH && !stopped && (openedCount < 32 || Date.now() - t0 < 100)) {
       const key = openQueue.shift()
+      openQueueSet.delete(key)
       if (fileDocs.size >= maxOpen()) {
         openQueue.length = 0
+        openQueueSet.clear()
         break
       }
       // STILL WANTED? A key can wait here while a peer deletes the file. Its document still exists on
@@ -2753,7 +2865,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
 
   function queueOpenFile(key) {
-    if (fileDocs.has(key) || fileDocs.size >= maxOpen() || openQueue.includes(key)) return
+    if (fileDocs.has(key) || fileDocs.size >= maxOpen() || openQueueSet.has(key)) return
+    openQueueSet.add(key)
     if (fs.existsSync(path.join(ROOT, key))) openQueue.unshift(key)
     else openQueue.push(key)
     if (!openTimer && !stopped) {
@@ -2769,7 +2882,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (change.action === 'delete') {
         pendingManifestOps.delete(key)
         closeFile(key)
-        { const qi = openQueue.indexOf(key); if (qi >= 0) openQueue.splice(qi, 1) } // deleted while queued
+        { const qi = openQueue.indexOf(key); if (qi >= 0) { openQueue.splice(qi, 1); openQueueSet.delete(key) } } // deleted while queued
         try { fs.rmSync(path.join(ROOT, key)) } catch { }
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key)
         log(`[${name}] <- deleted ${key}`)
@@ -3323,6 +3436,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     },
     _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
     _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
+    _fileDoc: (r) => fileDocs.get(r),
+    _fileText: (r) => fileDocs.get(r)?.text?.toString() || '',
     _watcher: () => watcher,
     _scanInterval: () => scanInterval,
     // Just the two booleans hive_say, hive_check/hive_wait and hive_delivered need on every call.
@@ -3337,6 +3452,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
       if (renderBoardTimer) { clearImmediate(renderBoardTimer); renderBoardTimer = null }
       openQueue.length = 0
+      openQueueSet.clear()
       if (scanTimer) clearTimeout(scanTimer)
       if (debounce) { clearTimeout(debounce); debounce = null }
       pendingFsEvents.clear()
