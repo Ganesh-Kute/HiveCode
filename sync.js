@@ -36,6 +36,7 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 // simply died mid-session, which reads to a user as "sync stopped working". Rewriting a
 // whole file is the most common thing an agent does, so this fired constantly.
 import { createRequire } from 'module'
+import { VERSION, VERSION_LABEL } from './hive-version.js' // which build this client is, carried in presence
 // GRM STAYS PRIVATE (29 Sep 2026). grm-link.cjs hands this room's history to a LOCAL GRM, so the room
 // has a memory -- and it is not in the published package: GRM never goes on the internet. A checkout
 // that has the file links the room; an npm install simply has no room-memory link, and nothing else
@@ -1066,7 +1067,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets() })
   let stopped = false
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, passive: !!passive, listener: listener || undefined }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -2593,7 +2594,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, passive: !!passive, listener: listener || undefined })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -2691,6 +2692,43 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const theirs = u.v ? `v${u.v}` : 'an older build'
       log(`[${name}] ⚠ ${u.name} is on ${theirs} (incompatible with v${PROTOCOL_VERSION}) — they won't sync correctly until everyone updates.`)
       try { say(`⚠ ${u.name} is on an incompatible version — files won't sync with them until everyone updates Hivecode.`) } catch { }
+    }
+    checkBuilds()
+  }
+  // MIXED BUILDS, SEEN BY THE ROOM ITSELF (29 Sep 2026). The same protocol does not mean the same
+  // engine: two builds that merge differently corrupt each other's files with every write green.
+  // Until now the only detector was each agent remembering to say "joined on hivecode X". Every
+  // engine client now carries its build in presence (hv), so the room can see a mismatch without
+  // anyone announcing it. Rules, each against a false alarm:
+  //   - only clients that report a build are compared, EXCEPT an AI on this protocol reporting none:
+  //     that is an engine older than build reporting, the rollout case, and it cannot warn itself
+  //   - humans are not flagged: the extension and the browser panel carry no engine build
+  //   - one side of each pair speaks (the name that sorts first), once per build it sees
+  const buildWarned = new Set()
+  function checkBuilds() {
+    // An old engine cannot speak for itself, so SOMEBODY current must -- but only one: the reporting
+    // client whose name sorts first. Otherwise every current client in the room says the same thing.
+    const reporters = [name]
+    for (const s of provider.awareness.getStates().values()) { const u = s && s.user; if (u && u.name && u.hv) reporters.push(u.name) }
+    const speakForOld = reporters.sort()[0] === name
+    for (const s of provider.awareness.getStates().values()) {
+      const u = s && s.user
+      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION) continue
+      const human = String(u.kind || '').toLowerCase() === 'human'
+      let theirs = ''
+      if (u.hv) {
+        if (u.hv === VERSION_LABEL || name > u.name) continue
+        theirs = `hivecode ${u.hv}`
+      } else if (!human) {
+        if (!speakForOld) continue
+        theirs = `a hivecode build older than build reporting (before ${VERSION})`
+      } else continue
+      const key = `${u.name}|${u.hv || '-'}`
+      if (buildWarned.has(key)) continue
+      buildWarned.add(key)
+      const same = u.hv && u.hv.split('+')[0] === VERSION ? ' (the same release from different commits)' : ''
+      log(`[${name}] ⚠ MIXED BUILDS: ${u.name} runs ${theirs}, this client runs ${VERSION_LABEL}${same}`)
+      try { say(`⚠ MIXED BUILDS: ${u.name} runs ${theirs}, ${name} runs hivecode ${VERSION_LABEL}${same}. Two builds in one room can lose file content with no error on either side -- everyone should run the same build.`) } catch { }
     }
   }
   if (syncFiles) provider.awareness.on('change', () => { renderMembers(); renderClaims(); checkVersions() })

@@ -1383,7 +1383,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           const rec = act ? act.get(String(m.name).toLowerCase()) : null
           const c = controls.get(m.name)
           const editing = m.editing && now - m.editing.at < 15000 ? `\n    editing ${m.editing.file}` : ''
-          return ACT.line(`${m.name} (${m.kind})`, rec, {
+          return ACT.line(`${m.name} (${m.kind})${m.hv ? ` on ${m.hv}` : ''}`, rec, {
             present: true, passive: !!m.passive,
             paused: !!(c && c.state === 'paused'),
             // HIV-P11c. Without this the room said `Ganesh (human) — PARKED: ... anything you
