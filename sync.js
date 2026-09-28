@@ -2528,17 +2528,27 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     else say(`@${to}: ${text}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
     return id
   }
+  // A decision is about a task that is WAITING for one. Approving an accepted or done task used to
+  // rewrite it to 'accepted', which hands finished work straight back to the agent to do again.
+  // 'denied' stays decidable: an owner may change their mind.
   function decide(id, accept, by = name) {
     const t = tasks.get(id)
     if (!t) return { error: 'no such task' }
     const ownerOf = owners.get(t.to)
     if (ownerOf && by !== ownerOf) return { error: `only ${ownerOf} (owner of ${t.to}) can approve task ${id}` }
+    if (t.status !== 'pending' && t.status !== 'denied') return { error: `task ${id} is ${t.status}, not waiting for a decision` }
     tasks.set(id, { ...t, status: accept ? 'accepted' : 'denied', decidedBy: by })
     say(`task ${id} ${accept ? 'APPROVED' : 'denied'} by ${by}: "${t.text}"`)
     return { ok: true }
   }
+  // Only the ASSIGNEE finishes a task, and only work it was cleared to do. Before 29 Sep 2026 anyone
+  // could mark anyone's task done -- including one still PENDING its owner's approval, or DENIED --
+  // so "done" could mean the owner said no and the room was told otherwise. Done twice is done.
   function complete(id, note = '') {
     const t = tasks.get(id); if (!t) return { error: 'no such task' }
+    if (t.to !== name) return { error: `task ${id} is ${t.to}'s -- only ${t.to} can complete it` }
+    if (t.status === 'done') return { ok: true, already: true }
+    if (t.status !== 'accepted') return { error: `task ${id} is ${t.status}: only accepted work can be completed${t.status === 'pending' ? ` (it is waiting for ${owners.get(t.to) || 'its owner'} to approve)` : ''}` }
     tasks.set(id, { ...t, status: 'done', decidedBy: t.decidedBy })
     say(`task ${id} done by ${name}${note ? ': ' + note : ''}`)
     return { ok: true }

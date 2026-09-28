@@ -1261,7 +1261,7 @@ async function dispatch(req) {
       }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
-      case 'hive_complete': { enforceDcoLock(); const r = requireSession().hive.complete(String(args.id), String(args.note || '')); return r.ok ? text(`completed ${args.id}`) : err(r.error) }
+      case 'hive_complete': { enforceDcoLock(); const r = requireSession().hive.complete(String(args.id), String(args.note || '')); return r.ok ? text(r.already ? `${args.id} was already done` : `completed ${args.id}`) : err(r.error) }
       case 'hive_claim': {
         const region = String(args.region || ''); if (!region) return err('need a region (file path)')
         // Claiming does not spend a lease — it is not a write. But claiming a poisoned path is
