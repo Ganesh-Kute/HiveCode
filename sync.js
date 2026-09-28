@@ -29,20 +29,18 @@ import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (
 import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
-import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
+import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js'
+import { createRequire } from 'module'
+import { VERSION, VERSION_LABEL } from './hive-version.js'
+let grmLink = null
+try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
+ // convergent-substrate: signed provenance for every landed change
 // `languageFor` belongs in this list and was missing: reconcile() calls it on the
 // clean-rewrite path, so a local whole-file rewrite of a supported file threw
 // ReferenceError and killed the sync process outright. Nothing caught it -- the client
 // simply died mid-session, which reads to a user as "sync stopped working". Rewriting a
 // whole file is the most common thing an agent does, so this fired constantly.
-import { createRequire } from 'module'
-import { VERSION, VERSION_LABEL } from './hive-version.js' // which build this client is, carried in presence
-// GRM STAYS PRIVATE (29 Sep 2026). grm-link.cjs hands this room's history to a LOCAL GRM, so the room
-// has a memory -- and it is not in the published package: GRM never goes on the internet. A checkout
-// that has the file links the room; an npm install simply has no room-memory link, and nothing else
-// changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
-let grmLink = null
-try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
+ // hands this room's history to GRM, so the ROOM has a memory
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
 import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from './hive-pr-staleness.js' // room-versus-branch provenance staleness checks (HIV-P9)
 // HIV-P8. The map key MUST be the string 'obligations' — hive-mcp.js:656 reads that exact key, and
@@ -142,22 +140,11 @@ export function fusionReason(merged, mine, theirs, lang) {
   }
   return ''
 }
-
 const endNl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
-
-// HIV-P17. Why a creation race of relPath must NOT land, '' when it may: 'CONFLICT' when two whole
-// files collide in a file with a language, else fusionReason's answer when a clean-looking union
-// broke code both sides could parse. No language (Markdown) is never refused.
 export function creationRaceVerdict(r0, mine, theirs, relPath) {
   const code = supports(relPath)
   return r0.conflict ? (code ? 'CONFLICT' : '') : fusionReason(r0.text, endNl(mine), endNl(theirs), code ? languageFor(relPath) : null)
 }
-
-// HIV-P17 dead heat: several clients published one file into an empty doc before any saw another, and
-// the CRDT unioned them. textsByClient = each creator's live text, keyed by Yjs client id. The winner
-// is the lowest id -- every peer holds the same union, so every peer picks the same one. The creators
-// are folded in ONE BY ONE and each step is judged, because the union is what would land: with three
-// creators, two can each merge cleanly with the winner and still fuse with each other.
 export function deadHeatVerdict(textsByClient, relPath) {
   const [winner, ...others] = [...textsByClient.keys()].sort((a, b) => a - b)
   const winnerText = textsByClient.get(winner) || ''
@@ -171,6 +158,7 @@ export function deadHeatVerdict(textsByClient, relPath) {
   }
   return { winner, winnerText, why: '' }
 }
+
 
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
@@ -565,6 +553,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // DISAGREEMENT becomes the signal. One shared "size" field would have silently converged on
   // whichever peer wrote last, which is precisely the failure it exists to catch.
   const swarmAttest = doc.getMap('swarm_attest')
+  const swarmVersions = doc.getMap('swarm_versions')
+
+  function bumpAttestVersion(relPath, newText) {
+    if (!swarmAttest.has(relPath)) return // only bump files that already have attestations
+    const prev = swarmVersions.get(relPath) || { n: 1, hash: '' }
+    const newHash = contentHash(newText)
+    if (prev.hash !== newHash) {
+      swarmVersions.set(relPath, { n: (prev.n || 1) + 1, hash: newHash })
+    }
+  }
   // GATE VERDICTS — `<region>|<peerName>` -> the result of that peer running the room's check in
   // ITS OWN folder before handing the file back. Keyed per peer for the same reason swarmAttest
   // is: "the tests pass" is a fact about one folder's bytes, and storing it as a single shared
@@ -2201,6 +2199,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // fusing. Recording (fork, disk) keeps every concurrent same-line edit anchored to the
     // SAME clean parent, so the fork stays detectable no matter how the char-CRDT fuses.
     if (origin === 'local') {
+      if (res.text !== docText) bumpAttestVersion(relPath, res.text)
       // Gate ON: the author's INTENT was already captured at the source (captureLocal, top
       // of this pass) — here we only advance the authority head to the landed content.
       // Gate OFF (default): the proven landed-transition stamp, unchanged.
@@ -3264,24 +3263,120 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // whether the peers DISAGREE — see the swarm_attest declaration for why it is keyed per peer.
     attest: (relPath, bytes, lines) => {
       const p = String(relPath)
-      const prev = swarmAttest.get(p) || {}
-      const next = { ...prev, [name]: { bytes: Number(bytes), lines: Number(lines), at: new Date().toISOString() } }
-      swarmAttest.set(p, next)
-      const sizes = [...new Set(Object.values(next).map((v) => v && v.bytes))]
-      const split = sizes.length > 1
-      if (split) {
-        // Announce, do not throw. The measuring agent did nothing wrong and its report is valid; the
-        // ROOM is what is broken. Throwing here would punish whoever happened to measure second.
-        const detail = Object.entries(next).map(([who, v]) => `${who}:${v.bytes}b/${v.lines}L`).join('  ')
-        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT bytes: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+      const full = path.join(ROOT, p)
+      let measuredHash = ''
+      let measuredBytes = Number(bytes)
+      let measuredLines = Number(lines || 0)
+      if (fs.existsSync(full)) {
+        try {
+          const diskContent = fs.readFileSync(full, 'utf8')
+          measuredHash = contentHash(diskContent)
+          if (!Number.isFinite(measuredBytes) || measuredBytes === 0) {
+            measuredBytes = Buffer.byteLength(diskContent, 'utf8')
+          }
+        } catch { }
+      } else {
+        const fe = fileDocs.get(p)
+        if (fe && fe.text && fe.text.length > 0) {
+          measuredHash = contentHash(fe.text.toString())
+        } else {
+          measuredHash = contentHash(`bytes:${measuredBytes}:lines:${measuredLines}`)
+        }
       }
-      return { path: p, peers: next, count: Object.keys(next).length, sizes, diverged: split }
+
+      let curVer = swarmVersions.get(p)
+      if (!curVer) {
+        curVer = { n: 1, hash: measuredHash }
+        swarmVersions.set(p, curVer)
+      }
+
+      const prev = swarmAttest.get(p) || {}
+      const next = {
+        ...prev,
+        [name]: {
+          bytes: measuredBytes,
+          lines: measuredLines,
+          hash: measuredHash,
+          version: curVer.n,
+          at: new Date().toISOString()
+        }
+      }
+      swarmAttest.set(p, next)
+
+      // Compare only attestations of the CURRENT version
+      const currentPeers = []
+      const formattedPeers = {}
+      for (const [peerName, rec] of Object.entries(next)) {
+        if (!rec) continue
+        const isCurrent = (rec.version || 1) === curVer.n
+        if (isCurrent) {
+          currentPeers.push({ peer: peerName, ...rec })
+          formattedPeers[peerName] = { ...rec, stale: false }
+        } else {
+          formattedPeers[peerName] = {
+            ...rec,
+            stale: true,
+            staleReason: `stale: attested version ${rec.version || 0}, room is at ${curVer.n}`
+          }
+        }
+      }
+
+      const currentHashes = [...new Set(currentPeers.map((v) => v.hash))]
+      const currentSizes = [...new Set(currentPeers.map((v) => v.bytes))]
+      const split = currentHashes.length > 1
+      const quorum = currentPeers.length >= 2 && currentHashes.length === 1
+
+      if (split) {
+        const detail = currentPeers.map((v) => `${v.peer}:${v.bytes}b/${v.lines}L`).join('  ')
+        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+      }
+
+      return {
+        path: p,
+        peers: formattedPeers,
+        count: currentPeers.length,
+        totalCount: Object.keys(next).length,
+        sizes: currentSizes,
+        diverged: split,
+        quorum,
+        version: curVer.n
+      }
     },
     verified: (relPath) => {
       const p = String(relPath)
+      const curVer = swarmVersions.get(p) || { n: 1, hash: '' }
       const rec = swarmAttest.get(p) || {}
-      const sizes = [...new Set(Object.values(rec).map((v) => v && v.bytes))]
-      return { path: p, peers: rec, count: Object.keys(rec).length, sizes, diverged: sizes.length > 1, quorum: Object.keys(rec).length >= 2 && sizes.length === 1 }
+      const currentPeers = []
+      const formattedPeers = {}
+      for (const [peerName, v] of Object.entries(rec)) {
+        if (!v) continue
+        const isCurrent = (v.version || 1) === curVer.n
+        if (isCurrent) {
+          currentPeers.push({ peer: peerName, ...v })
+          formattedPeers[peerName] = { ...v, stale: false }
+        } else {
+          formattedPeers[peerName] = {
+            ...v,
+            stale: true,
+            staleReason: `stale: attested version ${v.version || 0}, room is at ${curVer.n}`
+          }
+        }
+      }
+      const currentHashes = [...new Set(currentPeers.map((v) => v.hash))]
+      const currentSizes = [...new Set(currentPeers.map((v) => v.bytes))]
+      const split = currentHashes.length > 1
+      const quorum = currentPeers.length >= 2 && currentHashes.length === 1
+
+      return {
+        path: p,
+        peers: formattedPeers,
+        count: currentPeers.length,
+        totalCount: Object.keys(rec).length,
+        sizes: currentSizes,
+        diverged: split,
+        quorum,
+        version: curVer.n
+      }
     },
     say,                 // post a coordination message
     assign,              // direct a task at a participant (needs approval if target AI has an owner)

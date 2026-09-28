@@ -1226,11 +1226,14 @@ async function dispatch(req) {
         const f = String(args.file || ''); if (!f) return err('need a file path')
         if (!Number.isFinite(Number(args.bytes))) return err('need bytes — measure your own folder, do not estimate')
         const r = requireSession().hive.attest(f, Number(args.bytes), Number(args.lines || 0))
-        const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines`).join('\n  ')
+        const who = Object.entries(r.peers).map(([n, v]) => {
+          if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
+          return `${n}: ${v.bytes} bytes / ${v.lines} lines`
+        }).join('\n  ')
         if (r.diverged) {
           return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.`)
         }
-        return text(`attested ${f} at ${args.bytes} bytes.\n  ${who}\n${r.count >= 2 ? 'QUORUM: 2+ peers agree — this publish is confirmed.' : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'}`)
+        return text(`attested ${f} at ${args.bytes} bytes.\n  ${who}\n${r.quorum ? 'QUORUM: 2+ peers agree — this publish is confirmed.' : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'}`)
       }
       case 'hive_verified': {
         const f = String(args.file || ''); if (!f) return err('need a file path')
@@ -1238,14 +1241,17 @@ async function dispatch(req) {
         // Attestation and gate verdicts are independent records, so an unattested path must still
         // report its gate. Returning early here would hide a FAILED check behind "nobody measured
         // the bytes", which is the opposite of what this tool is for.
-        if (!r.count) {
+        if (!r.totalCount) {
           const g0 = requireSession().hive.gateVerdicts(f)
           const extra = Object.entries(g0).map(([n, v]) => v.forced
             ? `\n  [!] ${n} FORCE-released it without passing the gate${v.why ? ` — "${v.why}"` : ''}`
             : `\n  ${v.pass ? '[ok]' : '[!]'} ${n}'s gate ${v.pass ? 'passed' : `FAILED (exit ${v.exit})`}`).join('')
           return text(`${f}: NOT attested by anyone. Unverified — measure it and call hive_attest.${extra}`)
         }
-        const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`).join('\n  ')
+        const who = Object.entries(r.peers).map(([n, v]) => {
+          if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
+          return `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`
+        }).join('\n  ')
         // Same bytes in two folders says the file PROPAGATED. It says nothing about whether it
         // WORKS, which is the actual question an agent is asking here — so the gate verdicts
         // belong in this answer. A file two peers agree on and whose owner's tests failed is the
