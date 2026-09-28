@@ -37,6 +37,7 @@ import * as meter from './usage-meter.js'
 // ONE SOCKET PER PARTICIPANT: the wire format and the session that serves it. Static imports, so
 // scripts/build-relay.mjs puts both in the published relay.
 import { MUX_PREFIX, MUX_VERSION } from './hive-mux-proto.js'
+import { VERSION, BUILD } from './hive-version.js'
 import { serveMux } from './relay-mux.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
@@ -907,6 +908,11 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     return res.end(JSON.stringify({
       ok: true,
+      // WHICH BUILD is answering. On 29 Sep 2026 a night of relay fixes had been pushed and the hosted
+      // relay was still the old build, and the only evidence was its uptime. build is the commit
+      // (Render's RENDER_GIT_COMMIT, or a checkout's HEAD); null when the relay cannot know it.
+      version: VERSION,
+      build: BUILD || null,
       uptimeSec: Math.round(process.uptime()),
       connections: s.connections,
       // Files open over mux sockets. `connections` counts physical sockets; a mux participant is

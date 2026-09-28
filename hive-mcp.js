@@ -402,7 +402,7 @@ was not written. Fix the relay and call hive_join again.`
     ? `\n\nMOVED: this folder pointed at ${migratedFrom}, a Hivecode relay that has been retired. ` +
       `It now uses ${relay}, and .hive.json has been updated, so this happens once.`
     : ''
-  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : ''}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : ''}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION_LABEL}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 // Connected-or-not without status()'s file counts, which stat every file in the room. Falls back
@@ -722,7 +722,7 @@ function enforceDcoLock(opts = {}) {
 // itself reporting the wrong build. Read the truth instead; package.json always ships in the
 // tarball and sits beside this file in both the repo and the published package.
 // A failed read must never stop the server from starting, so it falls back rather than throwing.
-import { VERSION } from "./hive-version.js"
+import { VERSION, BUILD, VERSION_LABEL } from "./hive-version.js"
 export { VERSION }
 // `instructions` is placed in the agent's SYSTEM PROMPT by the client at connect time, which
 // makes it the only channel that reaches an agent before its first tool call. Everything else we
@@ -1417,7 +1417,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // answer to the second -- the public relay and a company's own are the same shape.
         const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs })
         return text({
-          room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(updateNotice() ? { update: updateNotice() } : {}),
+          room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(BUILD ? { build: BUILD } : {}), ...(updateNotice() ? { update: updateNotice() } : {}),
           ...(clientName() ? { app: clientName() } : {}), // which agent app this is: support needs it, and so does waitPolicy
           privacy: pv.headline,
           ...(pv.warn ? { privacyWarning: pv.warn } : {}),
