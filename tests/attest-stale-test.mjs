@@ -3,17 +3,25 @@
 // 1. Same-size mutation: two peers with equal bytes but different content must NOT reach quorum.
 // 2. Edit invalidation: an edit by one peer must mark earlier attestations stale, not raise a false DIVERGENCE.
 // 3. Stale sync failure: a peer attesting with old bytes AFTER a change must raise a REAL divergence.
+// 4. Missing file: two peers attesting a path neither holds must NOT reach quorum.
+// 5. Stated vs Measured: stating a byte count different from what is on disk must be reported.
+// 6. Direct doc edit (bypassing bump): editing file doc turns confirmed quorum into "older version".
 
 import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { startSync, parseLink } from '../sync.js'
+import { contentHash } from '../substrate.js'
 
 const PORT = 1248
 const RELAY = `ws://localhost:${PORT}`
 const ROOT = path.resolve('.attest-test')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let failed = 0
-const assert = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }
+const assert = (n, c, extra = '') => {
+  console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? ' — ' + extra : ''}`)
+  if (!c) failed++
+}
 
 fs.rmSync(ROOT, { recursive: true, force: true })
 const dirA = path.join(ROOT, 'a'), dirB = path.join(ROOT, 'b')
@@ -73,7 +81,6 @@ await sleep(1000)
 const a1 = await A.call('hive_attest', { file: 'foo.js', bytes: 6, lines: 1 })
 await sleep(600)
 const b1 = await B.call('hive_attest', { file: 'foo.js', bytes: 6, lines: 1 })
-console.log('b1 response:', b1)
 assert('initial attest reaches quorum', /QUORUM/.test(b1))
 
 // Now A edits foo.js to a longer version (20 bytes)
@@ -82,28 +89,56 @@ await sleep(1000)
 
 // A attests the new version (20 bytes). B has NOT attested the new version yet!
 const a2 = await A.call('hive_attest', { file: 'foo.js', bytes: 20, lines: 1 })
-console.log('a2 response:', a2)
 assert('A attesting new version does NOT trigger DIVERGENCE', !/\[!\] DIVERGENCE/.test(a2))
 assert('A sees B as stale', /stale/i.test(a2))
 
 console.log('\n# 2. Same-size mutation must NOT reach false quorum')
-// Two different contents of exact same length (11 bytes each)
 await A.call('hive_edit', { file: 'same_size.js', content: 'Potato 123\n', intent: 'a' })
 await sleep(1000)
-// Simulate B having different content on disk with same byte count (e.g. sync desync)
 fs.writeFileSync(path.join(dirB, 'same_size.js'), 'Potatu 123\n', 'utf8')
-// A attests what A has (11 bytes, Potato)
 const as1 = await A.call('hive_attest', { file: 'same_size.js', bytes: 11, lines: 1 })
 await sleep(600)
-// B attests what B has (11 bytes, Potatu)
 const bs1 = await B.call('hive_attest', { file: 'same_size.js', bytes: 11, lines: 1 })
-console.log('bs1 response:', bs1)
 assert('same bytes with different content does NOT reach quorum', !/QUORUM/.test(bs1))
-// Now if A also attests the current version while holding Potato, both are current with different content:
 fs.writeFileSync(path.join(dirA, 'same_size.js'), 'Potato 123\n', 'utf8')
 const as2 = await A.call('hive_attest', { file: 'same_size.js', bytes: 11, lines: 1 })
-console.log('as2 response:', as2)
-assert('different content with same bytes raises DIVERGENCE', /DIVERGENCE/.test(as2))
+console.log('--- as2:', as2)
+assert('different content with same bytes raises DIVERGENCE', /DIVERGENCE/.test(as2), as2)
+
+console.log('\n# 3. Two peers attesting a missing file gives NO quorum')
+const am1 = await A.call('hive_attest', { file: 'nonexistent.js', bytes: 50, lines: 2 })
+await sleep(600)
+const bm1 = await B.call('hive_attest', { file: 'nonexistent.js', bytes: 50, lines: 2 })
+assert('two peers attesting missing file gives NO quorum', !/QUORUM: 2\+ peers agree/.test(bm1), bm1)
+assert('missing file is reported absent', /absent/i.test(bm1), bm1)
+
+console.log('\n# 4. Stated bytes different from measured are reported')
+// foo.js on A is 20 bytes. A states 999 bytes.
+const asm = await A.call('hive_attest', { file: 'foo.js', bytes: 999, lines: 1 })
+assert('stated bytes different from measured is reported', /stated 999|you stated/i.test(asm), asm)
+
+console.log('\n# 5. Direct doc edit bypassing bump turns QUORUM into "older version"')
+// Both B and A attest foo.js to reach QUORUM on 20 bytes
+const bAttestRes = await B.call('hive_attest', { file: 'foo.js', bytes: 20, lines: 1 })
+await sleep(1500)
+const vBefore = await A.call('hive_verified', { file: 'foo.js' })
+assert('both reach quorum on current foo.js', /QUORUM/.test(vBefore), `${bAttestRes}\n--- verified before:\n${vBefore}`)
+
+// Now simulate an edit that bypasses the bump:
+// 1. A edits foo.js to new content 'bypassed content\n'
+await A.call('hive_edit', { file: 'foo.js', content: 'bypassed content\n', intent: 'bypass' })
+await sleep(1000)
+
+// 2. Connect tester to room doc and reset swarm_versions to version 2 (simulating a client that edited doc without bumping n)
+const tester = startSync({ relay: RELAY, room: parseLink(link).room, dir: path.join(ROOT, 't'), name: 'Tester', passive: true, syncFiles: false, log: () => {} })
+await sleep(1000)
+tester.doc.getMap('swarm_versions').set('foo.js', { n: 2, hash: contentHash('hello world updated\n') })
+await sleep(800)
+
+// Check verified report without anyone re-attesting
+const vAfter = await A.call('hive_verified', { file: 'foo.js' })
+assert('bypassed doc edit reports older version, not plain quorum', /older version/i.test(vAfter) && !/^QUORUM:/m.test(vAfter), vAfter)
+tester.stop()
 
 relay.kill('SIGKILL')
 A.proc.kill('SIGKILL')

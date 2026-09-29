@@ -3264,29 +3264,32 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     attest: (relPath, bytes, lines) => {
       const p = String(relPath)
       const full = path.join(ROOT, p)
-      let measuredHash = ''
-      let measuredBytes = Number(bytes)
-      let measuredLines = Number(lines || 0)
+      let measuredHash = null
+      let measuredBytes = null
+      let measuredLines = null
+      let absent = false
+      let mismatch = null
+
       if (fs.existsSync(full)) {
         try {
           const diskContent = fs.readFileSync(full, 'utf8')
           measuredHash = contentHash(diskContent)
-          if (!Number.isFinite(measuredBytes) || measuredBytes === 0) {
-            measuredBytes = Buffer.byteLength(diskContent, 'utf8')
+          measuredBytes = Buffer.byteLength(diskContent, 'utf8')
+          measuredLines = diskContent.length === 0 ? 0 : diskContent.split(/\r?\n/).length
+          const statedBytes = Number(bytes)
+          if (Number.isFinite(statedBytes) && statedBytes > 0 && statedBytes !== measuredBytes) {
+            mismatch = { stated: statedBytes, measured: measuredBytes }
           }
-        } catch { }
-      } else {
-        const fe = fileDocs.get(p)
-        if (fe && fe.text && fe.text.length > 0) {
-          measuredHash = contentHash(fe.text.toString())
-        } else {
-          measuredHash = contentHash(`bytes:${measuredBytes}:lines:${measuredLines}`)
+        } catch {
+          absent = true
         }
+      } else {
+        absent = true
       }
 
       let curVer = swarmVersions.get(p)
       if (!curVer) {
-        curVer = { n: 1, hash: measuredHash }
+        curVer = { n: 1, hash: measuredHash || '' }
         swarmVersions.set(p, curVer)
       }
 
@@ -3297,6 +3300,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           bytes: measuredBytes,
           lines: measuredLines,
           hash: measuredHash,
+          absent,
+          mismatch,
           version: curVer.n,
           at: new Date().toISOString()
         }
@@ -3321,13 +3326,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         }
       }
 
-      const currentHashes = [...new Set(currentPeers.map((v) => v.hash))]
-      const currentSizes = [...new Set(currentPeers.map((v) => v.bytes))]
-      const split = currentHashes.length > 1
-      const quorum = currentPeers.length >= 2 && currentHashes.length === 1
+      const presentCurrent = currentPeers.filter((v) => !v.absent && v.hash)
+      const currentHashes = [...new Set(presentCurrent.map((v) => v.hash))]
+      const currentSizes = [...new Set(presentCurrent.map((v) => v.bytes))]
+      const anyAbsent = currentPeers.some((v) => v.absent)
+
+      // Quorum requires at least 2 present peers of current version with identical hash, and no divergence/absent
+      let quorum = presentCurrent.length >= 2 && currentHashes.length === 1 && !anyAbsent
+      // Divergence: either present peers disagree on hash, OR one peer has it and another peer is absent!
+      const split = currentHashes.length > 1 || (anyAbsent && presentCurrent.length > 0)
+
+      // Check if room doc changed since (Refinement C)
+      const fe = fileDocs.get(p)
+      let roomDocHash = null
+      if (fe && fe.text && fe.text.length > 0) {
+        roomDocHash = contentHash(fe.text.toString())
+      }
+      let quorumOnOlder = false
+      if (quorum && roomDocHash && currentHashes[0] && roomDocHash !== currentHashes[0]) {
+        quorum = false
+        quorumOnOlder = true
+      }
 
       if (split) {
-        const detail = currentPeers.map((v) => `${v.peer}:${v.bytes}b/${v.lines}L`).join('  ')
+        const detail = currentPeers.map((v) => v.absent ? `${v.peer}:ABSENT` : `${v.peer}:${v.bytes}b/${v.lines}L`).join('  ')
         say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
       }
 
@@ -3339,6 +3361,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         sizes: currentSizes,
         diverged: split,
         quorum,
+        quorumOnOlder,
+        mismatch,
         version: curVer.n
       }
     },
@@ -3362,10 +3386,24 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           }
         }
       }
-      const currentHashes = [...new Set(currentPeers.map((v) => v.hash))]
-      const currentSizes = [...new Set(currentPeers.map((v) => v.bytes))]
-      const split = currentHashes.length > 1
-      const quorum = currentPeers.length >= 2 && currentHashes.length === 1
+      const presentCurrent = currentPeers.filter((v) => !v.absent && v.hash)
+      const currentHashes = [...new Set(presentCurrent.map((v) => v.hash))]
+      const currentSizes = [...new Set(presentCurrent.map((v) => v.bytes))]
+      const anyAbsent = currentPeers.some((v) => v.absent)
+
+      let quorum = presentCurrent.length >= 2 && currentHashes.length === 1 && !anyAbsent
+      const split = currentHashes.length > 1 || (anyAbsent && presentCurrent.length > 0)
+
+      const fe = fileDocs.get(p)
+      let roomDocHash = null
+      if (fe && fe.text && fe.text.length > 0) {
+        roomDocHash = contentHash(fe.text.toString())
+      }
+      let quorumOnOlder = false
+      if (quorum && roomDocHash && currentHashes[0] && roomDocHash !== currentHashes[0]) {
+        quorum = false
+        quorumOnOlder = true
+      }
 
       return {
         path: p,
@@ -3375,6 +3413,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         sizes: currentSizes,
         diverged: split,
         quorum,
+        quorumOnOlder,
         version: curVer.n
       }
     },

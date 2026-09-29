@@ -1228,12 +1228,19 @@ async function dispatch(req) {
         const r = requireSession().hive.attest(f, Number(args.bytes), Number(args.lines || 0))
         const who = Object.entries(r.peers).map(([n, v]) => {
           if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
+          if (v.absent) return `${n}: absent (not in folder)`
           return `${n}: ${v.bytes} bytes / ${v.lines} lines`
         }).join('\n  ')
+        const mismatchNote = r.mismatch ? `\n(note: you stated ${r.mismatch.stated}, your folder holds ${r.mismatch.measured})` : ''
         if (r.diverged) {
-          return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.`)
+          return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.${mismatchNote}`)
         }
-        return text(`attested ${f} at ${args.bytes} bytes.\n  ${who}\n${r.quorum ? 'QUORUM: 2+ peers agree — this publish is confirmed.' : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'}`)
+        const quorumStatus = r.quorumOnOlder
+          ? 'QUORUM on an OLDER version: the room\'s copy changed since, re-attest.'
+          : r.quorum
+            ? 'QUORUM: 2+ peers agree — this publish is confirmed.'
+            : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'
+        return text(`attested ${f} at ${args.bytes} bytes.\n  ${who}${mismatchNote}\n${quorumStatus}`)
       }
       case 'hive_verified': {
         const f = String(args.file || ''); if (!f) return err('need a file path')
@@ -1250,6 +1257,7 @@ async function dispatch(req) {
         }
         const who = Object.entries(r.peers).map(([n, v]) => {
           if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
+          if (v.absent) return `${n}: absent (not in folder)`
           return `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`
         }).join('\n  ')
         // Same bytes in two folders says the file PROPAGATED. It says nothing about whether it
@@ -1263,7 +1271,14 @@ async function dispatch(req) {
         const gate = gLines.length
           ? `\n\nCHECKS RUN BY THE AGENTS THAT HELD IT:\n${gLines.join('\n')}${Object.values(g).some((v) => !v.pass) ? '\n  Somebody handed this back knowing it did not pass. Read it before you build on it.' : ''}`
           : '\n\nNo gate verdict recorded for this path — nobody has run a check on it here.'
-        return text(`${f}\n  ${who}\n\n${r.diverged ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.' : r.quorum ? 'QUORUM: confirmed by 2+ peers at the same size.' : 'Attested by ONE peer only — not yet proof.'}${gate}`)
+        const statusLine = r.diverged
+          ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.'
+          : r.quorumOnOlder
+            ? 'QUORUM on an OLDER version: the room\'s copy changed since, re-attest.'
+            : r.quorum
+              ? 'QUORUM: confirmed by 2+ peers at the same size.'
+              : 'Attested by ONE peer only — not yet proof.'
+        return text(`${f}\n  ${who}\n\n${statusLine}${gate}`)
       }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
