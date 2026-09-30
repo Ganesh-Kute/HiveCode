@@ -213,12 +213,14 @@ export function forget(store, name) {
  * @param {boolean} opts.paused   controls map says a human paused it
  * @param {boolean} opts.passive  declared passive at join
  */
-export function stateOf(rec, { present, paused = false, passive = false, human = false, now = Date.now(), parkedAfter = DEFAULT_PARKED_AFTER_MS } = {}) {
+export function stateOf(rec, { present, paused = false, passive = false, human = false, listener = false, connections = null, now = Date.now(), parkedAfter = DEFAULT_PARKED_AFTER_MS } = {}) {
   if (!present) return GONE
   // A human is exempt from the whole taxonomy below, which asks whether an AGENT will act again
   // unprompted. Checked before `paused` and `passive` because those describe agent mechanics too;
   // checked after `!present` because a departed human is still departed.
   if (human) return PRESENT
+  const isListener = !!listener || (Array.isArray(connections) && connections.some((c) => c && (c.listener || (c.user && c.user.listener))))
+  if (isListener) return WAITING
   if (passive) return PASSIVE
   if (paused) return PAUSED
   if (rec && rec.waitingSince) return WAITING
@@ -240,11 +242,13 @@ export function stateOf(rec, { present, paused = false, passive = false, human =
  */
 export function describe(rec, opts = {}) {
   const now = opts.now || Date.now()
-  const state = stateOf(rec, { ...opts, now })
+  const isListener = !!opts.listener || (Array.isArray(opts.connections) && opts.connections.some((c) => c && (c.listener || (c.user && c.user.listener))))
+  const state = stateOf(rec, { ...opts, listener: isListener, now })
   const last = rec && Number(rec.lastAction)
   const ageMs = Number.isFinite(last) ? Math.max(0, now - last) : null
   return {
     state,
+    listener: isListener,
     lastTool: (rec && rec.lastTool) || null,
     lastAction: Number.isFinite(last) ? last : null,
     ageMs,
@@ -267,6 +271,10 @@ export function line(name, rec, opts = {}) {
   const tool = d.lastTool ? ` (${d.lastTool})` : ''
   switch (d.state) {
     case WAITING:
+      if (opts.listener || d.listener) {
+        const lastActionStr = age == null ? 'no actions logged' : `last acted ${age} min ago`
+        return `${name} — WAITING (listening via hivecode-await), ${lastActionStr}. Reachable.`
+      }
       return `${name} — WAITING: blocked in hive_wait, wakes the moment anything arrives. Reachable.`
     case WORKING:
       return `${name} — WORKING: last action ${age} min ago${tool}. Reachable.`

@@ -833,6 +833,7 @@ async function dispatch(req) {
             present: isPresent,
             paused: isPaused,
             passive: isPassive,
+            listener: !!(mem && mem.listener),
             now,
             parkedAfter,
           })
@@ -1219,6 +1220,7 @@ async function dispatch(req) {
             present: !!mem,
             paused: !!(c && c.state === 'paused'),
             passive: !!(mem && mem.passive),
+            listener: !!(mem && mem.listener),
             now,
             parkedAfter,
           })
@@ -1435,6 +1437,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           const editing = m.editing && now - m.editing.at < 15000 ? `\n    editing ${m.editing.file}` : ''
           return ACT.line(`${m.name} (${m.kind})${m.hv ? ` on ${m.hv}` : ''}`, rec, {
             present: true, passive: !!m.passive,
+            listener: !!m.listener,
             paused: !!(c && c.state === 'paused'),
             // HIV-P11c. Without this the room said `Ganesh (human) — PARKED: ... anything you
             // send it now will sit unread until a human prompts it` about the human.
