@@ -37,7 +37,7 @@ if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
 import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
-import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats } from './hive-mailbox.js'
+import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
 import { INSTRUCTIONS, JOIN_RULES } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
@@ -778,12 +778,6 @@ async function dispatch(req) {
         // reported as landing in everyone's ambient digest, where it is meant to be skipped.
         // Immediate, per-call feedback, at the moment the mistake is made.
         const named = mentionedNames(body)
-        if (!named.length) {
-          return text(stamp(`sent: ${body}`) + `\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
-            `activity", where they are told to skip it — so assume no one acts on it. Name the ` +
-            `agents you actually need with @Name (hive_members lists who is here). Use an ` +
-            `unaddressed message only for a genuine announcement to the whole room.`)
-        }
         // WHO IS ACTUALLY GOING TO READ THIS. The sender is the only participant who can act on
         // "they left" or "they are mid-task", and it is worth strictly more here than in a
         // reply: it arrives before the sender starts waiting, and it costs the room no message.
@@ -801,6 +795,28 @@ async function dispatch(req) {
         const everHere = new Set(present)
         for (const m of s.hive.doc.getArray('chat').toArray()) {
           if (m && m.by) everHere.add(String(m.by).toLowerCase())
+        }
+
+        // 5.2: Route only to known names, @all, explicit reply requests (needsReply),
+        // or unknown @words that are direct addresses (at start) or typos (within edit distance <= 2 of a known name).
+        // Unrecognized @words in prose are ignored.
+        const allKnown = new Set([...present, ...everHere])
+        function isAddressee(n) {
+          const lc = n.toLowerCase()
+          if (lc === 'all') return true
+          if (allKnown.has(lc)) return true
+          if (args.needsReply) return true
+          if (isDirectAddress(body, n)) return true
+          if (findClosestKnown(n, [...allKnown])) return true
+          return false
+        }
+        const addressed = named.filter(isAddressee)
+
+        if (!addressed.length && !mentionsAll(body)) {
+          return text(stamp(`sent: ${body}`) + `\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
+            `activity", where they are told to skip it — so assume no one acts on it. Name the ` +
+            `agents you actually need with @Name (hive_members lists who is here). Use an ` +
+            `unaddressed message only for a genuine announcement to the whole room.`)
         }
 
         // HIV-P11b. Send-time inspection of recipient state:
@@ -838,7 +854,20 @@ async function dispatch(req) {
             if (everHere.has(lc)) {
               return `⚠ @${displayName} — AWAY RIGHT NOW. Not connected at the moment, but has worked here before; obligation recorded for when they return.`
             } else {
-              return `⚠ @${displayName} — NOT IN THIS ROOM. Nobody by that name is here, so nobody is going to answer. Call hive_members and re-address it now; this is the one failure mode that otherwise costs you a whole shift.`
+              // 5.2 Typo catch: within distance 2 of known names
+              const closest = findClosestKnown(n, [...allKnown])
+              if (closest && closest.name.toLowerCase() !== lc) {
+                return `⚠ @${displayName} — not in this room (did you mean @${closest.name}?).`
+              }
+              // 5.2 Direct address position at start of message or explicit needsReply
+              if (isDirectAddress(body, n) || args.needsReply) {
+                // 5.3 Terse 1-liner on subsequent mentions
+                if (firstTime('notInRoom:' + lc)) {
+                  return `⚠ @${displayName} — NOT IN THIS ROOM. Nobody by that name is here, so nobody is going to answer. Call hive_members and re-address it now; this is the one failure mode that otherwise costs you a whole shift.`
+                }
+                return `⚠ @${displayName} — not in this room.`
+              }
+              return ''
             }
           }
           // d.state is WORKING or WAITING
@@ -849,7 +878,7 @@ async function dispatch(req) {
           return ''
         }
 
-        const candidateNames = named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+        const candidateNames = addressed.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
         const seenCandidates = new Set()
         const uniqueCandidates = []
         for (const n of candidateNames) {
@@ -860,7 +889,7 @@ async function dispatch(req) {
           }
         }
         const notes = uniqueCandidates.map(describeRecipientLiveness).filter(Boolean)
-        const to = mentionsAll(body) ? 'the whole room (@all)' : named.map((n) => '@' + n).join(', ')
+        const to = mentionsAll(body) ? 'the whole room (@all)' : addressed.map((n) => '@' + n).join(', ')
         // NEEDS REPLY. A question is recorded, not just spoken. One obligation per agent named.
         // HIV-P6: If the room knows nobody will answer, DO NOT record a debt.
         //   1. Absent names: warned immediately, ZERO obligations opened.
