@@ -308,6 +308,71 @@ export const FEATURES = [
     breaks: 'The central claim of the product — "any agent, any vendor" — is unproven. STRUCTURALLY unautomatable here: it needs another vendor\'s agent running. Demonstrated by hand with Antigravity; that is the only evidence there is, and it should be described that way.',
     proves: [],
   },
+
+  // ── branch rooms (hive-branch.js): a room bound to a git branch ──────────────────────────
+  {
+    id: 'branch-room-random-id',
+    name: 'A branch room\'s id is random, never the branch name',
+    criticality: 'critical', tier: 2,
+    breaks: 'Every repo\'s feature/login lands in the same room, and on an open relay anyone who guesses a branch name reads the code in it.',
+    proves: [
+      { suite: 'tests/branch-test.mjs', assertion: 'the room id is random, never the branch name' },
+      { suite: 'tests/branch-test.mjs', assertion: 'the same branch name in another repo gets a different room' },
+    ],
+  },
+  {
+    id: 'branch-room-not-a-checkout',
+    name: 'No git command can rewrite a branch room\'s files',
+    criticality: 'critical', tier: 4,
+    breaks: 'An agent runs git stash -u or git clean in its folder and every teammate\'s copy of those files is deleted with it. Measured: an EMPTY .git directory does not stop this -- git walks past it to the enclosing repo and stashes the room away.',
+    proves: [
+      { suite: 'tests/branch-test.mjs', assertion: 'git refuses inside an agent folder, although it sits inside another repo' },
+      { suite: 'tests/branch-test.mjs', assertion: 'stash -u, clean -fdx and checkout run inside an agent folder all refuse' },
+      { suite: 'tests/branch-test.mjs', assertion: 'changed nothing in the room' },
+    ],
+  },
+  {
+    id: 'branch-room-seed',
+    name: 'A branch room starts as the whole branch, and the checkout is not touched',
+    criticality: 'critical', tier: 4,
+    breaks: 'Agents build on a partial tree -- or the developer\'s checkout is switched under them by the command that was supposed to leave it alone.',
+    proves: [
+      { suite: 'tests/branch-test.mjs', assertion: 'the checkout was not switched and nothing in it changed' },
+      { suite: 'tests/branch-test.mjs', assertion: 'every text file of the branch arrived byte-exact' },
+      { suite: 'tests/branch-test.mjs', assertion: 'binary, over-1MB and always-ignored files were filled from git' },
+      { suite: 'tests/branch-test.mjs', assertion: 'deleted in the room, is not recreated by a later joiner' },
+    ],
+  },
+  {
+    id: 'branch-room-landing',
+    name: 'pr lands the room on its branch, one commit per agent, and never over unseen changes',
+    criticality: 'critical', tier: 4,
+    breaks: 'A PR that looks complete and is not: agents\' deletions left behind, files still in flight left out, or a teammate\'s commit to the branch silently written over.',
+    proves: [
+      { suite: 'tests/branch-test.mjs', assertion: 'pr lands one commit per agent, plus the room' },
+      { suite: 'tests/branch-test.mjs', assertion: 'checkout was never touched' },
+      { suite: 'tests/branch-test.mjs', assertion: 'is not written over (Q506)' },
+      { suite: 'tests/branch-test.mjs', assertion: 'is refused (Q572)' },
+      { suite: 'tests/branch-test.mjs', assertion: 'refused (Q571) when that worktree has uncommitted changes' },
+    ],
+  },
+  {
+    id: 'git-file-never-synced',
+    name: 'A .git FILE is never published to a room',
+    criticality: 'critical', tier: 3,
+    breaks: 'In a worktree or submodule, `.git` is a file naming this machine\'s git directory. MEASURED before the fix: an edit to one participant\'s sub/.git was published, and a peer\'s own sub/.git -- its submodule pointer -- was overwritten with conflict markers and then deleted.',
+    proves: [
+      { suite: 'tests/branch-test.mjs', assertion: 'a .git FILE never enters the room, not even briefly' },
+      { suite: 'tests/branch-test.mjs', assertion: 'own .git file (a submodule pointer) is left exactly as it was' },
+    ],
+  },
+  {
+    id: 'branch-room-not-home',
+    name: 'A home directory kept under git is never taken for the project',
+    criticality: 'hot', tier: 1,
+    breaks: 'Run in a folder that is not its own repository, the command finds the enclosing one -- a home directory under git, on the development machine -- and publishes its committed files to a room.',
+    proves: [{ suite: 'tests/branch-test.mjs', assertion: 'a folder inside a home-directory repo is refused' }],
+  },
 ]
 
 /** Group by criticality for reporting; order is the order in CRITICALITY. */

@@ -96,6 +96,45 @@ To write code yourself, run your own AI agent (above) and join the same room.
 
 ---
 
+## Work on a git branch
+
+In a git repository, one command gives a branch its own room:
+
+```bash
+npx -y hivecode-mcp@latest branch fix-login
+```
+
+It creates the branch `fix-login` if it doesn't exist yet (your checkout is not switched), creates
+a room for it, fills the room with the branch's files, checks that a newcomer receives every one
+of them, and prints three lines: one for your agents, one for teammates, and one for when the
+work is done.
+
+- **Your agents:** *"Use hive_join with branch `fix-login`, repo `<path to the repo>`, as
+  Alice-AI."* Each agent gets its own folder holding the branch. Binary files, which a room does
+  not carry, are filled in from git.
+- **A teammate**, in their own clone: `npx -y hivecode-mcp@latest branch fix-login --join "<link>"`,
+  then the same line for their agents.
+- **When the work is done:**
+
+  ```bash
+  npx -y hivecode-mcp@latest pr fix-login
+  ```
+
+  This lands the room's work on `fix-login` as one commit per agent, with each agent as the git
+  author. Files the agents deleted are deleted too. Add `--pr` to push the branch and open the
+  pull request (this needs [`gh`](https://cli.github.com)).
+
+The room's folders are deliberately **not git checkouts**: git refuses to run in them, so no
+`checkout`, `stash` or `clean` can rewrite files your teammates are working on. Work leaves only
+through `pr`, which builds the commits in a temporary worktree and never touches your checkout.
+If someone changed a file on the branch that the room also changed, `pr` refuses and names the
+commit rather than writing over it.
+
+The room's link is random, never the branch name, and like any room link it lets whoever has it
+read the room.
+
+---
+
 ## The rules agents follow
 
 Every agent is handed these when it joins. They are worth knowing as a person too:

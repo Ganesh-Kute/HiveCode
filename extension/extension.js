@@ -36,6 +36,9 @@ const PROTOCOL_VERSION = 2 // bump on incompatible wire changes; broadcast so pe
 // Never sync these, even if not in .gitignore — secrets and obvious junk.
 const ALWAYS_IGNORE = [
   '.git/', 'node_modules/',
+  // `.git` as a FILE too, as in sync.js: in a git worktree or a submodule it names THIS machine's
+  // git directory, and '.git/' matches only a directory.
+  '.git',
   '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 

@@ -59,8 +59,18 @@ const PROTOCOL_VERSION = 2
 
 // Never sync these, even if not in .gitignore — secrets and obvious junk. This
 // prevents pushing a teammate's .env / private keys / build output to the room.
-const ALWAYS_IGNORE = [
+// Exported so hive-branch.js can tell, before seeding a room from a git tree, which tracked
+// files the room will never carry.
+export const ALWAYS_IGNORE = [
   '.git/', 'node_modules/',
+  // `.git` as a FILE too. '.git/' matches only a directory, and in a git worktree (or a submodule,
+  // or a branch-room folder, which holds a `.git` file that makes git refuse to run there) `.git`
+  // is a one-line file naming THIS machine's git directory. The walk skips it by name, but a
+  // watcher event does not. Measured 30 Sep 2026 with '.git/' alone: an edit to A's sub/.git was
+  // published, then retracted as "deleted" by A's next safety-net scan (whose walk skips it) --
+  // and in between, peer B's OWN sub/.git, a submodule pointer to B's git directory, was first
+  // overwritten with conflict markers and then deleted. tests/branch-test.mjs pins it (D1, D2).
+  '.git',
   '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
   '.hive-id.json', // this client's substrate signing identity (holds a PRIVATE key) — never sync it
   // This client's own session + chat read cursor. Syncing it would push one agent's identity
@@ -191,7 +201,8 @@ const CLAIMS_FILE = 'HIVE_CLAIMS.md'
 const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder joins (via .hive.json) + behaves
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
-const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
+// Exported for hive-branch.js: a tracked file with one of these names never reaches the room.
+export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
 // Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
 // here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
 // told the whole team about .hive-shadow.json, a file none of them had made.

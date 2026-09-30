@@ -45,6 +45,7 @@ import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of th
 import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
+import * as HB from './hive-branch.js' // a room bound to a git branch: hive_join { branch }, and the branch/pr CLI
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 let session = null // { hive, room, relay, dir, name, mailbox }
@@ -158,7 +159,7 @@ function defaultJoinTarget(link, name) {
   return { dir: path.join(HIVE_HOME, safeSegment(room), safeSegment(name)), link, hostedHere: false }
 }
 
-async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false }) {
+async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false, branch = '', repo = '' }) {
   // REFUSED BEFORE THE OLD SESSION IS TORN DOWN. joinRoom's first act is to stop whatever session
   // exists, so validating after that point would leave an agent with a bad name holding nothing at
   // all -- it would lose a working room to a refusal it could have been given for free.
@@ -169,6 +170,21 @@ async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomByte
 Nothing was joined and your current session is untouched. Re-run hive_join with name: "${nameCheck.suggested}".
 
 This is refused rather than fixed for you because renaming silently is worse: if another member is already called "${nameCheck.suggested}", you would be merged into them -- one awareness entry, one read cursor, one mailbox -- and neither of you would be told. Your own prompt would also still say your name is "${name}", so you would stop recognising messages about yourself.`
+  }
+  // A BRANCH ROOM (hive-branch.js): the link comes from the repo's git config, and the folder is
+  // this participant's own, marked so git refuses to run in it. Resolved and refused BEFORE the old
+  // session is torn down, for the same reason as the name check above.
+  let branchCtx = null
+  if (branch) {
+    const untouched = '\n\nNothing was joined and your current session is untouched.'
+    if (link) return `Pass branch or link, not both: a branch's room link comes from the repo's git config.${untouched}`
+    const bound = HB.resolveForJoin({ branch, repo: repo || process.cwd() })
+    if (!bound.ok) return bound.message + untouched
+    link = bound.link
+    if (!dir) dir = HB.roomFolder(link, name)
+    const mark = HB.markNotACheckout(path.resolve(dir))
+    if (!mark.ok) return `Q564 ${mark.why}${untouched}`
+    branchCtx = bound
   }
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   let hostedHere = false
@@ -402,7 +418,19 @@ was not written. Fix the relay and call hive_join again.`
     ? `\n\nMOVED: this folder pointed at ${migratedFrom}, a Hivecode relay that has been retired. ` +
       `It now uses ${relay}, and .hive.json has been updated, so this happens once.`
     : ''
-  return `${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : ''}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION_LABEL}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  // What the room cannot carry (binary, over 1 MB, always-ignored) comes from git, once the room's
+  // own files are known. Only those: a text file missing here was deleted in the room.
+  let branchNote = ''
+  if (branchCtx) {
+    let filled = 0
+    let fillErr = ''
+    if (branchCtx.commit) { try { filled = HB.fillFromGit({ root: branchCtx.root, commit: branchCtx.commit, dir: ROOT }) } catch (e) { fillErr = e.message } }
+    branchNote = `BRANCH ROOM: this room is git branch "${branchCtx.branch}" of ${branchCtx.root}.\n` +
+      `Edit files in YOUR folder (${ROOT}), never in ${branchCtx.root}. It is deliberately not a git checkout: git refuses to run there, so no git command can rewrite the room's files. Do not commit; the work lands on "${branchCtx.branch}" as one commit per agent when the developer runs: npx -y hivecode-mcp@latest pr ${branchCtx.branch}` +
+      (filled ? `\nFilled from git: ${filled} file(s) the room does not carry (binary, over 1 MB, or never synced).` : '') +
+      (fillErr ? `\nCould not fill non-text files from git (${fillErr}); binary files may be missing here.` : '') + '\n\n'
+  }
+  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : ''}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION_LABEL}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 // Connected-or-not without status()'s file counts, which stat every file in the room. Falls back
@@ -553,7 +581,7 @@ const firstTime = (key) => (explained.has(key) ? false : (explained.add(key), tr
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join a Hivecode room, or host a new one, for a folder. Uses the join link if given, else <dir>/.hive.json, else hosts. Returns the room details and the rules you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch (npx -y hivecode-mcp@latest branch <name>)' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' } } } },
   { name: 'hive_assign', description: 'Give a task to a participant by name. A task for an AI with an owner stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name' }, text: { type: 'string', description: 'the task' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Tasks aimed at you (act only on accepted ones) and all pending tasks awaiting approval.',
@@ -1599,6 +1627,10 @@ if (isEntryPoint && process.argv[2] === 'setup') {
 } else if (isEntryPoint && (process.argv[2] === '--version' || process.argv[2] === '-v')) {
   console.log(VERSION)
   process.exit(0)
+} else if (isEntryPoint && (process.argv[2] === 'branch' || process.argv[2] === 'pr')) {
+  // `npx -y hivecode-mcp@latest branch <name>` binds a room to a git branch; `pr <name>` lands its work on it.
+  // A CLI run like setup: nobody is speaking JSON-RPC to it, so it never opens stdio.
+  process.exit(await HB.main(process.argv.slice(2)))
 } else if (isEntryPoint) {
   const transport = new StdioServerTransport()
   // STDIN CLOSING IS THE AGENT APP SAYING GOODBYE -- the MCP spec's stdio shutdown. Leave the

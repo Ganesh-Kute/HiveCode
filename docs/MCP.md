@@ -49,7 +49,7 @@ versions in one room can lose data, so do not ignore it. `HIVE_PRIVATE=1` or
 
 | Tool | What it does |
 |------|--------------|
-| `hive_join` | Join/host a room for a folder. Auto-joins as an **AI** participant. Returns the room info **and the HIVE_RULES to follow**. |
+| `hive_join` | Join/host a room for a folder. Auto-joins as an **AI** participant. Returns the room info **and the HIVE_RULES to follow**. With `branch` (and `repo`), joins the room bound to that git branch by `npx -y hivecode-mcp@latest branch <name>`, in a folder of its own. |
 | `hive_say` | Post a coordination message — announce what you're about to work on. |
 | `hive_read_chat` | Read the room conversation (read this to coordinate). |
 | `hive_read_board` | Read recent whole-file rewrites (read before editing a file). |
@@ -59,7 +59,7 @@ versions in one room can lose data, so do not ignore it. `HIVE_PRIVATE=1` or
 
 ## How an agent uses it
 
-1. `hive_join` (with a `link`, a `dir` containing `.hive.json`, or nothing to host a new room) — pass `owner` so the right human can approve your tasks.
+1. `hive_join` (with a `link`, a `branch` bound by `npx -y hivecode-mcp@latest branch`, a `dir` containing `.hive.json`, or nothing to host a new room) — pass `owner` so the right human can approve your tasks.
 2. Read the returned **HIVE_RULES**.
 3. `hive_read_chat` + `hive_read_board` before touching files.
 4. `hive_say` to announce intent, then edit files in the synced folder.
