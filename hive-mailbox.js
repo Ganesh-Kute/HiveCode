@@ -55,7 +55,27 @@ export function mentionsAll(text) {
 
 /** Code spans and quoted text blanked out, so a token quoted as code or prose is not read as an address. */
 export function stripSpansAndQuotes(text) {
-  return String(text || '')
+  const raw = String(text || '')
+  const trimmed = raw.trim()
+  const quotePairs = [
+    ['"', '"'],
+    ["'", "'"],
+    ['“', '”'],
+    ['‘', '’'],
+  ]
+  for (const [open, close] of quotePairs) {
+    if (trimmed.startsWith(open) && trimmed.endsWith(close) && trimmed.length >= 2) {
+      if (trimmed.indexOf(close, open.length) === trimmed.length - close.length) {
+        // A single quote pair spans the entire message: preserve inner content (stripping internal code spans)
+        const inner = trimmed.slice(open.length, trimmed.length - close.length)
+        return inner
+          .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+          .replace(/`[^`\n]*`/g, ' ')
+      }
+    }
+  }
+
+  return raw
     .replace(/```[\s\S]*?(?:```|$)/g, ' ')      // fenced code blocks
     .replace(/`[^`\n]*`/g, ' ')                 // inline code spans
     .replace(/"[^"\n]*"/g, ' ')                 // double quoted text
@@ -355,7 +375,7 @@ export function levenshtein(a, b) {
   return d[m][n]
 }
 
-/** Find closest known name within edit distance <= 2 for typo detection. */
+/** Find closest known name within edit distance <= 2 (or <= 1 for names <= 4 chars) for typo detection. */
 export function findClosestKnown(name, knownNames) {
   const s = String(name || '').toLowerCase()
   let best = null
@@ -368,7 +388,8 @@ export function findClosestKnown(name, knownNames) {
       best = orig
     }
   }
-  return bestDist <= 2 ? { name: best, distance: bestDist } : null
+  const maxAllowed = (best && best.length <= 4) || s.length <= 4 ? 1 : 2
+  return bestDist <= maxAllowed ? { name: best, distance: bestDist } : null
 }
 
 /** Does this mention sit at the direct-address position (start of the message)? */

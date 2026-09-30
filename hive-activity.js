@@ -213,16 +213,20 @@ export function forget(store, name) {
  * @param {boolean} opts.paused   controls map says a human paused it
  * @param {boolean} opts.passive  declared passive at join
  */
+export function resumesOnExit(app) {
+  return Boolean(app && /claude-code/i.test(app))
+}
+
 export function stateOf(rec, { present, paused = false, passive = false, human = false, listener = false, connections = null, now = Date.now(), parkedAfter = DEFAULT_PARKED_AFTER_MS } = {}) {
   if (!present) return GONE
   // A human is exempt from the whole taxonomy below, which asks whether an AGENT will act again
   // unprompted. Checked before `paused` and `passive` because those describe agent mechanics too;
   // checked after `!present` because a departed human is still departed.
   if (human) return PRESENT
+  if (paused) return PAUSED
+  if (passive) return PASSIVE
   const isListener = !!listener || (Array.isArray(connections) && connections.some((c) => c && (c.listener || (c.user && c.user.listener))))
   if (isListener) return WAITING
-  if (passive) return PASSIVE
-  if (paused) return PAUSED
   if (rec && rec.waitingSince) return WAITING
   const last = rec && Number(rec.lastAction)
   // No record at all, but awareness says present: a client that has joined and not yet driven a
@@ -246,14 +250,19 @@ export function describe(rec, opts = {}) {
   const state = stateOf(rec, { ...opts, listener: isListener, now })
   const last = rec && Number(rec.lastAction)
   const ageMs = Number.isFinite(last) ? Math.max(0, now - last) : null
+  const app = opts.app || (Array.isArray(opts.connections) && opts.connections.find((c) => c && (c.app || (c.user && c.user.app)))?.app) || ''
+  const canResume = opts.resumesOnExit !== undefined ? opts.resumesOnExit : resumesOnExit(app)
+  const isWaitingOnWait = !!(rec && rec.waitingSince)
+  const reachable = state === WORKING || (state === WAITING && (isWaitingOnWait || canResume))
   return {
     state,
     listener: isListener,
+    resumesOnExit: canResume,
     lastTool: (rec && rec.lastTool) || null,
     lastAction: Number.isFinite(last) ? last : null,
     ageMs,
     waitingSince: (rec && Number(rec.waitingSince)) || null,
-    reachable: state === WAITING || state === WORKING,
+    reachable,
   }
 }
 
@@ -273,7 +282,10 @@ export function line(name, rec, opts = {}) {
     case WAITING:
       if (opts.listener || d.listener) {
         const lastActionStr = age == null ? 'no actions logged' : `last acted ${age} min ago`
-        return `${name} — WAITING (listening via hivecode-await), ${lastActionStr}. Reachable.`
+        if (d.reachable) {
+          return `${name} — WAITING (listening via hivecode-await), ${lastActionStr}. Reachable.`
+        }
+        return `${name} — WAITING (listening via hivecode-await), ${lastActionStr}. Listener running, but this app is not woken by it.`
       }
       return `${name} — WAITING: blocked in hive_wait, wakes the moment anything arrives. Reachable.`
     case WORKING:

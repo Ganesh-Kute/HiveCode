@@ -150,6 +150,16 @@ T('quoted mentions are not returned by mentionedNames',
   !mentionedNames("she said '@Bo will take it'").includes('Bo') &&
   !mentionedNames('they said “@Kai is away”').includes('Kai'))
 
+T('a message that is ENTIRELY one quoted string DOES address the recipient',
+  mentionsName('"@Claude please deploy"', 'Claude') &&
+  mentionedNames('"@Claude please deploy"').includes('Claude') &&
+  mentionsName("'@Claude please deploy'", 'Claude') &&
+  mentionsName('“@Claude please deploy”', 'Claude'))
+
+T('a message with multiple quoted strings still ignores them',
+  !mentionsName('"@Claude" and "@Bob"', 'Claude') &&
+  !mentionedNames('"@Claude" and "@Bob"').includes('Claude'))
+
 // ───────────────────────────────────────────────────────────────────────────────────────
 section('5.4 Urgent Directive Tightening in priorityOf')
 
@@ -206,6 +216,12 @@ T('findClosestKnown ignores words with distance > 2',
   typeof findClosestKnown === 'function' &&
   findClosestKnown('mentions', ['Antigravity1', 'Claude']) === null &&
   findClosestKnown('gmail', ['Antigravity1', 'Claude']) === null)
+
+T('findClosestKnown uses distance <= 1 for names of 4 characters or fewer',
+  typeof findClosestKnown === 'function' &&
+  findClosestKnown('me', ['Dev']) === null &&
+  findClosestKnown('Dv', ['Dev'])?.name === 'Dev' &&
+  findClosestKnown('Cladue', ['Claude'])?.name === 'Claude')
 
 T('isDirectAddress identifies mention at start of message',
   typeof isDirectAddress === 'function' &&

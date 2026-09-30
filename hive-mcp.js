@@ -216,7 +216,7 @@ was not written. Fix the relay and call hive_join again.`
   // folder is precisely the situation the lock exists to prevent.
   let hive
   try {
-    hive = startSync({ relay, room, dir, name, kind: kind || 'ai', owner, token: useToken, log: () => {}, passive: !!passive })
+    hive = startSync({ relay, room, dir, name, kind: kind || 'ai', owner, token: useToken, log: () => {}, passive: !!passive, app: clientName() })
   } catch (e) {
     if (e && e.code === 'EHIVELOCKED') {
       return text(
@@ -834,6 +834,7 @@ async function dispatch(req) {
             paused: isPaused,
             passive: isPassive,
             listener: !!(mem && mem.listener),
+            app: mem && mem.app,
             now,
             parkedAfter,
           })
@@ -871,7 +872,10 @@ async function dispatch(req) {
               return ''
             }
           }
-          // d.state is WORKING or WAITING
+          if (d.state === ACT.WAITING && !d.reachable) {
+            return `⚠ @${displayName} — listener running, but this app is not woken by it.`
+          }
+          // d.state is WORKING or WAITING (reachable)
           const busy = findBusy(busyMap, n)
           if (busy) {
             return describeRecipient(displayName, busy, true, now)
@@ -1221,6 +1225,7 @@ async function dispatch(req) {
             paused: !!(c && c.state === 'paused'),
             passive: !!(mem && mem.passive),
             listener: !!(mem && mem.listener),
+            app: mem && mem.app,
             now,
             parkedAfter,
           })
@@ -1233,6 +1238,9 @@ async function dispatch(req) {
           }
           if (d.state === ACT.PAUSED) {
             return `${base}  [PAUSED by human — do not reassign]`
+          }
+          if (d.state === ACT.WAITING && !d.reachable) {
+            return `${base}  [UNREACHABLE — @${mem ? mem.name : o.to}: listener running, but this app is not woken by it]`
           }
           return base
         }
@@ -1257,6 +1265,7 @@ async function dispatch(req) {
         const f = String(args.file || ''); if (!f) return err('need a file path')
         if (!Number.isFinite(Number(args.bytes))) return err('need bytes — measure your own folder, do not estimate')
         const r = requireSession().hive.attest(f, Number(args.bytes), Number(args.lines || 0))
+        if (r.error) return err(r.error)
         const who = Object.entries(r.peers).map(([n, v]) => {
           if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
           if (v.absent) return `${n}: absent (not in folder)`
@@ -1438,6 +1447,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           return ACT.line(`${m.name} (${m.kind})${m.hv ? ` on ${m.hv}` : ''}`, rec, {
             present: true, passive: !!m.passive,
             listener: !!m.listener,
+            app: m.app,
             paused: !!(c && c.state === 'paused'),
             // HIV-P11c. Without this the room said `Ganesh (human) — PARKED: ... anything you
             // send it now will sit unread until a human prompts it` about the human.

@@ -100,10 +100,22 @@ const as1 = await A.call('hive_attest', { file: 'same_size.js', bytes: 11, lines
 await sleep(600)
 const bs1 = await B.call('hive_attest', { file: 'same_size.js', bytes: 11, lines: 1 })
 assert('same bytes with different content does NOT reach quorum', !/QUORUM/.test(bs1))
-fs.writeFileSync(path.join(dirA, 'same_size.js'), 'Potato 123\n', 'utf8')
-const as2 = await A.call('hive_attest', { file: 'same_size.js', bytes: 11, lines: 1 })
-console.log('--- as2:', as2)
-assert('different content with same bytes raises DIVERGENCE', /DIVERGENCE/.test(as2), as2)
+
+// Simulate two peers holding different content for the same version
+const testerDiv = startSync({ relay: RELAY, room: parseLink(link).room, dir: path.join(ROOT, 'tdiv'), name: 'TesterDiv', passive: true, syncFiles: false, log: () => {} })
+await sleep(1000)
+testerDiv.doc.getMap('swarm_versions').set('diverge.js', { n: 1, hash: contentHash('Potato 123\n') })
+testerDiv.doc.getMap('swarm_attest').set('diverge.js', {
+  Alpha: { bytes: 11, lines: 1, hash: contentHash('Potato 123\n'), version: 1, at: new Date().toISOString() }
+})
+await sleep(600)
+fs.writeFileSync(path.join(dirB, 'diverge.js'), 'Potatu 123\n', 'utf8')
+const bsDiv = await B.call('hive_attest', { file: 'diverge.js', bytes: 11, lines: 1 })
+assert('different content with same bytes raises DIVERGENCE', /DIVERGENCE/.test(bsDiv), bsDiv)
+const vs1 = await A.call('hive_verified', { file: 'diverge.js' })
+assert('verified reports divergence', /DIVERGED/i.test(vs1), vs1)
+testerDiv.stop()
+
 
 console.log('\n# 3. Two peers attesting a missing file gives NO quorum')
 const am1 = await A.call('hive_attest', { file: 'nonexistent.js', bytes: 50, lines: 2 })
@@ -139,6 +151,29 @@ await sleep(800)
 const vAfter = await A.call('hive_verified', { file: 'foo.js' })
 assert('bypassed doc edit reports older version, not plain quorum', /older version/i.test(vAfter) && !/^QUORUM:/m.test(vAfter), vAfter)
 tester.stop()
+
+console.log('\n# 6. Propagation lag prevents false divergence and answers not caught up')
+await A.call('hive_edit', { file: 'lag.js', content: 'version 1 initial\n', intent: 'initial' })
+await sleep(1000)
+await A.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
+await sleep(600)
+await B.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
+
+// Now A edits lag.js to new content
+await A.call('hive_edit', { file: 'lag.js', content: 'version 2 updated\n', intent: 'v2' })
+await sleep(1000)
+
+// Simulate B's disk lagging behind: overwrite B's disk file with old content while fileDoc is updated
+fs.writeFileSync(path.join(dirB, 'lag.js'), 'version 1 initial\n', 'utf8')
+const bLag = await B.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
+assert('lagging folder reports not caught up yet', /your folder has not caught up yet/i.test(bLag), bLag)
+const vLag = await A.call('hive_verified', { file: 'lag.js' })
+assert('lagging folder does NOT create divergence in verified', !/\[!\] DIVERGED/.test(vLag), vLag)
+
+console.log('\n# 7. Line count with trailing newline matches wc -l')
+fs.writeFileSync(path.join(dirA, 'lines.js'), '1\n2\n3\n4\n5\n', 'utf8')
+const aLines = await A.call('hive_attest', { file: 'lines.js', bytes: 10, lines: 5 })
+assert('file with trailing newline reports 5 lines, not 6', /5 lines/.test(aLines) && !/6 lines/.test(aLines), aLines)
 
 relay.kill('SIGKILL')
 A.proc.kill('SIGKILL')

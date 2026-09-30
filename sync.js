@@ -29,18 +29,20 @@ import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (
 import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
-import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js'
-import { createRequire } from 'module'
-import { VERSION, VERSION_LABEL } from './hive-version.js'
-let grmLink = null
-try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
- // convergent-substrate: signed provenance for every landed change
+import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
 // `languageFor` belongs in this list and was missing: reconcile() calls it on the
 // clean-rewrite path, so a local whole-file rewrite of a supported file threw
 // ReferenceError and killed the sync process outright. Nothing caught it -- the client
 // simply died mid-session, which reads to a user as "sync stopped working". Rewriting a
 // whole file is the most common thing an agent does, so this fired constantly.
- // hands this room's history to GRM, so the ROOM has a memory
+import { createRequire } from 'module'
+import { VERSION, VERSION_LABEL } from './hive-version.js' // which build this client is, carried in presence
+// GRM STAYS PRIVATE (29 Sep 2026). grm-link.cjs hands this room's history to a LOCAL GRM, so the room
+// has a memory -- and it is not in the published package: GRM never goes on the internet. A checkout
+// that has the file links the room; an npm install simply has no room-memory link, and nothing else
+// changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
+let grmLink = null
+try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
 import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from './hive-pr-staleness.js' // room-versus-branch provenance staleness checks (HIV-P9)
 // HIV-P8. The map key MUST be the string 'obligations' — hive-mcp.js:656 reads that exact key, and
@@ -140,11 +142,22 @@ export function fusionReason(merged, mine, theirs, lang) {
   }
   return ''
 }
+
 const endNl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
+
+// HIV-P17. Why a creation race of relPath must NOT land, '' when it may: 'CONFLICT' when two whole
+// files collide in a file with a language, else fusionReason's answer when a clean-looking union
+// broke code both sides could parse. No language (Markdown) is never refused.
 export function creationRaceVerdict(r0, mine, theirs, relPath) {
   const code = supports(relPath)
   return r0.conflict ? (code ? 'CONFLICT' : '') : fusionReason(r0.text, endNl(mine), endNl(theirs), code ? languageFor(relPath) : null)
 }
+
+// HIV-P17 dead heat: several clients published one file into an empty doc before any saw another, and
+// the CRDT unioned them. textsByClient = each creator's live text, keyed by Yjs client id. The winner
+// is the lowest id -- every peer holds the same union, so every peer picks the same one. The creators
+// are folded in ONE BY ONE and each step is judged, because the union is what would land: with three
+// creators, two can each merge cleanly with the winner and still fuse with each other.
 export function deadHeatVerdict(textsByClient, relPath) {
   const [winner, ...others] = [...textsByClient.keys()].sort((a, b) => a - b)
   const winnerText = textsByClient.get(winner) || ''
@@ -158,7 +171,6 @@ export function deadHeatVerdict(textsByClient, relPath) {
   }
   return { winner, winnerText, why: '' }
 }
-
 
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
@@ -420,7 +432,7 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, app = '' }) {
   // BEFORE ANY DISK OR SOCKET WORK. A name outside the mention grammar joins successfully and is
   // then unreachable: its mail, its obligations and its wake-on-mention are all silently dead,
   // and the only symptom is other people being told "@X is NOT in the room" about someone who is
@@ -1065,7 +1077,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets() })
   let stopped = false
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -2593,7 +2605,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -3194,6 +3206,52 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
   })
 
+  // Evaluates consensus across peer measurements for a path and version.
+  function evaluateAttestations(rec, curVer, roomDocHash) {
+    const currentPeers = []
+    const formattedPeers = {}
+    for (const [peerName, v] of Object.entries(rec || {})) {
+      if (!v) continue
+      const isCurrent = (v.version || 1) === (curVer.n || 1)
+      if (isCurrent) {
+        currentPeers.push({ peer: peerName, ...v })
+        formattedPeers[peerName] = { ...v, stale: false }
+      } else {
+        formattedPeers[peerName] = {
+          ...v,
+          stale: true,
+          staleReason: `stale: attested version ${v.version || 0}, room is at ${curVer.n}`
+        }
+      }
+    }
+
+    const presentCurrent = currentPeers.filter((v) => !v.absent && v.hash)
+    const currentHashes = [...new Set(presentCurrent.map((v) => v.hash))]
+    const currentSizes = [...new Set(presentCurrent.map((v) => v.bytes))]
+    const anyAbsent = currentPeers.some((v) => v.absent)
+
+    let quorum = presentCurrent.length >= 2 && currentHashes.length === 1 && !anyAbsent
+    const split = currentHashes.length > 1 || (anyAbsent && presentCurrent.length > 0)
+
+    let quorumOnOlder = false
+    if (quorum && roomDocHash && currentHashes[0] && roomDocHash !== currentHashes[0]) {
+      quorum = false
+      quorumOnOlder = true
+    }
+
+    return {
+      peers: formattedPeers,
+      currentPeers,
+      count: currentPeers.length,
+      totalCount: Object.keys(rec || {}).length,
+      sizes: currentSizes,
+      diverged: split,
+      quorum,
+      quorumOnOlder,
+      version: curVer.n || 1
+    }
+  }
+
   return {
     doc,
     provider,
@@ -3275,7 +3333,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           const diskContent = fs.readFileSync(full, 'utf8')
           measuredHash = contentHash(diskContent)
           measuredBytes = Buffer.byteLength(diskContent, 'utf8')
-          measuredLines = diskContent.length === 0 ? 0 : diskContent.split(/\r?\n/).length
+          const normalized = diskContent.endsWith('\n') ? diskContent.slice(0, -1) : diskContent
+          measuredLines = diskContent.length === 0 ? 0 : normalized.split(/\r?\n/).length
           const statedBytes = Number(bytes)
           if (Number.isFinite(statedBytes) && statedBytes > 0 && statedBytes !== measuredBytes) {
             mismatch = { stated: statedBytes, measured: measuredBytes }
@@ -3285,6 +3344,20 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         }
       } else {
         absent = true
+      }
+
+      // Check if room doc changed since or if local folder has not caught up with remote doc
+      const fe = fileDocs.get(p)
+      let roomDocHash = null
+      if (fe && fe.text && fe.text.length > 0) {
+        const docText = fe.text.toString()
+        roomDocHash = contentHash(docText)
+        if (measuredHash && roomDocHash && measuredHash !== roomDocHash) {
+          return {
+            error: 'your folder has not caught up yet, re-attest in a moment',
+            path: p
+          }
+        }
       }
 
       let curVer = swarmVersions.get(p)
@@ -3308,113 +3381,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
       swarmAttest.set(p, next)
 
-      // Compare only attestations of the CURRENT version
-      const currentPeers = []
-      const formattedPeers = {}
-      for (const [peerName, rec] of Object.entries(next)) {
-        if (!rec) continue
-        const isCurrent = (rec.version || 1) === curVer.n
-        if (isCurrent) {
-          currentPeers.push({ peer: peerName, ...rec })
-          formattedPeers[peerName] = { ...rec, stale: false }
-        } else {
-          formattedPeers[peerName] = {
-            ...rec,
-            stale: true,
-            staleReason: `stale: attested version ${rec.version || 0}, room is at ${curVer.n}`
-          }
-        }
-      }
-
-      const presentCurrent = currentPeers.filter((v) => !v.absent && v.hash)
-      const currentHashes = [...new Set(presentCurrent.map((v) => v.hash))]
-      const currentSizes = [...new Set(presentCurrent.map((v) => v.bytes))]
-      const anyAbsent = currentPeers.some((v) => v.absent)
-
-      // Quorum requires at least 2 present peers of current version with identical hash, and no divergence/absent
-      let quorum = presentCurrent.length >= 2 && currentHashes.length === 1 && !anyAbsent
-      // Divergence: either present peers disagree on hash, OR one peer has it and another peer is absent!
-      const split = currentHashes.length > 1 || (anyAbsent && presentCurrent.length > 0)
-
-      // Check if room doc changed since (Refinement C)
-      const fe = fileDocs.get(p)
-      let roomDocHash = null
-      if (fe && fe.text && fe.text.length > 0) {
-        roomDocHash = contentHash(fe.text.toString())
-      }
-      let quorumOnOlder = false
-      if (quorum && roomDocHash && currentHashes[0] && roomDocHash !== currentHashes[0]) {
-        quorum = false
-        quorumOnOlder = true
-      }
-
-      if (split) {
-        const detail = currentPeers.map((v) => v.absent ? `${v.peer}:ABSENT` : `${v.peer}:${v.bytes}b/${v.lines}L`).join('  ')
+      const evaluated = evaluateAttestations(next, curVer, roomDocHash)
+      if (evaluated.diverged) {
+        const detail = evaluated.currentPeers.map((v) => v.absent ? `${v.peer}:ABSENT` : `${v.peer}:${v.bytes}b/${v.lines}L`).join('  ')
         say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
       }
 
       return {
         path: p,
-        peers: formattedPeers,
-        count: currentPeers.length,
-        totalCount: Object.keys(next).length,
-        sizes: currentSizes,
-        diverged: split,
-        quorum,
-        quorumOnOlder,
         mismatch,
-        version: curVer.n
+        ...evaluated
       }
     },
     verified: (relPath) => {
       const p = String(relPath)
       const curVer = swarmVersions.get(p) || { n: 1, hash: '' }
       const rec = swarmAttest.get(p) || {}
-      const currentPeers = []
-      const formattedPeers = {}
-      for (const [peerName, v] of Object.entries(rec)) {
-        if (!v) continue
-        const isCurrent = (v.version || 1) === curVer.n
-        if (isCurrent) {
-          currentPeers.push({ peer: peerName, ...v })
-          formattedPeers[peerName] = { ...v, stale: false }
-        } else {
-          formattedPeers[peerName] = {
-            ...v,
-            stale: true,
-            staleReason: `stale: attested version ${v.version || 0}, room is at ${curVer.n}`
-          }
-        }
-      }
-      const presentCurrent = currentPeers.filter((v) => !v.absent && v.hash)
-      const currentHashes = [...new Set(presentCurrent.map((v) => v.hash))]
-      const currentSizes = [...new Set(presentCurrent.map((v) => v.bytes))]
-      const anyAbsent = currentPeers.some((v) => v.absent)
-
-      let quorum = presentCurrent.length >= 2 && currentHashes.length === 1 && !anyAbsent
-      const split = currentHashes.length > 1 || (anyAbsent && presentCurrent.length > 0)
-
       const fe = fileDocs.get(p)
       let roomDocHash = null
       if (fe && fe.text && fe.text.length > 0) {
         roomDocHash = contentHash(fe.text.toString())
       }
-      let quorumOnOlder = false
-      if (quorum && roomDocHash && currentHashes[0] && roomDocHash !== currentHashes[0]) {
-        quorum = false
-        quorumOnOlder = true
-      }
-
+      const evaluated = evaluateAttestations(rec, curVer, roomDocHash)
       return {
         path: p,
-        peers: formattedPeers,
-        count: currentPeers.length,
-        totalCount: Object.keys(rec).length,
-        sizes: currentSizes,
-        diverged: split,
-        quorum,
-        quorumOnOlder,
-        version: curVer.n
+        ...evaluated
       }
     },
     say,                 // post a coordination message
@@ -3547,7 +3538,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         const u = s.user
         if (!u || !u.name) continue
         const prev = seen.get(u.name) || {}
-        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined })
+        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined, app: u.app || prev.app || undefined })
       }
       return [...seen.values()]
     },

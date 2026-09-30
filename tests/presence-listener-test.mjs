@@ -49,14 +49,14 @@ console.log('# Item 4: Presence — recognize hivecode-await listeners')
   T('when listener exits (present: false), state is GONE',
     ACT.stateOf(silentRec, { present: false, listener: true, now }) === ACT.GONE)
 
-  // describe() includes listener flag and reachability:
-  const d = ACT.describe(silentRec, { present: true, listener: true, now })
+  // describe() includes listener flag and reachability (when app known to resume):
+  const d = ACT.describe(silentRec, { present: true, listener: true, app: 'claude-code', now })
   T('describe() reports WAITING', d.state === ACT.WAITING)
   T('describe() reports listener: true', d.listener === true)
   T('describe() reports reachable: true', d.reachable === true)
 
   // line() renders "WAITING (listening via hivecode-await)" plus last action age:
-  const l = ACT.line('Claude', silentRec, { present: true, listener: true, now })
+  const l = ACT.line('Claude', silentRec, { present: true, listener: true, app: 'claude-code', now })
   T('line() includes "WAITING (listening via hivecode-await)"',
     l.includes('WAITING (listening via hivecode-await)'))
   T('line() includes last action age ("last acted 30 min ago")',
@@ -69,6 +69,26 @@ console.log('# Item 4: Presence — recognize hivecode-await listeners')
   const lNoAction = ACT.line('NewAgent', noActionRec, { present: true, listener: true, now })
   T('line() with no past actions does NOT report PARKED',
     lNoAction.includes('WAITING (listening via hivecode-await)') && !lNoAction.includes('PARKED'))
+
+  // Review Point 3: paused and passive must win over listener:
+  T('paused wins over listener',
+    ACT.stateOf(silentRec, { present: true, paused: true, listener: true, now }) === ACT.PAUSED)
+  T('passive wins over listener',
+    ACT.stateOf(silentRec, { present: true, passive: true, listener: true, now }) === ACT.PASSIVE)
+
+  // Review Point 2: reachable only for apps known to resume (claude-code):
+  const dClaude = ACT.describe(silentRec, { present: true, listener: true, app: 'claude-code', now })
+  T('claude-code listener is reachable', dClaude.reachable === true)
+
+  const dAntigravity = ACT.describe(silentRec, { present: true, listener: true, app: 'antigravity', now })
+  T('antigravity listener is NOT reachable', dAntigravity.reachable === false)
+
+  const lClaude = ACT.line('Claude', silentRec, { present: true, listener: true, app: 'claude-code', now })
+  T('claude-code line says Reachable', lClaude.includes('Reachable.'))
+
+  const lAntigravity = ACT.line('Antigravity1', silentRec, { present: true, listener: true, app: 'antigravity', now })
+  T('antigravity line says listener running, but this app is not woken by it',
+    /listener running, but this app is not woken by it/i.test(lAntigravity))
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`)
