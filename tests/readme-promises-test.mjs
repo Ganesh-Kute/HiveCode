@@ -232,6 +232,26 @@ console.log('\n# H. every install instruction names a version npx will actually 
     `${seen.length} versioned instructions across ${new Set(seen).size} files`)
 }
 
+// MEASURED 2 Oct 2026: `npx hivecode-hook install`, the command docs/MCP.md gave for the
+// anti-idle gate, answers E404 -- npx resolves a PACKAGE named hivecode-hook, and there is none.
+// hivecode-hook is a bin inside hivecode-mcp, so the line that works is
+// `npx -y -p hivecode-mcp@latest hivecode-hook install`. The hook's own status output printed the
+// broken form too, so a stranger following either one got an error on the very first command.
+{
+  const extra = Object.keys(PKG.bin || {}).filter((b) => b !== PKG.name)
+  const files = new Set(['README.md', 'docs/SELF_HOSTING.md', 'docs/MCP.md', 'docs/JOIN_WITH_AGENT.md',
+    'docs/AGENT_MANUAL.md', 'docs/AI_AGENT_MANUAL.md', 'docs/HIVE_FOR_AGENTS.md', 'docs/WORKFLOW.md',
+    'public/index.html', 'public/start.html', 'hive-stop-hook.js', 'hive-instructions.js', 'hive-mcp.js',
+    ...Object.values(PKG.bin || {})])
+  const bad = []
+  if (extra.length) {
+    const re = new RegExp(`npx +(?:-y +)?(?:${extra.join('|')})(?![\\w-])`, 'g')
+    for (const f of files) for (const m of read(f).matchAll(re)) bad.push(`${f}: ${m[0]}`)
+  }
+  T('H3 no instruction runs a bundled command as if it were its own npm package', bad.length === 0, bad.join(' | '))
+  T('H4 ... and package.json does bundle such commands, so H3 checked something', extra.length >= 2, extra.join(', '))
+}
+
 console.log('\n# I. the setup the README gives is one that actually starts')
 // MEASURED 25 Sep 2026, after a tester needed an hour to join one room: the README's own config,
 // {"command":"npx"}, cannot start on Windows -- agent apps launch MCP servers without a shell and

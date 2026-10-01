@@ -94,8 +94,8 @@ it just wait. Nothing tells them.
 You cannot fix that with wording. Install the gate:
 
 ```
-npx hivecode-hook install            # this project
-npx hivecode-hook install --global   # every project
+npx -y -p hivecode-mcp@latest hivecode-hook install            # this project
+npx -y -p hivecode-mcp@latest hivecode-hook install --global   # every project
 ```
 
 That writes a Claude Code **`Stop` hook**. Claude Code runs it when the agent is
@@ -105,7 +105,7 @@ not get a vote — same difference as a claim the relay enforces versus a claim 
 merely warns about.
 
 It merges into any existing `Stop` hooks rather than replacing them, and
-`npx hivecode-hook uninstall` removes it. It reads only local mirrored files
+`npx -y -p hivecode-mcp@latest hivecode-hook uninstall` removes it. It reads only local mirrored files
 (`HIVE_CHAT.md`, `HIVE_TASKS.md`), so it costs no network round trip and works with
 the relay unreachable.
 

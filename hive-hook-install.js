@@ -2,10 +2,10 @@
 /**
  * INSTALL THE ANTI-IDLE GATE.
  *
- *   npx hivecode-hook install            # this project  (.claude/settings.json)
- *   npx hivecode-hook install --global   # every project (~/.claude/settings.json)
- *   npx hivecode-hook status
- *   npx hivecode-hook uninstall
+ *   npx -y -p hivecode-mcp@latest hivecode-hook install            # this project  (.claude/settings.json)
+ *   npx -y -p hivecode-mcp@latest hivecode-hook install --global   # every project (~/.claude/settings.json)
+ *   npx -y -p hivecode-mcp@latest hivecode-hook status
+ *   npx -y -p hivecode-mcp@latest hivecode-hook uninstall
  *
  * Writes a Claude Code `Stop` hook entry pointing at hive-stop-hook.js. See that file for what
  * the gate does and why prompt text alone cannot do it.
@@ -95,7 +95,7 @@ function status() {
   console.log(`\n  settings   ${settingsPath}${fs.existsSync(settingsPath) ? '' : '  (does not exist)'}`)
   console.log(`  hivecode   ${mine.length ? 'INSTALLED' : 'not installed'}`)
   if (others) console.log(`  other      ${others} unrelated Stop hook(s)`)
-  console.log(`\n  install with:  npx hivecode-hook install${GLOBAL ? ' --global' : ''}\n`)
+  console.log(`\n  install with:  npx -y -p hivecode-mcp@latest hivecode-hook install${GLOBAL ? ' --global' : ''}\n`)
 }
 
 if (cmd === 'install') install()

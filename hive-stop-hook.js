@@ -51,7 +51,7 @@
  * and allows the stop. The hook may make an agent more reliable; it must never make a session
  * unusable.
  *
- * Install with:  npx hivecode-hook install
+ * Install with:  npx -y -p hivecode-mcp@latest hivecode-hook install
  */
 import fs from 'fs'
 import path from 'path'
