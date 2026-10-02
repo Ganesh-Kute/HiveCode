@@ -117,7 +117,7 @@
     "test:mailbox": "node tests/mailbox-test.mjs && node tests/mcp-wait-test.mjs && node tests/mailbox-noise-test.mjs",
     "test:stophook": "node tests/stop-hook-test.mjs",
     "test:limits": "node tests/limits-test.mjs && node tests/rate-hold-test.mjs && node tests/persist-batch-test.mjs",
-    "test:merge": "node tests/diff3-test.mjs && node tests/merge-balloon-test.mjs && node tests/icr-merge-test.js",
+    "test:merge": "node tests/diff3-test.mjs && node tests/merge-balloon-test.mjs && node tests/icr-merge-test.js && node tests/icr-gap-comments-test.mjs",
     "test:rejoin": "node tests/rejoin-clobber-test.mjs",
     "test:prod": "node tests/test.js && node tests/firstrun-test.mjs && node tests/credential-split-test.mjs && node tests/limits-test.mjs && node tests/usage-meter-test.mjs && node tests/rejoin-clobber-test.mjs && node tests/stop-hook-test.mjs && node tests/coordination-test.mjs && node tests/control-panel-test.mjs && node tests/hive-map-test.mjs && node tests/hive-gate-test.mjs && node tests/durability-test.mjs && node tests/payment-e2e-test.mjs && node tests/subscribe-test.mjs && node tests/lifecycle-test.mjs && node tests/billing-test.mjs && node tests/hive-license-test.js && node tests/recover-test.mjs && node demo/wrap-test.mjs",
     "test:meter": "node tests/usage-meter-test.mjs",
