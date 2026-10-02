@@ -443,7 +443,7 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, app = '' }) {
   // BEFORE ANY DISK OR SOCKET WORK. A name outside the mention grammar joins successfully and is
   // then unreachable: its mail, its obligations and its wake-on-mention are all silently dead,
   // and the only symptom is other people being told "@X is NOT in the room" about someone who is
@@ -576,6 +576,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // DISAGREEMENT becomes the signal. One shared "size" field would have silently converged on
   // whichever peer wrote last, which is precisely the failure it exists to catch.
   const swarmAttest = doc.getMap('swarm_attest')
+  const swarmVersions = doc.getMap('swarm_versions')
+
+  function bumpAttestVersion(relPath, newText) {
+    if (!swarmAttest.has(relPath)) return // only bump files that already have attestations
+    const prev = swarmVersions.get(relPath) || { n: 1, hash: '' }
+    const newHash = contentHash(newText)
+    if (prev.hash !== newHash) {
+      swarmVersions.set(relPath, { n: (prev.n || 1) + 1, hash: newHash })
+    }
+  }
   // GATE VERDICTS — `<region>|<peerName>` -> the result of that peer running the room's check in
   // ITS OWN folder before handing the file back. Keyed per peer for the same reason swarmAttest
   // is: "the tests pass" is a fact about one folder's bytes, and storing it as a single shared
@@ -1078,7 +1088,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets() })
   let stopped = false
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -1760,6 +1770,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     } catch { /* the log still carries it */ }
   }
   function reconcile(relPath, origin = 'local') {
+    if (process.env.HIVE_TEST_STUCK_SYNC && relPath === process.env.HIVE_TEST_STUCK_SYNC) return
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
     if (!canOpen(relPath)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
     const full = path.join(ROOT, relPath)
@@ -2212,6 +2223,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // fusing. Recording (fork, disk) keeps every concurrent same-line edit anchored to the
     // SAME clean parent, so the fork stays detectable no matter how the char-CRDT fuses.
     if (origin === 'local') {
+      if (res.text !== docText) bumpAttestVersion(relPath, res.text)
       // Gate ON: the author's INTENT was already captured at the source (captureLocal, top
       // of this pass) — here we only advance the authority head to the landed content.
       // Gate OFF (default): the proven landed-transition stamp, unchanged.
@@ -2605,7 +2617,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -3206,6 +3218,73 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
   })
 
+  // Evaluates consensus across peer measurements for a path and version.
+  function evaluateAttestations(rec, curVer, roomDocHash) {
+    const currentPeers = []
+    const formattedPeers = {}
+    for (const [peerName, v] of Object.entries(rec || {})) {
+      if (!v) continue
+      const isCurrent = (v.version || 1) === (curVer.n || 1)
+      if (isCurrent) {
+        currentPeers.push({ peer: peerName, ...v })
+        let note = ''
+        if (v.stuckLagging) {
+          note = ` (${v.stuckReason || 'stuck lagging'})`
+        } else if (v.lagging) {
+          note = ` (${v.lagNotice || 'your folder has not caught up yet'})`
+        }
+        formattedPeers[peerName] = { ...v, stale: false, note }
+      } else {
+        formattedPeers[peerName] = {
+          ...v,
+          stale: true,
+          staleReason: `stale: attested version ${v.version || 0}, room is at ${curVer.n}`
+        }
+      }
+    }
+
+    // Peers that are present, have a hash, and are NOT lagging (stuck peers are kept out of quorum too)
+    const presentValid = currentPeers.filter((v) => !v.absent && v.hash && !v.lagging && !v.stuckLagging)
+    const validHashes = [...new Set(presentValid.map((v) => v.hash))]
+    const validSizes = [...new Set(presentValid.map((v) => v.bytes))]
+
+    // Peers that count toward comparison:
+    // A peer lagging inside the grace period counts toward NEITHER quorum NOR divergence!
+    // Compare hashes over non-lagging peers plus stuck peers only.
+    const comparisonPeers = currentPeers.filter((v) => !v.absent && v.hash && (!v.lagging || v.stuckLagging))
+    const comparisonHashes = [...new Set(comparisonPeers.map((v) => v.hash))]
+    const comparisonSizes = [...new Set(comparisonPeers.map((v) => v.bytes))]
+    const anyAbsent = currentPeers.some((v) => v.absent)
+    const anyStuck = currentPeers.some((v) => v.stuckLagging)
+
+    // Quorum: requires at least 2 non-lagging peers of current version with identical hash, no absent, no stuck
+    let quorum = presentValid.length >= 2 && validHashes.length === 1 && !anyAbsent && !anyStuck
+
+    // Divergence:
+    // 1. Two comparison peers (non-lagging or stuck) disagree on disk hash
+    // 2. OR one comparison peer is absent while another is present
+    // 3. OR any peer is stuck lagging (>grace period passed without catching up)
+    const split = comparisonHashes.length > 1 || (anyAbsent && comparisonPeers.length > 0) || anyStuck
+
+    let quorumOnOlder = false
+    if (quorum && roomDocHash && validHashes[0] && roomDocHash !== validHashes[0]) {
+      quorum = false
+      quorumOnOlder = true
+    }
+
+    return {
+      peers: formattedPeers,
+      currentPeers,
+      count: currentPeers.length,
+      totalCount: Object.keys(rec || {}).length,
+      sizes: comparisonSizes.length ? comparisonSizes : [...new Set(currentPeers.filter(v => !v.absent && v.hash).map(v => v.bytes))],
+      diverged: split,
+      quorum,
+      quorumOnOlder,
+      version: curVer.n || 1
+    }
+  }
+
   return {
     doc,
     provider,
@@ -3275,24 +3354,140 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // whether the peers DISAGREE — see the swarm_attest declaration for why it is keyed per peer.
     attest: (relPath, bytes, lines) => {
       const p = String(relPath)
-      const prev = swarmAttest.get(p) || {}
-      const next = { ...prev, [name]: { bytes: Number(bytes), lines: Number(lines), at: new Date().toISOString() } }
-      swarmAttest.set(p, next)
-      const sizes = [...new Set(Object.values(next).map((v) => v && v.bytes))]
-      const split = sizes.length > 1
-      if (split) {
-        // Announce, do not throw. The measuring agent did nothing wrong and its report is valid; the
-        // ROOM is what is broken. Throwing here would punish whoever happened to measure second.
-        const detail = Object.entries(next).map(([who, v]) => `${who}:${v.bytes}b/${v.lines}L`).join('  ')
-        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT bytes: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+      const full = path.join(ROOT, p)
+      let measuredHash = null
+      let measuredBytes = null
+      let measuredLines = null
+      let absent = false
+      let mismatch = null
+      let diskContent = null
+
+      if (fs.existsSync(full)) {
+        try {
+          diskContent = fs.readFileSync(full, 'utf8')
+          measuredHash = contentHash(diskContent)
+          measuredBytes = Buffer.byteLength(diskContent, 'utf8')
+          const normalized = diskContent.endsWith('\n') ? diskContent.slice(0, -1) : diskContent
+          measuredLines = diskContent.length === 0 ? 0 : normalized.split(/\r?\n/).length
+          const statedBytes = Number(bytes)
+          if (Number.isFinite(statedBytes) && statedBytes > 0 && statedBytes !== measuredBytes) {
+            mismatch = { stated: statedBytes, measured: measuredBytes }
+          }
+        } catch {
+          absent = true
+        }
+      } else {
+        absent = true
       }
-      return { path: p, peers: next, count: Object.keys(next).length, sizes, diverged: split }
+
+      // Check if room doc exists and whether disk differs from room doc
+      const fe = fileDocs.get(p)
+      let roomDocHash = null
+      let roomDocBytes = null
+      let lagging = false
+      let lagDirection = null
+      let lagNotice = null
+
+      if (fe && fe.text && fe.text.length > 0 && measuredHash) {
+        const docText = fe.text.toString()
+        roomDocHash = contentHash(docText)
+        roomDocBytes = Buffer.byteLength(docText, 'utf8')
+        if (measuredHash !== roomDocHash) {
+          lagging = true
+          const base = bases.get(p)
+          if (base !== undefined && base === docText) {
+            lagDirection = 'ahead'
+            lagNotice = 'disk ahead of room doc: local edit not published to room yet (your folder has not caught up yet)'
+          } else if (base !== undefined && base === diskContent) {
+            lagDirection = 'behind'
+            lagNotice = 'disk behind room doc: your folder has not caught up yet'
+          } else {
+            lagDirection = 'lagging'
+            lagNotice = 'disk out of step with the room\'s copy (your folder has not caught up yet)'
+          }
+        }
+      }
+
+      let curVer = swarmVersions.get(p)
+      if (!curVer) {
+        curVer = { n: 1, hash: measuredHash || '' }
+        swarmVersions.set(p, curVer)
+      }
+
+      const GRACE_MS = Number(process.env.HIVE_ATTEST_GRACE_MS) || 10000
+      const prev = swarmAttest.get(p) || {}
+      const prevAttest = prev[name]
+
+      let stuckLagging = false
+      let stuckReason = null
+      if (lagging && prevAttest && (prevAttest.lagging || prevAttest.stuckLagging) && prevAttest.laggingDocHash === roomDocHash) {
+        const prevAt = prevAttest.at ? new Date(prevAttest.at).getTime() : 0
+        const elapsedMs = Date.now() - prevAt
+        if (elapsedMs >= GRACE_MS) {
+          stuckLagging = true
+          stuckReason = `not catching up to room doc after ${Math.round(elapsedMs / 1000)}s: disk ${measuredBytes}b vs doc ${roomDocBytes}b (${lagDirection || 'lagging'})`
+        }
+      }
+
+      const next = {
+        ...prev,
+        [name]: {
+          bytes: measuredBytes,
+          lines: measuredLines,
+          hash: measuredHash,
+          absent,
+          mismatch,
+          lagging: lagging && !stuckLagging,
+          lagDirection: lagDirection || undefined,
+          lagNotice: lagNotice || undefined,
+          laggingDocHash: lagging ? roomDocHash : undefined,
+          stuckLagging,
+          stuckReason: stuckReason || undefined,
+          version: curVer.n,
+          at: (lagging && prevAttest && (prevAttest.lagging || prevAttest.stuckLagging) && prevAttest.laggingDocHash === roomDocHash)
+            ? prevAttest.at
+            : new Date().toISOString()
+        }
+      }
+      swarmAttest.set(p, next)
+
+      const evaluated = evaluateAttestations(next, curVer, roomDocHash)
+      if (evaluated.diverged) {
+        const detail = evaluated.currentPeers.map((v) => {
+          if (v.absent) return `${v.peer}:ABSENT`
+          if (v.stuckLagging) return `${v.peer}:${v.bytes}b/${v.lines}L[STUCK:${v.stuckReason || 'not catching up'}]`
+          return `${v.peer}:${v.bytes}b/${v.lines}L`
+        }).join('  ')
+        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+      }
+
+      return {
+        path: p,
+        mismatch,
+        measuredBytes,
+        measuredLines,
+        measuredHash,
+        lagging: lagging && !stuckLagging,
+        lagNotice,
+        stuckLagging,
+        stuckReason,
+        ...evaluated
+      }
     },
     verified: (relPath) => {
       const p = String(relPath)
+      const curVer = swarmVersions.get(p) || { n: 1, hash: '' }
       const rec = swarmAttest.get(p) || {}
-      const sizes = [...new Set(Object.values(rec).map((v) => v && v.bytes))]
-      return { path: p, peers: rec, count: Object.keys(rec).length, sizes, diverged: sizes.length > 1, quorum: Object.keys(rec).length >= 2 && sizes.length === 1 }
+      const fe = fileDocs.get(p)
+      let roomDocHash = null
+      if (fe && fe.text && fe.text.length > 0) {
+        roomDocHash = contentHash(fe.text.toString())
+      }
+      const evaluated = evaluateAttestations(rec, curVer, roomDocHash)
+      return {
+        path: p,
+        ...evaluated
+      }
     },
     say,                 // post a coordination message
     assign,              // direct a task at a participant (needs approval if target AI has an owner)
@@ -3424,7 +3619,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         const u = s.user
         if (!u || !u.name) continue
         const prev = seen.get(u.name) || {}
-        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined })
+        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined, app: u.app || prev.app || undefined })
       }
       return [...seen.values()]
     },

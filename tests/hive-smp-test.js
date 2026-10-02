@@ -34,8 +34,8 @@ const relay = spawn(process.execPath, ['server.js'], { env: { ...process.env, PO
 await new Promise((res) => relay.stdout.on('data', (d) => /listening on/.test(d) && res()))
 
 /** One MCP agent: a child process plus a newline-delimited JSON-RPC client. */
-function agent(label) {
-  const p = spawn(process.execPath, ['hive-mcp.js'], { env: { ...process.env, HIVE_RELAY: RELAY } })
+function agent(label, extraEnv = {}) {
+  const p = spawn(process.execPath, ['hive-mcp.js'], { env: { ...process.env, HIVE_RELAY: RELAY, HIVE_ATTEST_GRACE_MS: '400', ...extraEnv } })
   p.stderr.on('data', (d) => process.stdout.write(`   [${label}-stderr] ${d}`))
   let buf = ''
   const pending = new Map()
@@ -66,7 +66,7 @@ function agent(label) {
   return { proc: p, rpc, notify, call }
 }
 
-const A = agent('A'), B = agent('B')
+const A = agent('A'), B = agent('B', { HIVE_TEST_STUCK_SYNC: 'split.js' })
 for (const x of [A, B]) {
   await x.rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } })
   x.notify('notifications/initialized')
@@ -132,15 +132,24 @@ const w3 = await A.call('hive_edit', { file: 'lease3.js', content: 'export const
 assert('write 3 refused — the window shut without anyone remembering to shut it', /DCO Enforced|Lease Spent/.test(w3))
 
 console.log('\n# 5. hive_attest — two folders disagreeing becomes LOUD')
-const a1 = await A.call('hive_attest', { file: 'shared.js', bytes: 8012, lines: 178 })
+fs.writeFileSync(path.join(dirA, 'shared.js'), 'x'.repeat(8012))
+await sleep(1500)
+const a1 = await A.call('hive_attest', { file: 'shared.js', bytes: 8012, lines: 1 })
 assert('a single attestation is explicitly NOT proof', /proves nothing|Only you so far/.test(a1))
 await sleep(600)
-const b1 = await B.call('hive_attest', { file: 'shared.js', bytes: 8012, lines: 178 })
+const b1 = await B.call('hive_attest', { file: 'shared.js', bytes: 8012, lines: 1 })
 assert('two peers at the same size reach quorum', /QUORUM/.test(b1))
 await sleep(400)
-const b2 = await B.call('hive_attest', { file: 'split.js', bytes: 22312, lines: 22312 })
+fs.writeFileSync(path.join(dirA, 'split.js'), 'a'.repeat(178))
+await sleep(1000)
+await A.call('hive_attest', { file: 'split.js', bytes: 178, lines: 1 })
+
+fs.writeFileSync(path.join(dirB, 'split.js'), 'b'.repeat(22312))
+await B.call('hive_attest', { file: 'split.js', bytes: 22312, lines: 1 })
 await sleep(600)
-const a2 = await A.call('hive_attest', { file: 'split.js', bytes: 178, lines: 178 })
+await B.call('hive_attest', { file: 'split.js', bytes: 22312, lines: 1 })
+await sleep(400)
+const a2 = await A.call('hive_attest', { file: 'split.js', bytes: 178, lines: 1 })
 assert('peers reporting DIFFERENT bytes raises divergence', /DIVERGENCE/.test(a2))
 assert('divergence names both peers and both sizes', /Alpha/.test(a2) && /Beta/.test(a2) && /22312/.test(a2))
 const v = await A.call('hive_verified', { file: 'split.js' })

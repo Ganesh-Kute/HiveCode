@@ -37,7 +37,7 @@ if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
 import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
-import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats } from './hive-mailbox.js'
+import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
 import { INSTRUCTIONS, JOIN_RULES } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
@@ -232,7 +232,7 @@ was not written. Fix the relay and call hive_join again.`
   // folder is precisely the situation the lock exists to prevent.
   let hive
   try {
-    hive = startSync({ relay, room, dir, name, kind: kind || 'ai', owner, token: useToken, log: () => {}, passive: !!passive })
+    hive = startSync({ relay, room, dir, name, kind: kind || 'ai', owner, token: useToken, log: () => {}, passive: !!passive, app: clientName() })
   } catch (e) {
     if (e && e.code === 'EHIVELOCKED') {
       return text(
@@ -687,7 +687,7 @@ function enforceDcoLock(opts = {}) {
       POISONED: `[Path Poisoned] ${opts.path} must NOT be written. Publish to a NEW path instead. (Legacy flag — prefer DELETED_UNWRITABLE / CORRUPT / DIVERGED, which say WHY.)`,
       DELETED_UNWRITABLE: `[Path Unwritable] ${opts.path} had a delete propagate. A write here vanishes or silently resurrects the deleted content, and two folders end up permanently disagreeing with no marker. Never write it and never delete it again — publish to a NEW path.`,
       CORRUPT: `[Path Corrupt] ${opts.path} is unusable in every folder that has measured it. Do not write it and do not read it as reference — build the replacement out-of-tree and publish it to a NEW path.`,
-      DIVERGED: `[Path Diverged] peers hold DIFFERENT bytes for ${opts.path}, so there is no single truth to write on top of. Call hive_attest to record what YOUR folder holds and see who disagrees. Nobody writes this path until it is reconciled.`,
+      DIVERGED: `[Path Diverged] peers hold DIFFERENT content for ${opts.path}, so there is no single truth to write on top of. Call hive_attest to record what YOUR folder holds and see who disagrees. Nobody writes this path until it is reconciled.`,
       FROZEN: `[Path Frozen] ${opts.path} is frozen by the state machine. Ask the owner to set path:${opts.path}=LIVE before writing it.`,
     }
     if (ps && stop[ps]) throw new Error(stop[ps])
@@ -806,12 +806,6 @@ async function dispatch(req) {
         // reported as landing in everyone's ambient digest, where it is meant to be skipped.
         // Immediate, per-call feedback, at the moment the mistake is made.
         const named = mentionedNames(body)
-        if (!named.length) {
-          return text(stamp(`sent: ${body}`) + `\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
-            `activity", where they are told to skip it — so assume no one acts on it. Name the ` +
-            `agents you actually need with @Name (hive_members lists who is here). Use an ` +
-            `unaddressed message only for a genuine announcement to the whole room.`)
-        }
         // WHO IS ACTUALLY GOING TO READ THIS. The sender is the only participant who can act on
         // "they left" or "they are mid-task", and it is worth strictly more here than in a
         // reply: it arrives before the sender starts waiting, and it costs the room no message.
@@ -831,6 +825,28 @@ async function dispatch(req) {
           if (m && m.by) everHere.add(String(m.by).toLowerCase())
         }
 
+        // 5.2: Route only to known names, @all, explicit reply requests (needsReply),
+        // or unknown @words that are direct addresses (at start) or typos (within edit distance <= 2 of a known name).
+        // Unrecognized @words in prose are ignored.
+        const allKnown = new Set([...present, ...everHere])
+        function isAddressee(n) {
+          const lc = n.toLowerCase()
+          if (lc === 'all') return true
+          if (allKnown.has(lc)) return true
+          if (args.needsReply) return true
+          if (isDirectAddress(body, n)) return true
+          if (findClosestKnown(n, [...allKnown])) return true
+          return false
+        }
+        const addressed = named.filter(isAddressee)
+
+        if (!addressed.length && !mentionsAll(body)) {
+          return text(stamp(`sent: ${body}`) + `\n\nNOBODY WAS ADDRESSED. This went to every agent's "room ` +
+            `activity", where they are told to skip it — so assume no one acts on it. Name the ` +
+            `agents you actually need with @Name (hive_members lists who is here). Use an ` +
+            `unaddressed message only for a genuine announcement to the whole room.`)
+        }
+
         // HIV-P11b. Send-time inspection of recipient state:
         // Warns when addressing PARKED, PAUSED, PASSIVE, or GONE/AWAY agents.
         function describeRecipientLiveness(n) {
@@ -845,6 +861,8 @@ async function dispatch(req) {
             present: isPresent,
             paused: isPaused,
             passive: isPassive,
+            listener: !!(mem && mem.listener),
+            app: mem && mem.app,
             now,
             parkedAfter,
           })
@@ -866,10 +884,26 @@ async function dispatch(req) {
             if (everHere.has(lc)) {
               return `⚠ @${displayName} — AWAY RIGHT NOW. Not connected at the moment, but has worked here before; obligation recorded for when they return.`
             } else {
-              return `⚠ @${displayName} — NOT IN THIS ROOM. Nobody by that name is here, so nobody is going to answer. Call hive_members and re-address it now; this is the one failure mode that otherwise costs you a whole shift.`
+              // 5.2 Typo catch: within distance 2 of known names
+              const closest = findClosestKnown(n, [...allKnown])
+              if (closest && closest.name.toLowerCase() !== lc) {
+                return `⚠ @${displayName} — not in this room (did you mean @${closest.name}?).`
+              }
+              // 5.2 Direct address position at start of message or explicit needsReply
+              if (isDirectAddress(body, n) || args.needsReply) {
+                // 5.3 Terse 1-liner on subsequent mentions
+                if (firstTime('notInRoom:' + lc)) {
+                  return `⚠ @${displayName} — NOT IN THIS ROOM. Nobody by that name is here, so nobody is going to answer. Call hive_members and re-address it now; this is the one failure mode that otherwise costs you a whole shift.`
+                }
+                return `⚠ @${displayName} — not in this room.`
+              }
+              return ''
             }
           }
-          // d.state is WORKING or WAITING
+          if (d.state === ACT.WAITING && !d.reachable) {
+            return `⚠ @${displayName} — listener running, but this app is not woken by it.`
+          }
+          // d.state is WORKING or WAITING (reachable)
           const busy = findBusy(busyMap, n)
           if (busy) {
             return describeRecipient(displayName, busy, true, now)
@@ -877,7 +911,7 @@ async function dispatch(req) {
           return ''
         }
 
-        const candidateNames = named.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
+        const candidateNames = addressed.filter((n) => n.toLowerCase() !== 'all' && n.toLowerCase() !== s.name.toLowerCase())
         const seenCandidates = new Set()
         const uniqueCandidates = []
         for (const n of candidateNames) {
@@ -888,7 +922,7 @@ async function dispatch(req) {
           }
         }
         const notes = uniqueCandidates.map(describeRecipientLiveness).filter(Boolean)
-        const to = mentionsAll(body) ? 'the whole room (@all)' : named.map((n) => '@' + n).join(', ')
+        const to = mentionsAll(body) ? 'the whole room (@all)' : addressed.map((n) => '@' + n).join(', ')
         // NEEDS REPLY. A question is recorded, not just spoken. One obligation per agent named.
         // HIV-P6: If the room knows nobody will answer, DO NOT record a debt.
         //   1. Absent names: warned immediately, ZERO obligations opened.
@@ -1222,6 +1256,8 @@ async function dispatch(req) {
             present: !!mem,
             paused: !!(c && c.state === 'paused'),
             passive: !!(mem && mem.passive),
+            listener: !!(mem && mem.listener),
+            app: mem && mem.app,
             now,
             parkedAfter,
           })
@@ -1234,6 +1270,9 @@ async function dispatch(req) {
           }
           if (d.state === ACT.PAUSED) {
             return `${base}  [PAUSED by human — do not reassign]`
+          }
+          if (d.state === ACT.WAITING && !d.reachable) {
+            return `${base}  [UNREACHABLE — @${mem ? mem.name : o.to}: listener running, but this app is not woken by it]`
           }
           return base
         }
@@ -1258,11 +1297,24 @@ async function dispatch(req) {
         const f = String(args.file || ''); if (!f) return err('need a file path')
         if (!Number.isFinite(Number(args.bytes))) return err('need bytes — measure your own folder, do not estimate')
         const r = requireSession().hive.attest(f, Number(args.bytes), Number(args.lines || 0))
-        const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines`).join('\n  ')
+        if (r.error) return err(r.error)
+        const who = Object.entries(r.peers).map(([n, v]) => {
+          if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
+          if (v.absent) return `${n}: absent (not in folder)`
+          const extra = v.note || ''
+          return `${n}: ${v.bytes} bytes / ${v.lines} lines${extra}`
+        }).join('\n  ')
+        const mismatchNote = r.mismatch ? `\n(note: you stated ${r.mismatch.stated}, your folder holds ${r.mismatch.measured})` : ''
+        const lagNotice = (r.lagging && r.lagNotice) ? `\n(note: ${r.lagNotice}, re-attest once disk syncs)` : ''
         if (r.diverged) {
-          return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.`)
+          return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.${mismatchNote}${lagNotice}`)
         }
-        return text(`attested ${f} at ${args.bytes} bytes.\n  ${who}\n${r.count >= 2 ? 'QUORUM: 2+ peers agree — this publish is confirmed.' : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'}`)
+        const quorumStatus = r.quorumOnOlder
+          ? 'QUORUM on an OLDER version: the room\'s copy changed since, re-attest.'
+          : r.quorum
+            ? 'QUORUM: 2+ peers agree — this publish is confirmed.'
+            : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'
+        return text(`attested ${f} at ${r.measuredBytes ?? args.bytes} bytes.\n  ${who}${mismatchNote}${lagNotice}\n${quorumStatus}`)
       }
       case 'hive_verified': {
         const f = String(args.file || ''); if (!f) return err('need a file path')
@@ -1270,14 +1322,19 @@ async function dispatch(req) {
         // Attestation and gate verdicts are independent records, so an unattested path must still
         // report its gate. Returning early here would hide a FAILED check behind "nobody measured
         // the bytes", which is the opposite of what this tool is for.
-        if (!r.count) {
+        if (!r.totalCount) {
           const g0 = requireSession().hive.gateVerdicts(f)
           const extra = Object.entries(g0).map(([n, v]) => v.forced
             ? `\n  [!] ${n} FORCE-released it without passing the gate${v.why ? ` — "${v.why}"` : ''}`
             : `\n  ${v.pass ? '[ok]' : '[!]'} ${n}'s gate ${v.pass ? 'passed' : `FAILED (exit ${v.exit})`}`).join('')
           return text(`${f}: NOT attested by anyone. Unverified — measure it and call hive_attest.${extra}`)
         }
-        const who = Object.entries(r.peers).map(([n, v]) => `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`).join('\n  ')
+        const who = Object.entries(r.peers).map(([n, v]) => {
+          if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
+          if (v.absent) return `${n}: absent (not in folder)`
+          const extra = v.note || ''
+          return `${n}: ${v.bytes} bytes / ${v.lines} lines${extra} at ${v.at}`
+        }).join('\n  ')
         // Same bytes in two folders says the file PROPAGATED. It says nothing about whether it
         // WORKS, which is the actual question an agent is asking here — so the gate verdicts
         // belong in this answer. A file two peers agree on and whose owner's tests failed is the
@@ -1289,7 +1346,14 @@ async function dispatch(req) {
         const gate = gLines.length
           ? `\n\nCHECKS RUN BY THE AGENTS THAT HELD IT:\n${gLines.join('\n')}${Object.values(g).some((v) => !v.pass) ? '\n  Somebody handed this back knowing it did not pass. Read it before you build on it.' : ''}`
           : '\n\nNo gate verdict recorded for this path — nobody has run a check on it here.'
-        return text(`${f}\n  ${who}\n\n${r.diverged ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.' : r.quorum ? 'QUORUM: confirmed by 2+ peers at the same size.' : 'Attested by ONE peer only — not yet proof.'}${gate}`)
+        const statusLine = r.diverged
+          ? '[!] DIVERGED — peers hold different content. Do not write or build on this path.'
+          : r.quorumOnOlder
+            ? 'QUORUM on an OLDER version: the room\'s copy changed since, re-attest.'
+            : r.quorum
+              ? 'QUORUM: confirmed by 2+ peers at the same size.'
+              : 'Attested by ONE peer only — not yet proof.'
+        return text(`${f}\n  ${who}\n\n${statusLine}${gate}`)
       }
       case 'hive_approve': { const r = requireSession().hive.decide(String(args.id), true); return r.ok ? text(`approved ${args.id}`) : err(r.error) }
       case 'hive_deny': { const r = requireSession().hive.decide(String(args.id), false); return r.ok ? text(`denied ${args.id}`) : err(r.error) }
@@ -1417,6 +1481,8 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           const editing = m.editing && now - m.editing.at < 15000 ? `\n    editing ${m.editing.file}` : ''
           return ACT.line(`${m.name} (${m.kind})${m.hv ? ` on ${m.hv}` : ''}`, rec, {
             present: true, passive: !!m.passive,
+            listener: !!m.listener,
+            app: m.app,
             paused: !!(c && c.state === 'paused'),
             // HIV-P11c. Without this the room said `Ganesh (human) — PARKED: ... anything you
             // send it now will sit unread until a human prompts it` about the human.
