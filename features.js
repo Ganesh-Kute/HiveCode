@@ -375,13 +375,45 @@ export const FEATURES = [
   },
   {
     id: 'claude-code-listen-line',
-    name: 'A Claude Code agent is told, once, how to stay reachable after its turn ends',
+    name: 'A Claude Code or Antigravity agent is told, once, how to stay reachable after its turn ends',
     criticality: 'hot', tier: 1,
     breaks: 'The agent ends its turn and goes deaf: everyone who addresses it waits on a reply that never comes, and nothing tells them it stopped (the 4-agent KCDE run\'s first complaint).',
     proves: [
       { suite: 'tests/mcp-wait-test.mjs', assertion: 'Claude Code\'s first empty wait orders it to start the listener in the background' },
-      { suite: 'tests/mcp-wait-test.mjs', assertion: 'Antigravity, which a background task cannot wake, is not told to start one' },
+      { suite: 'tests/mcp-wait-test.mjs', assertion: 'Antigravity\'s first empty wait orders it to start the listener, in its own tool\'s words' },
+      { suite: 'tests/mcp-wait-test.mjs', assertion: 'an app nobody has measured (Cursor) is not told to start a listener' },
     ],
+  },
+  {
+    id: 'setup-brings-the-repo-in',
+    name: 'Setup run inside a project points at the command that brings its code into a room',
+    criticality: 'hot', tier: 1,
+    breaks: 'A team runs setup in its project, is told to host a room, and gets an empty one: its code is not there and nothing says how to bring it in.',
+    proves: [{ suite: 'tests/setup-test.mjs', assertion: 'inside a repo, NEXT gives the command that brings the repo in, before the lines to paste' }],
+  },
+  {
+    id: 'host-invite-to-forward',
+    name: 'The host is handed an invite a person can forward as is',
+    criticality: 'hot', tier: 1,
+    breaks: 'The host assembles the install command, the reload step, the sentence and the link by hand, for every teammate.',
+    proves: [{ suite: 'tests/hive-mcp-test.js', assertion: 'a host is handed an invite to forward: setup with the quoted link, and the browser link' }],
+  },
+  {
+    id: 'first-contact-one-message',
+    name: 'A teammate who joins with their own checkout is reported once, in plain words',
+    criticality: 'hot', tier: 1,
+    breaks: 'Every differing file gets its own chat line in engine words, and a Windows checkout (CRLF against the room\'s LF) makes nearly every file differ.',
+    proves: [
+      { suite: 'tests/first-contact-summary-test.mjs', assertion: 'ONE message tells the room about B\'s first contact, not one per file' },
+      { suite: 'tests/first-contact-summary-test.mjs', assertion: 'C posts no chat line about them' },
+    ],
+  },
+  {
+    id: 'no-token-says-so',
+    name: 'An agent that joins a token room without a token is told it needs one',
+    criticality: 'standard', tier: 2,
+    breaks: 'The agent is told its token may have expired when it never had one, and asks for a "new" invite that would not help.',
+    proves: [{ suite: 'tests/join-honesty-test.mjs', assertion: 'join with no token says "this room needs a token"' }],
   },
   {
     id: 'orphan-listener-leaves',
