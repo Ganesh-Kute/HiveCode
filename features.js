@@ -390,6 +390,16 @@ export const FEATURES = [
     breaks: 'The app closes, its background listener lives on, and the room keeps showing the agent as listening and reachable while nobody can wake it.',
     proves: [{ suite: 'tests/hive-await-test.mjs', assertion: 'when its parent dies, the listener exits within 10 s' }],
   },
+  {
+    id: 'merge-keeps-every-comment',
+    name: 'A merge never ships without a comment one side wrote',
+    criticality: 'hot', tier: 1,
+    breaks: 'Two people edit one file; the merge reports a clean structural merge, and the comment one of them wrote above a function (or after a def, or at the end of the file) is gone. Nobody is told.',
+    proves: [
+      { suite: 'tests/icr-gap-comments-test.mjs', assertion: 'nothing one side added is lost' },
+      { suite: 'tests/icr-comment-fuzz-test.mjs', assertion: 'ALL INVARIANTS HELD' },
+    ],
+  },
 ]
 
 /** Group by criticality for reporting; order is the order in CRITICALITY. */
