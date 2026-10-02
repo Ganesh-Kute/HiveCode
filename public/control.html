@@ -74,6 +74,7 @@
   .gate input:focus{outline:none;border-color:var(--blue);background:var(--ground)}
   .gate .go{width:100%;justify-content:center;display:flex;padding:14px;font-size:15px;font-weight:500;margin-top:6px}
   .gate .err{color:var(--red);font-size:13px;margin-top:13px;min-height:18px;line-height:1.5}
+  .gate .err.info{color:var(--mut)}
   .gate .hint{color:var(--dim);font-size:12.5px;margin-top:18px;line-height:1.55}
 
   /* shell */
@@ -115,10 +116,10 @@
   .tag.ai{background:color-mix(in srgb,#9B72CB 22%,transparent);color:#c9b0ed}
   .tag.human{background:color-mix(in srgb,var(--teal) 18%,transparent);color:#86e6c2}
   .tag.pz{background:color-mix(in srgb,var(--amber) 22%,transparent);color:#f4d27a}
-  .estat{font-size:12.5px;color:var(--dim);margin-top:3px}.estat b{color:var(--edit);font-weight:400;font-family:var(--fm);font-size:11.5px}
-  .mctl{display:flex;gap:8px;margin-top:0;max-height:0;overflow:hidden;opacity:0;transition:max-height .16s ease,opacity .16s ease,margin-top .16s ease}
-  .mcard:hover>.mctl,.mcard:focus-within>.mctl{max-height:40px;opacity:1;margin-top:9px}
-  .mctl button{flex:1;display:flex;justify-content:center;padding:6px;font-size:12.5px}
+  .mctl{display:flex;gap:6px;margin-top:8px;opacity:.72;transition:opacity .15s ease}
+  .mcard:hover>.mctl,.mcard:focus-within>.mctl{opacity:1}
+  .mctl button{flex:1;display:flex;justify-content:center;padding:5px 8px;font-size:12px;border-radius:8px;box-shadow:inset 0 0 0 1px var(--line2)}
+  .mctl button:hover{background:var(--raise)}
   @media(prefers-reduced-motion:reduce){.mctl{transition:none}}
 
   /* chat */
@@ -325,7 +326,7 @@ const estat=(m)=>{const cur=efile(m.editing)
 const ebucket=(m)=>{if(efile(m.editing))return 'f'
   const la=eat(m.lastEdit);if(!la)return 'x'
   return 'a'+Math.floor((Date.now()-la)/5000)}
-const err=(m)=>{$('err').textContent=m||''}
+const err=(m,info=false)=>{const e=$('err');e.textContent=m||'';e.classList.toggle('info',!!info)}
 const genId=()=>'t'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36)
 const tstr=()=>new Date().toTimeString().slice(0,8) // "HH:MM:SS" — matches the editor/MCP clients
 
@@ -665,10 +666,13 @@ function paintProvenance(){
   el.innerHTML=(vhtml||'')+(rows||(files.length?'<div class="empty">No signed changes yet.<br>Run clients with <b>HIVE_PROVENANCE=on</b>.</div>':'<div class="empty">No active files yet.</div>'))
 }
 async function revertAgent(who){
-  if(!confirm(`Revert ALL of ${who}'s changes?\n\nEvery file they touched rolls back to before they edited it. Their current versions are saved first, so this is undoable.`))return
   const earliest=new Map()
   for(const m of Object.values(window._h.history.toJSON())){if(m.by!==who)continue;const c=earliest.get(m.file);if(!c||(m.ts||0)<(c.ts||0))earliest.set(m.file,m)}
   if(!earliest.size){alert(`No restore points found for ${who}.`);return}
+  const files=[...earliest.keys()]
+  const flist=files.slice(0,5).join(', ')+(files.length>5?` and ${files.length-5} more`:'')
+  const fcount=files.length===1?'1 file':`${files.length} files`
+  if(!confirm(`Revert ${who}'s changes to ${fcount}: ${flist}?\n\nEach goes back to before ${who}'s first edit. Their current versions are saved first.`))return
   let n=0;for(const [file,m] of earliest){const r=await restoreCore(m.id,file);if(r&&r.ok)n++}
   window._h.chat.push([{by:me,kind:meKind,at:tstr(),text:`⏮ ${me} reverted ${who}'s changes across ${n} file(s).`}])
 }
@@ -678,6 +682,7 @@ $('chatInput').addEventListener('keydown',(e)=>{if(e.key==='Enter')sendChat()})
 $('connect').addEventListener('click',()=>connect($('link').value.trim()))
 $('link').addEventListener('keydown',(e)=>{if(e.key==='Enter')connect($('link').value.trim())})
 $('link').addEventListener('input',()=>{if($('uname').value.trim())return;const c=decodeJwt(parseLink(sanitize($('link').value)).token);if(c&&c.name)$('uname').value=c.name})
+$('uname').addEventListener('input',()=>{if($('err').classList.contains('info'))err('')})
 $('refresh').addEventListener('click',()=>{_rsig='';render()})
 $('leave').addEventListener('click',()=>{try{if(window._tick)clearInterval(window._tick)}catch{};try{provider&&provider.destroy()}catch{};location.hash='';location.reload()})
 const applyTheme=(t)=>{document.body.classList.toggle('light',t==='light');$('theme').textContent=t==='light'?'🌙':'☀️'}
@@ -691,7 +696,7 @@ $('uname').value=_qName||$('uname').value||localStorage.getItem('hc-name')||''
 const _h=sanitize(decodeURIComponent(location.hash.slice(1)))
 // A bare room (#room-x) is a room on THIS relay: the page is served by the relay it belongs to.
 const h=_h&&!_h.includes('|')&&/^[A-Za-z0-9._-]{1,128}$/.test(_h)?(location.origin+location.pathname.replace(/\/control(\.html)?\/?$/,'')).replace(/^http/,'ws')+'|'+_h:_h
-if(h&&h.includes('|')){$('link').value=h;if($('uname').value.trim())connect(h);else{err('Pick the name the crew should see, then Join.');$('uname').focus()}}
+if(h&&h.includes('|')){$('link').value=h;if($('uname').value.trim())connect(h);else{err('Pick the name the crew should see, then click Enter room.',true);$('uname').focus()}}
 </script>
 </body>
 </html>
