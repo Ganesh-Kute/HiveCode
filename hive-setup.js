@@ -34,7 +34,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { VERSION } from './hive-version.js'
 import { currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
@@ -306,6 +306,23 @@ export function installRuntime(home = os.homedir(), here = fileURLToPath(import.
   return { mode: 'installed', js, dir: dest, packages: closure.size }
 }
 
+/** The project this was run in, when there is one to offer: a git work tree with at least one
+ *  commit, whose top is not the home folder (a home kept in git is a dotfiles repo, not a project;
+ *  this machine's is one). Returns the repo's top folder, or null. Any git failure is null: setup
+ *  must never fail because git is missing. */
+export function projectRepo(cwd = process.cwd(), home = os.homedir()) {
+  const git = (...args) => {
+    try {
+      const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 10000, windowsHide: true })
+      return r.status === 0 ? String(r.stdout || '').trim() : ''
+    } catch { return '' }
+  }
+  const top = git('rev-parse', '--show-toplevel')
+  if (!top || !git('rev-parse', '--verify', '-q', 'HEAD^{commit}')) return null
+  const norm = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
+  return norm(top) === norm(home) ? null : path.resolve(top)
+}
+
 function defaultName() {
   let base = 'agent'
   try { base = os.userInfo().username || base } catch {}
@@ -449,9 +466,22 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
       log(`\n  Then paste this to your agent:\n`)
       log(`    Use your hive_join tool to join the Hivecode room ${link} as ${name}. Then follow the rules it gives you.`)
     } else {
-      log(`\n  Then paste ONE of these to your agent:\n`)
+      // THE EMPTY-ROOM TRAP (onboarding audit, 2 Oct 2026). A team runs setup in its project and
+      // is told to host a room, which is new and empty: its code is not in it, and nothing said how
+      // to bring it in. `branch` does, so inside a repo it comes first -- with the privacy line
+      // BEFORE the command, because running it publishes the repo's committed files. The name is
+      // a real one: `<name>` pasted into PowerShell is a parse error, not a placeholder.
+      const repo = projectRepo(process.cwd(), home)
+      if (repo) {
+        const relay = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY
+        log(`\n  You're in a git repo (${repo}). To give your agents its code, run this here first:\n`)
+        log(`    npx -y hivecode-mcp@latest branch hive-work\n`)
+        log(`  It cuts a new branch, hive-work, without switching your checkout, puts its committed files in a room,`)
+        log(`  and prints the line for your agents and for teammates.${currentRelayFor(relay).relay === PUBLIC_DEFAULT_RELAY ? ' This uses the public relay: anyone with the room\'s link can read those files.' : ''}`)
+      }
+      log(`\n  ${repo ? 'Or paste' : 'Then paste'} ONE of these to your agent:\n`)
       log(`    Use your hive_join tool to join the Hivecode room <the link you were sent> as ${name}. Then follow the rules it gives you.`)
-      log(`    Use your hive_join tool to host a new Hivecode room as ${name}, then give me the join link.`)
+      log(`    Use your hive_join tool to host a new, empty Hivecode room as ${name}, then give me the join link.`)
     }
     log(`\n  Its files go in ${path.join(home, 'hivecode', '<room>', name)} unless you name a folder.`)
     // With a link, the room itself: its relay's Control Room with the link in the hash, so a person

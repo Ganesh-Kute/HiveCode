@@ -84,7 +84,7 @@ T('A9 keys setup has no business with are untouched', json(F.claude).numStartups
 T('A10 each original is backed up before the first change', ['claude', 'anti', 'cursor'].every((k) => rd(F[k] + '.before-hivecode') === ORIG[k]))
 T('A11 Antigravity\'s 2nd config has no hivecode entry, so it is not touched', rd(F.anti2) === ORIG.anti2)
 T('A12 apps that are not installed get no config created', !fs.existsSync(path.join(home, '.codeium')) && !fs.existsSync(path.join(home, '.gemini', 'settings.json')))
-T('A13 without a link, both sentences are printed: join one, or host one', /join the Hivecode room <the link you were sent> as Tester/.test(r1.out) && /host a new Hivecode room as Tester/.test(r1.out))
+T('A13 without a link, both sentences are printed: join one, or host one', /join the Hivecode room <the link you were sent> as Tester/.test(r1.out) && /host a new, empty Hivecode room as Tester/.test(r1.out))
 
 // second run: the broken file repaired by hand, everything else must be a no-op
 const after1 = Object.fromEntries(['claude', 'anti', 'cursor'].map((k) => [k, rd(F[k])]))
@@ -214,6 +214,48 @@ if (up) {
 }
 relay.kill()
 process.chdir(ROOT)
+
+// ---------------------------------------------------------------------------------------------
+// The onboarding audit (2 Oct 2026): a team runs setup in its project, is told to "host a new
+// room", and gets an EMPTY one in ~/hivecode -- its code is not there and nothing says how to bring
+// it in. The way in already existed (`branch`, run in the repo) and setup never mentioned it.
+section('F. setup run inside a project\'s git repo points at the way to bring its code in')
+const gHome = tmp('ghome')
+put(path.join(gHome, '.claude.json'), '{}')
+// Git must not find a repo ABOVE the temp folder: on a machine whose real home is a git repo (this
+// one), every temp folder is inside it, and that would answer for the cases meant to have no repo.
+const gEnv = { ...envFor(gHome), GIT_CEILING_DIRECTORIES: os.tmpdir().replace(/\\/g, '/') }
+const gitIn = (dir, ...args) => spawnSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { encoding: 'utf8', windowsHide: true, env: gEnv })
+const repoAt = (dir) => { fs.mkdirSync(dir, { recursive: true }); gitIn(dir, 'init', '-q'); fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n'); gitIn(dir, 'add', '-A'); return gitIn(dir, 'commit', '-q', '-m', 'first') }
+const setupIn = (cwd, args = []) => {
+  const r = spawnSync(process.execPath, [MCP, 'setup', '--dry-run', '--name', 'Tester', ...args], { cwd, env: gEnv, encoding: 'utf8', timeout: 180000, windowsHide: true })
+  return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }
+}
+const gProj = path.join(gHome, 'gProj')
+const made = repoAt(gProj)
+T('F0 (setup) the test repo has a commit', made.status === 0, made.stderr)
+const fIn = setupIn(path.join(gProj))
+const fNext = fIn.out.split('NEXT')[1] || ''
+const branchAt = fNext.indexOf('npx -y hivecode-mcp@latest branch hive-work')
+T('F1 inside a repo, NEXT gives the command that brings the repo in, before the lines to paste', branchAt > 0 && branchAt < fNext.indexOf('hive_join'), fNext)
+T('F2 ...it names the repo, says the checkout is not switched, and warns before anything is published', fNext.includes(path.resolve(gProj)) && /without switching your checkout/.test(fNext) && /anyone with the room's link can read/.test(fNext.slice(0, fNext.indexOf('hive_join'))), fNext)
+T('F3 the line that hosts a room says the room is EMPTY', /host a new, empty Hivecode room as Tester/.test(fNext), fNext)
+const plain = tmp('plain')
+const fOut = setupIn(plain)
+T('F4 outside any repo, no branch line', fOut.code === 0 && /hive_join/.test(fOut.out) && !/hivecode-mcp@latest branch/.test(fOut.out), fOut.out)
+const fLink = setupIn(gProj, ['ws://127.0.0.1:9|room-probe'])
+T('F5 with a link (a teammate joining), no branch line', /join the Hivecode room ws:\/\/127\.0\.0\.1:9\|room-probe/.test(fLink.out) && !/hivecode-mcp@latest branch/.test(fLink.out), fLink.out)
+// A home folder kept in git is a dotfiles repo, not a project -- this machine's own home is one.
+const madeHome = repoAt(gHome)
+const below = path.join(gHome, 'Downloads')
+fs.mkdirSync(below, { recursive: true })
+const fHome = setupIn(below)
+T('F6 (setup) the home folder itself is a repo with a commit', madeHome.status === 0, madeHome.stderr)
+T('F7 a folder whose repo is the HOME folder gets no branch line', fHome.code === 0 && /hive_join/.test(fHome.out) && !/hivecode-mcp@latest branch/.test(fHome.out), fHome.out)
+const fresh = path.join(tmp('fresh'), 'r')
+fs.mkdirSync(fresh, { recursive: true }); gitIn(fresh, 'init', '-q')
+const fFresh = setupIn(fresh)
+T('F8 a repo with no commits yet gets no branch line (there is nothing to bring in)', fFresh.code === 0 && !/hivecode-mcp@latest branch/.test(fFresh.out), fFresh.out)
 
 // ---------------------------------------------------------------------------------------------
 if (process.argv.includes('--package')) {
