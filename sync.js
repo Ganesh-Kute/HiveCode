@@ -1769,6 +1769,39 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         : `[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
     } catch { /* the log still carries it */ }
   }
+  // ONE MESSAGE PER JOIN, IN PLAIN WORDS (onboarding audit, 2 Oct 2026). HIV-P9's outcomes (in
+  // reconcile, below) are right, but each file used to be announced on its own chat line in engine
+  // words ("UNPROVEN", "Resolve deliberately"), so a teammate a few commits behind filled the chat,
+  // and a Windows checkout (CRLF, against a room seeded from git's LF) made nearly every text file
+  // "differ". The outcomes are unchanged. They are collected until the join goes quiet and said
+  // once; the per-file log lines stay. Line endings alone are not worth a chat line: when nothing
+  // else differs, nothing is said. The window slides, so one join of a big repo stays one message.
+  const firstContact = { eol: [], adopted: [], kept: [], timer: null }
+  function noteFirstContact(kind, relPath) {
+    firstContact[kind].push(relPath)
+    if (firstContact.timer) clearTimeout(firstContact.timer)
+    firstContact.timer = setTimeout(flushFirstContact, 3000)
+  }
+  function flushFirstContact() {
+    if (firstContact.timer) { clearTimeout(firstContact.timer); firstContact.timer = null }
+    const { eol, adopted, kept } = firstContact
+    firstContact.eol = []; firstContact.adopted = []; firstContact.kept = []
+    if (!adopted.length && !kept.length) return
+    const total = eol.length + adopted.length + kept.length
+    const names = (l) => l.slice(0, 5).join(', ') + (l.length > 5 ? ` and ${l.length - 5} more` : '')
+    const parts = [`↓ ${name} joined with ${total === 1 ? '1 file that differs' : `${total} files that differ`} from the room's copy.`]
+    if (eol.length) parts.push(`${eol.length} differed only in line endings and now match the room.`)
+    if (adopted.length) {
+      parts.push(`${adopted.length === 1 ? '1 was an older version' : `${adopted.length} were older versions`} the room had already moved past, so ${name} now has the room's copy (the old one is in the file's history): ${names(adopted)}.`)
+    }
+    if (kept.length) {
+      const one = kept.length === 1
+      parts.push(`${one ? '1 holds' : `${kept.length} hold`} content the room has never seen, so neither copy was changed and the room's copy was NOT adopted: ${names(kept)}. ` +
+        `In ${name}'s folder ${one ? 'it still holds' : 'they still hold'} ${name}'s version. To make one the room's version, claim it and hive_edit it with the full file. ` +
+        `Don't delete a local copy to get the room's: a deletion syncs, and removes the file for everyone.`)
+    }
+    try { say(parts.join(' ')) } catch { }
+  }
   function reconcile(relPath, origin = 'local') {
     if (process.env.HIVE_TEST_STUCK_SYNC && relPath === process.env.HIVE_TEST_STUCK_SYNC) return
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
@@ -2058,7 +2091,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
         writeToDisk(relPath, docText)
         bases.set(relPath, docText); forkBases.set(relPath, docText)
-        try { say(`↓ ${relPath} already existed in this room — ${name} adopted the room's copy. The local version before joining is saved in the file's history.`) } catch { }
+        // Past the `disk === docText` return above, IDENTICAL can only mean the line endings differ.
+        log(`[${name}] ↓ ${relPath} already existed in this room (${st.state}) — adopted the room's copy; the local version is in the file's history`)
+        noteFirstContact(st.state === IDENTICAL ? 'eol' : 'adopted', relPath)
         return
       }
 
@@ -2068,9 +2103,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // Refuse adoption: keep local disk untouched, keep room doc untouched, snapshot local, and announce loudly.
       captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: `local copy preserved at join (${st.state}: room copy refused)` })
       bases.set(relPath, disk); forkBases.set(relPath, disk)
-      try {
-        say(`⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted. Local disk was preserved. Resolve deliberately.`)
-      } catch { }
+      log(`[${name}] ⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted; local disk preserved`)
+      noteFirstContact('kept', relPath)
       return
     }
     // DEAD-HEAT GENESIS COLLISION DETECTION & RESOLUTION.
@@ -3708,6 +3742,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     _openTurns: () => openTurns,
     _scanCount: () => scanCount,
     stop: () => {
+      try { flushFirstContact() } catch { } // before `stopped`: a join cut short still says what it kept
       stopped = true
       try { flushRoomDoc() } catch { }
       if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
