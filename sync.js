@@ -1734,7 +1734,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (folderLost) return
     const full = path.join(ROOT, relPath)
     try {
-      if (fs.existsSync(full)) {
+      // Only for a path a scan already found unshared. Every remote edit lands through here, so
+      // checking every file would read each one in full before writing it -- double the disk work
+      // on the hottest path, to guard a case the scan has already seen.
+      if ((unsharedMtimes.has(relPath) || unsharedWarned.has(relPath)) && fs.existsSync(full)) {
         const unshared = checkUnshared(full)
         if (unshared) {
           const stamp = deletedStamp()
