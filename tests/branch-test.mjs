@@ -270,6 +270,38 @@ try {
   const tipApp = g(project, 'show', 'feat:app.js').out + '\n'
   await waitUntil(() => read(dirD, 'app.js') === tipApp, 15000)
   T('F4 a joiner after the refill gets the branch as it is now', read(dirD, 'app.js') === tipApp && read(dirD, 'README.md') === null && read(dirD, 'lib/util.js') === 'export const twice = (n) => n + n // human\n')
+
+  // ─── I. BRANCH OUTPUT POLISH & ONBOARDING EDGE CASES ───────────────────────────────────────
+  console.log('\n# I. branch output polish & onboarding edge cases')
+  // I1: Zero-commit repository gives clear, actionable error
+  const emptyRepo = path.join(tmp, 'empty-repo')
+  fs.mkdirSync(emptyRepo)
+  g(emptyRepo, 'init', '-q')
+  const i1 = await cli(emptyRepo, 'branch', 'feat', '--relay', RELAY)
+  T('I1 zero-commit repo refuses with helpful Q562', i1.code === 1 && /Q562/.test(i1.out) && /has no commits yet, so there's nothing to put in a room/.test(i1.out), i1.out.slice(0, 140))
+
+  // I2: Uncommitted dirty checkout warning lists files
+  const dirtyRepo = path.join(tmp, 'dirty-repo')
+  repo(dirtyRepo, { 'clean.js': 'clean\n' })
+  fs.writeFileSync(path.join(dirtyRepo, 'dirty1.js'), 'dirty\n')
+  fs.writeFileSync(path.join(dirtyRepo, 'dirty2.js'), 'dirty\n')
+  const i2 = await cli(dirtyRepo, 'branch', 'feat', '--relay', RELAY)
+  T('I2 uncommitted changes are named in branch output', i2.code === 0 && /2 file\(s\) with uncommitted changes are not in the room: dirty1\.js, dirty2\.js/.test(i2.out), (i2.out.match(/.*uncommitted changes.*/) || [''])[0])
+
+  // I3: Dual-folder mental model is explicitly stated in branch output
+  const linkFeat = g(project, 'config', '--get', 'hivecode.feat.room').out
+  const roomFeat = linkFeat.split('|')[1]
+  T('I3 branch output names ~/hivecode/<room>/ and untouched checkout', a1.code === 0 && a1.out.includes(`~/hivecode/${roomFeat}/`) && /Your checkout here doesn't change until you run pr/.test(a1.out))
+
+  // I4: CWD mismatch in resolveForJoin gives repo hint
+  const otherRepo = path.join(tmp, 'other-repo')
+  repo(otherRepo, { 'clean.js': 'clean\n' })
+  const i4 = HB.resolveForJoin({ branch: 'feat', repo: otherRepo })
+  T('I4 resolveForJoin Q562 hints to pass repo path', !i4.ok && /Q562/.test(i4.message) && /If your repository is elsewhere, pass repo: "\/path\/to\/repo" in hive_join/.test(i4.message), i4.message)
+
+  // I5: Stale --paths comment in hive-token.js
+  const tokenHelp = fs.readFileSync(path.join(ROOT, 'hive-token.js'), 'utf8')
+  T('I5 hive-token.js --paths comment says enforced by relay scopeCheck', /--paths\s+comma globs for path scoping \(enforced by relay scopeCheck in token-gated rooms\)/.test(tokenHelp))
 } catch (e) {
   T('the suite ran', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {

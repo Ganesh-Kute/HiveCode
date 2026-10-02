@@ -241,7 +241,7 @@ export function resolveForJoin({ branch, repo }) {
   let name
   try { name = validBranch(root, branch) } catch (e) { return { ok: false, message: e.message } }
   const b = readBinding(root, name)
-  if (!b) return { ok: false, message: `Q562 branch "${name}" in ${root} has no Hivecode room yet. The developer creates one with:\n  npx -y hivecode-mcp@latest branch ${name}\nor, if a teammate already made it, records it with:\n  npx -y hivecode-mcp@latest branch ${name} --join "<link>"` }
+  if (!b) return { ok: false, message: `Q562 branch "${name}" has no Hivecode room in directory ${root}. If your repository is elsewhere, pass repo: "/path/to/repo" in hive_join. Otherwise create one with:\n  npx -y hivecode-mcp@latest branch ${name}\nor, if a teammate already made it, records it with:\n  npx -y hivecode-mcp@latest branch ${name} --join "<link>"` }
   // A teammate's clone usually has the branch only as origin/<name>; that is as good a source for
   // the files the room does not carry. With neither, those files are simply not filled.
   const commit = revParse(root, `refs/heads/${name}`) || revParse(root, `refs/remotes/origin/${name}`) || b.base
@@ -398,7 +398,12 @@ export async function bindBranch({ cwd, branch, from = '', relay = '', you = '',
   if (!tip) {
     const src = from || 'HEAD'
     const sha = revParse(root, `${src}^{commit}`)
-    if (!sha) throw coded('Q562', `"${src}" is not a commit in ${root}.`)
+    if (!sha) {
+      if (src === 'HEAD' && !revParse(root, 'HEAD')) {
+        throw coded('Q562', `repository "${root}" has no commits yet, so there's nothing to put in a room. Commit your files first, then run this again.`)
+      }
+      throw coded('Q562', `"${src}" is not a commit in ${root}.`)
+    }
     const r = git(root, ['branch', '--no-track', name, sha]) // `branch`, never `checkout -b`: the checkout stays where it is
     if (r.code !== 0) throw coded('Q562', `could not create branch ${name}: ${r.err}`)
     tip = sha
@@ -623,8 +628,19 @@ export async function main(argv, { cwd = process.cwd(), log = console.log, logEr
       log(`Branch ${r.branch} already has a room: ${r.link}${r.roomFiles == null ? '\n(the relay did not answer just now)' : `  (${r.roomFiles} file(s) in it)`}`)
       if (r.lost) log(`\nTHE ROOM IS EMPTY: the relay lost it (a restart or a deploy wipes rooms on some hosts).\nAgents that still have their folders get their work back by joining again:\n  ${agentLine}\nIf no agent has a folder any more, refill it from the branch:\n  npx -y hivecode-mcp@latest branch ${r.branch} --reseed`)
     } else {
-      log(`${r.reseeded ? 'Room refilled' : 'Room ready'} for branch ${r.branch} @ ${r.commit.slice(0, 7)}${r.created ? ` (new branch, cut from ${r.from || 'HEAD'}; your checkout was not switched)` : ''}\n  ${r.files} file(s) in the room: the branch as committed; uncommitted changes in your checkout are not in it${r.total > r.files ? `\n  ${r.total - r.files} more (binary, over 1 MB, or never synced) are filled in from git for agents on this machine` : ''}\n  room: ${r.link}`)
+      const dirty = git(r.root, ['status', '--porcelain'])
+      const dirtyLines = dirty.out ? dirty.out.split('\n').filter(Boolean) : []
+      const dirtyFiles = dirtyLines.map((l) => {
+        const p = l.slice(3).trim()
+        return p.includes(' -> ') ? p.split(' -> ')[1].trim() : p
+      }).filter(Boolean)
+      const shown = dirtyFiles.slice(0, 5).join(', ')
+      const more = dirtyFiles.length > 5 ? ` (+${dirtyFiles.length - 5} more)` : ''
+      const uncommittedPart = dirtyFiles.length ? `\n  ${dirtyFiles.length} file(s) with uncommitted changes are not in the room: ${shown}${more}` : ''
+      log(`${r.reseeded ? 'Room refilled' : 'Room ready'} for branch ${r.branch} @ ${r.commit.slice(0, 7)}${r.created ? ` (new branch, cut from ${r.from || 'HEAD'}; your checkout was not switched)` : ''}\n  ${r.files} file(s) in the room: the branch as committed${uncommittedPart}${r.total > r.files ? `\n  ${r.total - r.files} more (binary, over 1 MB, or never synced) are filled in from git for agents on this machine` : ''}\n  room: ${r.link}`)
       if (/onrender\.com/.test(r.link)) log('  This is the public relay: anyone who has this link can read these files.')
+      const roomName = parseLink(r.link).room
+      log(`  Your agents work in their own folders under ~/hivecode/${roomName}/, kept in sync live.\n  Your checkout here doesn't change until you run pr.`)
     }
     log(`\nTell each of your agents:\n  ${agentLine}\n\nA teammate, in their own clone of this repo:\n  npx -y hivecode-mcp@latest branch ${r.branch} --join "${r.link}"\n\nWhen the work is done, land it on ${r.branch} (one commit per agent):\n  npx -y hivecode-mcp@latest pr ${r.branch}          add --pr to push it and open the pull request`)
     return 0
