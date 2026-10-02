@@ -7,15 +7,20 @@
 //   must report conflict: true.
 //   Any result where a comment disappears with conflict: false is a SILENT LOSS.
 //
-// Checks both argument orders (mine=A,theirs=B and mine=B,theirs=A) across
-// JS (.js), TS (.ts), and Python (.py).
+// Checks both argument orders across:
+//   - JavaScript (.js)
+//   - TypeScript (.ts)
+//   - Python (.py)
+//   - Ruby (.rb)
+//   - Go (.go)
+//   - YAML (.yaml)
 //
 // Usage:
 //   node tests/icr-comment-fuzz-test.mjs [numTrials] [seed]
 
 import { icrMerge3 } from '../icr-merge.js'
 
-const NUM_TRIALS = Number(process.argv[2]) || 350
+const NUM_TRIALS = Number(process.argv[2]) || 600
 const ROOT_SEED = Number(process.argv[3]) || 1337
 
 // Mulberry32 seeded PRNG
@@ -29,10 +34,8 @@ function makePrng(seed) {
   }
 }
 
-const rootPrng = makePrng(ROOT_SEED)
-
 const NAMES = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta', 'iota', 'kappa']
-const EXTENSIONS = ['test.js', 'test.ts', 'test.py']
+const EXTENSIONS = ['test.js', 'test.ts', 'test.py', 'test.rb', 'test.go', 'test.yaml']
 
 function cap(s) {
   return s[0].toUpperCase() + s.slice(1)
@@ -52,6 +55,32 @@ function genDecl(name, kind, lang, prng) {
       default:
         return `def ${name}(x):\n    base = ${randNum}\n    return base + x`
     }
+  } else if (lang === 'rb') {
+    switch (kind) {
+      case 'import':
+        return `require '${name}'`
+      case 'const':
+        return `${name.toUpperCase()} = { key: ${randNum} }`
+      case 'class':
+        return `class ${cap(name)}\n  def calc\n    ${randNum}\n  end\nend`
+      case 'fn':
+      default:
+        return `def ${name}(x)\n  base = ${randNum}\n  base + x\nend`
+    }
+  } else if (lang === 'go') {
+    switch (kind) {
+      case 'import':
+        return `// import placeholder\nconst ${cap(name)}Tag = "${name}"`
+      case 'const':
+        return `const ${cap(name)}Val = ${randNum}`
+      case 'class':
+        return `type ${cap(name)} struct {\n  Val int\n}`
+      case 'fn':
+      default:
+        return `func ${cap(name)}(x int) int {\n  base := ${randNum}\n  return base + x\n}`
+    }
+  } else if (lang === 'yaml') {
+    return `${name}:\n  port: ${randNum}\n  active: true\n  workers: 4`
   } else {
     // JS or TS
     const isTs = lang === 'ts'
@@ -78,30 +107,44 @@ function genDecl(name, kind, lang, prng) {
 }
 
 function makeComment(id, type, lang) {
-  if (lang === 'py') {
+  if (lang === 'py' || lang === 'rb' || lang === 'yaml') {
     if (type === 'trailing') return `  # ${id} trailing`
     return `# ${id} top-level comment`
   }
-  // JS / TS
+  // JS / TS / Go
   if (type === 'trailing') return ` // ${id} trailing`
   if (type === 'block') return `/**\n * ${id} block comment\n */`
   return `// ${id} line comment`
 }
 
+function getLang(relPath) {
+  if (relPath.endsWith('.py')) return 'py'
+  if (relPath.endsWith('.ts')) return 'ts'
+  if (relPath.endsWith('.rb')) return 'rb'
+  if (relPath.endsWith('.go')) return 'go'
+  if (relPath.endsWith('.yaml')) return 'yaml'
+  return 'js'
+}
+
 function runTrial(trialIndex, trialSeed) {
   const prng = makePrng(trialSeed)
   const relPath = EXTENSIONS[Math.floor(prng() * EXTENSIONS.length)]
-  const lang = relPath.endsWith('.py') ? 'py' : relPath.endsWith('.ts') ? 'ts' : 'js'
+  const lang = getLang(relPath)
 
   // Build base file of 4-8 top-level declarations
   const numDecls = 4 + Math.floor(prng() * 5)
   const availableNames = [...NAMES]
   const decls = []
 
+  // In Go, include package declaration as first item
+  if (lang === 'go') {
+    decls.push({ name: 'package', kind: 'pkg', code: 'package main' })
+  }
+
   for (let i = 0; i < numDecls; i++) {
     const nameIdx = Math.floor(prng() * availableNames.length)
     const name = availableNames.splice(nameIdx, 1)[0] || `item_${i}`
-    const kinds = ['import', 'const', 'fn', 'class']
+    const kinds = lang === 'yaml' ? ['yaml'] : ['import', 'const', 'fn', 'class']
     const kind = kinds[Math.floor(prng() * kinds.length)]
     decls.push({ name, kind, code: genDecl(name, kind, lang, prng) })
   }
@@ -118,10 +161,9 @@ function runTrial(trialIndex, trialSeed) {
   const numAComments = 1 + Math.floor(prng() * 3)
   for (let c = 0; c < numAComments; c++) {
     const commentId = `COMM_A_${trialIndex}_${c}`
-    // Location: gap 0..numDecls (0=start, numDecls=EOF) or trailing on decl
-    const loc = Math.floor(prng() * (numDecls + 1))
-    const isTrailing = prng() < 0.25 && numDecls > 0
-    const commentType = isTrailing ? 'trailing' : (lang !== 'py' && prng() < 0.33 ? 'block' : 'line')
+    const loc = Math.floor(prng() * (decls.length + 1))
+    const isTrailing = prng() < 0.25 && decls.length > 0
+    const commentType = isTrailing ? 'trailing' : (['js', 'ts', 'go'].includes(lang) && prng() < 0.33 ? 'block' : 'line')
     aComments.push({ id: commentId, loc, isTrailing, type: commentType, side: 'A' })
   }
 
@@ -131,22 +173,20 @@ function runTrial(trialIndex, trialSeed) {
     const numBComments = 1 + Math.floor(prng() * 2)
     for (let c = 0; c < numBComments; c++) {
       const commentId = `COMM_B_${trialIndex}_${c}`
-      // 50% chance to pick the same gap as an A comment
       let loc
       if (prng() < 0.5 && aComments.length > 0) {
         loc = aComments[Math.floor(prng() * aComments.length)].loc
       } else {
-        loc = Math.floor(prng() * (numDecls + 1))
+        loc = Math.floor(prng() * (decls.length + 1))
       }
-      const isTrailing = prng() < 0.25 && numDecls > 0
-      const commentType = isTrailing ? 'trailing' : (lang !== 'py' && prng() < 0.33 ? 'block' : 'line')
+      const isTrailing = prng() < 0.25 && decls.length > 0
+      const commentType = isTrailing ? 'trailing' : (['js', 'ts', 'go'].includes(lang) && prng() < 0.33 ? 'block' : 'line')
       bComments.push({ id: commentId, loc, isTrailing, type: commentType, side: 'B' })
     }
   }
 
   // Construct Side A text
   let aDecls = decls.map((d) => ({ ...d }))
-  // Apply trailing comments
   for (const c of aComments.filter((x) => x.isTrailing)) {
     const targetIdx = Math.min(c.loc, aDecls.length - 1)
     if (targetIdx >= 0) {
@@ -155,10 +195,10 @@ function runTrial(trialIndex, trialSeed) {
       aDecls[targetIdx].code = lines.join('\n')
     }
   }
-  // Assemble with gaps
   const aGapComments = Array.from({ length: aDecls.length + 1 }, () => [])
   for (const c of aComments.filter((x) => !x.isTrailing)) {
-    aGapComments[c.loc].push(makeComment(c.id, c.type, lang))
+    const loc = Math.min(c.loc, aDecls.length)
+    aGapComments[loc].push(makeComment(c.id, c.type, lang))
   }
 
   let aText = ''
@@ -176,20 +216,30 @@ function runTrial(trialIndex, trialSeed) {
   let bDecls = decls.map((d) => ({ ...d }))
   const bChangeType = ['edit_body', 'add_decl', 'delete_decl', 'rename'][Math.floor(prng() * 4)]
 
-  if (bChangeType === 'edit_body' && bDecls.length > 0) {
-    const target = bDecls[Math.floor(prng() * bDecls.length)]
-    target.code = target.code.replace(/\d+/, (m) => String(Number(m) + 999))
+  // Offset index for Go to keep `package main` untouched
+  const startIdx = lang === 'go' ? 1 : 0
+
+  if (bChangeType === 'edit_body' && bDecls.length > startIdx) {
+    const targetIdx = startIdx + Math.floor(prng() * (bDecls.length - startIdx))
+    const target = bDecls[targetIdx]
+    if (target) {
+      target.code = target.code.replace(/\d+/, (m) => String(Number(m) + 999))
+    }
   } else if (bChangeType === 'add_decl') {
     const newName = `extra_${trialIndex}`
-    const newCode = genDecl(newName, 'fn', lang, prng)
-    bDecls.splice(Math.floor(prng() * (bDecls.length + 1)), 0, { name: newName, kind: 'fn', code: newCode })
-  } else if (bChangeType === 'delete_decl' && bDecls.length > 1) {
-    bDecls.splice(Math.floor(prng() * bDecls.length), 1)
-  } else if (bChangeType === 'rename' && bDecls.length > 0) {
-    const target = bDecls[Math.floor(prng() * bDecls.length)]
-    const newName = `${target.name}_renamed`
-    target.code = target.code.replace(new RegExp(`\\b${target.name}\\b`, 'g'), newName)
-    target.name = newName
+    const newCode = genDecl(newName, lang === 'yaml' ? 'yaml' : 'fn', lang, prng)
+    bDecls.splice(startIdx + Math.floor(prng() * (bDecls.length - startIdx + 1)), 0, { name: newName, kind: 'fn', code: newCode })
+  } else if (bChangeType === 'delete_decl' && bDecls.length > (startIdx + 1)) {
+    const delIdx = startIdx + Math.floor(prng() * (bDecls.length - startIdx))
+    bDecls.splice(delIdx, 1)
+  } else if (bChangeType === 'rename' && bDecls.length > startIdx) {
+    const targetIdx = startIdx + Math.floor(prng() * (bDecls.length - startIdx))
+    const target = bDecls[targetIdx]
+    if (target && target.name !== 'package') {
+      const newName = `${target.name}_renamed`
+      target.code = target.code.replace(new RegExp(`\\b${target.name}\\b`, 'g'), newName)
+      target.name = newName
+    }
   }
 
   // Apply B comments if Mode 2
@@ -242,9 +292,6 @@ function runTrial(trialIndex, trialSeed) {
       continue
     }
 
-    // PASS criterion:
-    // If conflict: true (or conflict markers present), this is NOT a silent loss.
-    // If conflict: false, EVERY inserted comment ID must appear in res.text.
     const isConflict = res.conflict === true || (res.text && res.text.includes('<<<<<<<'))
     if (!isConflict) {
       const missing = allComments.filter((c) => !res.text || !res.text.includes(c.id))
@@ -275,18 +322,25 @@ function runTrial(trialIndex, trialSeed) {
 }
 
 // Main Runner
-console.log(`=== ICR Top-Level Comment Fuzz Test ===`)
-console.log(`Running ${NUM_TRIALS} seeded trials across JS, TS, and Python... (Root seed: ${ROOT_SEED})\n`)
+console.log(`=== ICR Multi-Language Comment Fuzz Test ===`)
+console.log(`Running ${NUM_TRIALS} seeded trials across JS, TS, Python, Ruby, Go, and YAML... (Root seed: ${ROOT_SEED})\n`)
 
 let totalFailures = 0
 const failedTrials = []
-const languageStats = { js: { trials: 0, failed: 0 }, ts: { trials: 0, failed: 0 }, py: { trials: 0, failed: 0 } }
+const languageStats = {
+  js: { trials: 0, failed: 0 },
+  ts: { trials: 0, failed: 0 },
+  py: { trials: 0, failed: 0 },
+  rb: { trials: 0, failed: 0 },
+  go: { trials: 0, failed: 0 },
+  yaml: { trials: 0, failed: 0 },
+}
 
 for (let i = 0; i < NUM_TRIALS; i++) {
   const trialSeed = (Math.imul(ROOT_SEED, 10007) + i * 1013 + 17) >>> 0
   const result = runTrial(i, trialSeed)
 
-  const lang = result.relPath.endsWith('.py') ? 'py' : result.relPath.endsWith('.ts') ? 'ts' : 'js'
+  const lang = getLang(result.relPath)
   languageStats[lang].trials++
 
   if (!result.passed) {
@@ -300,10 +354,11 @@ console.log(`--- Summary of Results ---`)
 console.log(`Total Trials : ${NUM_TRIALS}`)
 console.log(`Failed Trials: ${totalFailures} (silent comment losses on clean merges)`)
 console.log(`Passed Trials: ${NUM_TRIALS - totalFailures}`)
-console.log(`By Language:`)
-console.log(`  JS : ${languageStats.js.failed}/${languageStats.js.trials} failed`)
-console.log(`  TS : ${languageStats.ts.failed}/${languageStats.ts.trials} failed`)
-console.log(`  Python: ${languageStats.py.failed}/${languageStats.py.trials} failed`)
+console.log(`\nBy Language:`)
+for (const [lang, stats] of Object.entries(languageStats)) {
+  const pct = stats.trials ? ((stats.failed / stats.trials) * 100).toFixed(1) : '0'
+  console.log(`  ${lang.padEnd(6)}: ${String(stats.failed).padStart(3)} / ${String(stats.trials).padStart(3)} failed (${pct}%)`)
+}
 
 if (failedTrials.length > 0) {
   console.log(`\n--- Sample Failures (First 5) ---`)
