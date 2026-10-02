@@ -47,6 +47,23 @@ import { serveMux } from './relay-mux.js'
 // integrateStructs and is silently DROPPED. Symptom in production: a room reloaded
 // from a snapshot "eats" ledger receipts / edits and rolls clients back. (yjs#438)
 const Y = createRequire(import.meta.url)('yjs')
+
+// THE DOC SIZE COUNTER ONLY GROWS. limits.js noteDocBytes adds every write and nothing subtracts, so
+// a doc that is rewritten reads as larger than it is: a 5 MB image saved twice is 10 MB to the
+// counter, and on the free tier (8 MB a doc) its second version was refused with Q435 while the doc
+// held 5 MB; a long-occupied room's chat and claims add up the same way. Before refusing, measure
+// what the doc really holds and decide on that -- at most once a minute per doc, because encoding a
+// large doc on every write is the cost the counter exists to avoid.
+const REMEASURE_MS = process.env.HIVE_DOC_REMEASURE_MS !== undefined ? Number(process.env.HIVE_DOC_REMEASURE_MS) : 60000
+const lastMeasured = new Map() // docName -> when its real size was last measured
+function overCapAfterMeasuring(room, tier) {
+  if (!docOverCap(room, tier)) return false
+  const now = Date.now()
+  if (now - (lastMeasured.get(room) || 0) < REMEASURE_MS) return true
+  lastMeasured.set(room, now)
+  try { setDocBytes(room, Y.encodeStateAsUpdate(getYDoc(room)).length) } catch { return true }
+  return docOverCap(room, tier)
+}
 import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import { verifyReceipt, contentHash, headOk, contentHealth } from './substrate.js'
 import { makeGovernor } from './governor.js'
@@ -161,7 +178,7 @@ function installUsageLimits(conn) {
           }
         } catch { /* unparseable -> treat as non-write; the gates below still see it */ }
         if (isWrite) {
-          if (docOverCap(room, tier)) {
+          if (overCapAfterMeasuring(room, tier)) {
             const cap = (tier && tier.maxDocBytes) || LIMITS.maxDocBytes
             tell(`Q435 ${pathOf(room) || 'this room'} has reached the ${cap >= 1048576 ? Math.round(cap / 1048576) + " MB" : Math.ceil(cap / 1024) + " KB"} size limit${tier ? ` for the ${tier.tier} tier` : ''}; writes refused, reads still served`, { toRoom: true })
             return
