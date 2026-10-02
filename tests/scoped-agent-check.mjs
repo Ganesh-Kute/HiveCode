@@ -1,9 +1,10 @@
 // tests/scoped-agent-check.mjs
 // Verifies scoped outside agent access control against the built dist/relay package.
 //
-// 1. Unauthenticated connection is refused (4401 token required)
+// 1. Unauthenticated connection is refused at the upgrade (HTTP 401)
 // 2. Scoped agent writes inside its allowed path (src/stripe/**) -> syncs to owner
-// 3. Out-of-scope access (src/core/auth.js) is refused at the wire (4403 not in scope)
+// 3. Out-of-scope access (src/core/auth.js) never reaches the agent's disk, and a direct connect to
+//    that file's room is refused at the upgrade (HTTP 403)
 
 import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
@@ -68,14 +69,17 @@ await new Promise((resolve, reject) => {
 try {
   // ─── 1. UNAUTHENTICATED CONNECTION REFUSED ──────────────────────────────────────────────────
   console.log('\n# 1. Unauthenticated connection is refused')
-  const unauthWs = new WebSocket(`${RELAY_URL}/${ROOM}`)
-  const unauthResult = await new Promise((resolve) => {
-    unauthWs.on('open', () => resolve({ open: true }))
-    unauthWs.on('close', (code, reason) => resolve({ open: false, code, reason: reason.toString() }))
-    unauthWs.on('error', (err) => resolve({ open: false, error: err.message }))
+  // The relay refuses at the HTTP UPGRADE (server.js refuseUpgrade: "401 Unauthorized"), so the
+  // socket never opens and there is no WebSocket close code to read: the client sees the status.
+  const upgradeStatus = (url) => new Promise((resolve) => {
+    const ws = new WebSocket(url)
+    ws.on('open', () => { ws.close(); resolve({ open: true }) })
+    ws.on('unexpected-response', (_req, res) => resolve({ open: false, status: res.statusCode, message: res.statusMessage }))
+    ws.on('error', (err) => resolve({ open: false, error: err.message }))
     setTimeout(() => resolve({ open: false, timeout: true }), 3000)
   })
-  T('unauthenticated join is refused by relay with code 4401', !unauthResult.open && unauthResult.code === 4401, `code=${unauthResult.code} reason="${unauthResult.reason}"`)
+  const unauthResult = await upgradeStatus(`${RELAY_URL}/${ROOM}`)
+  T('unauthenticated join is refused by the relay with HTTP 401', !unauthResult.open && unauthResult.status === 401, JSON.stringify(unauthResult))
 
   // ─── 2. SCOPED TOKEN MINTING ───────────────────────────────────────────────────────────────
   console.log('\n# 2. Minting scoped token via hive-token.js CLI')
@@ -120,18 +124,13 @@ try {
   // Agent disk MUST NOT receive src/core/auth.js
   T('agent disk never receives out-of-scope src/core/auth.js', !fs.existsSync(authFileAgent))
 
-  // Direct WebSocket connection to out-of-scope file-room is refused with code 4403
+  // A direct connect to the out-of-scope file room, with the scoped token, is refused at the upgrade
+  // with 403. The reason ("path ... not in scope") goes to the relay's audit log, not the wire; what
+  // an AGENT reads is its tool's refusal, asserted in tests/scoped-mcp-check.mjs.
   const outOfScopeRoom = fileRoom(ROOM, authFileRel)
-  const directWs = new WebSocket(`${RELAY_URL}/${encodeURIComponent(outOfScopeRoom)}?token=${encodeURIComponent(stripeToken)}`)
-  const directResult = await new Promise((resolve) => {
-    directWs.on('open', () => resolve({ open: true }))
-    directWs.on('close', (code, reason) => resolve({ open: false, code, reason: reason.toString() }))
-    directWs.on('error', (err) => resolve({ open: false, error: err.message }))
-    setTimeout(() => resolve({ open: false, timeout: true }), 3000)
-  })
-  T('direct connect to out-of-scope file-room rejected with code 4403 and path not in scope',
-    !directResult.open && directResult.code === 4403 && /not in scope/i.test(directResult.reason),
-    `code=${directResult.code} reason="${directResult.reason}"`)
+  const directResult = await upgradeStatus(`${RELAY_URL}/${encodeURIComponent(outOfScopeRoom)}?token=${encodeURIComponent(stripeToken)}`)
+  T('a direct connect to the out-of-scope file room is refused by the relay with HTTP 403',
+    !directResult.open && directResult.status === 403, JSON.stringify(directResult))
 
   ownerSync.stop()
   agentSync.stop()

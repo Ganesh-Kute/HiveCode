@@ -65,10 +65,13 @@ const uniq = (re, src = README) => [...new Set([...src.matchAll(re)].map((m) => 
 // The checker for prose that names things that do not exist had, itself, named a set of
 // files that no longer existed. Derived from package.json now, so the next shipped module
 // joins the scan by being shipped.
+// The relay ships as its own package (hivecode-relay, built by scripts/build-relay.mjs) and the
+// README documents running one ("Give an outside agent one folder"), so its entry points are in the
+// scan too: HIVE_AUTH_MODE and HIVE_JWT_SECRET are read there and nowhere in hivecode-mcp.
 const SRC_ALL = [...new Set(
   JSON.parse(read('package.json')).files
     .filter((f) => /\.(js|cjs|mjs)$/.test(f))
-    .concat(['core.js', 'reconcile.cjs']),
+    .concat(['core.js', 'reconcile.cjs', 'server.js', 'hive-relay.js', 'hive-token.js']),
 )].map((f) => read(f)).join('\n')
 
 console.log('\n# A. every hive_* tool the README names is a tool that exists')
