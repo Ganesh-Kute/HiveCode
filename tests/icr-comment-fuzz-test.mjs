@@ -371,5 +371,7 @@ if (failedTrials.length > 0) {
   console.log(`\nSample failure seeds: ${failedTrials.slice(0, 8).map((f) => f.trialSeed).join(', ')}`)
 }
 
+// The line features.js reads as the proof of merge-keeps-every-comment (an `ok` line, like every suite's).
+console.log(`\n  ${totalFailures === 0 ? 'ok  ' : 'FAIL'} no comment either side added was lost, across ${NUM_TRIALS} randomized merges`)
 console.log(`\n=== ${totalFailures === 0 ? 'ALL INVARIANTS HELD' : `${totalFailures} FAILURES DETECTED (EXPECTED ON 3fec72f)`} ===`)
 process.exit(totalFailures === 0 ? 0 : 1)

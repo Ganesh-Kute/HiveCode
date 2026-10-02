@@ -397,7 +397,7 @@ export const FEATURES = [
     breaks: 'Two people edit one file; the merge reports a clean structural merge, and the comment one of them wrote above a function (or after a def, or at the end of the file) is gone. Nobody is told.',
     proves: [
       { suite: 'tests/icr-gap-comments-test.mjs', assertion: 'nothing one side added is lost' },
-      { suite: 'tests/icr-comment-fuzz-test.mjs', assertion: 'ALL INVARIANTS HELD' },
+      { suite: 'tests/icr-comment-fuzz-test.mjs', assertion: 'no comment either side added was lost' },
     ],
   },
 ]
