@@ -659,7 +659,7 @@ function enforceDcoLock(opts = {}) {
       POISONED: `[Path Poisoned] ${opts.path} must NOT be written. Publish to a NEW path instead. (Legacy flag — prefer DELETED_UNWRITABLE / CORRUPT / DIVERGED, which say WHY.)`,
       DELETED_UNWRITABLE: `[Path Unwritable] ${opts.path} had a delete propagate. A write here vanishes or silently resurrects the deleted content, and two folders end up permanently disagreeing with no marker. Never write it and never delete it again — publish to a NEW path.`,
       CORRUPT: `[Path Corrupt] ${opts.path} is unusable in every folder that has measured it. Do not write it and do not read it as reference — build the replacement out-of-tree and publish it to a NEW path.`,
-      DIVERGED: `[Path Diverged] peers hold DIFFERENT bytes for ${opts.path}, so there is no single truth to write on top of. Call hive_attest to record what YOUR folder holds and see who disagrees. Nobody writes this path until it is reconciled.`,
+      DIVERGED: `[Path Diverged] peers hold DIFFERENT content for ${opts.path}, so there is no single truth to write on top of. Call hive_attest to record what YOUR folder holds and see who disagrees. Nobody writes this path until it is reconciled.`,
       FROZEN: `[Path Frozen] ${opts.path} is frozen by the state machine. Ask the owner to set path:${opts.path}=LIVE before writing it.`,
     }
     if (ps && stop[ps]) throw new Error(stop[ps])
@@ -1315,7 +1315,7 @@ async function dispatch(req) {
           ? `\n\nCHECKS RUN BY THE AGENTS THAT HELD IT:\n${gLines.join('\n')}${Object.values(g).some((v) => !v.pass) ? '\n  Somebody handed this back knowing it did not pass. Read it before you build on it.' : ''}`
           : '\n\nNo gate verdict recorded for this path — nobody has run a check on it here.'
         const statusLine = r.diverged
-          ? '[!] DIVERGED — peers hold different bytes. Do not write or build on this path.'
+          ? '[!] DIVERGED — peers hold different content. Do not write or build on this path.'
           : r.quorumOnOlder
             ? 'QUORUM on an OLDER version: the room\'s copy changed since, re-attest.'
             : r.quorum

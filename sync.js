@@ -3237,10 +3237,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const validHashes = [...new Set(presentValid.map((v) => v.hash))]
     const validSizes = [...new Set(presentValid.map((v) => v.bytes))]
 
-    // All present peers (including lagging and stuck)
-    const allPresent = currentPeers.filter((v) => !v.absent && v.hash)
-    const allHashes = [...new Set(allPresent.map((v) => v.hash))]
-    const allSizes = [...new Set(allPresent.map((v) => v.bytes))]
+    // Peers that count toward comparison:
+    // A peer lagging inside the grace period counts toward NEITHER quorum NOR divergence!
+    // Compare hashes over non-lagging peers plus stuck peers only.
+    const comparisonPeers = currentPeers.filter((v) => !v.absent && v.hash && (!v.lagging || v.stuckLagging))
+    const comparisonHashes = [...new Set(comparisonPeers.map((v) => v.hash))]
+    const comparisonSizes = [...new Set(comparisonPeers.map((v) => v.bytes))]
     const anyAbsent = currentPeers.some((v) => v.absent)
     const anyStuck = currentPeers.some((v) => v.stuckLagging)
 
@@ -3248,10 +3250,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let quorum = presentValid.length >= 2 && validHashes.length === 1 && !anyAbsent && !anyStuck
 
     // Divergence:
-    // 1. Two present peers disagree on disk hash (allHashes.length > 1)
-    // 2. OR one peer is absent while another is present
-    // 3. OR any peer is stuck lagging (>10s grace period passed without catching up)
-    const split = allHashes.length > 1 || (anyAbsent && allPresent.length > 0) || anyStuck
+    // 1. Two comparison peers (non-lagging or stuck) disagree on disk hash
+    // 2. OR one comparison peer is absent while another is present
+    // 3. OR any peer is stuck lagging (>grace period passed without catching up)
+    const split = comparisonHashes.length > 1 || (anyAbsent && comparisonPeers.length > 0) || anyStuck
 
     let quorumOnOlder = false
     if (quorum && roomDocHash && validHashes[0] && roomDocHash !== validHashes[0]) {
@@ -3264,7 +3266,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       currentPeers,
       count: currentPeers.length,
       totalCount: Object.keys(rec || {}).length,
-      sizes: allSizes,
+      sizes: comparisonSizes.length ? comparisonSizes : [...new Set(currentPeers.filter(v => !v.absent && v.hash).map(v => v.bytes))],
       diverged: split,
       quorum,
       quorumOnOlder,
@@ -3389,14 +3391,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
             lagDirection = 'behind'
             lagNotice = 'disk behind room doc: your folder has not caught up yet'
           } else {
-            const lastReceipt = fe.ledger && fe.ledger.length > 0 ? fe.ledger.get(fe.ledger.length - 1) : null
-            if (lastReceipt && lastReceipt.name && lastReceipt.name !== name) {
-              lagDirection = 'behind'
-              lagNotice = 'disk behind room doc: your folder has not caught up yet'
-            } else {
-              lagDirection = 'ahead'
-              lagNotice = 'disk ahead of room doc: local edit not published to room yet (your folder has not caught up yet)'
-            }
+            lagDirection = 'lagging'
+            lagNotice = 'disk out of step with the room\'s copy (your folder has not caught up yet)'
           }
         }
       }

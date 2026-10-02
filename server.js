@@ -302,7 +302,7 @@ function isSyncWrite(data) {
 const PATH_BLOCK = {
   DELETED_UNWRITABLE: 'path had a delete propagate — a write here vanishes or resurrects deleted content',
   CORRUPT: 'path content is unusable in every folder that measured it — publish to a new path',
-  DIVERGED: 'peers hold different bytes for this path — no single truth to write on top of',
+  DIVERGED: 'peers hold different content for this path — no single truth to write on top of',
   POISONED: 'path is marked poisoned (legacy flag)',
   FROZEN: 'path is frozen by the state machine',
   SUPERSEDED: 'path has been replaced — read it, do not write it',

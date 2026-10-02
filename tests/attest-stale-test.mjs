@@ -162,13 +162,25 @@ await B.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
 // Now A edits lag.js to new content
 await A.call('hive_edit', { file: 'lag.js', content: 'version 2 updated\n', intent: 'v2' })
 await sleep(1000)
+// Editor checks its own work first (normal order)
+const aV2 = await A.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
+assert('editor attesting v2 succeeds', !/DIVERGENCE/.test(aV2), aV2)
 
 // Simulate B's disk lagging behind: overwrite B's disk file with old content while fileDoc is updated
 fs.writeFileSync(path.join(dirB, 'lag.js'), 'version 1 initial\n', 'utf8')
 const bLag = await B.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
 assert('lagging folder reports not caught up yet', /your folder has not caught up yet/i.test(bLag), bLag)
+assert('lagging peer inside grace does NOT trigger divergence', !/DIVERGENCE/.test(bLag), bLag)
 const vLag = await A.call('hive_verified', { file: 'lag.js' })
 assert('lagging folder does NOT create divergence in verified', !/\[!\] DIVERGED/.test(vLag), vLag)
+
+// The lagging peer catches up and re-attests -> reaches QUORUM
+fs.writeFileSync(path.join(dirB, 'lag.js'), 'version 2 updated\n', 'utf8')
+const bCatchup = await B.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
+assert('caught up peer reaches quorum on v2', /QUORUM/.test(bCatchup), bCatchup)
+await sleep(600)
+const vCatchup = await A.call('hive_verified', { file: 'lag.js' })
+assert('verified confirms quorum once caught up', /QUORUM/.test(vCatchup), vCatchup)
 
 console.log('\n# 7. Line count with trailing newline matches wc -l')
 fs.writeFileSync(path.join(dirA, 'lines.js'), '1\n2\n3\n4\n5\n', 'utf8')

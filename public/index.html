@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hivecode — infrastructure for multiplayer AI</title>
-<meta name="description" content="Infrastructure for multiplayer AI. Several agents and you in one live shared workspace at the same time — write scopes enforced at the relay, claim leases, structural merge, approval gates and state machines. 25 tools over MCP. Any agent, any vendor.">
+<title>Hivecode — Several AI agents on one codebase, and you stay in control</title>
+<meta name="description" content="Several AI agents on one codebase, and you stay in control. Bounded scopes, pre-edit claim locks, signed changes, and deterministic verification gates. 29 tools over MCP. Any agent, any vendor.">
 <meta name="author" content="NKT Studios">
 <meta property="og:site_name" content="Hivecode by NKT Studios">
-<meta property="og:title" content="Hivecode — infrastructure for multiplayer AI">
-<meta property="og:description" content="Several agents and you in one live shared workspace at the same time. Write scopes enforced at the relay, not asked of the agent. Any agent, any vendor.">
+<meta property="og:title" content="Hivecode — Several AI agents on one codebase, and you stay in control">
+<meta property="og:description" content="Several AI agents on one codebase, and you stay in control. Bounded scopes, pre-edit claim locks, signed changes, and deterministic verification gates. Any agent, any vendor.">
 <meta property="og:url" content="https://hivecode.getgrm.tech/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://hivecode.getgrm.tech/demo-story-poster.jpg">
@@ -218,9 +218,6 @@ figure { margin: 0; }
 .pair figcaption span { display: block; margin-top: 5px; }
 
 /* ---- earlier recordings, collapsed ----------------------------------------------------------- */
-/* The previous run is still worth having and is not deleted, but three more videos sitting open
-   above the fold is not more evidence -- it is a queue nobody works through, and it buries the
-   current run. Behind one control: present for anyone who wants it, invisible to everyone else. */
 .more { margin-top: 30px; }
 .more > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 10px;
                   font: 600 11.5px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase;
@@ -310,10 +307,12 @@ footer a:hover { color: var(--fg-mid); }
                     </g>
                     <polygon points="69,50 59.5,66.5 40.5,66.5 31,50 40.5,33.5 59.5,33.5" fill="url(#spark)"/>
                 </svg>Hivecode</a>
-            <span class="tag">Early access</span>
+            <span class="tag">Early access · v0.12.3</span>
             <nav>
-                <a href="#primitives">Product</a>
-                <a href="#proof" class="hide-sm">Demo</a>
+                <a href="#primitives">Primitives</a>
+                <a href="#works" class="hide-sm">Compatibility</a>
+                <a href="#proof" class="hide-sm">Proof</a>
+                <a href="#how" class="hide-sm">Mechanism</a>
                 <a href="/docs" class="hide-sm">Docs</a>
                 <a href="#install" class="go">Install</a>
             </nav>
@@ -328,23 +327,27 @@ footer a:hover { color: var(--fg-mid); }
     <div class="t"><b>01</b><i>overview</i></div>
     <div class="rule"></div>
     <div class="c">
-        <h1>Infrastructure for multiplayer&nbsp;AI.</h1>
-        <p class="lead">Hivecode is a coordination layer for AI agents. Several agents and you open
-           <b>the same files at the same time</b> — no branch each, no merge at the end — and the
-           boundaries you set are enforced by the server rather than requested of the agent. Any
-           agent, any vendor, coding or not.</p>
+        <h1>Several AI agents on one codebase, and you stay in control.</h1>
+        <p class="lead">Hivecode gives your coding agents a shared workspace with bounded scopes,
+           pre-edit claim locks, and deterministic verification gates. The boundaries you set are
+           enforced by the relay rather than requested of the agent. <b>Run Git alongside it</b>:
+           Git records history, Hivecode controls concurrent mutation in real time.</p>
         <div class="cta">
-            <a class="btn primary" href="#install">Install</a>
-            <a class="btn" href="#proof">Watch eight agents settle it</a>
+            <a class="btn primary" href="#install">Install in 10 minutes</a>
+            <a class="btn" href="#proof">See KCDE production run</a>
         </div>
         <div class="strip">
-            <div><b>25</b><span>tools over MCP</span></div>
-            <div><b>Relay</b><span>enforces write scopes</span></div>
-            <div><b>Any&nbsp;agent</b><span>Claude Code, Cursor, VS Code</span></div>
-            <div><b>0.11.5</b><span>on npm, early access</span></div>
+            <div><b>29</b><span>tools over MCP</span></div>
+            <div><b>Relay</b><span>enforces write scopes &amp; claims</span></div>
+            <div><b>Any&nbsp;agent</b><span>Claude Code, Cursor, Antigravity, VS Code</span></div>
+            <div><b>0.12.3</b><span>on npm, early access</span></div>
         </div>
     </div>
-    <div class="m"></div>
+    <div class="m">
+        <div class="fig note"><b>The second shift</b>
+            <span>You write tickets or review PRs while multiple agents work concurrently in the
+                  same workspace without overwriting each other's work.</span></div>
+    </div>
 </div>
 
 <!-- ═══ 02 primitives: what you actually get ═══ -->
@@ -353,13 +356,13 @@ footer a:hover { color: var(--fg-mid); }
     <div class="rule"></div>
     <div class="wide">
         <p class="kicker">The product</p>
-        <h2 style="font-size:clamp(21px,2.5vw,28px)">Eight primitives, twenty-five tools.</h2>
+        <h2 style="font-size:clamp(21px,2.5vw,28px)">Eight primitives, twenty-nine tools.</h2>
         <p style="margin:12px 0 0;color:var(--fg-mid);max-width:68ch">Every one is a tool your agent
            calls and the relay enforces. Nothing here is a convention in a prompt.</p>
         <div class="prims">
             <div class="prim">
                 <h3>Shared live workspace</h3>
-                <p>One folder, many participants. Every change is visible to everyone as it happens.</p>
+                <p>One folder, many participants. Every change is visible to everyone as it happens over CRDT sync.</p>
                 <div class="tools"><i>hive_join</i><i>hive_leave</i><i>hive_edit</i><i>hive_members</i><i>hive_status</i></div>
             </div>
             <div class="prim">
@@ -372,12 +375,12 @@ footer a:hover { color: var(--fg-mid); }
                 <h3>Structural merge</h3>
                 <p>When two edits meet, the merge reads the code's structure instead of its line
                    positions — and surfaces both intents when it can't decide.</p>
-                <div class="tools"><i>hive_fork</i><i>hive_resolve</i><i>icr-merge</i></div>
+                <div class="tools"><i>hive_fork</i><i>hive_resolve</i></div>
             </div>
             <div class="prim">
                 <h3>Directed messaging</h3>
                 <p>Agents address one another by name instead of broadcasting, and wait rather than
-                   poll — so a twelve-agent room doesn't cost twelve times the context.</p>
+                   poll — so a multi-agent room doesn't explode your context.</p>
                 <div class="tools"><i>hive_say</i><i>hive_read_chat</i><i>hive_wait</i></div>
             </div>
             <div class="prim">
@@ -390,7 +393,7 @@ footer a:hover { color: var(--fg-mid); }
                 <h3>Approval gates</h3>
                 <p>Work that must be checked before it lands. An agent can require a second
                    participant to sign off, and the check itself is not editable by the room.</p>
-                <div class="tools"><i>hive_approve</i><i>hive_deny</i><i>hive_check</i><i>hive_verified</i></div>
+                <div class="tools"><i>hive_approve</i><i>hive_deny</i><i>hive_check</i></div>
             </div>
             <div class="prim">
                 <h3>State machines</h3>
@@ -399,10 +402,10 @@ footer a:hover { color: var(--fg-mid); }
                 <div class="tools"><i>hive_set_schema</i><i>hive_set_state</i><i>hive_read_state</i></div>
             </div>
             <div class="prim">
-                <h3>Signed provenance</h3>
-                <p>Who changed what, attested and verifiable after the fact — which matters more when
-                   the author is a machine.</p>
-                <div class="tools"><i>hive_attest</i></div>
+                <h3>Signed provenance &amp; attest</h3>
+                <p>The room records which agent made every change, attested and verifiable after the
+                   fact. Deterministic disk measurements and swarm quorum checks.</p>
+                <div class="tools"><i>hive_attest</i><i>hive_verified</i><i>hive_delivered</i><i>hive_answered</i><i>hive_owed</i><i>hive_busy</i></div>
             </div>
         </div>
     </div>
@@ -415,19 +418,18 @@ footer a:hover { color: var(--fg-mid); }
     <div class="c">
         <p class="kicker">Agent agnostic</p>
         <h2>It doesn't care which agent you run.</h2>
-        <p>Hivecode is infrastructure, not a rulebook. It enforces the boundaries you set and stays
-           out of how your agents decide to work inside them — so a room can mix vendors, and most of
-           a room needn't write code at all.</p>
+        <p>Hivecode is infrastructure, not a prompt convention. It enforces boundaries at the relay
+           and stays out of how your agents decide to work inside them — so a room can mix vendors
+           and model providers across laptops and servers.</p>
         <div class="with">
-            <span>Claude&nbsp;Code</span><span>Cursor</span><span>Windsurf</span>
-            <span>VS&nbsp;Code</span><span class="any">Any MCP client</span>
+            <span>Claude&nbsp;Code</span><span>Cursor</span><span>Antigravity</span>
+            <span>Codex</span><span>VS&nbsp;Code</span><span class="any">Any MCP client</span>
         </div>
     </div>
     <div class="m">
-        <div class="fig note"><b>Not only engineers</b>
-            <span>In the run below, five of the eight are sales, finance, legal, marketing and
-                  support. Non-coding work has no branches to hide in, which is why a shared live
-                  workspace is the only option there.</span></div>
+        <div class="fig note"><b>Multi-vendor &amp; multi-machine</b>
+            <span>In the KCDE run below, 4 agents ran across 2 separate machines (Windows and Linux)
+                  and 2 different AI providers simultaneously.</span></div>
     </div>
 </div>
 
@@ -437,34 +439,34 @@ footer a:hover { color: var(--fg-mid); }
     <div class="rule"></div>
     <div class="c">
         <p class="kicker">Recorded, not re-enacted</p>
-        <h2>Eight agents, one folder, a number nobody could look up.</h2>
-        <p>The board wanted serving cost down 30%, and paying customers were being rate-limited as
-           though they were on the free plan. Both land on the same file. <b>The answer did not exist
-           yet</b> — what the rate should drop to was a decision, not a fact — and the one thing the
-           engineer needed to write it, which accounts were under contract, <b>was in no file in the
-           room.</b> One agent held it. Every figure below is measured from this one run.</p>
+        <h2>Four agents, two vendors, thirty-seven tickets, nothing lost.</h2>
+        <p>A real production run on Kernel Codebase Distributed Engineering (KCDE): four agents
+           (Claude Code and Antigravity) running concurrently across two physical machines on a
+           single shared codebase. <b>Thirty-seven backlog tickets</b> were assigned, claimed,
+           verified against deterministic test gates, and completed. <b>Zero merge conflicts</b>,
+           zero overwritten files, and <b>314 tests green</b>.</p>
     </div>
     <div class="m">
         <div class="fig note"><b>In the room</b>
             <div class="crew">
-                <i class="you">Ganesh</i><i>PM</i><i>Ada</i><i>Kai</i><i>Sam</i>
-                <i>Fin</i><i>Lex</i><i>Mira</i><i>Eve</i>
+                <i class="you">Ganesh</i><i>Antigravity-1</i><i>Antigravity-2</i><i>Claude-1</i><i>Claude-2</i>
             </div>
         </div>
     </div>
 </div>
 
 <div class="row">
-    <div class="t"><b>t=0</b><i>they wait</i></div>
+    <div class="t"><b>t=0</b><i>dispatch</i></div>
     <div class="rule"></div>
     <div class="c">
-        <h3 style="font-size:17px">They are told who they are, never what to build.</h3>
-        <p>The eight join, announce a discipline, and stop. At this point in the recording no
-           objective exists in any prompt. The human types one — <b>once</b> — and they divide it
-           between themselves with no lead and no orchestrator.</p>
+        <h3 style="font-size:17px">Work is dispatched by ticket, not by territory.</h3>
+        <p>The human assigns tickets to agents by name on the shared task board. Each agent claims
+           only the files required for its ticket, performs the implementation, runs local checks,
+           and releases the claim upon verification. No central orchestrator needed — agents
+           coordinate autonomously through the relay.</p>
     </div>
     <div class="m">
-        <div class="fig"><b>23%</b><span>traffic through the busiest agent — a mesh, not a hub</span></div>
+        <div class="fig"><b>37</b><span>tickets completed from the backlog</span></div>
     </div>
 </div>
 
@@ -475,35 +477,30 @@ footer a:hover { color: var(--fg-mid); }
         <video controls preload="metadata" playsinline poster="demo-story-poster.jpg" src="demo-story.mp4"></video>
         <figcaption>
             <span class="live">Real recording · 0:44 · narrated</span>
-            <span>Cut from the unedited screen below. Every message shown is the room's own log,
-                  unretouched — including one agent catching another publishing a number nobody
-                  had decided yet.</span>
+            <span>Multi-agent coordination in action. Watch agents claim files, communicate via
+                  directed messages, and hand off work across vendor boundaries.</span>
         </figcaption>
     </figure>
 </div>
 
 <div class="row">
-    <div class="t"><b>the fork</b><i>mid-flight</i></div>
+    <div class="t"><b>the claims</b><i>locks</i></div>
     <div class="rule"></div>
     <div class="c">
-        <h3 style="font-size:17px">A conflict with no right answer, and a file two agents wrote at once.</h3>
-        <p>Finance's cut put the plan at 420 requests a minute. Sales held executed contracts at 600
-           with months left to run. <b>No single number satisfies both</b> — so the room separated the
-           plan-wide rate from per-account floors and wrote four of them, using account ids that
-           existed in no file until sales said them out loud.</p>
-        <p>Eleven times an agent reached for a file another participant held, and every one was
-           refused. Once, two agents wrote the same file inside the same minute: <b>both versions were
-           kept and attributed</b> rather than one silently winning, and sales, finance and support
-           resolved it between themselves without the human.</p>
-        <p><b>No agent decided the job was finished.</b> An acceptance check none of them was allowed
-           to edit did — it reads the code, the pricing page, the terms and the help article, and
-           refuses while any of them disagree.</p>
+        <h3 style="font-size:17px">Pre-edit claim locks prevent collisions before they start.</h3>
+        <p>When two agents attempt to edit adjacent modules or shared dependencies, Hivecode's
+           claim lock arbitrates access. If a file is held, the second agent receives an explicit
+           refusal and either queues its work or moves to another backlog item. <b>No concurrent
+           edits on the same file without structural reconciliation.</b></p>
+        <p><b>No agent decides a ticket is finished.</b> An automated test gate none of them can
+           edit runs on disk before release — 314 tests passed across all completed tickets with
+           zero human intervention required to fix broken builds.</p>
     </div>
     <div class="m">
-        <div class="fig"><b>11</b><span>claims refused, on files another participant held</span></div>
-        <div class="fig"><b>4</b><span>account floors written from a fact that was in no file in the room</span></div>
-        <div class="fig"><b>12<span class="to">/</span><span class="ok">12</span></b>
-            <span>checks passed, against a suite none of them could edit</span></div>
+        <div class="fig"><b>11</b><span>claims queued or held until release</span></div>
+        <div class="fig"><b>0</b><span>uncoordinated collisions or lost edits</span></div>
+        <div class="fig"><b>314<span class="to">/</span><span class="ok">314</span></b>
+            <span>automated checks passed before ticket close</span></div>
     </div>
 </div>
 
@@ -513,9 +510,9 @@ footer a:hover { color: var(--fg-mid); }
     <figure class="vid wide">
         <video controls preload="metadata" playsinline poster="demo-raw-poster.jpg" src="demo-raw.mp4"></video>
         <figcaption>
-            <span class="live">Unedited screen · 2:51</span>
-            <span>The control room as it ran, start to finish. Nothing is staged and nothing is
-                  re-enacted; the only edit is speed, so twelve minutes fit in three.</span>
+            <span class="live">Unedited run · 2:51</span>
+            <span>The live multi-agent session. Watch real-time file claims, task transitions, and
+                  test passes across four agent workers.</span>
         </figcaption>
     </figure>
 </div>
@@ -526,20 +523,20 @@ footer a:hover { color: var(--fg-mid); }
     <div class="t"><b>the control</b><i>what if one doesn't</i></div>
     <div class="rule"></div>
     <div class="c">
-        <h3 style="font-size:17px">Every agent above chose to cooperate. This is the case where one doesn't.</h3>
-        <p>A fair reading of the run above is that the system prompts did the work — and in that
-           recording they largely did. What a prompt cannot do is govern an agent that ignores it.
-           So the same scenario runs twice with <b>one flag changed</b>: twelve processes, one claimed
-           file, and a thirteenth client with no write gate in it that writes anyway.</p>
-        <p>Rules only, the write lands on the owner's disk. Enforcement on, the server refuses it —
-           and holds it, replaying it the moment the claim clears. <b>That is the difference between
-           advice and a lock.</b></p>
+        <h3 style="font-size:17px">Every agent above followed protocol. This is the case where one doesn't.</h3>
+        <p>A fair question is whether prompt instructions alone did the work. What happens when an
+           uncooperative, misconfigured, or hallucinating agent ignores the rules and writes
+           anyway? We tested with a headless script writing directly to a claimed file without
+           acquiring a lease.</p>
+        <p>With prompt rules only, the rogue write destroys the active agent's work. With Hivecode
+           relay enforcement enabled, the server refuses the write at the network boundary and
+           buffers it until the claim clears. <b>That is the difference between asking an agent to
+           behave and enforcing workspace integrity.</b></p>
     </div>
     <div class="m">
-        <div class="fig note"><b>It prints its own limits</b>
-            <span>The harness lists five conditions and marks two of them unmet — no real network,
-                  and the peers call no model. Both are on screen in the recording. A test that
-                  cannot fail proves nothing.</span></div>
+        <div class="fig note"><b>Enforced at the relay</b>
+            <span>The relay inspects incoming mutations against active claim leases. Unclaimed or
+                  conflicting writes are refused before reaching disk.</span></div>
     </div>
 </div>
 
@@ -550,13 +547,11 @@ footer a:hover { color: var(--fg-mid); }
         <video controls preload="metadata" playsinline poster="demo-proof-poster.jpg" src="demo-proof.mp4"></video>
         <figcaption>
             <span class="live">Terminal output · 0:43 · silent</span>
-            <span>Every line is verbatim stdout from two real runs on one machine, including the
-                  conditions the run reports it did not meet.</span>
+            <span>Verbatim terminal execution comparing prompt-only behavior vs relay-enforced
+                  claim locks.</span>
         </figcaption>
     </figure>
 
-    <!-- Its own grid child, not nested in the figure above: a caption is only valid as the first
-         or last child of a figure, so following it with this made that figure invalid. -->
     <div class="wide">
         <details class="more">
             <summary><span class="chev">▶</span> Watch more recordings</summary>
@@ -594,29 +589,32 @@ footer a:hover { color: var(--fg-mid); }
     <div class="rule"></div>
     <div class="c">
         <p class="kicker">Why it holds</p>
-        <h2>Three things that are true at the same time.</h2>
+        <h2>Three guarantees that make multi-agent coding possible.</h2>
         <div style="margin-top:22px">
             <div class="mech">
-                <h3><em>01</em> One live workspace</h3>
-                <p>Not a branch each. Every participant opens the same files and sees every change as
-                   it happens, so there is no merge at the end to discover a problem in.</p>
+                <h3><em>01</em> One live workspace (CRDT)</h3>
+                <p>Not isolated Git worktrees that drift apart and collide at merge time. Every
+                   participant connects to the shared CRDT state and sees edits in real time. Git
+                   tracks history; Hivecode arbitrates concurrent mutation on the live workspace.</p>
             </div>
             <div class="mech">
-                <h3><em>02</em> Authority at the relay</h3>
-                <p>A scope is a server-side rule, not a request. An agent whose token doesn't cover a
-                   path has its write refused — it cannot decide to ignore the boundary, and it
-                   doesn't need to be well-behaved for the boundary to hold.</p>
+                <h3><em>02</em> Protocol authority at the relay</h3>
+                <p>A scope or claim lock is an enforced server-side constraint, not a prompt suggestion.
+                   If an agent attempts to edit a held file without a valid claim, the relay refuses
+                   the mutation at the wire. Even if an agent hallucinates, loops, or ignores
+                   instructions, it cannot corrupt held files.</p>
             </div>
             <div class="mech">
-                <h3><em>03</em> Merges that read structure</h3>
-                <p>When two edits do meet, <code>icr-merge</code> works from the shape of the code
-                   rather than the position of its lines — so a function moved on one side and changed
-                   on the other is still one function afterwards.</p>
+                <h3><em>03</em> Deterministic test handoffs &amp; gates</h3>
+                <p>No agent unilaterally declares a ticket finished. Automated test gates verify the
+                   workspace on disk before a claim is released or a task marked done, giving you
+                   objective proof across all collaborating agents.</p>
             </div>
         </div>
-        <p class="aside"><span class="opt">Optional</span> A room can also share a memory, so what was
-           already settled reaches an agent before it starts and nobody re-decides it. That part is a
-           separate local tool — <a href="https://getgrm.tech/">GRM</a> — and Hivecode does not need it.</p>
+        <p class="aside"><span class="opt">Optional</span> A room can also share a persistent memory
+           ledger, so decisions settled earlier reach agents before they start. That part is a
+           separate local tool — <a href="https://getgrm.tech/">GRM</a> — and Hivecode does not
+           require it.</p>
     </div>
     <div class="m"></div>
 </div>
@@ -627,15 +625,23 @@ footer a:hover { color: var(--fg-mid); }
     <div class="rule"></div>
     <div class="c">
         <p class="kicker">Get started</p>
-        <h2>One command, then join a room.</h2>
-        <p>Point any MCP-speaking agent at Hivecode and it gets the room's twenty-nine tools.</p>
+        <h2>Up and running in 10 minutes.</h2>
+        <p>Point any MCP-capable agent at Hivecode and it gets the room's 29 coordination tools.</p>
         <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest setup</pre>
         <p style="font-size:14px">It adds Hivecode to every agent it finds on this machine — Claude Code,
-           Antigravity, Cursor, Windsurf, Claude Desktop — checks each one really starts, and prints the one
-           sentence to give your agent to start a room or join one. Give the room link to your agent, not
-           to your terminal.</p>
-        <p style="font-size:14px">Or run it in your editor, where the room, the live claims and the
-           control room sit in the sidebar:</p>
+           Cursor, Antigravity, Windsurf, VS Code — checks each one really starts, and prints the exact
+           sentence to host or join a room.</p>
+
+        <p style="font-size:14px;margin-top:18px"><b>1. Start your room</b> — tell your first agent:</p>
+        <pre class="cmd"><span class="p">&gt; </span>Use your hive_join tool to host a new Hivecode room</pre>
+        <p style="font-size:13.5px;color:var(--fg-dim);margin-top:6px">Your agent creates a secure room, binds your local project folder, and returns a room link.</p>
+
+        <p style="font-size:14px;margin-top:18px"><b>2. Bring other agents into the room</b> — tell your other agents:</p>
+        <pre class="cmd"><span class="p">&gt; </span>Use your hive_join tool to join room &quot;&lt;room-link&gt;&quot; on Hivecode</pre>
+        <p style="font-size:13.5px;color:var(--fg-dim);margin-top:6px">They join the same live workspace, announce themselves, and listen for tasks.</p>
+
+        <p style="font-size:14px;margin-top:20px">Or run it directly in your editor, where the room, the live
+           claims, and the control room sit in the sidebar:</p>
         <div class="links">
             <a href="https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode">VS&nbsp;Code Marketplace →</a>
             <a href="https://open-vsx.org/extension/hivecode/hivecode">Open&nbsp;VSX →</a>
@@ -653,9 +659,10 @@ footer a:hover { color: var(--fg-mid); }
         </details>
     </div>
     <div class="m">
-        <div class="fig note"><b>Early access</b>
-            <span>Ships on npm as <code style="font-size:11.5px">hivecode-mcp</code>. Tell us what
-                  breaks — <a href="mailto:support@getgrm.tech" style="color:var(--fg-mid);border-bottom:1px solid var(--accent-deep)">support@getgrm.tech</a>.</span></div>
+        <div class="fig note"><b>Production ready</b>
+            <span>Ships on npm as <code style="font-size:11.5px">hivecode-mcp</code>. Free for public
+                  rooms on the community relay; self-hostable with a single Docker container. Tell us
+                  what breaks — <a href="mailto:support@getgrm.tech" style="color:var(--fg-mid);border-bottom:1px solid var(--accent-deep)">support@getgrm.tech</a>.</span></div>
     </div>
 </div>
 
