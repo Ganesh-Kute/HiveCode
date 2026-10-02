@@ -1914,6 +1914,29 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     touchFile(relPath)
 
     if (origin === 'local') {
+      if (!canWrite(relPath)) {
+        if (fe && fe.synced && fe.bin.has('data')) {
+          const remoteData = fe.bin.get('data')
+          const remoteSha = fe.bin.get('sha')
+          if (remoteData && remoteSha) {
+            let localSha = null
+            if (exists) {
+              try {
+                const localBuf = fs.readFileSync(full)
+                localSha = crypto.createHash('sha256').update(localBuf).digest('hex')
+              } catch { }
+            }
+            if (localSha !== remoteSha) {
+              try {
+                fs.writeFileSync(full, Buffer.from(remoteData))
+                shaShadow.set(relPath, remoteSha)
+                mtimes.set(relPath, fs.statSync(full).mtimeMs)
+              } catch { }
+            }
+          }
+        }
+        return
+      }
       if (!exists) return
       let st
       try { st = fs.statSync(full) } catch { return }

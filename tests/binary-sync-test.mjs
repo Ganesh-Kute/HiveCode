@@ -193,11 +193,67 @@ const hugeUnshared = unshared.find((u) => u.path === 'huge.bin')
 T('D1 Bob does NOT receive 6MB binary file', !bobHasHuge)
 T('D2 Alice reports huge.bin as unshared with reason oversized', !!hugeUnshared && hugeUnshared.reason === 'oversized')
 
+console.log('\n# E. Read-only viewer role enforcement')
+const charlieDir = path.join(tmp, 'charlie')
+fs.mkdirSync(charlieDir, { recursive: true })
+const viewerTok = 'eyJhbGciOiJub25lIn0.' + Buffer.from(JSON.stringify({ scopes: [{ room: ROOM, role: 'reader' }] })).toString('base64url') + '.'
+const charlie = startSync({ relay: RELAY, room: ROOM, dir: charlieDir, name: 'Charlie', kind: 'ai', token: viewerTok, log: () => {} })
+
+await sleep(2000)
+
+// Alice writes icon.png
+fs.writeFileSync(path.join(aliceDir, 'icon.png'), PNG_BYTES)
+
+// Wait for Charlie to receive icon.png
+let charlieHasIcon = false
+const deadlineE1 = Date.now() + 10000
+while (Date.now() < deadlineE1) {
+  const p = path.join(charlieDir, 'icon.png')
+  if (fs.existsSync(p)) {
+    try {
+      if (fs.readFileSync(p).equals(PNG_BYTES)) {
+        charlieHasIcon = true
+        break
+      }
+    } catch {}
+  }
+  await sleep(200)
+}
+T('E1 Viewer (Charlie) receives icon.png from Alice', charlieHasIcon)
+
+// Charlie tampers with icon.png locally
+const TAMPER_BYTES = Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04])
+fs.writeFileSync(path.join(charlieDir, 'icon.png'), TAMPER_BYTES)
+
+// Charlie also tries to create a new binary file
+fs.writeFileSync(path.join(charlieDir, 'rogue.png'), PNG_BYTES)
+
+// Wait for Charlie's sync to trigger and restore icon.png
+let charlieIconReverted = false
+const deadlineE2 = Date.now() + 10000
+while (Date.now() < deadlineE2) {
+  const p = path.join(charlieDir, 'icon.png')
+  try {
+    if (fs.readFileSync(p).equals(PNG_BYTES)) {
+      charlieIconReverted = true
+      break
+    }
+  } catch {}
+  await sleep(200)
+}
+T('E2 Viewer local tamper on icon.png is reverted back to room bytes', charlieIconReverted)
+
+await sleep(2000)
+const aliceHasRogue = fs.existsSync(path.join(aliceDir, 'rogue.png'))
+T('E3 Viewer new binary file (rogue.png) is never pushed to room', !aliceHasRogue)
+
 // Clean up
 try { alice.stop() } catch {}
 try { bob.stop() } catch {}
+try { charlie.stop() } catch {}
 try { relay.kill() } catch {}
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
 
 console.log(`\n=== RESULT: ${pass} passed, ${fail} failed ===\n`)
 process.exit(fail > 0 ? 1 : 0)
+
