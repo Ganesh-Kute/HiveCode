@@ -1129,7 +1129,21 @@ async function dispatch(req) {
         const dig = ambientDigest(ambient)
         if (dig) parts.push(dig)
         if (tasks.length) parts.push(`approved work queued for you:\n${tasks.map(fmtTask).join('\n')}`)
-        return text(parts.join('\n\n') + owedLine)
+        let unsharedPart = ''
+        try {
+          const list = s.hive.unshared ? s.hive.unshared() : []
+          if (list.length) {
+            const unannounced = list.filter((u) => firstTime('unshared:' + u.path))
+            if (unannounced.length) {
+              const shown = unannounced.slice(0, 5)
+              const extra = unannounced.length - shown.length
+              unsharedPart = `\n\n⛔ ${unannounced.length} unshared file(s) on disk (cannot sync to room):\n` +
+                shown.map((u) => `  - ${u.path} (${u.reason}): stays local; share another way (commit it)`).join('\n') +
+                (extra > 0 ? `\n  ... (+${extra} more; check hive_status for all)` : '')
+            }
+          }
+        } catch { }
+        return text(parts.join('\n\n') + owedLine + unsharedPart)
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
       case 'hive_assign': { enforceDcoLock(); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
@@ -1569,6 +1583,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
           ...(conn && conn.folderLost ? { folderLost: conn.folderLost } : {}),
+          ...(conn && conn.unsharedFiles && conn.unsharedFiles.length ? { unshared: conn.unsharedFiles } : {}),
         })
       }
       // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity

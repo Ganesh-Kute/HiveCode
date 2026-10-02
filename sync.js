@@ -1607,6 +1607,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (SKIP.has(p)) return `${p} is a Hivecode control file, not shared source`
     if (!canOpen(p)) return `your access token's scope does not cover ${p}, so its bytes stay in this folder`
     if (isIgnored(p)) return `${p} is ignored by a .gitignore here, so this client never opens a sync connection for it -- anything you write stays in this folder and no other agent will ever see it`
+    if (onDisk) {
+      const full = path.join(ROOT, p)
+      const unshared = checkUnshared(full)
+      if (unshared) {
+        if (unshared.reason === 'oversized') {
+          return `${p} is oversized (${Math.round(unshared.size / 1024)}KB > 1MB limit), so it cannot be shared -- anything you write stays in this folder and no other agent will see it`
+        }
+        return `${p} contains binary data (null bytes), so it cannot be shared -- anything you write stays in this folder and no other agent will see it`
+      }
+    }
     return ''
   }
 
@@ -1695,9 +1705,25 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   function readText(full) {
     try {
+      const st = fs.statSync(full)
+      if (st.size > MAX_BYTES) return null
       const buf = fs.readFileSync(full)
-      if (buf.length > MAX_BYTES || buf.includes(0)) return null
+      if (buf.includes(0)) return null
       return buf.toString('utf8')
+    } catch { return null }
+  }
+  function checkUnshared(full, st) {
+    try {
+      const s = st || fs.statSync(full)
+      if (!s.isFile()) return null
+      if (s.size > MAX_BYTES) {
+        return { reason: 'oversized', size: s.size }
+      }
+      const buf = fs.readFileSync(full)
+      if (buf.includes(0)) {
+        return { reason: 'binary', size: s.size }
+      }
+      return null
     } catch { return null }
   }
   const ensuredDirs = new Set()
@@ -1707,6 +1733,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // every other file as deleted -- the exact wipe loseFolder exists to prevent.
     if (folderLost) return
     const full = path.join(ROOT, relPath)
+    try {
+      if (fs.existsSync(full)) {
+        const unshared = checkUnshared(full)
+        if (unshared) {
+          const stamp = deletedStamp()
+          const keptAs = keepDeletedCopy(relPath, stamp)
+          if (keptAs) {
+            log(`[${name}] local unshared file ${relPath} overwritten by room write; copy preserved in ${keptAs}`)
+            try {
+              say(`· ${relPath} on ${name}'s disk was ${unshared.reason} and was overwritten by a room write — local copy preserved in ${keptAs}.`)
+            } catch { }
+          }
+        }
+      }
+    } catch { }
     const dir = path.dirname(full)
     if (!ensuredDirs.has(dir)) {
       fs.mkdirSync(dir, { recursive: true })
@@ -1829,7 +1870,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const full = path.join(ROOT, relPath)
     const exists = fs.existsSync(full)
     const disk = exists ? readText(full) : null
-    if (exists && disk === null) return // present on disk but binary/too-large to represent — leave it untouched (never clobber with stale doc text)
+    if (exists && disk === null) {
+      const unshared = checkUnshared(full)
+      if (unshared) noticeUnsharedOne(relPath, unshared)
+      return // present on disk but binary/too-large to represent — leave it untouched (never clobber with stale doc text)
+    }
     // View-only file: never PUSH our local change/creation (the relay would drop it
     // anyway — it connects this file-room as a reader). Keep disk in sync with the
     // shared copy if we already have it; a brand-new local-only file just stays local
@@ -2840,6 +2885,65 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // scroll past — but deleting the case entirely is worse than announcing it cheaply.
   const ENGINE_ID = 'hivecode'
   const invisibleWarned = new Map()  // relPath -> obligation id, or null for the ambient case
+  const unsharedWarned = new Map()   // relPath -> { id: obligation id | null, reason: 'binary' | 'oversized', size: number }
+  const unsharedMtimes = new Map()   // relPath -> mtimeMs (for CPU skip in scan)
+
+  function noticeUnshared(currentUnshared) {
+    for (const r of [...unsharedWarned.keys()]) if (!currentUnshared.has(r)) dischargeUnshared(r)
+    for (const [r, info] of currentUnshared) noticeUnsharedOne(r, info)
+  }
+
+  function dischargeUnshared(r) {
+    if (!unsharedWarned.has(r) && !unsharedMtimes.has(r)) return
+    const entry = unsharedWarned.get(r)
+    if (entry && entry.id) {
+      try { OB.discharge(doc.getMap('obligations'), { id: entry.id, by: ENGINE_ID }) } catch { }
+    }
+    unsharedWarned.delete(r)
+    unsharedMtimes.delete(r)
+  }
+
+  function noticeUnsharedOne(r, info) {
+    if (SKIP.has(r) || OWN_LOCAL.has(r)) return
+    const holder = coordinator.sense(r)
+    const existing = unsharedWarned.get(r)
+    if (existing && (existing.id || !holder || !holder.by)) return
+
+    const reasonText = info.reason === 'oversized'
+      ? `oversized (${Math.round(info.size / 1024)}KB > 1MB limit)`
+      : 'binary (contains null bytes)'
+    const inRoom = inManifest(r)
+    const contextPrefix = inRoom
+      ? `${r} is in the room as text, but local file is ${reasonText}`
+      : `${r} is ${reasonText}`
+
+    if (holder && holder.by) {
+      const guidance = `stays on ${holder.by}'s machine only: teammates will not get it from the room. Share it another way (commit it).`
+      let id = null
+      try {
+        const rec = OB.open(doc.getMap('obligations'), {
+          from: ENGINE_ID,
+          to: holder.by,
+          text: `⛔ ${r} is on disk and claimed by you, but cannot be shared because it is ${reasonText} — it ${guidance}`,
+          absent: false,
+          neverSeen: false,
+        })
+        id = rec && rec.id
+      } catch { }
+      unsharedWarned.set(r, { id, reason: info.reason, size: info.size })
+      try {
+        say(`⛔ ${contextPrefix} and claimed by ${holder.by} — it ${guidance}`)
+      } catch { }
+    } else {
+      const guidance = `stays on ${name}'s machine only: teammates will not get it from the room. Share it another way (commit it).`
+      unsharedWarned.set(r, { id: null, reason: info.reason, size: info.size })
+      if (!preexisting.has(r) || inRoom) {
+        try {
+          say(`· ${contextPrefix} — it ${guidance}`)
+        } catch { }
+      }
+    }
+  }
 
   function noticeBornInvisible(ignoredRel) {
     // DISCHARGE FIRST. A file that has gone away takes its debt with it: the question "this will
@@ -3013,22 +3117,46 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       firstScanDone = true
     }
     noticeBornInvisible(ignoredRel)
+    const currentUnshared = new Map()
     let changes = 0
     for (const full of diskFulls) {
       const r = rel(full)
       if (SKIP.has(r)) continue
       let mt
       try { mt = fs.statSync(full).mtimeMs } catch { continue }
+
+      // 1. If previously known unshared and mtime hasn't changed, skip re-reading buffer!
+      if (unsharedMtimes.get(r) === mt && unsharedWarned.has(r)) {
+        currentUnshared.set(r, unsharedWarned.get(r))
+        continue
+      }
+
+      // 2. If known shareable and mtime hasn't changed, skip!
       if (mtimes.get(r) === mt && inManifest(r)) continue
+
+      // 3. mtime changed or new file: check unshared
+      const unshared = checkUnshared(full)
+      if (unshared) {
+        unsharedMtimes.set(r, mt)
+        currentUnshared.set(r, unshared)
+        continue
+      } else {
+        unsharedMtimes.delete(r)
+      }
+
       if (readText(full) === null) continue
       mtimes.set(r, mt)
       reconcile(r, 'local')
       changes++
     }
+    noticeUnshared(currentUnshared)
     const removed = [...known].filter((r) => !diskRel.has(r) && inManifest(r) && !pendingLocalDeletes.has(r))
     if (removed.length) {
       changes += removed.length
-      for (const r of removed) noteLocalDelete(r) // leaves with its batch; see settleLocalDeletes
+      for (const r of removed) {
+        dischargeUnshared(r)
+        noteLocalDelete(r) // leaves with its batch; see settleLocalDeletes
+      }
     }
     return changes
   }
@@ -3182,6 +3310,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         st = fs.statSync(full)
       } catch {
         // Path does not exist on disk (deleted file or directory)
+        dischargeUnshared(r)
         if (known.has(r) && inManifest(r)) {
           changes++
           noteLocalDelete(r) // leaves with its batch; see settleLocalDeletes
@@ -3212,7 +3341,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
 
       if (!st.isFile()) continue
+      if (unsharedMtimes.get(r) === st.mtimeMs && unsharedWarned.has(r)) continue
       if (mtimes.get(r) === st.mtimeMs && inManifest(r)) continue
+      const unshared = checkUnshared(full, st)
+      if (unshared) {
+        unsharedMtimes.set(r, st.mtimeMs)
+        noticeUnsharedOne(r, unshared)
+        continue
+      } else {
+        unsharedMtimes.delete(r)
+        dischargeUnshared(r)
+      }
       if (readText(full) === null) continue
       mtimes.set(r, st.mtimeMs)
       reconcile(r, 'local')
@@ -3687,7 +3826,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const held = coordinator.acquire(r, i)
       // Fire-and-forget on purpose: claim's contract is synchronous and changing that would
       // break every caller. Use fetch(path) directly when you need to WAIT for the bytes.
-      if (held) { try { fetchFile(r).catch(() => {}) } catch { } }
+      if (held) {
+        try { fetchFile(r).catch(() => {}) } catch { }
+        try {
+          const full = path.join(ROOT, r)
+          const unshared = checkUnshared(full)
+          if (unshared) noticeUnsharedOne(r, unshared)
+        } catch { }
+      }
       return held
     }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
     // HIV-P18: bring a file the room has but this folder does not. Resolves when the BYTES have
@@ -3861,6 +4007,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         filesMissing: Math.max(0, roomFiles - held),
         notSyncing: notSyncing.length,
         notSyncingFiles: notSyncing.slice(0, 20),
+        unsharedFiles: [...unsharedWarned.entries()].map(([p, info]) => ({
+          path: p,
+          reason: info.reason,
+          size: info.size,
+        })),
         // The working set and its bound. `openCap` x agents must stay under the relay's
         // maxConnsTotal, and `evicted` climbing steadily means the cap is too small for
         // how this room actually works — both are things an operator can only act on if
@@ -3873,6 +4024,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         ...(folderLost ? { folderLost: folderLost.message } : {}),
       }
     },
+    unshared: () => [...unsharedWarned.entries()].map(([p, info]) => ({ path: p, reason: info.reason, size: info.size })),
     _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
     _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
     _fileDoc: (r) => fileDocs.get(r),
