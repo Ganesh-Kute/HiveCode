@@ -34,6 +34,7 @@
 import fs from 'fs'
 import path from 'path'
 import { startSync, parseLink } from './sync.js'
+import * as RC from './hive-receipts.js'
 
 const [, , LINK = '', NAME = '', IDLE_MIN = '10'] = process.argv
 if (!LINK || !NAME) {
@@ -51,12 +52,35 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // name character follows. `@all` must not match `@allen` either.
 const rx = new RegExp(`@(${esc(NAME)}|all)(?![\\w-])`, 'i')
 let armed = false
+let finishing = false
 
-function finish(reason, payload) {
+// `flushMs`: when this exit just moved the room's read cursor, give that update time to leave the
+// socket. Exiting at once can drop it, and the MCP side would announce the same mail again.
+async function finish(reason, payload, flushMs = 0) {
+  if (finishing) return
+  finishing = true
+  if (flushMs) {
+    const ws = hive.provider && hive.provider.ws
+    const end = Date.now() + flushMs
+    while (Date.now() < end && ws && ws.readyState === 1 && ws.bufferedAmount > 0) await new Promise((r) => setTimeout(r, 25))
+    await new Promise((r) => setTimeout(r, 200))
+  }
   console.log(JSON.stringify({ reason, ...payload }))
   try { hive.stop() } catch {}
   process.exit(0)
 }
+
+// THE ROOM'S CURSOR IS THE SHARED ONE (3 Oct 2026). This process and the agent's MCP server each
+// kept their own: a message delivered here was still unread there, so the next tool call announced
+// it again as "UNREAD MAIL ... Handle before continuing" (19 old messages in one session), and mail
+// the agent read through hive_check could wake a fresh listener a second time. Both now meet at the
+// room's per-member cursor (hive-receipts.js), which only moves forward. Publishing it here is also
+// what lets a sender's hive_delivered say READ for mail this listener handed over.
+const cursors = hive.doc.getMap('cursors')
+const roomCursor = (len) => {
+  try { const c = RC.cursorOf(cursors, NAME); const at = (c && Number(c.at)) || 0; return at <= len ? at : 0 } catch { return 0 }
+}
+const publish = (n) => { try { RC.publishCursor(cursors, NAME, n) } catch { /* a room that predates receipts */ } }
 
 // A PERSISTED CURSOR, not just "my last message".
 //
@@ -95,7 +119,7 @@ function check() {
   const msgs = chat.toArray()
   let lastMine = -1
   for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].by === NAME) { lastMine = i; break } }
-  const from = Math.max(readCursor(), lastMine + 1)
+  const from = Math.max(readCursor(), lastMine + 1, roomCursor(msgs.length))
   const hits = []
   for (let i = from; i < msgs.length; i++) {
     const m = msgs[i]
@@ -103,7 +127,11 @@ function check() {
   }
   // Advance past everything READ, not just everything matched — an unaddressed message I have
   // already seen must not be re-scanned on the next call either.
-  if (hits.length) { writeCursor(msgs.length); finish('mention', { messages: hits.map((m) => `${m.by}(${m.kind}): ${m.text}`) }) }
+  if (hits.length) {
+    writeCursor(msgs.length)
+    publish(msgs.length)
+    finish('mention', { messages: hits.map((m) => `${m.by}(${m.kind}): ${m.text}`) }, 1500)
+  }
 }
 
 hive.provider.on('sync', (s) => {
@@ -120,6 +148,7 @@ hive.provider.on('sync', (s) => {
 // would re-deliver everything that arrived during the quiet window too.
 setTimeout(() => {
   try { writeCursor(chat.length) } catch {}
-  finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again to keep listening.` })
+  publish(chat.length) // nothing in the window named us, so nothing in it is mail the MCP should raise
+  finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again to keep listening.` }, 1500)
 }, Number(IDLE_MIN) * 60 * 1000)
 process.on('SIGINT', () => { try { hive.stop() } catch {}; process.exit(0) })

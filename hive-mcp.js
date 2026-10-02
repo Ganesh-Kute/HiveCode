@@ -365,6 +365,7 @@ was not written. Fix the relay and call hive_join again.`
     try {
       const s = session
       if (!s || !s.mailbox) return
+      catchUp(s)
       const m = s.mailbox.peek(hive.doc.getArray('chat').toArray())
       // Compare with !== rather than >: after hive_wait consumes the backlog the count drops to
       // 0, and a later single mention must still ring. `>` would go permanently silent.
@@ -468,7 +469,23 @@ function mailbox() {
   // rather than two that disagree.
   try { throttle.sent('rules', RULES_NUDGE) } catch { }
   if (!s.mailbox) s.mailbox = createMailbox({ me: s.name, startAt: s.hive.doc.getArray('chat').length })
+  catchUp(s)
   return s.mailbox
+}
+// THE LISTENER READS MAIL TOO (3 Oct 2026). An agent on Claude Code or Antigravity is woken by
+// hivecode-await, a separate process with a cursor of its own, so every message it delivered was
+// still unread here: the next tool call announced "UNREAD MAIL: N ... Handle before continuing"
+// about mail the agent had already acted on (19 of them in one session), and an agent that obeys
+// redoes old instructions. Both now meet at the room's per-member cursor, which only moves forward:
+// whichever of them handed a message over, the other knows. A cursor past the end of chat belongs to
+// a rebuilt room and is ignored, as the mailbox itself does. Every peek and take goes through here.
+function catchUp(s) {
+  if (!s || !s.mailbox) return
+  try {
+    const c = RC.cursorOf(s.hive.doc.getMap('cursors'), s.name)
+    const at = (c && Number(c.at)) || 0
+    if (at > s.mailbox.cursor && at <= s.hive.doc.getArray('chat').length) s.mailbox.seek(at)
+  } catch { /* a room that predates receipts */ }
 }
 function chatArray() { return requireSession().hive.doc.getArray('chat').toArray() }
 
@@ -1615,6 +1632,7 @@ let mailNotice = 0
 function mailBanner() {
   try {
     if (!session || !session.mailbox) return ''
+    catchUp(session)
     const m = session.mailbox.peek(chatArray())
     // EVERY notice says it supersedes the earlier ones: a context is append-only, so an old "you have
     // mail" can only be retired by a newer notice that says so. What is said once per session (see
