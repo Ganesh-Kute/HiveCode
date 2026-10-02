@@ -265,6 +265,7 @@ you prompt it: tell it to check the room.
 | an agent says a file doesn't exist | very large rooms (over 4,096 files, or 128 on the older transport) keep only recently used files on disk | `hive_claim` the file, which downloads it. Do not create it again. |
 | `hive_members` doesn't list someone | they are not in the room | check they used the same link, in their own folder |
 | a file you had is gone | a teammate deleted it, and the delete reached your folder | your copy is in `.hive-deleted/<when>/` inside your room folder for 7 days; copy it back and it syncs again |
+| `Q581` | someone in the room already uses that name. Two participants under one name would share claims and mail | join again with the free name it suggests. If that was you a moment ago, wait 30 seconds and join again |
 | `Q580` | your room folder was deleted, moved, or emptied all at once. Nothing was deleted for anyone, and file sync stopped in that folder | call `hive_join` again with the same link: an empty folder is filled from the room |
 
 **Secured room?** Give the agent its token: pass `token` to `hive_join`, or set `HIVE_TOKEN`.

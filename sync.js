@@ -1103,7 +1103,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets() })
   let stopped = false
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined }) // identity is implicit in the client
+  // WHICH COPY OF AN AGENT THIS IS: this machine plus this folder, hashed. Everything in a room is
+  // keyed by NAME (claims, mail, presence), so two different agents under one name are one identity
+  // to everybody; this is what lets a join tell another agent with the same name (refused, see
+  // sameNameElsewhere) from this agent a moment ago, restarting in the same folder (allowed).
+  const IID = crypto.createHash('sha256').update(`${os.hostname()}|${ROOT}`).digest('hex').slice(0, 12)
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -2877,7 +2882,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -4145,6 +4150,27 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined, app: u.app || prev.app || undefined })
       }
       return [...seen.values()]
+    },
+    // ANOTHER PARTICIPANT ALREADY USING THIS NAME. Measured 3 Oct 2026: a second agent joined as
+    // "Claude" beside the first, was told "others here: none yet", and BOTH were then told
+    // "claimed x.js -- it's yours"; the second one's write landed in the first one's folder while
+    // the first held the file. hive_members showed a single Claude. (The same thing once fused a
+    // file to 32,038 lines between two agents called Hermes.) Not counted: this connection, a
+    // listener (it runs under its agent's name on purpose), this same agent a moment ago in this
+    // same folder (same iid), and a person in a second window when this is a person too. A state
+    // with no iid is an older build that cannot say, so it counts.
+    sameNameElsewhere: () => {
+      const me = provider.awareness.clientID
+      const lc = String(name).toLowerCase()
+      const out = []
+      for (const [id, s] of provider.awareness.getStates()) {
+        const u = s && s.user
+        if (id === me || !u || !u.name || String(u.name).toLowerCase() !== lc) continue
+        if (u.listener || u.iid === IID) continue
+        if (kind === 'human' && u.kind === 'human') continue
+        out.push({ name: u.name, kind: u.kind, owner: u.owner, app: u.app })
+      }
+      return out
     },
     // Live connection state. An agent parked on hive_wait has no way to tell a quiet
     // room from a dead socket, so it guesses -- and the guess it reaches for is

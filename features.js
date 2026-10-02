@@ -431,6 +431,17 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'one-name-one-participant',
+    name: 'A second participant cannot join under a name already in the room',
+    criticality: 'critical', tier: 1,
+    breaks: 'Two agents under one name are one identity: both are told they hold the same claims, read each other\'s mail, and one\'s writes land on the other\'s files (measured 3 Oct 2026; two agents named Hermes once fused a file to 32,038 lines).',
+    proves: [
+      { suite: 'tests/duplicate-name-test.mjs', assertion: 'D1 a second agent named Claude is NOT joined, and is told why (Q581)' },
+      { suite: 'tests/duplicate-name-test.mjs', assertion: 'P1 an agent joining as Ganesh, while the person Ganesh is here, is refused (Q581)' },
+      { suite: 'tests/duplicate-name-test.mjs', assertion: 'R1 Rex rejoining from its own folder is NOT refused' },
+    ],
+  },
+  {
     id: 'mail-handed-over-once',
     name: 'A message the listener woke the agent for is not raised again as unread mail',
     criticality: 'hot', tier: 1,

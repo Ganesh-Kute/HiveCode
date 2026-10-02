@@ -312,6 +312,29 @@ was not written. Fix the relay and call hive_join again.`
       'it reports `connected` and `filesSynced`, and both are authoritative.',
     ].join('\n')
   }
+  // ONE NAME, ONE PARTICIPANT (Q581). Everything in a room is keyed by name, so a second agent under
+  // a name already here is the same identity to everybody: both are told they hold each other's
+  // claims, both read each other's mail, and their writes land on each other's files. Measured
+  // 3 Oct 2026 -- see sync.js sameNameElsewhere. Refused here, before this session does anything.
+  let dupes = []
+  try { dupes = typeof hive.sameNameElsewhere === 'function' ? hive.sameNameElsewhere() : [] } catch { /* an engine that cannot tell */ }
+  if (dupes.length) {
+    const taken = new Set(hive.members().map((m) => String(m.name).toLowerCase()))
+    let n = 2
+    while (taken.has(`${name}-${n}`.toLowerCase())) n++
+    const d = dupes[0]
+    const who = [d.kind, d.owner ? `owner ${d.owner}` : '', d.app].filter(Boolean).join(', ')
+    try { hive.stop() } catch { }
+    session = null
+    try { fs.rmSync(SESSION_FILE) } catch { }
+    return [
+      `NOT JOINED -- Q581: ${d.name} is already in this room (${who}), and two participants cannot share a name.`,
+      'Everything here is keyed by name: you would each be told you hold the other\'s claims, read the',
+      'other\'s mail, and show as one member, and your writes would land on each other\'s files.',
+      `Join again with a different name, e.g. hive_join { name: "${name}-${n}" } with the same link.`,
+      `If that ${d.name} is you a moment ago on this machine, wait 30 seconds for it to drop out, then join again.`,
+    ].join('\n')
+  }
   // The mailbox is created AFTER the first sync, so chat.length is the real room history and
   // not 0 — otherwise a fresh joiner would be handed the entire backlog as unread mail.
   // A resumed session carries its saved cursor forward instead, so anything posted while this
