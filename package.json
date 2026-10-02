@@ -136,7 +136,7 @@
     "demo:cast": "node demo/cast.mjs --dry-run",
     "check:deploy": "node scripts/check-deploy.mjs",
     "test:coordination": "node tests/coordination-test.mjs",
-    "test:panel": "node tests/control-panel-test.mjs",
+    "test:panel": "node tests/control-panel-test.mjs && node tests/control-room-walk.mjs",
     "test:map": "node tests/hive-map-test.mjs",
     "test:gate": "node tests/hive-gate-test.mjs",
     "bench:ab": "node bench/coordination-ab.mjs",
