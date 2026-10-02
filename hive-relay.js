@@ -89,6 +89,13 @@ if (SEATS && SEATS !== true) process.env.HIVE_SEATS = String(SEATS)
 // one base-room socket plus one per open file, so the per-room ceiling is not a headcount.
 if (!process.env.HIVE_SEATS && !SEATS) process.env.HIVE_SEATS = '25'
 
+// Claims hold here as they do on the public relay (render.yaml: queue). server.js defaults this to
+// 'off', and until 3 Oct this command left it there, so a team's own relay let anyone write over a
+// file someone else had claimed -- the one thing the README and the site promise it prevents.
+// queue = the write is held and replayed when the claim is released, never landed on top. An
+// explicit HIVE_ENFORCE_CLAIMS (off | warn | block | queue) still wins.
+if (!process.env.HIVE_ENFORCE_CLAIMS) process.env.HIVE_ENFORCE_CLAIMS = 'queue'
+
 function lanAddresses() {
   const out = []
   const ifaces = os.networkInterfaces()
@@ -144,6 +151,7 @@ const banner = [
     ? 'TOKEN REQUIRED (mint with: npx hivecode-token --room <room> --name <who> --ttl 7d)'
     : 'OPEN — anyone who can reach this port and knows a room id can join'}`,
   `  seats          ${process.env.HIVE_SEATS}`,
+  `  claims         ${process.env.HIVE_ENFORCE_CLAIMS === 'queue' ? 'held: a write to a file someone else claimed waits for the release' : process.env.HIVE_ENFORCE_CLAIMS}`,
   '',
   '  ── give these to each teammate ───────────────────────────────────────',
   '',
