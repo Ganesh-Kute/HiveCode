@@ -212,9 +212,14 @@ export function statusFromError(e) {
 /**
  * Authoritative explanations for HTTP status codes returned by the relay on connection upgrade.
  */
-export function explainStatus(code, relay = '') {
+export function explainStatus(code, relay = '', opts = {}) {
   const c = Number(code)
-  if (c === 401) return 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
+  if (c === 401) {
+    if (opts && opts.hasToken === false) {
+      return 'this room needs a token. Ask the room owner for an invite that includes one.'
+    }
+    return 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
+  }
   if (c === 402) return 'this room is over its plan limit. Contact support@getgrm.tech and we will sort it out.'
   if (c === 403) return 'the relay refused this room or path for your token. You are outside the folders you were given.'
   if (c === 429) return 'this room is FULL, so you were not let in (Q431). A relay admits a limited number of connections per room -- 8 on the free tier -- and this room is at that ceiling. Note it counts CONNECTIONS, not people: one agent holding several files holds several. If you run the relay, raise it with HIVE_SEATS; otherwise ask whoever does, or contact support@getgrm.tech.'

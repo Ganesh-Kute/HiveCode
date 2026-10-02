@@ -147,21 +147,28 @@ read the room.
 
 When you bring in an outside agent or contractor, you may not want them seeing or editing your
 whole repository. In a token-secured room, the relay enforces path scopes at the network boundary:
-files outside the agent's scope never leave your machine, and the agent's attempts to touch them
-are refused at the wire.
+files outside the agent's scope never reach the agent, and attempts to touch them are refused at
+the wire.
+
+In a secured room (`HIVE_AUTH_MODE=required`), nobody joins without a token — including the host.
+You mint an unscoped token for yourself (a maintainer), and a scoped token for the outside agent.
 
 ### 1. Run a secured relay
 
-Set `HIVE_AUTH_MODE=required` and a shared secret:
+Set the auth mode and secret once in your environment so the secret never appears in command arguments:
 
 **Bash:**
 ```bash
-HIVE_AUTH_MODE=required HIVE_JWT_SECRET="your-secret" npx -y -p hivecode-relay hivecode-relay
+export HIVE_AUTH_MODE=required
+export HIVE_JWT_SECRET="your-secret"
+npx -y -p hivecode-relay hivecode-relay
 ```
 
 **PowerShell:**
 ```powershell
-$env:HIVE_AUTH_MODE='required'; $env:HIVE_JWT_SECRET='your-secret'; npx -y -p hivecode-relay hivecode-relay
+$env:HIVE_AUTH_MODE='required'
+$env:HIVE_JWT_SECRET='your-secret'
+npx -y -p hivecode-relay hivecode-relay
 ```
 
 > **Note on encryption:** `ws://127.0.0.1` is fine for trying it on your machine. For production
@@ -169,26 +176,26 @@ $env:HIVE_AUTH_MODE='required'; $env:HIVE_JWT_SECRET='your-secret'; npx -y -p hi
 > are unencrypted). `render.yaml` includes ready-to-uncomment `HIVE_AUTH_MODE` and `HIVE_JWT_SECRET`
 > variables.
 
-### 2. Mint a scoped token
+### 2. Mint tokens for yourself and the agent
 
-Keep the secret off the command line by letting `hivecode-token` read `$HIVE_JWT_SECRET` directly
-from the environment:
+Because `hivecode-token` reads `HIVE_JWT_SECRET` directly from the environment, you do not pass
+the secret on the command line:
 
-**Bash:**
+**For yourself (the host — full access across the room):**
 ```bash
-export HIVE_JWT_SECRET="your-secret"
+npx -y -p hivecode-relay hivecode-token --name Alice --room "<room>" --role maintainer
+```
+
+**For the outside agent (scoped only to `src/stripe/**`):**
+```bash
 npx -y -p hivecode-relay hivecode-token --name StripeAgent --room "<room>" --role agent --paths "src/stripe/**" --ttl 24h
 ```
 
-**PowerShell:**
-```powershell
-$env:HIVE_JWT_SECRET='your-secret'
-npx -y -p hivecode-relay hivecode-token --name StripeAgent --room "<room>" --role agent --paths "src/stripe/**" --ttl 24h
-```
+*(On PowerShell, run the identical `npx` commands in the same terminal session where `$env:HIVE_JWT_SECRET` was set).*
 
-### 3. Have the agent join
+### 3. Join the room
 
-Give the agent its token and join link:
+Join with your own token first, then invite the outside agent:
 
 > Use `hive_join` with link `wss://your-relay|<room>`, token `<token>`, as **StripeAgent**.
 
@@ -196,7 +203,12 @@ Give the agent its token and join link:
 
 The agent's access is verified and enforced directly at the relay boundary:
 
-1. **Unauthenticated access is blocked (401):** An agent trying to join without a valid token is refused immediately:
+1. **Unauthenticated access is blocked (401):** An agent trying to join without a token is refused immediately:
+   ```
+   NOT JOINED -- the relay refused the connection (401): this room needs a token.
+   Ask the room owner for an invite that includes one.
+   ```
+   If an expired or invalid token is supplied, the refusal names it directly:
    ```
    NOT JOINED -- the relay refused the connection (401): the relay rejected your token.
    It may have expired -- ask the room owner for a new invite.

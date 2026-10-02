@@ -117,5 +117,40 @@ console.log('\n# C. per-room ceiling refusal (Q431)')
   relayC.kill()
 }
 
+// ── D. token-required relay (401): distinguish no token from expired token ───────────
+console.log('\n# D. token-required relay refusal (401)')
+{
+  const PORT_D = PORT + 2
+  const relayD = await new Promise((res) => {
+    const p = spawn(process.execPath, ['server.js'], {
+      cwd: ROOT,
+      env: { ...process.env, PORT: String(PORT_D), HIVE_AUTH_MODE: 'required', HIVE_JWT_SECRET: 'test-secret', HIVE_PERSIST_DIR: 'off' },
+    })
+    p.stderr.on('data', (d) => { if (process.env.HIVE_DEBUG) process.stderr.write(d) })
+    p.stdout.on('data', (d) => { if (/listening on/.test(d)) res(p) })
+  })
+  const wsUrlD = `ws://localhost:${PORT_D}`
+  const roomD = 'room-token-' + crypto.randomBytes(6).toString('hex')
+
+  // D1: No token passed
+  const refusedNoToken = textOf(await _test.callTool('hive_join', {
+    link: `${wsUrlD}|${roomD}`, dir, name: 'NoTokenAgent', owner: 'test',
+  }))
+
+  T('D1 join with no token says "this room needs a token"', /this room needs a token\. Ask the room owner for an invite that includes one\./.test(refusedNoToken))
+  T('D1b does NOT say "the relay rejected your token"', !/rejected your token/.test(refusedNoToken))
+
+  // D2: Bad / expired token passed
+  const refusedBadToken = textOf(await _test.callTool('hive_join', {
+    link: `${wsUrlD}|${roomD}`, dir, name: 'BadTokenAgent', owner: 'test', token: 'bad.token.here',
+  }))
+
+  T('D2 join with bad token says "the relay rejected your token"', /the relay rejected your token\. It may have expired -- ask the room owner for a new invite\./.test(refusedBadToken))
+
+  try { await _test.callTool('hive_leave', {}) } catch { }
+  relayD.kill()
+}
+
 console.log(`\n=== JOIN HONESTY: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
+

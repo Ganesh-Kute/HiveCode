@@ -58,21 +58,32 @@ await new Promise((resolve, reject) => {
 const url = (f, q = '') => `file:///${ROOT.replace(/\\/g, '/')}/${f}${q}`
 const mcp = (tag) => import(url('hive-mcp.js', `?${tag}`))
 
-const results = {}
+let pass = 0, fail = 0
+function T(name, ok, note = '') {
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${note ? `   ${note}` : ''}`)
+  if (ok) pass++; else fail++
+}
 
 try {
   // Fact 1: Joining with NO token
   console.log('\n# Fact 1: Joining with NO token to required-auth relay')
   const clientUnauth = await mcp('unauth')
   const unauthJoin = await clientUnauth._test.callTool('hive_join', { link: LINK, dir: dirUnauth, name: 'UnauthAgent' })
-  results.unauthJoin = unauthJoin
-  console.log('Unauth Join Result:\n', JSON.stringify(unauthJoin, null, 2))
+  const unauthText = (unauthJoin && unauthJoin.content && unauthJoin.content[0] && unauthJoin.content[0].text) || ''
+  T('Fact 1 unauth join refused 401', /NOT JOINED -- the relay refused the connection \(401\)/.test(unauthText))
+  T('Fact 1 unauth join says "this room needs a token"', /this room needs a token\. Ask the room owner for an invite that includes one\./.test(unauthText))
+
+  // Fact 1b: Joining with bad/expired token
+  const badTokenJoin = await clientUnauth._test.callTool('hive_join', { link: LINK, dir: dirUnauth, name: 'BadTokenAgent', token: 'bad.token' })
+  const badTokenText = (badTokenJoin && badTokenJoin.content && badTokenJoin.content[0] && badTokenJoin.content[0].text) || ''
+  T('Fact 1b bad token says "the relay rejected your token"', /the relay rejected your token\. It may have expired -- ask the room owner for a new invite\./.test(badTokenText))
 
   // Mint tokens via CLI
   console.log('\n# Minting tokens via hive-token.js CLI (reading $env:HIVE_JWT_SECRET)')
   const ownerToken = mintCli({ name: 'Owner', role: 'maintainer' })
   const stripeToken = mintCli({ name: 'StripeAgent', role: 'agent', paths: 'src/stripe/**' })
-  console.log('Stripe token minted:', stripeToken.slice(0, 30) + '...')
+  T('Owner token minted', !!ownerToken && ownerToken.length > 20)
+  T('Stripe token minted', !!stripeToken && stripeToken.length > 20)
 
   // Host joins
   const clientOwner = await mcp('owner')
@@ -82,34 +93,37 @@ try {
   console.log('\n# Fact 2: Scoped agent joins and writes inside src/stripe/**')
   const clientStripe = await mcp('stripe')
   const stripeJoin = await clientStripe._test.callTool('hive_join', { link: LINK, dir: dirStripe, name: 'StripeAgent', token: stripeToken })
-  console.log('Stripe join status: ok')
+  const stripeJoinText = (stripeJoin && stripeJoin.content && stripeJoin.content[0] && stripeJoin.content[0].text) || String(stripeJoin)
+  T('Fact 2 Stripe agent joined', /^joined/i.test(stripeJoinText))
 
   // Claim and edit inside src/stripe/charge.js
   const claimStripe = await clientStripe._test.callTool('hive_claim', { region: 'src/stripe/charge.js' })
-  results.claimStripe = claimStripe
-  console.log('Claim in-scope (src/stripe/charge.js):\n', JSON.stringify(claimStripe, null, 2))
+  const claimStripeText = (claimStripe && claimStripe.content && claimStripe.content[0] && claimStripe.content[0].text) || ''
+  T('Fact 2 Claim in-scope succeeds', claimStripeText.includes("claimed src/stripe/charge.js — it's yours."))
 
   const editStripe = await clientStripe._test.callTool('hive_edit', {
     file: 'src/stripe/charge.js',
     content: 'export function chargeCustomer(amt) { return { ok: true, amt }; }\n',
     intent: 'implement customer charge'
   })
-  results.editStripe = editStripe
-  console.log('Edit in-scope (src/stripe/charge.js):\n', JSON.stringify(editStripe, null, 2))
+  const editStripeText = (editStripe && editStripe.content && editStripe.content[0] && editStripe.content[0].text) || ''
+  T('Fact 2 Edit in-scope succeeds', editStripeText.includes("✓ wrote src/stripe/charge.js through the medium — your intent is signed into its provenance ledger"))
 
   // Fact 3: Out-of-scope claim and edit (src/core/auth.js)
   console.log('\n# Fact 3: Out-of-scope access (src/core/auth.js)')
   const claimAuth = await clientStripe._test.callTool('hive_claim', { region: 'src/core/auth.js' })
-  results.claimAuth = claimAuth
-  console.log('Claim out-of-scope (src/core/auth.js):\n', JSON.stringify(claimAuth, null, 2))
+  const claimAuthText = (claimAuth && claimAuth.content && claimAuth.content[0] && claimAuth.content[0].text) || ''
+  T('Fact 3 Claim out-of-scope refused', claimAuthText.includes("refusing to claim src/core/auth.js — your access token's scope does not cover src/core/auth.js, so its bytes stay in this folder"))
+  T('Fact 3 Claim isError is true', claimAuth.isError === true)
 
   const editAuth = await clientStripe._test.callTool('hive_edit', {
     file: 'src/core/auth.js',
     content: 'export const HACKED = true;\n',
     intent: 'tamper with core auth'
   })
-  results.editAuth = editAuth
-  console.log('Edit out-of-scope (src/core/auth.js):\n', JSON.stringify(editAuth, null, 2))
+  const editAuthText = (editAuth && editAuth.content && editAuth.content[0] && editAuth.content[0].text) || ''
+  T('Fact 3 Edit out-of-scope refused', editAuthText.includes("refusing to write src/core/auth.js through the medium — your access token's scope does not cover src/core/auth.js, so its bytes stay in this folder"))
+  T('Fact 3 Edit isError is true', editAuth.isError === true)
 
   try { clientOwner._test.getSession().hive.stop() } catch {}
   try { clientStripe._test.getSession().hive.stop() } catch {}
@@ -118,5 +132,6 @@ try {
   try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
 }
 
-fs.writeFileSync(path.join(ROOT, 'tests', 'scoped-results.json'), JSON.stringify(results, null, 2))
-console.log('\n=== SCOPED CHECK COMPLETED AND RECORDED ===')
+console.log(`\n=== SCOPED MCP CHECK: ${pass} passed, ${fail} failed ===`)
+process.exit(fail ? 1 : 0)
+

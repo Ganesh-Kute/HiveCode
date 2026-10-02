@@ -275,7 +275,7 @@ was not written. Fix the relay and call hive_join again.`
     // authoritative cause (Q430 -> capacity, Q431 -> HIVE_SEATS, 401/403 -> token).
     // Only when nothing refused us with a code do we query /health to infer whether it was capacity.
     if (refusedCode) {
-      const explanation = RH.explainStatus(refusedCode, relay)
+      const explanation = RH.explainStatus(refusedCode, relay, { hasToken: !!useToken })
       return [
         `NOT JOINED -- the relay refused the connection (${refusedCode}): ${explanation}`,
         `room: ${room}`,
