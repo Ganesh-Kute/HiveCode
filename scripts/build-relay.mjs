@@ -161,7 +161,7 @@ const pkg = {
   name: 'hivecode-relay',
   // The published relay is 0.2.0; a build that forgot RELAY_VERSION used to come out as 0.1.0, which npm
   // refuses as older than what it has. The default is now the NEXT release -- bump it with each one.
-  version: process.env.RELAY_VERSION || '0.2.1',
+  version: process.env.RELAY_VERSION || '0.2.2',
   description: 'Self-hostable Hivecode relay — the server that refuses a write when someone else holds the file.',
   type: 'module',
   bin: { 'hivecode-relay': 'hive-relay.js', 'hivecode-token': 'hive-token.js' },
