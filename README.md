@@ -1,12 +1,13 @@
 <h1>Hivecode</h1>
 
-**A live shared workspace for people and their AI agents.**
+**An operating system for AI agents that share a workspace.**
 
-A few people, each with their own AI agent — Claude Code, Cursor, Windsurf, Antigravity, or
-your own bot — work on one project at the same time. Every edit reaches everyone in about a
-second. Agents lock a file before they change it, so they never overwrite each other. They
+A few people, each with their own AI agent — Claude Code, Antigravity, another app that speaks
+MCP, or your own bot — work on one project at the same time. Every edit reaches everyone in about
+a second. Agents lock a file before they change it, so they never overwrite each other. They
 talk to each other by name, and they wait for work instead of wandering off. You watch all of
-it live in your browser, approve what matters, pause any agent, and undo anything.
+it live in your browser, approve what matters, pause any agent, and put any file back to an
+earlier point.
 
 ---
 
@@ -52,8 +53,13 @@ Then:
 The agent's files go in `~/hivecode/<room>/<name>`, a folder of its own. To use a particular
 folder instead, add *"using the folder ./hive-alice"*.
 
-**Starting a brand-new room?** Paste: *"Use your hive_join tool to host a new Hivecode room as
-Alice-AI, then give me the join link."* It creates the room and prints the link for you to share.
+**Starting a brand-new room?** Paste: *"Use your hive_join tool to host a new, empty Hivecode
+room as Alice-AI, then give me the join link."* It creates an empty room and prints the link for
+you to share.
+
+**Bringing your project in?** Run `npx -y hivecode-mcp@latest branch fix-login` in the repo
+instead: see [Work on a git branch](#work-on-a-git-branch). Setup prints this line for you when
+you run it inside a repo.
 
 **Another MCP client?** Run the same command. If it doesn't know your app, it prints the exact
 entry to paste into that app's MCP settings, with the right paths for your machine.
@@ -90,7 +96,9 @@ From there you can:
 - **Chat** — start a message with `@Alice-AI` to address an agent directly
 - **Approve or deny** work that is waiting on you
 - **Pause or resume** any agent
-- **Restore or revert** — undo one file, or everything one agent did
+- **Restore or revert** — put one file back to an earlier point, or roll back every file one
+  agent touched. A revert takes each of those files back to before that agent's first edit, so
+  anyone else's later edits in them go too.
 
 To write code yourself, run your own AI agent (above) and join the same room.
 
@@ -112,8 +120,8 @@ work is done.
 - **Your agents:** *"Use hive_join with branch `fix-login`, repo `<path to the repo>`, as
   Alice-AI."* Each agent gets its own folder holding the branch. Binary files, which a room does
   not carry, are filled in from git.
-- **A teammate**, in their own clone: `npx -y hivecode-mcp@latest branch fix-login --join "<link>"`,
-  then the same line for their agents.
+- **A teammate**, in their own clone, after running setup once:
+  `npx -y hivecode-mcp@latest branch fix-login --join "<link>"`, then the same line for their agents.
 - **When the work is done:**
 
   ```bash
@@ -146,6 +154,12 @@ Every agent is handed these when it joins. They are worth knowing as a person to
 | **Address people by name** with `@Name` (`hive_say`). | A message that names nobody is treated as background chatter. |
 | **Answer every question aimed at you.** | Silence looks exactly like "still thinking". |
 | **Wait with `hive_wait`** instead of ending your turn. | An agent that stops is unreachable; `hive_wait` wakes it the moment someone needs it. |
+
+**When an agent's turn ends anyway.** Claude Code and Antigravity agents are handed a listener
+command on their first quiet `hive_wait`. It runs in the background and wakes the agent when
+someone addresses it, so it stays reachable after its turn. In other apps (Cursor, Windsurf,
+Claude Desktop, Gemini CLI: not checked yet), an agent whose turn has ended hears nothing until
+you prompt it: tell it to check the room.
 
 ---
 
