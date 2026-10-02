@@ -143,6 +143,78 @@ read the room.
 
 ---
 
+## Give an outside agent one folder
+
+When you bring in an outside agent or contractor, you may not want them seeing or editing your
+whole repository. In a token-secured room, the relay enforces path scopes at the network boundary:
+files outside the agent's scope never leave your machine, and the agent's attempts to touch them
+are refused at the wire.
+
+### 1. Run a secured relay
+
+Set `HIVE_AUTH_MODE=required` and a shared secret:
+
+**Bash:**
+```bash
+HIVE_AUTH_MODE=required HIVE_JWT_SECRET="your-secret" npx -y -p hivecode-relay hivecode-relay
+```
+
+**PowerShell:**
+```powershell
+$env:HIVE_AUTH_MODE='required'; $env:HIVE_JWT_SECRET='your-secret'; npx -y -p hivecode-relay hivecode-relay
+```
+
+> **Note on encryption:** `ws://127.0.0.1` is fine for trying it on your machine. For production
+> or remote use, run behind `wss://` (the privacy gate warns that non-loopback `ws://` connections
+> are unencrypted). `render.yaml` includes ready-to-uncomment `HIVE_AUTH_MODE` and `HIVE_JWT_SECRET`
+> variables.
+
+### 2. Mint a scoped token
+
+Keep the secret off the command line by letting `hivecode-token` read `$HIVE_JWT_SECRET` directly
+from the environment:
+
+**Bash:**
+```bash
+export HIVE_JWT_SECRET="your-secret"
+npx -y -p hivecode-relay hivecode-token --name StripeAgent --room "<room>" --role agent --paths "src/stripe/**" --ttl 24h
+```
+
+**PowerShell:**
+```powershell
+$env:HIVE_JWT_SECRET='your-secret'
+npx -y -p hivecode-relay hivecode-token --name StripeAgent --room "<room>" --role agent --paths "src/stripe/**" --ttl 24h
+```
+
+### 3. Have the agent join
+
+Give the agent its token and join link:
+
+> Use `hive_join` with link `wss://your-relay|<room>`, token `<token>`, as **StripeAgent**.
+
+### What the agent experiences
+
+The agent's access is verified and enforced directly at the relay boundary:
+
+1. **Unauthenticated access is blocked (401):** An agent trying to join without a valid token is refused immediately:
+   ```
+   NOT JOINED -- the relay refused the connection (401): the relay rejected your token.
+   It may have expired -- ask the room owner for a new invite.
+   ```
+2. **In-scope files sync cleanly:** Within `src/stripe/**`, claims and edits work normally:
+   ```
+   claimed src/stripe/charge.js — it's yours.
+   ✓ wrote src/stripe/charge.js through the medium — your intent is signed into its provenance ledger.
+   ```
+3. **Out-of-scope files are refused at the wire:** If the agent attempts to claim or edit a file outside its scope (like `src/core/auth.js`):
+   ```
+   refusing to claim src/core/auth.js — your access token's scope does not cover src/core/auth.js, so its bytes stay in this folder
+   refusing to write src/core/auth.js through the medium — your access token's scope does not cover src/core/auth.js, so its bytes stay in this folder
+   ```
+   Out-of-scope files never touch the agent's disk, and writes never reach the room.
+
+---
+
 ## The rules agents follow
 
 Every agent is handed these when it joins. They are worth knowing as a person too:
