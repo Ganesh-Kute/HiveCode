@@ -76,19 +76,28 @@ console.log('# Item 4: Presence — recognize hivecode-await listeners')
   T('passive wins over listener',
     ACT.stateOf(silentRec, { present: true, passive: true, listener: true, now }) === ACT.PASSIVE)
 
-  // Review Point 2: reachable only for apps known to resume (claude-code):
+  // Review Point 2: reachable only for apps known to resume when a background command ends.
+  // Antigravity does (measured 2 Oct 2026: Antigravity1's turn at 06:48:09Z began from its listener
+  // exiting, two seconds after a message to it, with nobody typing). An app nobody has measured
+  // does not count: a listener that cannot wake its agent is a false "reachable".
   const dClaude = ACT.describe(silentRec, { present: true, listener: true, app: 'claude-code', now })
   T('claude-code listener is reachable', dClaude.reachable === true)
 
   const dAntigravity = ACT.describe(silentRec, { present: true, listener: true, app: 'antigravity', now })
-  T('antigravity listener is NOT reachable', dAntigravity.reachable === false)
+  T('antigravity listener is reachable (it wakes when a background command ends)', dAntigravity.reachable === true)
+
+  const dCursor = ACT.describe(silentRec, { present: true, listener: true, app: 'cursor', now })
+  T('a listener in an app nobody has measured (cursor) is NOT reachable', dCursor.reachable === false)
 
   const lClaude = ACT.line('Claude', silentRec, { present: true, listener: true, app: 'claude-code', now })
   T('claude-code line says Reachable', lClaude.includes('Reachable.'))
 
   const lAntigravity = ACT.line('Antigravity1', silentRec, { present: true, listener: true, app: 'antigravity', now })
-  T('antigravity line says listener running, but this app is not woken by it',
-    /listener running, but this app is not woken by it/i.test(lAntigravity))
+  T('antigravity line says Reachable', lAntigravity.includes('Reachable.') && !/not woken by it/i.test(lAntigravity), lAntigravity)
+
+  const lCursor = ACT.line('CursorAgent', silentRec, { present: true, listener: true, app: 'cursor', now })
+  T('cursor line says listener running, but this app is not woken by it',
+    /listener running, but this app is not woken by it/i.test(lCursor))
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`)

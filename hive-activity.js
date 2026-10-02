@@ -213,8 +213,13 @@ export function forget(store, name) {
  * @param {boolean} opts.paused   controls map says a human paused it
  * @param {boolean} opts.passive  declared passive at join
  */
+// Apps that wake their agent when a background command ends, which is what makes a running
+// hivecode-await listener mean "reachable". Antigravity was left out on a belief; measured 2 Oct
+// 2026, it wakes the same way (Antigravity1's turn at 06:48:09Z began from its listener exiting,
+// with nobody typing). Keep it in step with listenHow in hive-mcp.js, which tells the same apps to
+// start the listener.
 export function resumesOnExit(app) {
-  return Boolean(app && /claude-code/i.test(app))
+  return Boolean(app && /claude-code|antigravity/i.test(app))
 }
 
 export function stateOf(rec, { present, paused = false, passive = false, human = false, listener = false, connections = null, now = Date.now(), parkedAfter = DEFAULT_PARKED_AFTER_MS } = {}) {
