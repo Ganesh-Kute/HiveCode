@@ -1164,7 +1164,11 @@ async function dispatch(req) {
         const conn = (() => {
           try { return connectionOf(requireSession().hive) } catch { return null }
         })()
-        const connStr = (conn && !conn.connected)
+        // A lost folder outranks the connection line, and replaces it: that line says never to
+        // rejoin, and a rejoin is the one way back for a folder that is gone.
+        const connStr = (conn && conn.folderLost)
+          ? `\n[FOLDER LOST] ${conn.folderLost} Tell your person.\n`
+          : (conn && !conn.connected)
           ? `\n[CONNECTION] ${conn.connecting ? 'reconnecting' : 'offline'} — this heals itself, the client retries automatically. Do NOT call hive_join; that tears down the session and can overwrite your local edits. Keep calling hive_wait.\n`
           : ''
         
@@ -1547,6 +1551,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           unread: mailbox().peek(chatArray()).unreadCount,
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
+          ...(conn && conn.folderLost ? { folderLost: conn.folderLost } : {}),
         })
       }
       // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity

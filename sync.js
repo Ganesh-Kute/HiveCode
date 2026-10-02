@@ -86,6 +86,9 @@ export const ALWAYS_IGNORE = [
   // Names a PID on THIS machine. Syncing it would tell every peer their folder is locked by
   // a process that does not exist for them.
   '.hive-lock.json',
+  // Copies of files a teammate's delete removed from THIS folder (see keepDeletedCopy). They
+  // are this machine's safety net; syncing them would undo every delete in the room.
+  '.hive-deleted/',
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 
   // MOBILE AND CLOUD SECRETS. These are the files a mobile project keeps OUT of git via
@@ -190,6 +193,11 @@ const TASKS_FILE = 'HIVE_TASKS.md' // generated locally from `tasks`; directed w
 const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
 const SHADOW_FILE = '.hive-shadow.json' // what THIS client last wrote per file; the cross-restart ancestor
 const LOCK_FILE = '.hive-lock.json'     // one sync client per folder; see acquireFolderLock
+const DELETED_DIR = '.hive-deleted'     // copies of files a teammate's delete removed here; see keepDeletedCopy
+const DELETED_KEEP_MS = 7 * 24 * 3600 * 1000 // ...pruned at start once they are a week old
+// Local deletes wait this long for the deleting to stop, then leave as one batch. See settleLocalDeletes.
+const DELETE_SETTLE_MS = Number(process.env.HIVE_DELETE_SETTLE_MS) || 1500
+const BULK_DELETE = 5 // a batch this big is announced in the room, not just logged
 const ID_FILE = '.hive-id.json'    // this client's substrate signing identity (private); never synced
 const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
 const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
@@ -488,6 +496,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   fs.mkdirSync(ROOT, { recursive: true })
   // FIRST, before any socket or file work: if another client already holds this folder,
   const releaseLock = syncFiles ? acquireFolderLock(ROOT, room, log) : () => {}
+  // Set once this folder stops existing under a running session (see loseFolder). From then on
+  // nothing in it is written, moved or deleted, and no local absence is sent to the room as a delete.
+  let folderLost = null
+  if (syncFiles) pruneDeletedCopies()
 
   // Respect .gitignore (+ always-ignore secrets/junk) so we never sync a
   // teammate's .env, keys, or build output. Reloaded by reloadIgnores().
@@ -1007,6 +1019,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     relPath = String(relPath || '').replace(/\\/g, '/')
     if (!relPath || typeof content !== 'string') return { error: 'need a file path and string content' }
     if (!isSafeRelPath(relPath)) return { error: 'unsafe path' }
+    if (folderLost) return { error: folderLost.message }
     if (SKIP.has(relPath) || isIgnored(relPath)) return { error: `${relPath} is not a syncable file` }
     if (!canOpen(relPath)) return { error: `${relPath} is out of your scope` }
     if (!canWrite(relPath)) return { error: `${relPath} is read-only for you` }
@@ -1690,6 +1703,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const ensuredDirs = new Set()
   function writeToDisk(relPath, content) {
     if (!isSafeRelPath(relPath)) return // never write a path that could escape ROOT (defense in depth)
+    // The mkdir below would recreate a lost folder holding one file, and the next scan would read
+    // every other file as deleted -- the exact wipe loseFolder exists to prevent.
+    if (folderLost) return
     const full = path.join(ROOT, relPath)
     const dir = path.dirname(full)
     if (!ensuredDirs.has(dir)) {
@@ -2881,9 +2897,97 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
   }
 
+  // ---- deletes: a missing folder is not a deletion, and a delete from the room keeps a copy ----
+  //
+  // Measured 3 Oct 2026 on a local relay, before any of this existed: one agent's `rm -rf src`
+  // took 30 files out of its teammate's folder within seconds, and nothing kept them -- a delete
+  // from the room was a bare rmSync. Deleting the agent's WHOLE room folder was worse: on Windows
+  // fs.watch threw EPERM with no handler and the agent's hivecode server died, and wherever the
+  // watcher survives, the next scan walked a folder that was not there, read every file as
+  // deleted, and emptied the room for everyone (12 of 12 files gone from the teammate's folder).
+  function rootIsDir() { try { return fs.statSync(ROOT).isDirectory() } catch { return false } }
+
+  // LOCAL DELETES SETTLE, THEN LEAVE AS ONE BATCH. `rm -rf` removes the files first and the folder
+  // last, and each removal used to reach the room 40 ms after its watcher event -- so on a big
+  // folder most of the deletes were already out while the folder still existed, and no check of
+  // the folder could catch it. Nobody needs a delete in 40 ms. Waiting for the deleting to stop
+  // lets the batch be judged whole: the folder gone, or every file in it gone at once, reads as a
+  // lost folder (loseFolder), never as N deliberate deletes. It also stops an editor that saves by
+  // delete-then-write from sending a delete and a re-create of the same file.
+  const pendingLocalDeletes = new Set()
+  let deleteTimer = null
+  function noteLocalDelete(r) {
+    if (pendingLocalDeletes.has(r)) return // a rescan of the same absence must not keep postponing it
+    pendingLocalDeletes.add(r)
+    if (deleteTimer) clearTimeout(deleteTimer)
+    deleteTimer = setTimeout(settleLocalDeletes, DELETE_SETTLE_MS)
+  }
+  function settleLocalDeletes() {
+    if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null }
+    if (!pendingLocalDeletes.size) return
+    const pending = [...pendingLocalDeletes]
+    pendingLocalDeletes.clear()
+    if (folderLost) return
+    if (!rootIsDir()) { loseFolder('is gone'); return }
+    // Gone now = still absent, or ignored since (walk() skips both, and both always retracted the
+    // file from the room). Anything that came back during the wait is an edit, not a delete.
+    const gone = pending.filter((r) => known.has(r) && inManifest(r) && (!fs.existsSync(path.join(ROOT, r)) || isIgnored(r)))
+    if (!gone.length) return
+    const held = [...known].filter((r) => inManifest(r)).length
+    if (held >= 5 && gone.length >= held) { loseFolder(`was emptied: all ${held} of its files vanished at once`); return }
+    for (const r of gone) queueManifestDelete(r)
+    flushRoomDoc()
+    for (const r of gone) {
+      closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
+    }
+    const list = gone.slice(0, 3).join(', ') + (gone.length > 3 ? ` (+${gone.length - 3} more)` : '')
+    log(`[${name}] -> deleted for everyone: ${list}`)
+    if (gone.length >= BULK_DELETE) {
+      try { say(`· ${name} deleted ${gone.length} files for everyone: ${list}. Teammates' folders keep a copy of what they held, in ${DELETED_DIR}/, for 7 days.`) } catch { }
+    }
+  }
+
+  // A DELETE FROM THE ROOM KEEPS A COPY. The file moves to .hive-deleted/<when>/<path> in this
+  // folder (ALWAYS_IGNORE, so it never syncs back). If the move fails -- an editor holding the file
+  // on Windows -- it is copied, then removed. If even the copy fails it is still removed, as
+  // before: a file left in place would be read as new by the next scan and resurrected for everyone.
+  function deletedStamp() { return new Date().toISOString().replace(/[:.]/g, '-') }
+  function keepDeletedCopy(relPath, stamp) {
+    if (!isSafeRelPath(relPath)) return null
+    const from = path.join(ROOT, relPath)
+    let st
+    try { st = fs.statSync(from) } catch { return null } // never reached this disk: nothing to keep
+    if (!st.isFile()) return null
+    const keptAs = `${DELETED_DIR}/${stamp}/${relPath}`
+    const to = path.join(ROOT, keptAs)
+    try { fs.mkdirSync(path.dirname(to), { recursive: true }) } catch { }
+    try { fs.renameSync(from, to); return keptAs } catch { }
+    let copied = false
+    try { fs.copyFileSync(from, to); copied = true } catch { }
+    try { fs.rmSync(from) } catch { }
+    return copied ? keptAs : null
+  }
+  // Only folders this code named (an ISO stamp) and only once they are a week old: anything else a
+  // person put in .hive-deleted/ is theirs.
+  function pruneDeletedCopies() {
+    const base = path.join(ROOT, DELETED_DIR)
+    let names = []
+    try { names = fs.readdirSync(base) } catch { return }
+    const cutoff = Date.now() - DELETED_KEEP_MS
+    for (const n of names) {
+      const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(n)
+      if (!m) continue
+      const t = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`)
+      if (t < cutoff) { try { fs.rmSync(path.join(base, n), { recursive: true, force: true }) } catch { } }
+    }
+  }
+
   let scanCount = 0
   function scan() {
     scanCount++
+    if (folderLost) return 0
+    // walk() of a missing folder returns nothing, which used to read as "every file was deleted".
+    if (!rootIsDir()) { loseFolder('is gone'); return 0 }
     const skippedFulls = []
     const diskFulls = walk(ROOT, [], skippedFulls)
     const diskRel = new Set(diskFulls.map(rel))
@@ -2921,14 +3025,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       reconcile(r, 'local')
       changes++
     }
-    const removed = [...known].filter((r) => !diskRel.has(r) && inManifest(r))
+    const removed = [...known].filter((r) => !diskRel.has(r) && inManifest(r) && !pendingLocalDeletes.has(r))
     if (removed.length) {
       changes += removed.length
-      for (const r of removed) queueManifestDelete(r)
-      flushRoomDoc()
-      for (const r of removed) {
-        closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
-      }
+      for (const r of removed) noteLocalDelete(r) // leaves with its batch; see settleLocalDeletes
     }
     return changes
   }
@@ -2991,17 +3091,22 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
 
   // Manifest changes from OTHERS: a new path -> open its file-room (its sync pulls
-  // the content); a removed path -> tear down + delete the local file.
+  // the content); a removed path -> tear down, and move the local file into .hive-deleted/.
   if (syncFiles) manifest.observe((ev, txn) => {
     if (txn.local) return
+    if (folderLost) return // nothing in a lost folder is written, moved or recreated
+    let stamp = null
+    let kept = 0
     ev.changes.keys.forEach((change, key) => {
       if (change.action === 'delete') {
         pendingManifestOps.delete(key)
         closeFile(key)
         { const qi = openQueue.indexOf(key); if (qi >= 0) { openQueue.splice(qi, 1); openQueueSet.delete(key) } } // deleted while queued
-        try { fs.rmSync(path.join(ROOT, key)) } catch { }
+        if (!stamp) stamp = deletedStamp() // one folder per batch, so a bulk delete comes back together
+        const keptAs = keepDeletedCopy(key, stamp)
+        if (keptAs) kept++
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key)
-        log(`[${name}] <- deleted ${key}`)
+        log(`[${name}] <- deleted ${key}${keptAs ? ` (copy kept: ${keptAs})` : ''}`)
       } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
         if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
           openFile(key)
@@ -3010,6 +3115,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         }
       }
     })
+    if (kept > 1) log(`[${name}] <- ${kept} files deleted by a teammate; copies kept in ${DELETED_DIR}/${stamp}/`)
   })
 
   // INSTANT propagation: fs.watch fires on the actual edit, so changes go out in
@@ -3032,7 +3138,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let debounce = null
 
   function scheduleNextScan(ms) {
-    if (stopped) return
+    if (stopped || folderLost) return
     if (scanTimer) clearTimeout(scanTimer)
     // Ref'd, like the setInterval it replaced: a headless client whose socket is down may have
     // nothing else holding the process open, and an unref'd net would let it exit silently.
@@ -3044,7 +3150,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   function flushFsEvents() {
     debounce = null
-    if (stopped) return
+    if (stopped || folderLost) return
+    if (!rootIsDir()) { pendingFsEvents.clear(); loseFolder('is gone'); return }
     if (!firstScanDone || pendingFsFullScan || pendingFsEvents.size > 256) {
       pendingFsEvents.clear()
       pendingFsFullScan = false
@@ -3077,9 +3184,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // Path does not exist on disk (deleted file or directory)
         if (known.has(r) && inManifest(r)) {
           changes++
-          queueManifestDelete(r)
-          flushRoomDoc()
-          closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
+          noteLocalDelete(r) // leaves with its batch; see settleLocalDeletes
           continue
         }
         // Check if r might have been a directory containing tracked files
@@ -3160,6 +3265,40 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function startWatch() {
     try { watcher = fs.watch(ROOT, { recursive: true }, onFsEvent) }
     catch { watcher = null } // recursive watch unsupported (some Linux) -> rely on scan
+    // A watcher error used to be an uncaught 'error' event: deleting the room folder on Windows
+    // (EPERM) killed the whole process, and with it the agent's hivecode server.
+    if (watcher) watcher.on('error', onWatchError)
+  }
+  function onWatchError(e) {
+    try { watcher && watcher.close() } catch { }
+    watcher = null
+    if (stopped || folderLost) return
+    if (!rootIsDir()) { loseFolder('is gone'); return }
+    log(`[${name}] the folder watcher failed (${(e && e.code) || e}); checking the folder every ${SCAN_NO_WATCHER_MS} ms instead`)
+    scheduleNextScan(SCAN_NO_WATCHER_MS)
+  }
+
+  // THE FOLDER IS GONE: say so once, and stop touching the disk. Every way back is a fresh join,
+  // which compares the folder with the room the same way a first join does, so nothing a person
+  // put back is overwritten. Stopping, rather than carrying on, is deliberate: a remote write would
+  // recreate the folder holding one file, and the next pass would read the rest as deleted.
+  function loseFolder(why) {
+    if (folderLost || stopped) return
+    folderLost = {
+      at: Date.now(),
+      message: `Q580: this room's folder ${why} (${ROOT}). Nothing was deleted for anyone: ` +
+        `file sync stopped here, so the room keeps every file. Chat and claims still work. To get the ` +
+        `room's files back, call hive_join again with the same link: an empty folder is filled from ` +
+        `the room. If the folder was moved on purpose, join from its new place.`,
+    }
+    try { watcher && watcher.close() } catch { }
+    watcher = null
+    if (scanTimer) { clearTimeout(scanTimer); scanTimer = null }
+    if (debounce) { clearTimeout(debounce); debounce = null }
+    if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null }
+    pendingFsEvents.clear()
+    pendingLocalDeletes.clear()
+    log(`[${name}] ${folderLost.message}`)
   }
 
   provider.on('sync', (s) => {
@@ -3731,6 +3870,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         transport: fileTransport.mode,
         evicted,
         scanInterval,
+        ...(folderLost ? { folderLost: folderLost.message } : {}),
       }
     },
     _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
@@ -3742,11 +3882,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // Just the two booleans hive_say, hive_check/hive_wait and hive_delivered need on every call.
     // status() also counts filesHeld, one existsSync per file in the room -- 1,000 on a 1,000-file
     // room, every call; in one profile 0.8 s of a 12 s publish went to polling status() alone.
-    connection: () => ({ connected: !!provider.wsconnected, connecting: !!provider.wsconnecting }),
+    // ...plus folderLost, because the agent learns its folder is gone only where it is looking.
+    connection: () => ({ connected: !!provider.wsconnected, connecting: !!provider.wsconnecting, ...(folderLost ? { folderLost: folderLost.message } : {}) }),
     _openTurns: () => openTurns,
     _scanCount: () => scanCount,
     stop: () => {
       try { flushFirstContact() } catch { } // before `stopped`: a join cut short still says what it kept
+      try { settleLocalDeletes() } catch { } // a delete made just before leaving still leaves, judged like any other
       stopped = true
       try { flushRoomDoc() } catch { }
       if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
