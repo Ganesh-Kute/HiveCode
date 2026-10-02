@@ -1269,18 +1269,20 @@ async function dispatch(req) {
         const who = Object.entries(r.peers).map(([n, v]) => {
           if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
           if (v.absent) return `${n}: absent (not in folder)`
-          return `${n}: ${v.bytes} bytes / ${v.lines} lines`
+          const extra = v.note || ''
+          return `${n}: ${v.bytes} bytes / ${v.lines} lines${extra}`
         }).join('\n  ')
         const mismatchNote = r.mismatch ? `\n(note: you stated ${r.mismatch.stated}, your folder holds ${r.mismatch.measured})` : ''
+        const lagNotice = (r.lagging && r.lagNotice) ? `\n(note: ${r.lagNotice}, re-attest once disk syncs)` : ''
         if (r.diverged) {
-          return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.${mismatchNote}`)
+          return text(`[!] DIVERGENCE on ${f} — peers do NOT agree:\n  ${who}\n\nThe room has no single truth for this path. Nobody should write it. If it cannot be reconciled, have the owner set path:${f}=POISONED and publish the correct content to a NEW path.${mismatchNote}${lagNotice}`)
         }
         const quorumStatus = r.quorumOnOlder
           ? 'QUORUM on an OLDER version: the room\'s copy changed since, re-attest.'
           : r.quorum
             ? 'QUORUM: 2+ peers agree — this publish is confirmed.'
             : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'
-        return text(`attested ${f} at ${args.bytes} bytes.\n  ${who}${mismatchNote}\n${quorumStatus}`)
+        return text(`attested ${f} at ${r.measuredBytes ?? args.bytes} bytes.\n  ${who}${mismatchNote}${lagNotice}\n${quorumStatus}`)
       }
       case 'hive_verified': {
         const f = String(args.file || ''); if (!f) return err('need a file path')
@@ -1298,7 +1300,8 @@ async function dispatch(req) {
         const who = Object.entries(r.peers).map(([n, v]) => {
           if (v.stale) return `${n}: ${v.bytes} bytes / ${v.lines} lines (${v.staleReason || 'stale'})`
           if (v.absent) return `${n}: absent (not in folder)`
-          return `${n}: ${v.bytes} bytes / ${v.lines} lines at ${v.at}`
+          const extra = v.note || ''
+          return `${n}: ${v.bytes} bytes / ${v.lines} lines${extra} at ${v.at}`
         }).join('\n  ')
         // Same bytes in two folders says the file PROPAGATED. It says nothing about whether it
         // WORKS, which is the actual question an agent is asking here — so the gate verdicts

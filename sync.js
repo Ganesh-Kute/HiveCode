@@ -1759,6 +1759,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     } catch { /* the log still carries it */ }
   }
   function reconcile(relPath, origin = 'local') {
+    if (process.env.HIVE_TEST_STUCK_SYNC && relPath === process.env.HIVE_TEST_STUCK_SYNC) return
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
     if (!canOpen(relPath)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
     const full = path.join(ROOT, relPath)
@@ -3215,7 +3216,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const isCurrent = (v.version || 1) === (curVer.n || 1)
       if (isCurrent) {
         currentPeers.push({ peer: peerName, ...v })
-        formattedPeers[peerName] = { ...v, stale: false }
+        let note = ''
+        if (v.stuckLagging) {
+          note = ` (${v.stuckReason || 'stuck lagging'})`
+        } else if (v.lagging) {
+          note = ` (${v.lagNotice || 'your folder has not caught up yet'})`
+        }
+        formattedPeers[peerName] = { ...v, stale: false, note }
       } else {
         formattedPeers[peerName] = {
           ...v,
@@ -3225,16 +3232,29 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
     }
 
-    const presentCurrent = currentPeers.filter((v) => !v.absent && v.hash)
-    const currentHashes = [...new Set(presentCurrent.map((v) => v.hash))]
-    const currentSizes = [...new Set(presentCurrent.map((v) => v.bytes))]
-    const anyAbsent = currentPeers.some((v) => v.absent)
+    // Peers that are present, have a hash, and are NOT lagging (stuck peers are kept out of quorum too)
+    const presentValid = currentPeers.filter((v) => !v.absent && v.hash && !v.lagging && !v.stuckLagging)
+    const validHashes = [...new Set(presentValid.map((v) => v.hash))]
+    const validSizes = [...new Set(presentValid.map((v) => v.bytes))]
 
-    let quorum = presentCurrent.length >= 2 && currentHashes.length === 1 && !anyAbsent
-    const split = currentHashes.length > 1 || (anyAbsent && presentCurrent.length > 0)
+    // All present peers (including lagging and stuck)
+    const allPresent = currentPeers.filter((v) => !v.absent && v.hash)
+    const allHashes = [...new Set(allPresent.map((v) => v.hash))]
+    const allSizes = [...new Set(allPresent.map((v) => v.bytes))]
+    const anyAbsent = currentPeers.some((v) => v.absent)
+    const anyStuck = currentPeers.some((v) => v.stuckLagging)
+
+    // Quorum: requires at least 2 non-lagging peers of current version with identical hash, no absent, no stuck
+    let quorum = presentValid.length >= 2 && validHashes.length === 1 && !anyAbsent && !anyStuck
+
+    // Divergence:
+    // 1. Two present peers disagree on disk hash (allHashes.length > 1)
+    // 2. OR one peer is absent while another is present
+    // 3. OR any peer is stuck lagging (>10s grace period passed without catching up)
+    const split = allHashes.length > 1 || (anyAbsent && allPresent.length > 0) || anyStuck
 
     let quorumOnOlder = false
-    if (quorum && roomDocHash && currentHashes[0] && roomDocHash !== currentHashes[0]) {
+    if (quorum && roomDocHash && validHashes[0] && roomDocHash !== validHashes[0]) {
       quorum = false
       quorumOnOlder = true
     }
@@ -3244,7 +3264,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       currentPeers,
       count: currentPeers.length,
       totalCount: Object.keys(rec || {}).length,
-      sizes: currentSizes,
+      sizes: allSizes,
       diverged: split,
       quorum,
       quorumOnOlder,
@@ -3327,10 +3347,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       let measuredLines = null
       let absent = false
       let mismatch = null
+      let diskContent = null
 
       if (fs.existsSync(full)) {
         try {
-          const diskContent = fs.readFileSync(full, 'utf8')
+          diskContent = fs.readFileSync(full, 'utf8')
           measuredHash = contentHash(diskContent)
           measuredBytes = Buffer.byteLength(diskContent, 'utf8')
           const normalized = diskContent.endsWith('\n') ? diskContent.slice(0, -1) : diskContent
@@ -3346,16 +3367,36 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         absent = true
       }
 
-      // Check if room doc changed since or if local folder has not caught up with remote doc
+      // Check if room doc exists and whether disk differs from room doc
       const fe = fileDocs.get(p)
       let roomDocHash = null
-      if (fe && fe.text && fe.text.length > 0) {
+      let roomDocBytes = null
+      let lagging = false
+      let lagDirection = null
+      let lagNotice = null
+
+      if (fe && fe.text && fe.text.length > 0 && measuredHash) {
         const docText = fe.text.toString()
         roomDocHash = contentHash(docText)
-        if (measuredHash && roomDocHash && measuredHash !== roomDocHash) {
-          return {
-            error: 'your folder has not caught up yet, re-attest in a moment',
-            path: p
+        roomDocBytes = Buffer.byteLength(docText, 'utf8')
+        if (measuredHash !== roomDocHash) {
+          lagging = true
+          const base = bases.get(p)
+          if (base !== undefined && base === docText) {
+            lagDirection = 'ahead'
+            lagNotice = 'disk ahead of room doc: local edit not published to room yet (your folder has not caught up yet)'
+          } else if (base !== undefined && base === diskContent) {
+            lagDirection = 'behind'
+            lagNotice = 'disk behind room doc: your folder has not caught up yet'
+          } else {
+            const lastReceipt = fe.ledger && fe.ledger.length > 0 ? fe.ledger.get(fe.ledger.length - 1) : null
+            if (lastReceipt && lastReceipt.name && lastReceipt.name !== name) {
+              lagDirection = 'behind'
+              lagNotice = 'disk behind room doc: your folder has not caught up yet'
+            } else {
+              lagDirection = 'ahead'
+              lagNotice = 'disk ahead of room doc: local edit not published to room yet (your folder has not caught up yet)'
+            }
           }
         }
       }
@@ -3366,7 +3407,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         swarmVersions.set(p, curVer)
       }
 
+      const GRACE_MS = Number(process.env.HIVE_ATTEST_GRACE_MS) || 10000
       const prev = swarmAttest.get(p) || {}
+      const prevAttest = prev[name]
+
+      let stuckLagging = false
+      let stuckReason = null
+      if (lagging && prevAttest && (prevAttest.lagging || prevAttest.stuckLagging) && prevAttest.laggingDocHash === roomDocHash) {
+        const prevAt = prevAttest.at ? new Date(prevAttest.at).getTime() : 0
+        const elapsedMs = Date.now() - prevAt
+        if (elapsedMs >= GRACE_MS) {
+          stuckLagging = true
+          stuckReason = `not catching up to room doc after ${Math.round(elapsedMs / 1000)}s: disk ${measuredBytes}b vs doc ${roomDocBytes}b (${lagDirection || 'lagging'})`
+        }
+      }
+
       const next = {
         ...prev,
         [name]: {
@@ -3375,21 +3430,40 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           hash: measuredHash,
           absent,
           mismatch,
+          lagging: lagging && !stuckLagging,
+          lagDirection: lagDirection || undefined,
+          lagNotice: lagNotice || undefined,
+          laggingDocHash: lagging ? roomDocHash : undefined,
+          stuckLagging,
+          stuckReason: stuckReason || undefined,
           version: curVer.n,
-          at: new Date().toISOString()
+          at: (lagging && prevAttest && (prevAttest.lagging || prevAttest.stuckLagging) && prevAttest.laggingDocHash === roomDocHash)
+            ? prevAttest.at
+            : new Date().toISOString()
         }
       }
       swarmAttest.set(p, next)
 
       const evaluated = evaluateAttestations(next, curVer, roomDocHash)
       if (evaluated.diverged) {
-        const detail = evaluated.currentPeers.map((v) => v.absent ? `${v.peer}:ABSENT` : `${v.peer}:${v.bytes}b/${v.lines}L`).join('  ')
+        const detail = evaluated.currentPeers.map((v) => {
+          if (v.absent) return `${v.peer}:ABSENT`
+          if (v.stuckLagging) return `${v.peer}:${v.bytes}b/${v.lines}L[STUCK:${v.stuckReason || 'not catching up'}]`
+          return `${v.peer}:${v.bytes}b/${v.lines}L`
+        }).join('  ')
         say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
       }
 
       return {
         path: p,
         mismatch,
+        measuredBytes,
+        measuredLines,
+        measuredHash,
+        lagging: lagging && !stuckLagging,
+        lagNotice,
+        stuckLagging,
+        stuckReason,
         ...evaluated
       }
     },

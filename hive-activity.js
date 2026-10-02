@@ -250,7 +250,8 @@ export function describe(rec, opts = {}) {
   const state = stateOf(rec, { ...opts, listener: isListener, now })
   const last = rec && Number(rec.lastAction)
   const ageMs = Number.isFinite(last) ? Math.max(0, now - last) : null
-  const app = opts.app || (Array.isArray(opts.connections) && opts.connections.find((c) => c && (c.app || (c.user && c.user.app)))?.app) || ''
+  const conn = Array.isArray(opts.connections) ? opts.connections.find((c) => c && (c.app || (c.user && c.user.app))) : null
+  const app = opts.app || (conn && (conn.app || (conn.user && conn.user.app))) || ''
   const canResume = opts.resumesOnExit !== undefined ? opts.resumesOnExit : resumesOnExit(app)
   const isWaitingOnWait = !!(rec && rec.waitingSince)
   const reachable = state === WORKING || (state === WAITING && (isWaitingOnWait || canResume))

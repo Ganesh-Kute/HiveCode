@@ -10,12 +10,13 @@
 import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import { startSync, parseLink } from '../sync.js'
 import { contentHash } from '../substrate.js'
 
 const PORT = 1248
 const RELAY = `ws://localhost:${PORT}`
-const ROOT = path.resolve('.attest-test')
+const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-attest-test-'))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let failed = 0
 const assert = (n, c, extra = '') => {
@@ -23,15 +24,14 @@ const assert = (n, c, extra = '') => {
   if (!c) failed++
 }
 
-fs.rmSync(ROOT, { recursive: true, force: true })
 const dirA = path.join(ROOT, 'a'), dirB = path.join(ROOT, 'b')
 fs.mkdirSync(dirA, { recursive: true }); fs.mkdirSync(dirB, { recursive: true })
 
 const relay = spawn(process.execPath, ['server.js'], { env: { ...process.env, PORT: String(PORT) } })
 await new Promise((res) => relay.stdout.on('data', (d) => /listening on/.test(d) && res()))
 
-function agent(label) {
-  const p = spawn(process.execPath, ['hive-mcp.js'], { env: { ...process.env, HIVE_RELAY: RELAY } })
+function agent(label, extraEnv = {}) {
+  const p = spawn(process.execPath, ['hive-mcp.js'], { env: { ...process.env, HIVE_RELAY: RELAY, HIVE_ATTEST_GRACE_MS: '400', ...extraEnv } })
   p.stderr.on('data', (d) => process.stdout.write(`   [${label}-stderr] ${d}`))
   let buf = ''
   const pending = new Map()
@@ -175,7 +175,35 @@ fs.writeFileSync(path.join(dirA, 'lines.js'), '1\n2\n3\n4\n5\n', 'utf8')
 const aLines = await A.call('hive_attest', { file: 'lines.js', bytes: 10, lines: 5 })
 assert('file with trailing newline reports 5 lines, not 6', /5 lines/.test(aLines) && !/6 lines/.test(aLines), aLines)
 
+console.log('\n# 8. Stuck lagging folder ends in DIVERGENCE after grace period')
+const S = agent('Stuck', { HIVE_TEST_STUCK_SYNC: 'stuck.js' })
+await S.rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } })
+S.notify('notifications/initialized')
+const dirS = path.join(ROOT, 's')
+fs.mkdirSync(dirS, { recursive: true })
+await S.call('hive_join', { dir: dirS, name: 'Stuck', link })
+await sleep(1000)
+
+// A edits stuck.js in room doc
+await A.call('hive_edit', { file: 'stuck.js', content: 'room content updated\n', intent: 'test' })
+await sleep(1000)
+
+// Write different content to S's disk (because HIVE_TEST_STUCK_SYNC is set, S's sync never reconciles it)
+fs.writeFileSync(path.join(dirS, 'stuck.js'), 'stuck local content\n', 'utf8')
+const sFirst = await S.call('hive_attest', { file: 'stuck.js', bytes: 20, lines: 1 })
+assert('first attest reports not caught up yet', /your folder has not caught up yet/i.test(sFirst), sFirst)
+
+// Wait for grace period (> 400ms)
+await sleep(600)
+const sStuck = await S.call('hive_attest', { file: 'stuck.js', bytes: 20, lines: 1 })
+assert('re-attesting stuck lagging folder after grace period raises DIVERGENCE', /DIVERGENCE/.test(sStuck), sStuck)
+assert('divergence reports not catching up', /not catching up|stuck lagging/i.test(sStuck), sStuck)
+const vStuck = await A.call('hive_verified', { file: 'stuck.js' })
+assert('verified reports DIVERGED for stuck folder', /\[!\] DIVERGED/.test(vStuck), vStuck)
+try { S.proc.kill('SIGKILL') } catch { }
+
 relay.kill('SIGKILL')
 A.proc.kill('SIGKILL')
 B.proc.kill('SIGKILL')
+try { fs.rmSync(ROOT, { recursive: true, force: true }) } catch { }
 process.exit(failed ? 1 : 0)
