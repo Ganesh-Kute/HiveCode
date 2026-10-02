@@ -373,6 +373,23 @@ export const FEATURES = [
     breaks: 'Run in a folder that is not its own repository, the command finds the enclosing one -- a home directory under git, on the development machine -- and publishes its committed files to a room.',
     proves: [{ suite: 'tests/branch-test.mjs', assertion: 'a folder inside a home-directory repo is refused' }],
   },
+  {
+    id: 'claude-code-listen-line',
+    name: 'A Claude Code agent is told, once, how to stay reachable after its turn ends',
+    criticality: 'hot', tier: 1,
+    breaks: 'The agent ends its turn and goes deaf: everyone who addresses it waits on a reply that never comes, and nothing tells them it stopped (the 4-agent KCDE run\'s first complaint).',
+    proves: [
+      { suite: 'tests/mcp-wait-test.mjs', assertion: 'Claude Code\'s first empty wait orders it to start the listener in the background' },
+      { suite: 'tests/mcp-wait-test.mjs', assertion: 'Antigravity, which a background task cannot wake, is not told to start one' },
+    ],
+  },
+  {
+    id: 'orphan-listener-leaves',
+    name: 'A listener whose agent app has closed leaves the room',
+    criticality: 'hot', tier: 1,
+    breaks: 'The app closes, its background listener lives on, and the room keeps showing the agent as listening and reachable while nobody can wake it.',
+    proves: [{ suite: 'tests/hive-await-test.mjs', assertion: 'when its parent dies, the listener exits within 10 s' }],
+  },
 ]
 
 /** Group by criticality for reporting; order is the order in CRITICALITY. */

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // hive-await — block until someone speaks to you, then exit. The CLI's `hive_wait`.
 //
-//   npx -p hivecode-mcp hivecode-await "<relay|room>" <YourName> [idleMinutes]
+//   npx -y -p hivecode-mcp@latest hivecode-await "<relay|room>" <YourName> [idleMinutes]
 //
 // Run it in the BACKGROUND and let its exit wake you. Exits 0 in both cases; read `reason` on stdout:
 //   {"reason":"mention","messages":[...]}   someone said @YourName or @all -> read, reply, run it again
@@ -37,7 +37,7 @@ import { startSync, parseLink } from './sync.js'
 
 const [, , LINK = '', NAME = '', IDLE_MIN = '10'] = process.argv
 if (!LINK || !NAME) {
-  console.error('usage: npx -p hivecode-mcp hivecode-await "<relay|room>" <YourName> [idleMinutes]')
+  console.error('usage: npx -y -p hivecode-mcp@latest hivecode-await "<relay|room>" <YourName> [idleMinutes]')
   process.exit(2)
 }
 const { relay, room } = parseLink(LINK)
@@ -70,6 +70,23 @@ function finish(reason, payload) {
 // So the cursor is written to disk and advanced on every exit. `lastMine` is still used, as a
 // FLOOR: anything I have already replied to is handled by definition, even if a stale cursor
 // says otherwise. Whichever is further along wins.
+// AN ORPHAN MUST NOT KEEP SAYING "LISTENING" (2 Oct 2026). When the app that started this listener
+// closes, the listener can outlive it: on macOS and Linux it is reparented, and on any OS a detached
+// start escapes the parent's job. It then keeps its agent marked LISTENING, reachable, in every
+// teammate's hive_members, and wakes nobody when they call. So it watches the process that started
+// it and leaves the room once that process is gone. HIVE_AWAIT_KEEP_ALIVE=1 opts out, for a listener
+// that is detached on purpose. (tests/hive-await-test.mjs, "an orphaned listener")
+const PARENT = process.ppid
+const parentGone = () => {
+  if (process.ppid !== PARENT) return true // reparented: the parent exited
+  try { process.kill(PARENT, 0); return false } catch (e) { return e.code !== 'EPERM' }
+}
+if (process.env.HIVE_AWAIT_KEEP_ALIVE !== '1' && PARENT > 1 && !parentGone()) {
+  setInterval(() => {
+    if (parentGone()) finish('parent-gone', { note: `the process that started this listener exited, so ${NAME} left the room` })
+  }, Number(process.env.HIVE_AWAIT_PARENT_CHECK_MS) || 15000).unref()
+}
+
 const cursorFile = path.join(dir, `.await-cursor-${room}.json`)
 const readCursor = () => { try { return Number(JSON.parse(fs.readFileSync(cursorFile, 'utf8')).at) || 0 } catch { return 0 } }
 const writeCursor = (n) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ at: n }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
@@ -103,6 +120,6 @@ hive.provider.on('sync', (s) => {
 // would re-deliver everything that arrived during the quiet window too.
 setTimeout(() => {
   try { writeCursor(chat.length) } catch {}
-  finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min` })
+  finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again to keep listening.` })
 }, Number(IDLE_MIN) * 60 * 1000)
 process.on('SIGINT', () => { try { hive.stop() } catch {}; process.exit(0) })

@@ -242,7 +242,7 @@ was not written. Fix the relay and call hive_join again.`
     }
     throw e
   }
-  session = { hive, room, relay, dir, name, owner, kind: kind || 'ai', passive: !!passive, mailbox: null }
+  session = { hive, room, relay, dir, name, owner, kind: kind || 'ai', passive: !!passive, authed: !!useToken, mailbox: null }
   persistSession({ dir, name, owner }) // survive MCP host restarts (see tryResumeSession)
   // Wait for the first sync so members/board/rules are ready.
   //
@@ -1149,7 +1149,11 @@ async function dispatch(req) {
           }
           return text(`⏸ You are PAUSED by mission control. Stop new work and wait. You will be woken if someone @mentions you or assigns you a task; otherwise just call hive_wait again.${stateStr}`)
         }
-        if (!r) return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${stateStr}${rulesStr}`)
+        if (!r) {
+          const ll = listenLine(requireSession())
+          const listenStr = ll && firstTime('listen') ? ll : ''
+          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${stateStr}${rulesStr}${listenStr}`)
+        }
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
@@ -1669,6 +1673,27 @@ function waitPolicy() {
   return { def: 60, max: 300 }
 }
 function waitDefaultSeconds() { return waitPolicy().def }
+
+// THE LINE THAT KEEPS A CLAUDE CODE AGENT REACHABLE AFTER ITS TURN (2 Oct 2026). The rules say
+// hive_wait is the idle state, but agents end their turns anyway, and from then on they are deaf:
+// the Lead's #1 complaint in the 4-agent KCDE run, and Antigravity1 sat PARKED with a review unread
+// the same night. Claude Code, unlike the other apps, wakes an agent when one of its background
+// tasks ends, so hive-await running in the background turns "ended its turn" into "asleep until
+// called". Nothing told a stranger's agent that. It is said once, on the first empty wait, and as
+// an order: an agent told to "consider" a command tends to describe it instead of running it. The
+// idle limit is 25 minutes because Claude Code stops a background task after about 30 (measured
+// 2 Oct: started 03:46, killed 04:16) and then tells the agent not to restart it; a listener that
+// ends itself on idle can be restarted. Both paths are this server's own, so the listener is the
+// same build, and both use forward slashes, which bash and PowerShell each accept. A token-gated
+// room gets no line: the agent's shell does not hold this server's token, and a listener that
+// cannot join is a false "listening". (tests/mcp-wait-test.mjs)
+const LISTEN_IDLE_MIN = 25
+const AWAIT_JS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hive-await.js').replace(/\\/g, '/')
+function listenLine(s) {
+  if (!s || s.authed || !/claude-code/i.test(clientName())) return ''
+  const node = process.execPath.replace(/\\/g, '/')
+  return `\n[BEFORE YOU END THIS TURN] Ending it stops you hearing this room. Call your Bash tool now, with run_in_background: true, on this command. It ends, and that wakes you, when someone addresses you or after ${LISTEN_IDLE_MIN} quiet minutes; when it ends, run it again:\n"${node}" "${AWAIT_JS}" "${s.relay}|${s.room}" "${s.name}" ${LISTEN_IDLE_MIN}\n`
+}
 
 export const _test = {
   waitDefaultSeconds,

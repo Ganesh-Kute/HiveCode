@@ -104,6 +104,69 @@ try {
     const r = await L.result()
     T('nothing addressed to it: exits with reason "idle"', !r.running && r.parsed && r.parsed.reason === 'idle', JSON.stringify(r.parsed || {}))
   }
+
+  console.log('# idle says what to do next')
+  {
+    const L = listen('Vega', 0.05, 12000)
+    const r = await L.result()
+    T('the idle exit tells the agent to run the same command again', !!r.parsed && /again/i.test(String(r.parsed.note || '')), JSON.stringify(r.parsed || {}))
+  }
+
+  console.log('# an orphaned listener stops claiming to listen')
+  // 2 Oct 2026: a listener outlives the agent that started it when the agent's app is closed. It
+  // then keeps that agent marked as LISTENING, reachable, in every teammate's hive_members: the most
+  // reassuring false state there is. It must notice its parent is gone and leave the room.
+  // A room of its own: an earlier section left "@all standup" in the first room's history, and a
+  // listener with no history of its own wakes on it at once (measured, the first time this ran).
+  const room2 = 'aw-' + crypto.randomBytes(5).toString('hex')
+  const link2 = `ws://localhost:${PORT}|${room2}`
+  const P2 = startSync({ relay: `ws://localhost:${PORT}`, room: room2, dir: path.join(tmp, 'poster2'), name: 'Ganesh', kind: 'human', syncFiles: false, log: () => {} })
+  await sleep(1500)
+  const orphan = async (who, extraEnv, waitMs) => {
+    const logPath = path.join(tmp, who + '.log')
+    const script = `const { spawn } = require('child_process')
+const logFd = require('fs').openSync(${JSON.stringify(logPath)}, 'a')
+const c = spawn(process.execPath, ['hive-await.js', ${JSON.stringify(link2)}, ${JSON.stringify(who)}, '5'], { cwd: ${JSON.stringify(ROOT)},
+  env: { ...process.env, TEMP: ${JSON.stringify(tmp)}, TMPDIR: ${JSON.stringify(tmp)}, HIVE_AWAIT_PARENT_CHECK_MS: '500', ...${JSON.stringify(extraEnv)} },
+  stdio: ['ignore', logFd, logFd], detached: true, windowsHide: true })
+console.log('PID ' + c.pid)
+setInterval(() => {}, 1000)`
+    // DETACHED, because that is what an orphan is. On Windows a non-detached child sits in its
+    // parent's job object and dies with it (so a Claude Code background task cannot leave one
+    // behind there); on macOS and Linux it is reparented and lives on. Detached reproduces the
+    // second case on every OS. The child's stdio is NOT piped to the parent either. A pipe would break when the parent dies, and a
+    // listener killed by that broken pipe would pass this test for the wrong reason (measured: it
+    // did, on the old code). Readiness is read from the room instead, which is what is asserted.
+    const parent = spawn(process.execPath, ['-e', script], { cwd: ROOT })
+    const pid = await new Promise((res) => {
+      let o = ''
+      parent.stdout.on('data', (d) => { o += d; const m = /PID (\d+)/.exec(o); if (m) res(Number(m[1])) })
+      setTimeout(() => res(0), 20000)
+    })
+    const alive = (p) => { try { process.kill(p, 0); return true } catch (e) { return e.code === 'EPERM' } }
+    const listed = () => [...P2.provider.awareness.getStates().values()].some((s) => s && s.user && s.user.name === who && s.user.listener)
+    for (let t = 0; t < 15000 && !listed(); t += 250) await sleep(250)
+    const listedBefore = listed()
+    parent.kill()
+    let gone = false
+    for (let t = 0; t < waitMs && !gone; t += 250) { await sleep(250); gone = !alive(pid) }
+    await sleep(1500)
+    const listedAfter = listed()
+    if (pid && !gone) { try { process.kill(pid) } catch { } }
+    let log = ''; try { log = fs.readFileSync(logPath, 'utf8').trim().slice(-300) } catch { }
+    return { pid, listedBefore, gone, listedAfter, log }
+  }
+  {
+    const o = await orphan('Orpha', {}, 10000)
+    T('the room saw the listener while its parent lived', o.pid > 0 && o.listedBefore, JSON.stringify(o))
+    T('when its parent dies, the listener exits within 10 s', o.gone, JSON.stringify(o))
+    T('...and the room stops listing it as a listener', o.pid > 0 && !o.listedAfter, JSON.stringify(o))
+  }
+  {
+    const o = await orphan('Orphb', { HIVE_AWAIT_KEEP_ALIVE: '1' }, 4000)
+    T('HIVE_AWAIT_KEEP_ALIVE=1 keeps a deliberately detached listener running', o.pid > 0 && !o.gone, JSON.stringify(o))
+  }
+  try { P2.stop() } catch { }
 } catch (e) {
   T('the suite ran', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {

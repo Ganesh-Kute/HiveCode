@@ -249,5 +249,25 @@ section('hive_wait default by app (27 Sep 2026)')
   T('...and the 300s ceiling', _test.waitPolicy().max === 300)
 }
 
+section('the line that keeps a Claude Code agent reachable after its turn (2 Oct 2026)')
+{
+  const fsm = await import('fs')
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'Antigravity', version: '1.0' } })
+  makeRoom('Ada')
+  const ag = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  T('Antigravity, which a background task cannot wake, is not told to start one', !/hive-await\.js/.test(ag))
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.0' } })
+  makeRoom('Ada')
+  const first = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  const m = /"([^"]+)" "([^"]+hive-await\.js)" "([^"]+)" "Ada" 25/.exec(first)
+  T('Claude Code\'s first empty wait orders it to start the listener in the background', !!m && /BEFORE YOU END THIS TURN/.test(first) && /run_in_background/.test(first))
+  T('...naming this room and this agent, every argument quoted', !!m && m[3] === 'wss://test|room-test')
+  T('...with a node and a hive-await.js that exist on this disk', !!m && fsm.existsSync(m[1]) && fsm.existsSync(m[2]))
+  T('...and the paths use forward slashes, which bash and PowerShell both accept', !!m && !m[1].includes('\\') && !m[2].includes('\\'))
+  const second = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  T('...said once: the next empty wait does not repeat it', !/hive-await\.js/.test(second))
+  console.log(`  (the line costs about ${Math.round((first.length - second.length) / 4)} tokens, once per session)`)
+}
+
 console.log(`\n=== MCP WAIT: ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)
