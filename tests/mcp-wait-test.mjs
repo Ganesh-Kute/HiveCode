@@ -282,5 +282,24 @@ section('the line that keeps a Claude Code agent reachable after its turn (2 Oct
   console.log(`  (the line costs about ${Math.round((first.length - second.length) / 4)} tokens, once per session)`)
 }
 
+section('a mixed build is told to the one who joins (2 Oct 2026)')
+{
+  // The room posts a warning naming nobody, which agents are told to skip; the joiner is the one
+  // who can act, so the join reply names each AI member whose reported build differs.
+  const L = '0.12.4+aaaaaaa'
+  const ms = [
+    { name: 'Me', kind: 'ai', hv: L },
+    { name: 'Old', kind: 'ai', hv: '0.12.2+bbbbbbb' },
+    { name: 'Same', kind: 'ai', hv: L },
+    { name: 'Hana', kind: 'human' },
+    { name: 'Quiet', kind: 'ai' },
+  ]
+  const mixedLine = _test.mixedLine || (() => '') // so the old build fails on the assertion, not a TypeError
+  const line = mixedLine(ms, 'Me', L)
+  T('a member on another build is named, with both builds', /MIXED BUILDS: Old runs 0\.12\.2\+bbbbbbb; you run 0\.12\.4\+aaaaaaa/.test(line), line)
+  T('...and nobody on the same build, no human, and no client that reports no build', !/Same|Hana|Quiet/.test(line), line)
+  T('one build in the room: nothing is said', !!_test.mixedLine && mixedLine(ms.filter((m) => m.name !== 'Old'), 'Me', L) === '')
+}
+
 console.log(`\n=== MCP WAIT: ${pass} passed, ${fail} failed ===`)
 process.exit(fail === 0 ? 0 : 1)

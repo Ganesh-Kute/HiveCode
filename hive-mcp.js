@@ -322,6 +322,7 @@ was not written. Fix the relay and call hive_join again.`
   persistCursor()
 
   const others = hive.members().filter((m) => m.name !== name).map((m) => `${m.name}(${m.kind})`)
+  const mixedNote = mixedLine(hive.members(), name, VERSION_LABEL)
 
   // Event-Driven Wakeups: notify the MCP client the millisecond the DCO state changes
   hive.doc.getMap('swarm_state').observe(() => {
@@ -430,7 +431,27 @@ was not written. Fix the relay and call hive_join again.`
       (filled ? `\nFilled from git: ${filled} file(s) the room does not carry (binary, over 1 MB, or never synced).` : '') +
       (fillErr ? `\nCould not fill non-text files from git (${fillErr}); binary files may be missing here.` : '') + '\n\n'
   }
-  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}\ninvite link: ${inviteLink}${browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : ''}${movedNote}${privNote}\n\nANNOUNCE YOUR VERSION: say "joined on hivecode ${VERSION_LABEL}" in chat. Mixed builds in one room cause data loss, and this is the only way anyone finds out.${updateNotice() ? '\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  // THE INVITE, READY TO FORWARD (onboarding audit, 2 Oct 2026). The host used to assemble it by
+  // hand: the install, the reload step, the sentence, the link. setup given a link prints that
+  // person's reload steps and their exact sentence, so one message covers all of it. Host only:
+  // this reply stays in the transcript, and a joiner already has the link it came in by.
+  const people = browserUrl ? ` No AI agent? Open ${browserUrl}` : ''
+  const invite = /^HOSTED/.test(mode)
+    ? `\nto invite someone, forward this as is: Join my Hivecode room. In a terminal, run once (needs Node.js 18+): npx -y hivecode-mcp@latest setup "${inviteLink}" and do what it prints.${people}`
+    : (browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : '')
+  // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
+  // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.
+  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\ninvite link: ${inviteLink}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+}
+
+// A MIXED BUILD, TOLD TO THE ONE WHO CAN ACT ON IT (2 Oct 2026). The room's own warning names
+// nobody, and agents are told to skip messages that name nobody; the joiner can act, so the join
+// reply names every AI member whose reported build differs. Humans carry no engine build, and a
+// client that reports none is the room's warning to give (checkBuilds speaks for old engines).
+function mixedLine(members, me, label) {
+  const diff = (members || []).filter((m) => m && m.name && m.name !== me && String(m.kind || '').toLowerCase() !== 'human' && m.hv && m.hv !== label)
+  if (!diff.length) return ''
+  return `\n⚠ MIXED BUILDS: ${diff.map((m) => `${m.name} runs ${m.hv}`).join(', ')}; you run ${label}. Two builds in one room can lose file content: tell your person, so everyone runs the same build.`
 }
 
 // Connected-or-not without status()'s file counts, which stat every file in the room. Falls back
@@ -743,9 +764,10 @@ function enforceDcoLock(opts = {}) {
 // matters most here: an 0.10.0 client in a room with an 0.11.1 one is invisible in the audit
 // log while its roommate is named, so the room's own membership record disagrees with itself.
 // Also carries the ICR fix that stopped a whole-file rewrite duplicating every declaration.
-// VERSION is load-bearing, not cosmetic: the join message (see buildJoinReply) instructs every
-// arriving agent to announce it in chat, because a MIXED BUILD in one room causes data loss and
-// this is the only way anyone finds out. Hardcoding it meant that the moment package.json was
+// VERSION is load-bearing, not cosmetic: every client reports it in presence (hv), and the room
+// flags a MIXED BUILD from it (sync.js checkBuilds; the join reply names one to the joiner), because
+// two builds in one room can lose file content. Until 2 Oct the join message also told every agent
+// to announce it in chat. Hardcoding it meant that the moment package.json was
 // bumped the two disagreed silently -- so the one mechanism for detecting a mixed build was
 // itself reporting the wrong build. Read the truth instead; package.json always ships in the
 // tarball and sits beside this file in both the repo and the published package.
@@ -1787,6 +1809,7 @@ export const _test = {
   // One process serves one app, so "said once" is per process; a test that plays two apps in one
   // process forgets between them.
   forget: (key) => explained.delete(key),
+  mixedLine,
   callTool: (name, args = {}) =>
     server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, {}),
 }

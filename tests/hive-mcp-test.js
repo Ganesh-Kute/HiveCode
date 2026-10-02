@@ -80,8 +80,19 @@ console.log('\n   hive_read_chat ->\n' + chat.split('\n').map((l) => '      ' + 
 //
 // So what is asserted is that hive_join HANDS OVER that instruction — not that the server
 // announces on the agent's behalf.
-assert('hive_join instructs the agent to announce its engine version',
-  joined.includes('ANNOUNCE YOUR VERSION') && joined.includes('joined on hivecode'))
+//
+// SUPERSEDED 2 Oct 2026. Since 29 Sep every client reports its build in presence and the room
+// flags a mix itself (sync.js checkBuilds, tests/mixed-build-test.mjs), so "this is the only way
+// anyone finds out" stopped being true -- and the first thing a stranger read in their agent's
+// transcript was "data loss". The reply still names the build; nobody is asked to announce it.
+assert('hive_join no longer asks the agent to announce its version, or opens on "data loss"',
+  !joined.includes('ANNOUNCE YOUR VERSION') && !/data loss/i.test(joined))
+assert('...and still names this build', /\nhivecode: \d+\.\d+\.\d+/.test(joined))
+// The onboarding audit: the host put an invite together by hand (install, reload, the sentence,
+// the link). setup with a link prints the reload steps and the exact sentence for that person, so
+// the host's reply carries one message to forward as is.
+assert('a host is handed an invite to forward: setup with the quoted link, and the browser link',
+  joined.includes(`forward this as is`) && joined.includes(`npx -y hivecode-mcp@latest setup "${RELAY}|room-`) && /No AI agent\? Open http:\/\/localhost:\d+\/control#/.test(joined))
 assert('chat shows the said message', chat.includes('taking parser.js'))
 
 // 5. members

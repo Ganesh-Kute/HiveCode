@@ -59,8 +59,8 @@ try { head = execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: ROOT
 if (head) T('BUILD is this checkout\'s HEAD', BUILD === head, `BUILD=${BUILD} git=${head}`)
 T('VERSION is untouched (the update notice compares it with the registry)', !VERSION.includes('+') && VERSION === JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version)
 T('VERSION_LABEL carries the commit when there is one', VERSION_LABEL === (BUILD ? `${VERSION}+${BUILD}` : VERSION), VERSION_LABEL)
-T('the join reply announces the LABEL, not the bare version',
-  /joined on hivecode \$\{VERSION_LABEL\}/.test(fs.readFileSync(path.join(ROOT, 'hive-mcp.js'), 'utf8')))
+T('the join reply names the LABEL, not the bare version',
+  /hivecode: \$\{VERSION_LABEL\}/.test(fs.readFileSync(path.join(ROOT, 'hive-mcp.js'), 'utf8')))
 
 console.log('# the relay says which build it is')
 async function health(env) {
