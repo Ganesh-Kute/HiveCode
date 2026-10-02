@@ -18,6 +18,7 @@
 // Bob never gets the file, and Alice's session reports green with zero warning. This test
 // catches that silent false-green failure.
 
+process.env.HIVE_NO_BINARY_SYNC = '1'
 import { spawn } from 'child_process'
 import fs from 'fs'
 import os from 'os'

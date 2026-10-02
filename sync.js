@@ -18,6 +18,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import crypto from 'crypto'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
@@ -187,6 +188,7 @@ export function deadHeatVerdict(textsByClient, relPath) {
 
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
+const MAX_BINARY_BYTES = Number(process.env.HIVE_MAX_BINARY_BYTES) || (5 * 1024 * 1024)
 const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
 const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents' conversation
 const TASKS_FILE = 'HIVE_TASKS.md' // generated locally from `tasks`; directed work + approvals
@@ -1356,6 +1358,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const fdoc = new Y.Doc()
     const fprovider = fileTransport.provide(fileRoom(room, relPath), fdoc)
     const text = fdoc.getText('content')
+    const bin = fdoc.getMap('bin')
     // `snap` (in the FILE's own doc, so it's scope-protected with the file) holds
     // restore points: id -> { id, file, by, at, ts, content, churn, kind, label }.
     // `undo` is a per-file UndoManager tracking THIS client's local edits, so a
@@ -1383,19 +1386,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // each peer's DISK — never into the shared text — so conflict markers can't fuse.
     const conflict = fdoc.getMap('conflict')
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
-    e = { doc: fdoc, provider: fprovider, text, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
+    e = { doc: fdoc, provider: fprovider, text, bin, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
     fileDocs.set(relPath, e)
     // From the mtime scan() already took, not two more syscalls per open: a 1,000-file join opens
     // 1,000 files, and fileCreationTs() still falls back to a stat for any file this missed.
     if (!createdTimes.has(relPath) && mtimes.has(relPath)) createdTimes.set(relPath, mtimes.get(relPath))
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
+    bin.observe((_ev, txn) => { if (!txn.local) reconcileBinary(relPath, 'remote') }) // remote binary edits
     // A divergent receipt can arrive slightly after (or before) the fused content — so
     // re-run the fork check whenever the provenance ledger changes too, not only on edits.
     ledger.observe((_ev, txn) => { if (!txn.local) detectFork(relPath) })
     // The fork record arrived/changed from a peer: render it locally, or — if it was
     // cleared (resolved elsewhere) — adopt the now-clean shared text to disk.
     conflict.observe((_ev, txn) => { if (txn.local) return; if (e.conflict.has('meta')) renderConflict(relPath); else adoptResolved(relPath) })
-    fprovider.on('sync', (s) => { if (s) { e.synced = true; refusedFiles.delete(relPath); reconcile(relPath, 'remote'); detectFork(relPath) } }) // initial pull settled
+    fprovider.on('sync', (s) => {
+      if (s) {
+        e.synced = true
+        refusedFiles.delete(relPath)
+        if (e.bin.has('data')) {
+          reconcileBinary(relPath, 'remote')
+        } else {
+          reconcile(relPath, 'remote')
+          detectFork(relPath)
+        }
+      }
+    })
     // A refused upgrade lands here. The provider will keep retrying by itself, which is the
     // right behaviour and exactly why nothing surfaces it — so count it and let noteRefusals
     // decide whether this is a blip or a relay that will not take us.
@@ -1638,6 +1653,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let roomAtJoin = null
   let firstScanDone = false
   const shadow = new Map()     // relPath -> exact bytes THIS ENGINE last wrote/captured (source-level edit capture)
+  const shaShadow = new Map()  // relPath -> sha256 hex string of binary bytes written/seen locally (echo suppression)
   // Per-file pre-serialized JSON fragments: relPath -> '"path": "content"'.
   // Assembled into v:1 JSON in saveShadow() without re-stringifying all files, cutting save CPU by ~6.6x.
   const shadowFragments = new Map()
@@ -1712,16 +1728,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       return buf.toString('utf8')
     } catch { return null }
   }
+  function isBinaryFile(full, st) {
+    try {
+      const s = st || fs.statSync(full)
+      if (!s.isFile()) return false
+      if (s.size > MAX_BINARY_BYTES) return false
+      const buf = fs.readFileSync(full)
+      return buf.includes(0)
+    } catch { return false }
+  }
   function checkUnshared(full, st) {
     try {
       const s = st || fs.statSync(full)
       if (!s.isFile()) return null
-      if (s.size > MAX_BYTES) {
+      if (s.size > MAX_BINARY_BYTES) {
         return { reason: 'oversized', size: s.size }
       }
       const buf = fs.readFileSync(full)
       if (buf.includes(0)) {
-        return { reason: 'binary', size: s.size }
+        if (process.env.HIVE_NO_BINARY_SYNC) {
+          return { reason: 'binary', size: s.size }
+        }
+        return null
+      }
+      if (s.size > MAX_BYTES) {
+        return { reason: 'oversized', size: s.size }
       }
       return null
     } catch { return null }
@@ -1866,14 +1897,118 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     try { say(parts.join(' ')) } catch { }
   }
+
+  function reconcileBinary(relPath, origin = 'local') {
+    if (folderLost) return
+    if (SKIP.has(relPath) || isIgnored(relPath) || !canOpen(relPath)) return
+    const full = path.join(ROOT, relPath)
+    const exists = fs.existsSync(full)
+    let fe = fileDocs.get(relPath)
+    if (!fe) {
+      if (!exists) return
+      openFile(relPath)
+      fe = fileDocs.get(relPath)
+      if (!fe) return
+    }
+    if (!fe.synced && origin !== 'local') return
+    touchFile(relPath)
+
+    if (origin === 'local') {
+      if (!exists) return
+      let st
+      try { st = fs.statSync(full) } catch { return }
+      if (!st.isFile()) return
+      if (st.size > MAX_BINARY_BYTES) {
+        noticeUnsharedOne(relPath, { reason: 'oversized', size: st.size })
+        return
+      }
+      let buf
+      try { buf = fs.readFileSync(full) } catch { return }
+      const sha = crypto.createHash('sha256').update(buf).digest('hex')
+      if (shaShadow.get(relPath) === sha) return // echo suppression
+      shaShadow.set(relPath, sha)
+      mtimes.set(relPath, st.mtimeMs)
+
+      fe.doc.transact(() => {
+        fe.bin.set('data', new Uint8Array(buf))
+        fe.bin.set('sha', sha)
+        fe.bin.set('size', buf.length)
+        fe.bin.set('by', name)
+        fe.bin.set('at', Date.now())
+        if (fe.text.length > 0) fe.text.delete(0, fe.text.length)
+      })
+      if (!inManifest(relPath)) manifest.set(relPath, 1)
+      known.add(relPath)
+      dischargeUnshared(relPath)
+      return
+    }
+
+    // origin === 'remote'
+    if (!fe.bin.has('data')) return
+    const remoteData = fe.bin.get('data')
+    const remoteSha = fe.bin.get('sha')
+    const remoteBy = fe.bin.get('by')
+    if (!remoteData || !remoteSha) return
+
+    let localSha = null
+    if (exists) {
+      try {
+        const localBuf = fs.readFileSync(full)
+        localSha = crypto.createHash('sha256').update(localBuf).digest('hex')
+      } catch { }
+    }
+
+    if (localSha === remoteSha) {
+      shaShadow.set(relPath, remoteSha)
+      try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
+      known.add(relPath)
+      return
+    }
+
+    let keptAs = null
+    if (exists) {
+      const stamp = deletedStamp()
+      keptAs = keepDeletedCopy(relPath, stamp)
+      if (keptAs) {
+        log(`[${name}] local binary ${relPath} overwritten by remote write (winner: ${remoteBy || 'teammate'}); copy preserved in ${keptAs}`)
+        try {
+          say(`· ${relPath} updated from room (winner: ${remoteBy || 'teammate'}). Your local copy saved to ${keptAs}.`)
+        } catch { }
+      }
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(full), { recursive: true })
+      fs.writeFileSync(full, Buffer.from(remoteData))
+      shaShadow.set(relPath, remoteSha)
+      mtimes.set(relPath, fs.statSync(full).mtimeMs)
+      known.add(relPath)
+      dischargeUnshared(relPath)
+      log(`[${name}] <- binary ${relPath} (${remoteData.length} bytes${keptAs ? `, previous saved to ${keptAs}` : ''})`)
+    } catch (err) {
+      log(`[${name}] error writing binary ${relPath}: ${err.message}`)
+    }
+  }
+
   function reconcile(relPath, origin = 'local') {
     if (process.env.HIVE_TEST_STUCK_SYNC && relPath === process.env.HIVE_TEST_STUCK_SYNC) return
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
     if (!canOpen(relPath)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
     const full = path.join(ROOT, relPath)
     const exists = fs.existsSync(full)
+    let fe = fileDocs.get(relPath)
+    if (fe && fe.bin && fe.bin.has('data')) {
+      reconcileBinary(relPath, origin)
+      return
+    }
     const disk = exists ? readText(full) : null
     if (exists && disk === null) {
+      if (isBinaryFile(full)) {
+        if (origin === 'local') {
+          reconcileBinary(relPath, 'local')
+          return
+        }
+      }
       const unshared = checkUnshared(full)
       if (unshared) noticeUnsharedOne(relPath, unshared)
       return // present on disk but binary/too-large to represent — leave it untouched (never clobber with stale doc text)
@@ -1892,7 +2027,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // "empty file" — acting now would re-seed from disk and fork the CRDT history
     // (duplicated/garbled content on rejoin). So: open if needed, then defer until
     // the 'sync' handler re-runs us. Once synced, "" genuinely means empty.
-    let fe = fileDocs.get(relPath)
+    fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
     touchFile(relPath) // reconciling a file IS using it — keep it in the working set
@@ -3170,7 +3305,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         unsharedMtimes.delete(r)
       }
 
-      if (readText(full) === null) continue
+      if (readText(full) === null) {
+        if (isBinaryFile(full)) {
+          mtimes.set(r, mt)
+          reconcileBinary(r, 'local')
+          changes++
+          continue
+        }
+        continue
+      }
       mtimes.set(r, mt)
       reconcile(r, 'local')
       changes++
@@ -3259,7 +3402,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (!stamp) stamp = deletedStamp() // one folder per batch, so a bulk delete comes back together
         const keptAs = keepDeletedCopy(key, stamp)
         if (keptAs) kept++
-        known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key)
+        known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key); shaShadow.delete(key)
         log(`[${name}] <- deleted ${key}${keptAs ? ` (copy kept: ${keptAs})` : ''}`)
       } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
         if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
@@ -3378,7 +3521,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         unsharedMtimes.delete(r)
         dischargeUnshared(r)
       }
-      if (readText(full) === null) continue
+      if (readText(full) === null) {
+        if (isBinaryFile(full, st)) {
+          mtimes.set(r, st.mtimeMs)
+          reconcileBinary(r, 'local')
+          changes++
+          continue
+        }
+        continue
+      }
       mtimes.set(r, st.mtimeMs)
       reconcile(r, 'local')
       changes++
