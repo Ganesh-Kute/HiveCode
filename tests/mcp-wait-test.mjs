@@ -252,10 +252,23 @@ section('hive_wait default by app (27 Sep 2026)')
 section('the line that keeps a Claude Code agent reachable after its turn (2 Oct 2026)')
 {
   const fsm = await import('fs')
+  // An app nobody has measured is not told to run something that may never wake it: a listener
+  // that cannot wake its agent is a false "listening".
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'cursor', version: '1.0' } })
+  makeRoom('Ada')
+  const cu = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  T('an app nobody has measured (Cursor) is not told to start a listener', !/hive-await\.js/.test(cu))
+  // Antigravity DOES wake when a background command ends. Measured 2 Oct 2026: Antigravity1's turn at
+  // 06:48:09Z began from its listener exiting, two seconds after a message to it, with nobody typing.
+  // It sat PARKED in the KCDE run only because this line was never given to it.
   await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'Antigravity', version: '1.0' } })
   makeRoom('Ada')
   const ag = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
-  T('Antigravity, which a background task cannot wake, is not told to start one', !/hive-await\.js/.test(ag))
+  const am = /"([^"]+)" "([^"]+hive-await\.js)" "([^"]+)" "Ada" 25/.exec(ag)
+  T('Antigravity\'s first empty wait orders it to start the listener, in its own tool\'s words', !!am && /BEFORE YOU END THIS TURN/.test(ag) && /run_command/.test(ag) && /WaitMsBeforeAsync/.test(ag) && !/run_in_background/.test(ag), ag.slice(0, 600))
+  T('...naming this room and this agent', !!am && am[3] === 'wss://test|room-test')
+  T('...said once: the next empty wait does not repeat it', !/hive-await\.js/.test(textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))))
+  _test.forget('listen') // a new process, as a second app would be
   await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.0' } })
   makeRoom('Ada')
   const first = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))

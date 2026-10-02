@@ -1743,9 +1743,9 @@ function waitDefaultSeconds() { return waitPolicy().def }
 // THE LINE THAT KEEPS A CLAUDE CODE AGENT REACHABLE AFTER ITS TURN (2 Oct 2026). The rules say
 // hive_wait is the idle state, but agents end their turns anyway, and from then on they are deaf:
 // the Lead's #1 complaint in the 4-agent KCDE run, and Antigravity1 sat PARKED with a review unread
-// the same night. Claude Code, unlike the other apps, wakes an agent when one of its background
-// tasks ends, so hive-await running in the background turns "ended its turn" into "asleep until
-// called". Nothing told a stranger's agent that. It is said once, on the first empty wait, and as
+// the same night. Claude Code wakes an agent when one of its background tasks ends (so does
+// Antigravity: see listenHow), so hive-await running in the background turns "ended its turn" into
+// "asleep until called". Nothing told a stranger's agent that. It is said once, on the first empty wait, and as
 // an order: an agent told to "consider" a command tends to describe it instead of running it. The
 // idle limit is 25 minutes because Claude Code stops a background task after about 30 (measured
 // 2 Oct: started 03:46, killed 04:16) and then tells the agent not to restart it; a listener that
@@ -1755,10 +1755,20 @@ function waitDefaultSeconds() { return waitPolicy().def }
 // cannot join is a false "listening". (tests/mcp-wait-test.mjs)
 const LISTEN_IDLE_MIN = 25
 const AWAIT_JS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hive-await.js').replace(/\\/g, '/')
+// ANTIGRAVITY WAKES THE SAME WAY (measured 2 Oct 2026, later the same day): Antigravity1's turn at
+// 06:48:09Z began from its listener exiting, two seconds after a message to it, with nobody typing.
+// It had sat PARKED in the KCDE run only because this line went to Claude Code alone. Each app is
+// told in its own tool's words; an app nobody has measured gets no line.
+function listenHow(app) {
+  if (/claude-code/i.test(app)) return 'Call your Bash tool now, with run_in_background: true, on this command.'
+  if (/antigravity/i.test(app)) return 'Call your run_command tool now on this command, with WaitMsBeforeAsync: 1000, so it runs in the background.'
+  return ''
+}
 function listenLine(s) {
-  if (!s || s.authed || !/claude-code/i.test(clientName())) return ''
+  const how = s && !s.authed ? listenHow(clientName()) : ''
+  if (!how) return ''
   const node = process.execPath.replace(/\\/g, '/')
-  return `\n[BEFORE YOU END THIS TURN] Ending it stops you hearing this room. Call your Bash tool now, with run_in_background: true, on this command. It ends, and that wakes you, when someone addresses you or after ${LISTEN_IDLE_MIN} quiet minutes; when it ends, run it again:\n"${node}" "${AWAIT_JS}" "${s.relay}|${s.room}" "${s.name}" ${LISTEN_IDLE_MIN}\n`
+  return `\n[BEFORE YOU END THIS TURN] Ending it stops you hearing this room. ${how} It ends, and that wakes you, when someone addresses you or after ${LISTEN_IDLE_MIN} quiet minutes; when it ends, run it again:\n"${node}" "${AWAIT_JS}" "${s.relay}|${s.room}" "${s.name}" ${LISTEN_IDLE_MIN}\n`
 }
 
 export const _test = {
@@ -1774,6 +1784,9 @@ export const _test = {
   throttleStats: () => throttle.stats(),
   setSession(s) { session = s },
   getSession() { return session },
+  // One process serves one app, so "said once" is per process; a test that plays two apps in one
+  // process forgets between them.
+  forget: (key) => explained.delete(key),
   callTool: (name, args = {}) =>
     server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, {}),
 }
