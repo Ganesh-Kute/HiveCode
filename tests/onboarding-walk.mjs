@@ -23,9 +23,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const PORT = Number(process.env.HIVE_TEST_PORT) || (27000 + (process.pid % 8000))
 const RELAY_URL = `ws://127.0.0.1:${PORT}`
+process.env.HIVE_RELAY = RELAY_URL
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const SCRATCH_DIR = process.env.SCRATCH_DIR || 'C:\\Users\\G1\\.gemini\\antigravity\\brain\\f99a2166-2bd6-4342-99ab-ebca05369d0d\\scratch'
+const SCRATCH_DIR = process.env.SCRATCH_DIR || os.tmpdir()
 fs.mkdirSync(SCRATCH_DIR, { recursive: true })
 const TRANSCRIPT_PATH = path.join(SCRATCH_DIR, 'onboarding-transcript.txt')
 
@@ -137,7 +138,7 @@ try {
 
   T('Step 2 Room ready for branch hive-work', branch2Out.includes('Room ready for branch hive-work'))
   T('Step 2 Dual-folder mental model explained', branch2Out.includes("~/hivecode/") && /checkout here doesn't change until you run pr/.test(branch2Out))
-  T('Step 2 Prints line for agents', /Use hive_join with branch "hive-work"/.test(branch2Out))
+  T('Step 2 Prints line for agents', /Use hive_join with branch "hive-work"/.test(branch2Out) && branch2Out.includes('as a name of your own (each agent picks a different one)'))
   T('Step 2 Prints line for teammates', /branch hive-work --join/.test(branch2Out))
 
   // ──────────────────────────────────────────────────────────────────────────

@@ -302,6 +302,9 @@ try {
   // I5: Stale --paths comment in hive-token.js
   const tokenHelp = fs.readFileSync(path.join(ROOT, 'hive-token.js'), 'utf8')
   T('I5 hive-token.js --paths comment says enforced by relay scopeCheck', /--paths\s+comma globs for path scoping \(enforced by relay scopeCheck in token-gated rooms\)/.test(tokenHelp))
+
+  // I6: agentLine tells each agent to pick a name of its own without angle brackets
+  T('I6 agentLine instructs each agent to pick a name of its own', a1.code === 0 && a1.out.includes('as a name of your own (each agent picks a different one)') && !a1.out.includes('<a name of its own>'))
 } catch (e) {
   T('the suite ran', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {

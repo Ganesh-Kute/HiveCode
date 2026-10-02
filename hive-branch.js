@@ -619,7 +619,7 @@ export async function main(argv, { cwd = process.cwd(), log = console.log, logEr
       return r.ok ? 0 : r.code || 1
     }
     const r = await bindBranch({ cwd, branch: name, from: f.from || '', relay: f.relay || '', you: f.name || '', join: f.join || '', reseed: !!f.reseed })
-    const agentLine = `Use hive_join with branch "${r.branch}", repo "${r.root.replace(/\\/g, '/')}", as <a name of its own>`
+    const agentLine = `Use hive_join with branch "${r.branch}", repo "${r.root.replace(/\\/g, '/')}", as a name of your own (each agent picks a different one)`
     if (r.joined) {
       log(`Recorded: branch ${r.branch} in ${r.root} is the room ${r.link}\n\nTell each of your agents:\n  ${agentLine}`)
       return 0
