@@ -19,6 +19,7 @@
 //   E  an editor's delete-then-write inside the settle window never takes the file from the teammate
 //   F  .hive-deleted/ never reaches the room
 //   G  pruning: week-old stamp folders go; recent ones, and anything that is not ours, stay
+//   H  a file someone else holds is not deleted under them; it goes back, and the room is told why
 
 import fs from 'fs'
 import os from 'os'
@@ -189,6 +190,34 @@ sec('F  .hive-deleted/ never reaches the room')
   T('F1 no .hive-deleted/ path is in the room after section C\'s 30 copies were made',
     keys.length > 0 && !keys.some((k) => k.startsWith('.hive-deleted')), `${keys.length} keys`)
   T('F2 ...and none appeared in Alice\'s folder', !fs.existsSync(path.join(C.A_DIR, '.hive-deleted')))
+}
+
+// ------------------------------------------------- H: a held file is not deleted under its holder
+sec('H  a file someone else holds is not deleted under them')
+{
+  const p = await pair('H', { 'held.js': 'export const h = 1\n', 'free.js': 'export const f = 1\n', 'other.js': 'export const o = 1\n' })
+  T('H0 setup: Bob has all three files', p.arrived)
+  T('H0b setup: Bob holds held.js', p.B.claim('held.js', 'refactoring held.js') === true)
+  await sleep(1500)
+  fs.writeFileSync(path.join(p.B_DIR, 'held.js'), 'export const h = 1\n// Bob mid-edit, holding the claim\n')
+  await until(() => { try { return fs.readFileSync(path.join(p.A_DIR, 'held.js'), 'utf8').includes('Bob mid-edit') } catch { return false } }, 8000)
+  const chatBefore = p.B.doc.getArray('chat').length
+  fs.rmSync(path.join(p.A_DIR, 'held.js'))
+  fs.rmSync(path.join(p.A_DIR, 'free.js'))
+  await sleep(WAIT)
+  const read = (d, r) => { try { return fs.readFileSync(path.join(d, r), 'utf8') } catch { return '' } }
+  const refusals = () => p.B.doc.getArray('chat').toArray().slice(chatBefore).map((m) => String(m.text || '')).filter((t) => /⛔ Alice deleted held\.js \(held by Bob\)/.test(t))
+  T('H1 Bob keeps the file he holds, with his edit in it', read(p.B_DIR, 'held.js').includes('Bob mid-edit'))
+  T('H2 ...and it is still in the room', p.B.doc.getMap('manifest').has('held.js'))
+  T('H3 it is back in Alice\'s folder, with the room\'s content', read(p.A_DIR, 'held.js').includes('Bob mid-edit'))
+  T('H4 the room is told why, once', refusals().length === 1, JSON.stringify(p.B.doc.getArray('chat').toArray().slice(chatBefore).map((m) => m.text).slice(0, 3)))
+  T('H5 the unclaimed file deleted in the same batch still went', !fs.existsSync(path.join(p.B_DIR, 'free.js')))
+  await sleep(5000) // several scans: a refused delete must not be retried, or re-announced
+  T('H6 the refused delete is not retried on later scans', refusals().length === 1 && fs.existsSync(path.join(p.A_DIR, 'held.js')), `${refusals().length} refusal lines`)
+  p.B.release('held.js')
+  await sleep(1500)
+  fs.rmSync(path.join(p.A_DIR, 'held.js'))
+  T('H7 once Bob releases it, Alice\'s delete goes through', await until(() => !fs.existsSync(path.join(p.B_DIR, 'held.js')), 10000))
 }
 
 // --------------------------------------------------------------------- G: pruning

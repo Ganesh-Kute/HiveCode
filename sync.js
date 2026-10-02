@@ -3042,15 +3042,38 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!gone.length) return
     const held = [...known].filter((r) => inManifest(r)).length
     if (held >= 5 && gone.length >= held) { loseFolder(`was emptied: all ${held} of its files vanished at once`); return }
-    for (const r of gone) queueManifestDelete(r)
-    flushRoomDoc()
+    // A FILE SOMEONE ELSE HOLDS IS NOT DELETED UNDER THEM. Measured 3 Oct 2026, with claims enforced
+    // as queue and as block alike: Bob claimed a.js and was editing it, Alice deleted it, and it left
+    // the room and Bob's folder -- a claim stopped every write except the largest one. Such a delete is
+    // not sent; the file goes back into this folder from the room, so the folder matches the room
+    // and the next scan does not try again; and the room is told why, once.
+    const refused = []
+    const send = []
     for (const r of gone) {
+      const h = coordinator.sense(r)
+      if (h && h.by && h.by !== name) refused.push([r, h.by]); else send.push(r)
+    }
+    for (const [r] of refused) {
+      if (fs.existsSync(path.join(ROOT, r))) continue // ignored since, not absent: nothing to put back
+      const e = fileDocs.get(r)
+      if (e) writeToDisk(r, e.text.toString())
+      else { known.delete(r); mtimes.delete(r); queueOpenFile(r) } // reopened, it arrives like any room file
+    }
+    if (refused.length) {
+      const what = refused.slice(0, 3).map(([r, by]) => `${r} (held by ${by})`).join(', ') + (refused.length > 3 ? ` (+${refused.length - 3} more)` : '')
+      log(`[${name}] delete not sent, the file is held by someone else: ${what}`)
+      try { say(`⛔ ${name} deleted ${what}, but a file someone else holds is not deleted under them, so that delete was not sent and the file is back in ${name}'s folder. Ask the holder to release it first.`) } catch { }
+    }
+    if (!send.length) return
+    for (const r of send) queueManifestDelete(r)
+    flushRoomDoc()
+    for (const r of send) {
       closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
     }
-    const list = gone.slice(0, 3).join(', ') + (gone.length > 3 ? ` (+${gone.length - 3} more)` : '')
+    const list = send.slice(0, 3).join(', ') + (send.length > 3 ? ` (+${send.length - 3} more)` : '')
     log(`[${name}] -> deleted for everyone: ${list}`)
-    if (gone.length >= BULK_DELETE) {
-      try { say(`· ${name} deleted ${gone.length} files for everyone: ${list}. Teammates' folders keep a copy of what they held, in ${DELETED_DIR}/, for 7 days.`) } catch { }
+    if (send.length >= BULK_DELETE) {
+      try { say(`· ${name} deleted ${send.length} files for everyone: ${list}. Teammates' folders keep a copy of what they held, in ${DELETED_DIR}/, for 7 days.`) } catch { }
     }
   }
 
