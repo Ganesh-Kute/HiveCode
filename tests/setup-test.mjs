@@ -32,7 +32,10 @@ const section = (s) => console.log(`\n${s}`)
 const rd = (p) => { try { return fs.readFileSync(p, 'utf8') } catch { return null } }
 const json = (p) => JSON.parse(rd(p))
 const tmp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `hv-setup-${tag}-`))
-const envFor = (home) => ({ ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: path.join(home, '.config') })
+// GIT_CEILING_DIRECTORIES: setup now reads the git repo it runs in, and on a machine whose real home
+// is a git repo (this one) every temp folder is inside it. The fake home here is not that home, so
+// without the ceiling every run below would look like it was run inside a project.
+const envFor = (home) => ({ ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: path.join(home, '.config'), GIT_CEILING_DIRECTORIES: os.tmpdir().replace(/\\/g, '/') })
 const runSetup = (home, args = [], bin = [process.execPath, MCP]) => {
   const r = spawnSync(bin[0], [...bin.slice(1), 'setup', ...args], { cwd: home, env: envFor(home), encoding: 'utf8', timeout: 180000, windowsHide: true })
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }
@@ -239,10 +242,13 @@ const fNext = fIn.out.split('NEXT')[1] || ''
 const branchAt = fNext.indexOf('npx -y hivecode-mcp@latest branch hive-work')
 T('F1 inside a repo, NEXT gives the command that brings the repo in, before the lines to paste', branchAt > 0 && branchAt < fNext.indexOf('hive_join'), fNext)
 T('F2 ...it names the repo, says the checkout is not switched, and warns before anything is published', fNext.includes(path.resolve(gProj)) && /without switching your checkout/.test(fNext) && /anyone with the room's link can read/.test(fNext.slice(0, fNext.indexOf('hive_join'))), fNext)
-T('F3 the line that hosts a room says the room is EMPTY', /host a new, empty Hivecode room as Tester/.test(fNext), fNext)
+// Antigravity1's stranger walk (3 Oct): next to the branch command, "host a new, empty room" is the
+// trap itself, so inside a repo it is gone and only the line for someone SENT a link stays.
+T('F3 inside a repo there is no line that hosts an empty room, only the one for a link you were sent', !/host a new/.test(fNext) && /If you were sent a link instead/.test(fNext) && /join the Hivecode room <the link you were sent> as Tester/.test(fNext), fNext)
 const plain = tmp('plain')
 const fOut = setupIn(plain)
 T('F4 outside any repo, no branch line', fOut.code === 0 && /hive_join/.test(fOut.out) && !/hivecode-mcp@latest branch/.test(fOut.out), fOut.out)
+T('F4b ...and the line that hosts a room says the room is EMPTY', /host a new, empty Hivecode room as Tester/.test(fOut.out), fOut.out)
 const fLink = setupIn(gProj, ['ws://127.0.0.1:9|room-probe'])
 T('F5 with a link (a teammate joining), no branch line', /join the Hivecode room ws:\/\/127\.0\.0\.1:9\|room-probe/.test(fLink.out) && !/hivecode-mcp@latest branch/.test(fLink.out), fLink.out)
 // A home folder kept in git is a dotfiles repo, not a project -- this machine's own home is one.

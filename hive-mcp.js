@@ -435,9 +435,11 @@ was not written. Fix the relay and call hive_join again.`
   // hand: the install, the reload step, the sentence, the link. setup given a link prints that
   // person's reload steps and their exact sentence, so one message covers all of it. Host only:
   // this reply stays in the transcript, and a joiner already has the link it came in by.
-  const people = browserUrl ? ` No AI agent? Open ${browserUrl}` : ''
+  // One line per thing a person acts on (the stranger walk, 3 Oct: as one line it pasted into chat
+  // apps as a wall of links).
+  const people = browserUrl ? `\n  No AI agent? Open ${browserUrl}` : ''
   const invite = /^HOSTED/.test(mode)
-    ? `\nto invite someone, forward this as is: Join my Hivecode room. In a terminal, run once (needs Node.js 18+): npx -y hivecode-mcp@latest setup "${inviteLink}" and do what it prints.${people}`
+    ? `\nto invite someone, forward this as is:\n  Join my Hivecode room. In a terminal, run this once (needs Node.js 18+), then do what it prints:\n    npx -y hivecode-mcp@latest setup "${inviteLink}"${people}`
     : (browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : '')
   // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
   // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.

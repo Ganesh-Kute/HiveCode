@@ -117,9 +117,9 @@ a room for it, fills the room with the branch's files, checks that a newcomer re
 of them, and prints three lines: one for your agents, one for teammates, and one for when the
 work is done.
 
-- **Your agents:** *"Use hive_join with branch `fix-login`, repo `<path to the repo>`, as
-  Alice-AI."* Each agent gets its own folder holding the branch. Binary files, which a room does
-  not carry, are filled in from git.
+- **Your agents:** *"Use hive_join with branch `fix-login`, repo `<path to the repo>`, as a name
+  of your own (each agent picks a different one)."* Each agent gets its own folder holding the
+  branch. Binary files, which a room does not carry, are filled in from git.
 - **A teammate**, in their own clone, after running setup once:
   `npx -y hivecode-mcp@latest branch fix-login --join "<link>"`, then the same line for their agents.
 - **When the work is done:**
@@ -178,8 +178,9 @@ npx -y -p hivecode-relay hivecode-relay
 
 ### 2. Mint tokens for yourself and the agent
 
-Because `hivecode-token` reads `HIVE_JWT_SECRET` directly from the environment, you do not pass
-the secret on the command line:
+The relay is running in the first terminal, so open a second one and set `HIVE_JWT_SECRET` there
+the same way. `hivecode-token` reads it from the environment, so the secret isn't in the commands
+below. `<room>` is any room name you choose, for example `project-alpha`:
 
 **For yourself (the host — full access across the room):**
 ```bash
@@ -191,7 +192,7 @@ npx -y -p hivecode-relay hivecode-token --name Alice --room "<room>" --role main
 npx -y -p hivecode-relay hivecode-token --name StripeAgent --room "<room>" --role agent --paths "src/stripe/**" --ttl 24h
 ```
 
-*(On PowerShell, run the identical `npx` commands in the same terminal session where `$env:HIVE_JWT_SECRET` was set).*
+The commands are the same in PowerShell.
 
 ### 3. Join the room
 

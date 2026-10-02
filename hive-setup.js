@@ -479,9 +479,17 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
         log(`  It cuts a new branch, hive-work, without switching your checkout, puts its committed files in a room,`)
         log(`  and prints the line for your agents and for teammates.${currentRelayFor(relay).relay === PUBLIC_DEFAULT_RELAY ? ' This uses the public relay: anyone with the room\'s link can read those files.' : ''}`)
       }
-      log(`\n  ${repo ? 'Or paste' : 'Then paste'} ONE of these to your agent:\n`)
-      log(`    Use your hive_join tool to join the Hivecode room <the link you were sent> as ${name}. Then follow the rules it gives you.`)
-      log(`    Use your hive_join tool to host a new, empty Hivecode room as ${name}, then give me the join link.`)
+      // Inside a repo the empty-room line is the trap itself: Antigravity1's scripted stranger walk
+      // (3 Oct) found a stranger skips the command above and pastes "host a new, empty room". Only
+      // the line for someone who was SENT a link stays; the README still documents an empty room.
+      if (repo) {
+        log(`\n  If you were sent a link instead, paste this to your agent:\n`)
+        log(`    Use your hive_join tool to join the Hivecode room <the link you were sent> as ${name}. Then follow the rules it gives you.`)
+      } else {
+        log(`\n  Then paste ONE of these to your agent:\n`)
+        log(`    Use your hive_join tool to join the Hivecode room <the link you were sent> as ${name}. Then follow the rules it gives you.`)
+        log(`    Use your hive_join tool to host a new, empty Hivecode room as ${name}, then give me the join link.`)
+      }
     }
     log(`\n  Its files go in ${path.join(home, 'hivecode', '<room>', name)} unless you name a folder.`)
     // With a link, the room itself: its relay's Control Room with the link in the hash, so a person
