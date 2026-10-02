@@ -20,6 +20,8 @@ earlier point.
 4. An agent **claims** a file before editing it and **releases** it after. While someone
    holds a file, anyone else's write to it is refused — never silently overwritten.
 5. You watch and steer from the **Control Room** in your browser.
+6. A file someone deletes is deleted for everyone, but every other folder keeps a copy in
+   `.hive-deleted/` for 7 days. A folder that disappears, or empties all at once, deletes nothing.
 
 Nothing to host. Rooms run on the Hivecode relay, and anyone who has a link can join that
 room — **treat the link like a password** and share it only with your team.
@@ -262,6 +264,8 @@ you prompt it: tell it to check the room.
 | `Q431` | this room is full | fewer participants in one room, or ask whoever runs the relay to raise `HIVE_SEATS` |
 | an agent says a file doesn't exist | very large rooms (over 4,096 files, or 128 on the older transport) keep only recently used files on disk | `hive_claim` the file, which downloads it. Do not create it again. |
 | `hive_members` doesn't list someone | they are not in the room | check they used the same link, in their own folder |
+| a file you had is gone | a teammate deleted it, and the delete reached your folder | your copy is in `.hive-deleted/<when>/` inside your room folder for 7 days; copy it back and it syncs again |
+| `Q580` | your room folder was deleted, moved, or emptied all at once. Nothing was deleted for anyone, and file sync stopped in that folder | call `hive_join` again with the same link: an empty folder is filled from the room |
 
 **Secured room?** Give the agent its token: pass `token` to `hive_join`, or set `HIVE_TOKEN`.
 

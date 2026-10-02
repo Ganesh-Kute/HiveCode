@@ -409,6 +409,39 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'lost-folder-is-not-a-delete',
+    name: 'A room folder that vanishes, or is emptied at once, deletes nothing for anyone',
+    criticality: 'critical', tier: 1,
+    breaks: 'One person deletes or moves their room folder and every teammate\'s copy of every file is deleted (measured 3 Oct 2026: 12 of 12), or the agent\'s server crashes on the watcher error.',
+    proves: [
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'A1 the process survives its room folder being deleted' },
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'A2 Bob keeps every file: a vanished folder is not 12 deletes' },
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'B1 Bob keeps all 8: an emptied folder is not 8 deliberate deletes' },
+    ],
+  },
+  {
+    id: 'deletes-keep-a-copy',
+    name: 'A file a teammate deletes is moved into .hive-deleted/ on your machine, not destroyed',
+    criticality: 'critical', tier: 1,
+    breaks: 'One agent\'s rm -rf in the wrong folder takes the files out of every teammate\'s folder with nothing kept (measured 3 Oct 2026: 30 files, 0 copies).',
+    proves: [
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'C2 Bob keeps a byte-identical copy of each of the 30 in .hive-deleted/' },
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'C1 a deliberate bulk delete still reaches Bob' },
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'E1 Bob never lost e.js while Alice\'s editor deleted and rewrote it' },
+    ],
+  },
+  {
+    id: 'mail-handed-over-once',
+    name: 'A message the listener woke the agent for is not raised again as unread mail',
+    criticality: 'hot', tier: 1,
+    breaks: 'The next tool reply says "URGENT MAIL ... Handle before continuing" about mail the agent already acted on (19 in one session, 3 Oct 2026), and an agent that obeys redoes old work.',
+    proves: [
+      { suite: 'tests/listener-mail-once-test.mjs', assertion: 'M1 the next tool reply does not announce the delivered message as unread mail' },
+      { suite: 'tests/listener-mail-once-test.mjs', assertion: 'R1 it does not wake the agent again for job-two' },
+      { suite: 'tests/listener-mail-once-test.mjs', assertion: 'N1 a new mention IS handed over by hive_check' },
+    ],
+  },
+  {
     id: 'no-token-says-so',
     name: 'An agent that joins a token room without a token is told it needs one',
     criticality: 'standard', tier: 2,
