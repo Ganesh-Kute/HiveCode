@@ -56,8 +56,13 @@ await sleep(800)
 console.log('# Client (non-owner) requests work (stays pending), agent starts WAITING')
 const id = client.assign('WaitBot', 'build the parser module')
 await sleep(500)
+// The request is a message ADDRESSED to the agent, so the agent's first wait hands it over at
+// once, saying who must approve. That is mail, not permission to start. (This test predates
+// addressed messages waking a wait, and asserted that this first wait kept blocking.)
+const told = await callTool('hive_wait', { timeoutSeconds: 25 })
+assert('the request reaches the agent at once, saying the owner must approve it', /@WaitBot/.test(told) && /Boss must approve/.test(told))
 const waitStart = Date.now()
-const waitPromise = callTool('hive_wait', { timeoutSeconds: 25 }) // BLOCKS here
+const waitPromise = callTool('hive_wait', { timeoutSeconds: 25 }) // BLOCKS here: nothing new until Boss decides
 
 console.log('# 1s later, Boss APPROVES — the wait should return right after')
 await sleep(1000)
