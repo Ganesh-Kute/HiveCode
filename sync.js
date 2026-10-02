@@ -1733,7 +1733,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       return buf.toString('utf8')
     } catch { return null }
   }
+  // BRANCH ROOMS CARRY TEXT ONLY, BY DESIGN (hive-branch.js roomCarries): binaries are filled into
+  // each folder from git, and `pr` reads a carried file missing from the room as DELETED. Binary sync
+  // pushed every git-filled image into the room (tests/branch-test A6: 5 files where the seed put 4),
+  // and once one was deleted there, the next joiner's fill would write it back and binary sync would
+  // publish the undo to everyone. So binary sync is off in a branch-room folder, recognised by the
+  // `.git` FILE hive-branch writes into it (NOT_A_CHECKOUT; not imported, hive-branch imports us).
+  // A binary the room already holds (someone pushed it from a plain folder) is still received.
+  const BINARY_SYNC = !process.env.HIVE_NO_BINARY_SYNC &&
+    !(() => { try { return fs.readFileSync(path.join(ROOT, '.git'), 'utf8').includes('hivecode-live-room-not-a-git-checkout') } catch { return false } })()
   function isBinaryFile(full, st) {
+    if (!BINARY_SYNC) return false
     try {
       const s = st || fs.statSync(full)
       if (!s.isFile()) return false
@@ -1751,7 +1761,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
       const buf = fs.readFileSync(full)
       if (buf.includes(0)) {
-        if (process.env.HIVE_NO_BINARY_SYNC) {
+        if (!BINARY_SYNC) {
           return { reason: 'binary', size: s.size }
         }
         return null
