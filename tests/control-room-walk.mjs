@@ -3,12 +3,14 @@
 // Runs hermetically against a local relay. If Chrome is not present on the system,
 // it skips loudly and exits 0.
 
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { default as WebSocket } from 'ws'
+import * as NodeSecrets from '../hive-secrets.js'
+import * as BrowserSecrets from '../public/hive-secrets.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -149,9 +151,17 @@ const chromeProc = spawn(chromeBin, [
   '--no-default-browser-check',
   '--window-size=1280,900'
 ])
-await sleep(2000)
+let targetRes = null
+for (let i = 0; i < 20; i++) {
+  try {
+    targetRes = await fetch(`http://127.0.0.1:${CHROME_PORT}/json/new`, { method: 'PUT' })
+    if (targetRes && targetRes.ok) break
+  } catch {
+    await sleep(250)
+  }
+}
+if (!targetRes || !targetRes.ok) throw new Error('Could not connect to Chrome CDP on port ' + CHROME_PORT)
 
-const targetRes = await fetch(`http://127.0.0.1:${CHROME_PORT}/json/new`, { method: 'PUT' })
 const target = await targetRes.json()
 const ws = new WebSocket(target.webSocketDebuggerUrl)
 await new Promise((r) => ws.on('open', r))
@@ -349,14 +359,147 @@ try {
     dialogEvents[0] ? dialogEvents[0].message : 'no dialog')
   T('chat announces revert across files', s7.hasRevertChat, s7.lastChat)
 
+  // ─── STEP 8: SECRET GATE IN CONTROL ROOM CHAT ────────────────────────────
+  console.log('\n# Step 8: Secret gate in Control Room chat send box')
+  // Dynamically generate a key at runtime so the test file holds no literal key
+  const genKey = () => {
+    const p = ['g', 'h', 'p', '_'].join('')
+    const c = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    let b = ''
+    for (let i = 0; i < 36; i++) b += c[(i * 7 + 13) % c.length]
+    return p + b
+  }
+  const secretKey = genKey()
+  const secretMsg = `my token is ${secretKey} please use it`
+
+  await evalJS(`(() => {
+    const input = document.getElementById('chatInput');
+    input.value = ${JSON.stringify(secretMsg)};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('send').click();
+  })()`)
+  await sleep(1500)
+
+  const s8 = await evalJS(`(() => {
+    const input = document.getElementById('chatInput');
+    const err = document.getElementById('chatErr') || document.querySelector('.composer-err');
+    const msgs = [...document.querySelectorAll('#chat .cmsg .ctxt')].map(m => m.textContent);
+    return {
+      inputValue: input ? input.value : '',
+      errText: err ? err.textContent.trim() : '',
+      hasSecretInDom: msgs.some(m => m.includes(${JSON.stringify(secretKey)})),
+      allMsgs: msgs
+    };
+  })()`)
+
+  const roomChats = hostSync.doc.getArray('chat').toArray().map(m => String(m.text || ''))
+  const hasSecretInRoom = roomChats.some(t => t.includes(secretKey))
+
+  T('secret message was NOT sent to room chat array', !hasSecretInRoom)
+  T('secret message was NOT rendered in DOM chat', !s8.hasSecretInDom)
+  T('chat input box still holds the unsent text', s8.inputValue === secretMsg)
+  T('inline notice explains refusal and names kind without leaking secret',
+    /Not sent: this message contains a GitHub token\. Keys never go in the room; say where it is kept \(e\.g\. GITHUB_TOKEN in \.env\)\./.test(s8.errText) && !s8.errText.includes(secretKey),
+    s8.errText || 'no error text')
+
+  // Normal message still sends
+  const normalMsg = 'Hello crew, all clear!'
+  await evalJS(`(() => {
+    const input = document.getElementById('chatInput');
+    input.value = ${JSON.stringify(normalMsg)};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('send').click();
+  })()`)
+  await sleep(1500)
+
+  const s8Normal = await evalJS(`(() => {
+    const input = document.getElementById('chatInput');
+    const err = document.getElementById('chatErr') || document.querySelector('.composer-err');
+    const msgs = [...document.querySelectorAll('#chat .cmsg .ctxt')].map(m => m.textContent);
+    return {
+      inputValue: input ? input.value : '',
+      errText: err ? err.textContent.trim() : '',
+      lastMsg: msgs[msgs.length - 1] || ''
+    };
+  })()`)
+
+  T('normal message sends successfully and clears input box', s8Normal.inputValue === '' && s8Normal.lastMsg.includes(normalMsg))
+  T('inline notice clears after successful send', !s8Normal.errText || s8Normal.errText === '')
+
+  // ─── STEP 9: SECRETS PARITY BETWEEN NODE AND BROWSER ───────────────────────
+  console.log('\n# Step 9: Secrets parity between hive-secrets.js and browser copies')
+
+  // 1. Stale check: build script --check exits cleanly
+  let buildCheckOk = false
+  try {
+    execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'build-secrets-browser.cjs'), '--check'], { stdio: 'pipe' })
+    buildCheckOk = true
+  } catch (e) {
+    buildCheckOk = false
+  }
+  T('browser secrets generator parity check passed (--check)', buildCheckOk)
+
+  // 2. Parity of exported patterns
+  const nodeSrc = fs.readFileSync(path.join(ROOT, 'hive-secrets.js'), 'utf8')
+  const nodePatternMatches = [...nodeSrc.matchAll(/\{\s*kind:\s*'([^']+)',\s*re:\s*(\/[^\n]+\/[a-z]*)\s*\}/g)]
+  const nodeKinds = nodePatternMatches.map(m => m[1])
+  const browserKinds = BrowserSecrets.PATTERNS.map(p => p.kind)
+  T('browser PATTERNS export has identical kind count and names',
+    nodeKinds.length === browserKinds.length && nodeKinds.every((k, i) => k === browserKinds[i]),
+    `${browserKinds.length} vs ${nodeKinds.length}`)
+
+  const patternSourcesMatch = BrowserSecrets.PATTERNS.every((bp, i) => {
+    const rawRe = nodePatternMatches[i][2]
+    const lastSlash = rawRe.lastIndexOf('/')
+    const expectedSrc = rawRe.slice(1, lastSlash)
+    const expectedFlags = rawRe.slice(lastSlash + 1)
+    return bp.re.source === expectedSrc && bp.re.flags === expectedFlags
+  })
+  T('browser PATTERNS regex sources and flags match hive-secrets.js exactly', patternSourcesMatch)
+
+  // 3. Live browser window._secrets pattern parity
+  const winPatterns = await evalJS(`window._secrets && window._secrets.PATTERNS ? window._secrets.PATTERNS.map(p => ({ kind: p.kind, src: p.re.source, flags: p.re.flags })) : []`)
+  T('in-browser window._secrets.PATTERNS matches exported patterns',
+    winPatterns.length === BrowserSecrets.PATTERNS.length &&
+    winPatterns.every((wp, i) => wp.kind === BrowserSecrets.PATTERNS[i].kind && wp.src === BrowserSecrets.PATTERNS[i].re.source))
+
+  // 4. Functional parity across sample credentials generated at runtime
+  const genRand = (chars, len) => {
+    let s = ''
+    for (let i = 0; i < len; i++) s += chars[(i * 17 + 5) % chars.length]
+    return s
+  }
+  const alnum = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  const testSamples = [
+    { kind: 'AWS access key', val: 'AKIA' + genRand('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 16) },
+    { kind: 'GitHub token', val: 'gh' + 'p_' + genRand(alnum, 36) },
+    { kind: 'GitLab token', val: 'glpat-' + genRand(alnum, 24) },
+    { kind: 'Slack token', val: 'xox' + 'b-987654-' + genRand(alnum, 16) },
+    { kind: 'Stripe live key', val: 'r' + 'k_live_' + genRand(alnum, 24) },
+  ]
+  let funcParity = true
+  for (const sample of testSamples) {
+    const nodeRes = NodeSecrets.findSecrets(`key = ${sample.val}`)
+    const browserRes = BrowserSecrets.findSecrets(`key = ${sample.val}`)
+    const inWinRes = await evalJS(`window._secrets.findSecrets(${JSON.stringify(`key = ${sample.val}`)})`)
+    if (!nodeRes.length || !browserRes.length || !inWinRes.length ||
+        nodeRes[0].kind !== sample.kind ||
+        browserRes[0].kind !== sample.kind ||
+        inWinRes[0].kind !== sample.kind) {
+      funcParity = false
+      break
+    }
+  }
+  T('Node and Browser findSecrets evaluate generated credentials identically', funcParity)
+
 } catch (err) {
   T('suite ran cleanly', false, err.stack || String(err))
 } finally {
-  ws.close()
-  chromeProc.kill()
-  hostSync.stop()
-  agentSync.stop()
-  relayProc.kill()
+  if (typeof ws !== 'undefined' && ws && typeof ws.close === 'function') try { ws.close() } catch {}
+  if (typeof chromeProc !== 'undefined' && chromeProc && typeof chromeProc.kill === 'function') try { chromeProc.kill() } catch {}
+  if (typeof hostSync !== 'undefined' && hostSync && typeof hostSync.stop === 'function') try { hostSync.stop() } catch {}
+  if (typeof agentSync !== 'undefined' && agentSync && typeof agentSync.stop === 'function') try { agentSync.stop() } catch {}
+  if (typeof relayProc !== 'undefined' && relayProc && typeof relayProc.kill === 'function') try { relayProc.kill() } catch {}
   try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
 }
 

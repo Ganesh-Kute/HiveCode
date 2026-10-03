@@ -130,6 +130,8 @@
   .cby{font-family:var(--fd);font-weight:500;font-size:14px;display:flex;align-items:center;gap:7px}
   .ctime{font-family:var(--fm);font-size:10.5px;color:var(--dim);font-weight:400}
   .ctxt{color:var(--msg);font-size:14px;margin-top:2px;word-break:break-word;white-space:pre-wrap;line-height:1.55}
+  .composer-err{color:var(--red);font-size:12.5px;padding:0 20px 6px;line-height:1.4;display:none}
+  .composer-err.on{display:block}
   .composer{display:flex;gap:10px;align-items:center;padding:14px 16px;flex:0 0 auto}
   .composer .field{flex:1;display:flex;align-items:center;background:color-mix(in srgb,var(--panel2) 42%,transparent);border-radius:26px;padding:5px 5px 5px 18px}
   .composer input{flex:1;background:transparent;border:none;color:var(--text);font-size:14.5px;font-family:var(--fb);padding:9px 0}
@@ -271,6 +273,7 @@
     <section class="col chat">
       <div class="colhead"><h2>Chat</h2><span class="ct" id="cc">0</span></div>
       <div class="scroll" id="chat"></div>
+      <div class="composer-err" id="chatErr"></div>
       <div class="composer">
         <div class="field"><input id="chatInput" placeholder="Message the crew…  ( @name to assign a task )" autocomplete="off">
           <button class="primary send" id="send" title="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button></div>
@@ -298,6 +301,120 @@
 </div>
 
 <script type="module">
+// --- AUTO-GENERATED: hive-secrets ---
+// LIVE CREDENTIALS ARE NOT SENT TO THE ROOM (3 Oct 2026).
+//
+// A file in a room goes to the relay and to every participant's disk. ALWAYS_IGNORE keeps the
+// files that are secrets by NAME at home (.env, *.pem, id_rsa, ...), but a secret inside an
+// ordinary file went out with it: an agent that pastes an API key into config.js to try
+// something shares that key with everyone in the room, and with whoever runs the relay.
+//
+// So a file whose content holds a credential the room does not already have is held on this
+// machine (see sync.js, withheld) until the credential is moved out. Only formats a provider
+// stamps on its keys are matched -- a fixed prefix plus enough random characters -- and private
+// key blocks. Nothing here guesses from entropy alone: a false match holds back real work, and
+// the people who hit it would be right to switch this off.
+//
+// The matched value never leaves this module's callers in any form: not in a log line, not in
+// the room, not in status. Only its kind and its line number do.
+
+const PATTERNS = [
+  { kind: 'private key', re: /-----BEGIN (?:[A-Z0-9]+ ){0,3}PRIVATE KEY(?: BLOCK)?-----/g },
+  { kind: 'AWS access key', re: /\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b/g },
+  { kind: 'GitHub token', re: /\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,100})\b/g },
+  { kind: 'GitLab token', re: /\bglpat-[A-Za-z0-9_-]{20,}\b/g },
+  { kind: 'Slack token', re: /\bxox[abposr]-[0-9]{6,}-[0-9A-Za-z-]{10,}/g },
+  { kind: 'Slack webhook', re: /hooks\.slack\.com\/services\/T[A-Z0-9]{6,}\/B[A-Z0-9]{6,}\/[A-Za-z0-9]{20,}/g },
+  { kind: 'Stripe live key', re: /\b[rs]k_live_[A-Za-z0-9]{20,}\b/g },
+  { kind: 'OpenAI API key', re: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{16,}T3BlbkFJ[A-Za-z0-9_-]{16,}/g },
+  { kind: 'Anthropic API key', re: /\bsk-ant-(?:api|admin|oat)\d{2}-[A-Za-z0-9_-]{60,}/g },
+  { kind: 'npm token', re: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { kind: 'Hugging Face token', re: /\bhf_[A-Za-z0-9]{30,40}\b/g },
+  { kind: 'Groq API key', re: /\bgsk_[A-Za-z0-9]{40,60}\b/g },
+  { kind: 'SendGrid API key', re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/g },
+  { kind: 'DigitalOcean token', re: /\bdo[opr]_v1_[a-f0-9]{64}\b/g },
+  // .npmrc and friends: a registry password or token written out literally. `${NPM_TOKEN}` is the
+  // documented way to keep one out of the file, so a reference to the environment is not a secret.
+  { kind: 'registry credential', re: /(?:^|\n)[ \t]*(?:\/\/[^\s=]+:)?_(?:authToken|auth|password)[ \t]*=[ \t]*(?!\$\{)[^\s'"]{8,}/g },
+]
+
+// Documentation and tests are full of keys that look real and are not: AWS's own example id,
+// and placeholders like sk_live_XXXXXXXXXXXXXXXXXXXXXXXX. A provider's key is random, so a match
+// with few distinct characters, or that says it is an example, is a placeholder.
+const PLACEHOLDER = /EXAMPLE|example|XXXX|xxxx|0{8}|1234567890|your[_-]?(?:key|token|secret)/i
+function placeholder(value, kind) {
+  if (kind === 'private key' || kind === 'registry credential') return false
+  if (PLACEHOLDER.test(value)) return true
+  return new Set(value).size < 10
+}
+
+/** Every credential in `text`: [{ kind, line, value }]. `value` is for comparing, never for showing. */
+function findSecrets(text) {
+  const s = String(text || '')
+  if (!s) return []
+  const out = []
+  for (const { kind, re } of PATTERNS) {
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(s)) !== null) {
+      const value = m[0].replace(/^\s+/, '')
+      if (!placeholder(value, kind)) {
+        const at = m.index + (m[0].length - m[0].replace(/^\s+/, '').length)
+        out.push({ kind, line: s.slice(0, at).split('\n').length, value })
+      }
+      if (m[0].length === 0) re.lastIndex++
+    }
+  }
+  return out.sort((a, b) => a.line - b.line)
+}
+
+/** Credentials in `local` that `shared` does not already contain: what sharing `local` would leak. */
+function newSecrets(local, shared) {
+  const found = findSecrets(local)
+  if (!found.length) return []
+  const room = String(shared || '')
+  return found.filter((f) => !room.includes(f.value))
+}
+
+/** "an OpenAI API key (line 12)" -- the only form a finding is ever shown in. */
+function describeSecret(f) {
+  if (!f) return ''
+  const a = /^(?:[aeiou]|npm\b)/i.test(f.kind) ? 'an' : 'a'
+  return `${a} ${f.kind} (line ${f.line})`
+}
+
+
+function envForKind(kind) {
+  switch (kind) {
+    case 'GitHub token': return 'GITHUB_TOKEN'
+    case 'GitLab token': return 'GITLAB_TOKEN'
+    case 'AWS access key': return 'AWS_ACCESS_KEY_ID'
+    case 'OpenAI API key': return 'OPENAI_API_KEY'
+    case 'Anthropic API key': return 'ANTHROPIC_API_KEY'
+    case 'Stripe live key': return 'STRIPE_SECRET_KEY'
+    case 'Slack token': return 'SLACK_BOT_TOKEN'
+    case 'Slack webhook': return 'SLACK_WEBHOOK_URL'
+    case 'npm token': return 'NPM_TOKEN'
+    case 'Hugging Face token': return 'HF_TOKEN'
+    case 'Groq API key': return 'GROQ_API_KEY'
+    case 'SendGrid API key': return 'SENDGRID_API_KEY'
+    case 'DigitalOcean token': return 'DO_TOKEN'
+    case 'private key': return 'PRIVATE_KEY'
+    case 'registry credential': return 'NPM_TOKEN'
+    default: return 'TOKEN'
+  }
+}
+
+function secretRefusalNotice(f) {
+  if (!f) return ''
+  const a = /^(?:[aeiou]|npm\b)/i.test(f.kind) ? 'an' : 'a'
+  const env = envForKind(f.kind)
+  return `Not sent: this message contains ${a} ${f.kind}. Keys never go in the room; say where it is kept (e.g. ${env} in .env).`
+}
+
+window._secrets = { PATTERNS, PLACEHOLDER, placeholder, findSecrets, newSecrets, describeSecret, envForKind, secretRefusalNotice }
+// --- END AUTO-GENERATED: hive-secrets ---
+
 const $=(id)=>document.getElementById(id)
 const COLORS=['#4285F4','#9B72CB','#D96570','#34D399','#FBBF24','#8AB4F8','#E0529C','#22D3EE']
 const colorFor=(s)=>{let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
@@ -327,6 +444,7 @@ const ebucket=(m)=>{if(efile(m.editing))return 'f'
   const la=eat(m.lastEdit);if(!la)return 'x'
   return 'a'+Math.floor((Date.now()-la)/5000)}
 const err=(m,info=false)=>{const e=$('err');e.textContent=m||'';e.classList.toggle('info',!!info)}
+const setChatErr=(m)=>{const e=$('chatErr');if(e){e.textContent=m||'';e.classList.toggle('on',!!m)}}
 const genId=()=>'t'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36)
 const tstr=()=>new Date().toTimeString().slice(0,8) // "HH:MM:SS" — matches the editor/MCP clients
 
@@ -490,6 +608,12 @@ document.addEventListener('click',(e)=>{
 })
 function sendChat(){
   const i=$('chatInput'),v=i.value.trim();if(!v||!window._h)return
+  const sec=typeof findSecrets==='function'&&findSecrets(v)[0]
+  if(sec){
+    setChatErr(secretRefusalNotice(sec))
+    return
+  }
+  setChatErr('')
   const at=tstr(),m=v.match(/^@(\S+)\s+(.+)/)
   if(m){
     // Mirror the editor/MCP assign(): create the task AND post a chat ping so the
@@ -679,6 +803,7 @@ async function revertAgent(who){
 
 $('send').addEventListener('click',sendChat)
 $('chatInput').addEventListener('keydown',(e)=>{if(e.key==='Enter')sendChat()})
+$('chatInput').addEventListener('input',()=>{setChatErr('')})
 $('connect').addEventListener('click',()=>connect($('link').value.trim()))
 $('link').addEventListener('keydown',(e)=>{if(e.key==='Enter')connect($('link').value.trim())})
 $('link').addEventListener('input',()=>{if($('uname').value.trim())return;const c=decodeJwt(parseLink(sanitize($('link').value)).token);if(c&&c.name)$('uname').value=c.name})
