@@ -1327,6 +1327,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function fetchFile(relPath, { timeoutMs = 15000 } = {}) {
     const r = String(relPath)
     if (!canOpen(r)) return Promise.resolve({ ok: false, reason: `${r} is out of your scope` })
+    if (collided.has(r)) {
+      return Promise.resolve({
+        ok: false,
+        collided: true,
+        file: r,
+        reason: `${r} collides in case with ${collided.get(r).with} already on disk. A case-insensitive disk cannot hold both.`,
+      })
+    }
     const full = path.join(ROOT, r)
     // Already here: report it, and say so rather than implying we went and got it.
     if (fs.existsSync(full)) return Promise.resolve({ ok: true, alreadyLocal: true, file: r })
@@ -1849,7 +1857,91 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { reconcile(r, 'remote') } catch { }
     }
   }
+  // --- CASE-INSENSITIVE PATH COLLISION GUARD ---
+  // On case-insensitive file systems (Windows/macOS), two room paths that differ only
+  // in case (e.g. Case.js and case.js) map to the exact same file on disk. Writing both
+  // causes alternating disk writes and watcher echo loops that clobber the room doc.
+  // We probe case-sensitivity at startup, keep the key already on disk (or first seen),
+  // never write the collided key to disk, never let a scan push the physical file into
+  // the collided key, report collided paths in status(), and announce once to the room.
+  const isCaseInsensitive = (() => {
+    try {
+      const probeName = `.hive-case-probe-${process.pid}-${Date.now()}.tmp`
+      const probePath = path.join(ROOT, probeName)
+      fs.writeFileSync(probePath, '')
+      const probeLower = probePath.toLowerCase()
+      const probeTarget = probePath === probeLower ? probePath.toUpperCase() : probeLower
+      const insensitive = fs.existsSync(probeTarget)
+      try { fs.unlinkSync(probePath) } catch { }
+      return insensitive
+    } catch {
+      return process.platform === 'win32' || process.platform === 'darwin'
+    }
+  })()
+  const fold = (r) => isCaseInsensitive ? r.toLowerCase() : r
+
+  const canonicalCaseKeys = new Map() // fold(r) -> canonical relPath
+  const collided = new Map()          // collided relPath -> { with: canonical relPath }
+  const collidedWarned = new Set()    // relPath announced to room
+
+  function actualDiskPath(relPath) {
+    try {
+      const full = path.join(ROOT, relPath)
+      const native = fs.realpathSync.native(full)
+      return path.relative(ROOT, native).replace(/\\/g, '/')
+    } catch {
+      return null
+    }
+  }
+
+  function checkCaseCollision(r) {
+    if (!isCaseInsensitive) return false
+    const cf = fold(r)
+    const onDisk = actualDiskPath(r)
+
+    if (!canonicalCaseKeys.has(cf)) {
+      if (onDisk) {
+        canonicalCaseKeys.set(cf, onDisk)
+        if (onDisk !== r) {
+          collided.set(r, { with: onDisk })
+          noteCollided(r, onDisk)
+          return true
+        }
+        return false
+      }
+      canonicalCaseKeys.set(cf, r)
+      return false
+    }
+
+    const canon = canonicalCaseKeys.get(cf)
+    if (canon === r) return false
+
+    // We have a collision between `canon` and `r`
+    if (onDisk === r && onDisk !== canon) {
+      canonicalCaseKeys.set(cf, r)
+      collided.delete(r)
+      collided.set(canon, { with: r })
+      noteCollided(canon, r)
+      return false
+    }
+
+    collided.set(r, { with: canon })
+    noteCollided(r, canon)
+    return true
+  }
+
+  function noteCollided(r, withKey) {
+    if (collidedWarned.has(r)) return
+    collidedWarned.add(r)
+    log(`[${name}] ${withKey} and ${r} both exist in the room; disk cannot hold both, so ${r} is not written here`)
+    if (SKIP.has(r)) return
+    try {
+      say(`${withKey} and ${r} both exist in the room; ${name}'s disk cannot hold both, so ${r} is not written there.`)
+    } catch { }
+  }
+
   function writeToDisk(relPath, content) {
+    if (collided.has(relPath)) return
     if (!isSafeRelPath(relPath)) return // never write a path that could escape ROOT (defense in depth)
     // The mkdir below would recreate a lost folder holding one file, and the next scan would read
     // every other file as deleted -- the exact wipe loseFolder exists to prevent.
@@ -2005,6 +2097,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function reconcileBinary(relPath, origin = 'local') {
     if (folderLost) return
     if (SKIP.has(relPath) || isIgnored(relPath) || !canOpen(relPath)) return
+    if (collided.has(relPath)) return
     const full = path.join(ROOT, relPath)
     const exists = fs.existsSync(full)
     let fe = fileDocs.get(relPath)
@@ -2121,6 +2214,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (process.env.HIVE_TEST_STUCK_SYNC && relPath === process.env.HIVE_TEST_STUCK_SYNC) return
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
     if (!canOpen(relPath)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
+    if (collided.has(relPath)) {
+      if (origin === 'local') return // never push physical file into collided key
+      const fe = fileDocs.get(relPath)
+      if (fe && fe.synced) {
+        const dt = fe.text.toString()
+        bases.set(relPath, dt)
+        forkBases.set(relPath, dt)
+      }
+      return
+    }
     const full = path.join(ROOT, relPath)
     const exists = fs.existsSync(full)
     let fe = fileDocs.get(relPath)
@@ -3418,6 +3521,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     for (const full of diskFulls) {
       const r = rel(full)
       if (SKIP.has(r)) continue
+      checkCaseCollision(r)
+      if (collided.has(r)) continue
       let mt
       try { mt = fs.statSync(full).mtimeMs } catch { continue }
 
@@ -3454,7 +3559,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       changes++
     }
     noticeUnshared(currentUnshared)
-    const removed = [...known].filter((r) => !diskRel.has(r) && inManifest(r) && !pendingLocalDeletes.has(r))
+    const removed = [...known].filter((r) => !diskRel.has(r) && inManifest(r) && !pendingLocalDeletes.has(r) && !collided.has(r))
     if (removed.length) {
       changes += removed.length
       for (const r of removed) {
@@ -3531,6 +3636,25 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let kept = 0
     ev.changes.keys.forEach((change, key) => {
       if (change.action === 'delete') {
+        let promotedKey = null
+        if (isCaseInsensitive) {
+          const cf = fold(key)
+          if (collided.has(key)) {
+            collided.delete(key)
+            collidedWarned.delete(key)
+          } else if (canonicalCaseKeys.get(cf) === key) {
+            canonicalCaseKeys.delete(cf)
+            for (const [colKey, info] of collided.entries()) {
+              if (info.with === key && inManifest(colKey)) {
+                collided.delete(colKey)
+                collidedWarned.delete(colKey)
+                canonicalCaseKeys.set(cf, colKey)
+                promotedKey = colKey
+                break
+              }
+            }
+          }
+        }
         pendingManifestOps.delete(key)
         closeFile(key)
         { const qi = openQueue.indexOf(key); if (qi >= 0) { openQueue.splice(qi, 1); openQueueSet.delete(key) } } // deleted while queued
@@ -3539,7 +3663,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (keptAs) kept++
         known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key); shaShadow.delete(key); unwritable.delete(key)
         log(`[${name}] <- deleted ${key}${keptAs ? ` (copy kept: ${keptAs})` : ''}`)
+        if (promotedKey) {
+          reconcile(promotedKey, 'remote')
+        }
       } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
+        checkCaseCollision(key)
         if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
           openFile(key)
         } else {
@@ -3792,6 +3920,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         return la - lb
       })
       const cap = maxOpen()
+      for (const k of localFirst) checkCaseCollision(k)
       for (const key of localFirst.slice(0, cap)) queueOpenFile(key)
       if (final && localFirst.length > cap) {
         log(`[${name}] ${localFirst.length} files in this room, holding ${cap} open (HIVE_MAX_OPEN_FILES). The rest sync when touched.`)
@@ -4324,7 +4453,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         let n = 0
         try {
           const onDisk = new Set(walk(ROOT).map(rel))
-          for (const r of manifest.keys()) { if (canOpen(r) && (onDisk.has(r) || fs.existsSync(path.join(ROOT, r)))) n++ }
+          for (const r of manifest.keys()) { if (canOpen(r) && !collided.has(r) && (onDisk.has(r) || fs.existsSync(path.join(ROOT, r)))) n++ }
         } catch { }
         return n
       })()
@@ -4357,6 +4486,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         ...(folderLost ? { folderLost: folderLost.message } : {}),
         ...(unwritable.size ? { unwritable: [...unwritable].map(([p, code]) => ({ path: p, code })) } : {}),
         ...(withheldNow().length ? { withheld: withheldNow() } : {}),
+        ...(collided.size ? { collided: [...collided.entries()].map(([p, info]) => ({ path: p, with: info.with })) } : {}),
       }
     },
     unshared: () => [...unsharedWarned.entries()].map(([p, info]) => ({ path: p, reason: info.reason, size: info.size })),
@@ -4365,6 +4495,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     unwritable: () => [...unwritable].map(([p, code]) => ({ path: p, code })),
     // Files held here because they contain a key: path, kind, line. Never the key.
     withheld: () => withheldNow(),
+    collided: () => [...collided.entries()].map(([p, info]) => ({ path: p, with: info.with })),
     _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
     _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
     _fileDoc: (r) => fileDocs.get(r),
