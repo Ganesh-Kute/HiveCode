@@ -658,6 +658,20 @@ function unwritableNotice(s) {
   } catch { return '' }
 }
 
+// A KEY IN A FILE KEEPS THE FILE HERE (3 Oct 2026; sync.js heldForSecret). The agent that pasted it
+// is usually the one that needs telling, and the room line about it is in that agent's own name.
+function withheldNotice(s) {
+  try {
+    const fresh = (s.hive.withheld ? s.hive.withheld() : []).filter((w) => firstTime('withheld:' + w.path))
+    if (!fresh.length) return ''
+    const shown = fresh.slice(0, 5)
+    return `\n\n⛔ ${fresh.length} file(s) in your folder were NOT shared, because each contains a credential (a key or token) the room does not have:\n` +
+      shown.map((w) => `  - ${w.path}: ${/^(?:[aeiou]|npm\b)/i.test(w.kind) ? 'an' : 'a'} ${w.kind} on line ${w.line}`).join('\n') +
+      (fresh.length > shown.length ? `\n  ... (+${fresh.length - shown.length} more; hive_status lists all)` : '') +
+      `\nNobody else has your changes to these files. Read the key from the environment instead (put it in .env, which is never shared); each file is shared on its next save without the key.`
+  } catch { return '' }
+}
+
 const TOOLS = [
   { name: 'hive_join', description: 'Join a Hivecode room, or host a new one, for a folder. Uses the join link if given, else <dir>/.hive.json, else hosts. Returns the room details and the rules you must follow.',
     inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch (npx -y hivecode-mcp@latest branch <name>)' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' } } } },
@@ -1182,7 +1196,7 @@ async function dispatch(req) {
             }
           }
         } catch { }
-        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s))
+        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s))
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
       case 'hive_assign': { enforceDcoLock(); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
@@ -1284,14 +1298,14 @@ async function dispatch(req) {
         if (!r) {
           const ll = listenLine(requireSession())
           const listenStr = ll && firstTime('listen') ? ll : ''
-          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${unwritableNotice(requireSession())}${stateStr}${rulesStr}${listenStr}`)
+          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${unwritableNotice(requireSession())}${withheldNotice(requireSession())}${stateStr}${rulesStr}${listenStr}`)
         }
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()))
+        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()) + withheldNotice(requireSession()))
       }
       case 'hive_delivered': {
         const s2 = requireSession()
@@ -1543,6 +1557,10 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         }
         const r = requireSession().hive.edit(editPath, String(args.content ?? ''), String(args.intent || ''))
         if (r.error) return err(r.error)
+        if (r.withheld) {
+          firstTime('withheld:' + r.file) // said here, so the next hive_wait does not say it again
+          return text(`⛔ wrote ${r.file} in YOUR folder only. It was NOT shared, because it contains ${r.withheld}, and Hivecode does not send keys to the room or the relay. Nobody else has this change. Read the key from the environment instead (put it in .env, which is never shared); the file is shared on its next save without the key.`)
+        }
         return text(r.conflicted
           ? `wrote ${r.file}, but it now carries <<<<<<< conflict markers (a concurrent edit collided). Read the file and resolve before continuing.`
           : `✓ wrote ${r.file} through the medium — your intent is signed into its provenance ledger and the change is syncing to every peer.`)
@@ -1624,6 +1642,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           ...(conn && conn.folderLost ? { folderLost: conn.folderLost } : {}),
           ...(conn && conn.unsharedFiles && conn.unsharedFiles.length ? { unshared: conn.unsharedFiles } : {}),
           ...(conn && conn.unwritable && conn.unwritable.length ? { unwritable: { files: conn.unwritable.map((u) => `${u.path} (${u.code})`), meaning: 'read-only or locked in your folder, so your copy is older than the room\'s; each is written as soon as it can be' } } : {}),
+          ...(conn && conn.withheld && conn.withheld.length ? { withheld: { files: conn.withheld.map((w) => `${w.path}: ${w.kind}, line ${w.line}`), meaning: 'NOT shared: each contains a key or token the room does not have. Read it from the environment (.env is never shared); the file is shared on its next save without it' } } : {}),
         })
       }
       // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity

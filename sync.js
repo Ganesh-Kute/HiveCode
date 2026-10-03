@@ -51,6 +51,7 @@ import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from '.
 // the defect this ticket is about, one level down.
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
 import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
+import { newSecrets, describeSecret } from './hive-secrets.js' // a credential inside a file is held here, not sent to the room
 import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
@@ -73,6 +74,9 @@ export const ALWAYS_IGNORE = [
   // overwritten with conflict markers and then deleted. tests/branch-test.mjs pins it (D1, D2).
   '.git',
   '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
+  // Files that are credentials by name, whatever is in them on a given day: direnv's exports, the
+  // login stores of curl/git/pip, and the other private key formats.
+  '.envrc', '.netrc', '_netrc', '.git-credentials', '.pypirc', 'id_ecdsa', 'id_dsa', '*.ppk', '*.p8', '*.jks',
   '.hive-id.json', // this client's substrate signing identity (holds a PRIVATE key) — never sync it
   // This client's own session + chat read cursor. Syncing it would push one agent's identity
   // and read position into every other agent's folder, and a shared cursor means one agent
@@ -794,6 +798,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const base = shadow.get(relPath)
     if (base == null || disk === base) return false // no baseline yet, or nothing new on disk
     if (hasConflictMarkers(disk)) return false      // half-edited conflict block — not an authored state
+    if (!SHARE_SECRETS && newSecrets(disk, fe.text.toString()).length) return false // the ledger is shared: a key stays out of it
     stampIntent(relPath, base, disk)                // into the provenance DAG NOW — clobber-proof
     shadow.set(relPath, disk)                       // the captured state is the new baseline
     return true
@@ -972,6 +977,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!canWrite(relPath)) return { ok: false, reason: `${relPath} is read-only for you` }
     if (typeof proposal !== 'string' || !proposal.trim()) return { ok: false, reason: 'empty resolution' }
     if (hasConflictMarkers(proposal)) return { ok: false, reason: 'resolution still contains <<<<<<< conflict markers — send the final clean file' }
+    if (!SHARE_SECRETS) {
+      const key = newSecrets(proposal, fe.text.toString())[0]
+      if (key) return { ok: false, reason: `the resolution contains ${describeSecret(key)}, and a resolution is sent to everyone in the room. Read the key from the environment (.env is never shared) and resolve again` }
+    }
     let landed = proposal
     if (supports(relPath) && rec.base != null) {
       const v = structuralMerge(rec.base, proposal, rec.base, { filename: relPath })
@@ -1037,7 +1046,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const fe = fileDocs.get(relPath)
     const landed = fe && fe.synced ? fe.text.toString() : content
     let disk = content; try { disk = fs.readFileSync(full, 'utf8') } catch { }
-    return { ok: true, file: relPath, landed, conflicted: hasConflictMarkers(disk) }
+    // A new file's doc has not synced yet when this returns, so the gate in reconcile has not run:
+    // judge the content here too, or the answer would be "syncing to every peer" for a file that
+    // the gate is about to hold.
+    const held = withheld.get(relPath) || (SHARE_SECRETS ? null : newSecrets(content, fe && fe.synced ? fe.text.toString() : '')[0])
+    return { ok: true, file: relPath, landed, conflicted: hasConflictMarkers(disk), ...(held ? { withheld: describeSecret(held) } : {}) }
   }
   // Detect a live fork and record it. The version set is a CRDT UNION (per-hash keys), so
   // this is monotonic + convergent: every peer contributes what it sees and the set grows
@@ -1773,6 +1786,37 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     } catch { return null }
   }
   const ensuredDirs = new Set()
+  // A CREDENTIAL INSIDE A FILE STAYS ON THIS MACHINE (3 Oct 2026). A file in a room goes to the relay
+  // and to every participant's disk, so a key an agent pasted into config.js "to try something" went
+  // to all of them. Now a file whose content holds a credential the room does not already have
+  // (hive-secrets.js) is not sent: not its first version, not its edits, and a teammate's edits to it
+  // wait too, because a merge made here would carry the key out with them. The person is told once
+  // which file and what kind of key -- never the key itself -- and the file flows again the moment
+  // the key is out of it. A key already in the room holds nothing back: there is nothing left to keep.
+  const SHARE_SECRETS = process.env.HIVE_SHARE_SECRETS === '1' // an explicit opt-out, never a default
+  const withheld = new Map() // relPath -> { kind, line } of the first credential found
+  function heldForSecret(relPath, local, shared) {
+    if (SHARE_SECRETS) return false
+    const found = newSecrets(local, shared)
+    if (!found.length) { if (withheld.has(relPath)) clearWithheld(relPath); return false }
+    const f = { kind: found[0].kind, line: found[0].line }
+    const first = !withheld.has(relPath)
+    withheld.set(relPath, f)
+    if (first) {
+      log(`[${name}] holding ${relPath} on this machine: it contains ${describeSecret(f)}`)
+      if (!SKIP.has(relPath)) { try { say(`⛔ ${relPath}: ${name}'s change stays on ${name}'s machine, because it contains ${describeSecret(f)} and Hivecode does not send keys to the room. It is shared once the key is moved out of the file (into .env, which is never shared).`) } catch { } }
+    }
+    return true
+  }
+  function clearWithheld(relPath) {
+    withheld.delete(relPath)
+    log(`[${name}] ${relPath} holds no key now: shared again`)
+    if (!SKIP.has(relPath)) { try { say(`· ${relPath} from ${name} is shared again: the key is out of it.`) } catch { } }
+  }
+  // Still on disk: a held file that was since deleted or moved away is no longer anybody's concern.
+  function withheldNow() {
+    return [...withheld].filter(([p]) => fs.existsSync(path.join(ROOT, p))).map(([p, f]) => ({ path: p, kind: f.kind, line: f.line }))
+  }
   // A ROOM WRITE THAT CANNOT LAND HERE. Measured 3 Oct 2026: a teammate's edit to a file that is
   // read-only on this disk (a Perforce checkout, a generated file, a handle another program holds)
   // threw EPERM inside the Yjs observer; y-websocket printed "Caught error while handling a Yjs
@@ -2113,6 +2157,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
+    // Before anything below can publish this disk's content, merge it, or stamp it into the ledger:
+    // a key on disk that the room does not have holds the whole file here (heldForSecret).
+    {
+      const shared0 = fe.text.toString()
+      if (disk !== null && disk !== shared0) { if (heldForSecret(relPath, disk, shared0)) return }
+      else if (withheld.has(relPath)) clearWithheld(relPath)
+    }
     touchFile(relPath) // reconciling a file IS using it — keep it in the working set
     // SOURCE CAPTURE (fork gate): before ANYTHING in this pass can merge over or render into
     // this file, record any authored edit sitting on disk. The edit enters the provenance
@@ -4305,12 +4356,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         scanInterval,
         ...(folderLost ? { folderLost: folderLost.message } : {}),
         ...(unwritable.size ? { unwritable: [...unwritable].map(([p, code]) => ({ path: p, code })) } : {}),
+        ...(withheldNow().length ? { withheld: withheldNow() } : {}),
       }
     },
     unshared: () => [...unsharedWarned.entries()].map(([p, info]) => ({ path: p, reason: info.reason, size: info.size })),
     // The room is told when a change cannot be written here, but in this participant's own name, and
     // an agent is never handed its own lines. This is how its tools tell it instead.
     unwritable: () => [...unwritable].map(([p, code]) => ({ path: p, code })),
+    // Files held here because they contain a key: path, kind, line. Never the key.
+    withheld: () => withheldNow(),
     _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
     _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
     _fileDoc: (r) => fileDocs.get(r),

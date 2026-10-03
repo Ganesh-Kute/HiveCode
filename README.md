@@ -28,6 +28,34 @@ room — **treat the link like a password** and share it only with your team.
 
 ---
 
+## Your code: where it goes, and who can see it
+
+Read this before you join from a real project.
+
+- **Your shared files go to the relay and to everyone in the room.** The default relay is run by
+  the Hivecode author, not by you. Files travel over an encrypted connection (`wss://`), and the
+  relay keeps a copy so the room survives everyone going offline. Your agent's `hive_join` says
+  which relay it is using every time, and whose it is.
+- **The link is the key.** Anyone who has it can read and change every file in the room. Share
+  it like a password. If it leaks, start a new room.
+- **These never leave your machine:** anything your `.gitignore` files ignore, `.git/`,
+  `node_modules/`, `.env` and `.env.*`, keys and certificates (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
+  `*.p8`, `*.ppk`, `*.jks`, `*.keystore`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), and login
+  files (`.envrc`, `.netrc`, `.git-credentials`, `.pypirc`).
+- **A key pasted into an ordinary file stays too.** If a file holds an API key or token the room
+  does not already have (OpenAI, Anthropic, GitHub, GitLab, AWS, Stripe, Slack, npm, Hugging Face,
+  Groq, SendGrid, DigitalOcean, or a private key), Hivecode keeps that file on your machine and
+  tells you and your agent which file, and which line. Your agent's `hive_edit` says so too, rather
+  than reporting the file as shared. Move the key into `.env` and the file is shared on its next save.
+- **What the others in the room can do:** change any shared file, which then changes in your
+  folder too (claims stop two agents colliding, not a teammate), and message your agent, which acts
+  on it. Hivecode never runs anything on your machine, but what they write lands on your disk.
+  Invite only people you would let push to your repository.
+- **For code that must never leave your own machines,** run your own relay: `npx hivecode-relay`
+  (see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)). Then nothing goes to ours.
+
+---
+
 ## Set up an AI agent (about 2 minutes)
 
 You need [Node.js](https://nodejs.org) 18 or newer. Then run this once, in any terminal:
@@ -267,6 +295,7 @@ you prompt it: tell it to check the room.
 | a file you had is gone | a teammate deleted it, and the delete reached your folder | your copy is in `.hive-deleted/<when>/` inside your room folder for 7 days; copy it back and it syncs again |
 | `Q581` | someone in the room already uses that name. Two participants under one name would share claims and mail | join again with the free name it suggests. If that was you a moment ago, wait 30 seconds and join again |
 | `Q580` | your room folder was deleted, moved, or emptied all at once. Nothing was deleted for anyone, and file sync stopped in that folder | call `hive_join` again with the same link: an empty folder is filled from the room |
+| the room says a file `stays on <name>'s machine, because it contains` a key | that file holds an API key or token the room does not have, so it was not shared (nor any change to it since) | move the key into `.env` and read it from the environment. The file is shared on its next save, with every edit made meanwhile |
 | the room says a file `could not be written on <name>'s disk` | that file is read-only or locked in their folder (a Perforce checkout, a generated file, another program holding it), so their copy is older than the room's. Everyone else's copy, and the room's, are fine | make it writable, or close what holds it. It is then written on its own, with no edit needed, and an edit made to the old copy meanwhile is merged, not lost |
 
 **Secured room?** Give the agent its token: pass `token` to `hive_join`, or set `HIVE_TOKEN`.

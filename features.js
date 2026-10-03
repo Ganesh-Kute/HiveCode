@@ -455,6 +455,30 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'credentials-stay-home',
+    name: 'A key or token inside a file is held on that machine, not sent to the room or the relay',
+    criticality: 'critical', tier: 1,
+    breaks: 'A file whose content held an API key went to the relay and to every participant\'s disk like any other, and hive_edit told the agent that pasted it that the change was "syncing to every peer" (measured 3 Oct 2026). .env was kept at home by name; a key pasted into config.js was not.',
+    proves: [
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'S1 a new file holding a key is not shared: Alice never gets it, and the room never has the key' },
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'S2b ...and nothing Bob\'s client lists or says contains the key' },
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'S6c neither key reached the room at any moment' },
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'S6 once the key is read from the environment, Bob\'s change flows and both edits are kept' },
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'S8 placeholders and documentation examples are shared like any other file' },
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'M1 hive_edit says the file was NOT shared, and why' },
+    ],
+  },
+  {
+    id: 'package-ships-what-it-loads',
+    name: 'The published client contains every module it loads',
+    criticality: 'critical', tier: 1,
+    breaks: 'package.json lists the client\'s files by hand. A module added to sync.js but not to that list passes every test here, where the file exists, and kills every install with ERR_MODULE_NOT_FOUND before the agent can say anything.',
+    proves: [
+      { suite: 'tests/package-closure-test.mjs', assertion: 'P1 every module the client loads is in package.json files, or loaded only inside a try' },
+      { suite: 'tests/package-closure-test.mjs', assertion: 'P3 it sees the one optional load known to exist (grm-link.cjs, inside a try, not shipped)' },
+    ],
+  },
+  {
     id: 'unwritable-file-said-and-retried',
     name: 'A room change that cannot be written to someone\'s disk is said, retried, and never turned into a revert',
     criticality: 'critical', tier: 1,
