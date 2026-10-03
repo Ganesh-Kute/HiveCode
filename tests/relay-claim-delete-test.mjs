@@ -72,17 +72,56 @@ await until(() => {
   return c && c.by === 'Bob'
 }, 4000)
 
+// Bob writes a local unpushed edit to held.js
+const BOB_EDIT = 'export const h = 1\n// Bob unpushed local work\n'
+fs.writeFileSync(path.join(bobDir, 'held.js'), BOB_EDIT)
+
 const chatBeforeA = alice.doc.getArray('chat').length
+
+// Poll Bob's disk every 20ms during the rogue delete & restoration
+let bobFileVanished = false
+let bobEditLost = false
+const poller = setInterval(() => {
+  const p = path.join(bobDir, 'held.js')
+  if (!fs.existsSync(p)) {
+    bobFileVanished = true
+  } else {
+    try {
+      const content = fs.readFileSync(p, 'utf8')
+      if (!content.includes('Bob unpushed local work')) {
+        bobEditLost = true
+      }
+    } catch {}
+  }
+}, 20)
+
 // Alice directly deletes manifest key (bypassing settleLocalDeletes)
 alice.doc.getMap('manifest').delete('held.js')
 
 // The relay should catch this and restore held.js
 const aRestored = await until(() => alice.doc.getMap('manifest').has('held.js'), 6000)
+await sleep(800)
+clearInterval(poller)
+
 T('A1 Alice direct manifest.delete of held.js is compensated/restored by relay', aRestored)
 
 const chatAfterA = alice.doc.getArray('chat').toArray().slice(chatBeforeA)
 const noticeA = chatAfterA.find((m) => m && m.text && m.text.includes('deleted held.js') && m.text.includes('held by Bob'))
 T('A2 Room is told via notice that delete was refused and file is back', !!noticeA, noticeA ? noticeA.text : 'no notice found')
+
+// Check the settlement invariants:
+// (a) held.js never vanished on Bob's disk
+T('A3 held.js never vanishes on Bob disk during compensating restore', !bobFileVanished)
+
+// (b) no .hive-deleted copy on Bob or Alice
+const bobHasDeletedCopy = fs.existsSync(path.join(bobDir, '.hive-deleted'))
+const aliceHasDeletedCopy = fs.existsSync(path.join(aliceDir, '.hive-deleted'))
+T('A4 no .hive-deleted copy created on Bob disk', !bobHasDeletedCopy)
+T('A5 no .hive-deleted copy created on Alice disk', !aliceHasDeletedCopy)
+
+// (c) Bob's unpushed edit is still in the working file
+const bobCurrentContent = fs.readFileSync(path.join(bobDir, 'held.js'), 'utf8')
+T('A6 Bob unpushed edit is still intact in the working file', bobCurrentContent === BOB_EDIT && !bobEditLost)
 
 console.log('\n# B. Holder deletes their own held file in open mode')
 bob.claim('own.js', 'Bob working on own')

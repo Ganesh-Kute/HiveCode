@@ -708,6 +708,11 @@ function installManifestDeleteGuard(baseRoom) {
         return
       }
 
+      // SYNCHRONOUS, HERE, ON PURPOSE. Yjs encodes a transaction's broadcast from the live store and
+      // emits it only after afterTransaction has run, so this restore rides inside the delete's own
+      // update: peers see one 'update' and never a delete. Deferred (setImmediate, a timer), peers get
+      // delete-then-restore, and the holder's file is moved to .hive-deleted and rewritten from the
+      // room, taking any edit not yet pushed with it. relay-claim-delete A3/A4/A6 fail if this moves.
       try {
         baseDoc.transact(() => {
           for (const { key, oldValue, claim } of restores) {
