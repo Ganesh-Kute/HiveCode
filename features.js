@@ -71,7 +71,7 @@ export const FEATURES = [
   {
     id: 'held-file-not-deleted',
     name: 'A file someone holds is not deleted under them: refused by the deleting client, and restored by the relay when an older client sends the delete anyway',
-    criticality: 'critical', tier: 1,
+    criticality: 'critical', tier: 3,
     breaks: 'A teammate\'s delete removes a file another agent holds and is mid-edit on, from every folder, the holder\'s included. A client from before the check, or a script, sends that delete straight to the room.',
     proves: [
       { suite: 'tests/delete-safety-test.mjs', assertion: 'H1 Bob keeps the file he holds, with his edit in it' },
@@ -457,7 +457,7 @@ export const FEATURES = [
   {
     id: 'credentials-stay-home',
     name: 'A key or token inside a file is held on that machine, not sent to the room or the relay',
-    criticality: 'critical', tier: 1,
+    criticality: 'critical', tier: 3,
     breaks: 'A file whose content held an API key went to the relay and to every participant\'s disk like any other, and hive_edit told the agent that pasted it that the change was "syncing to every peer" (measured 3 Oct 2026). .env was kept at home by name; a key pasted into config.js was not.',
     proves: [
       { suite: 'tests/secret-gate-test.mjs', assertion: 'S1 a new file holding a key is not shared: Alice never gets it, and the room never has the key' },
@@ -468,6 +468,18 @@ export const FEATURES = [
       { suite: 'tests/secret-gate-test.mjs', assertion: 'M1 hive_edit says the file was NOT shared, and why' },
       { suite: 'tests/secret-gate-test.mjs', assertion: 'M4 hive_say refuses a message holding a key, and the room never gets it' },
       { suite: 'tests/secret-gate-test.mjs', assertion: 'M6 a message that only says where a key is kept is sent as usual' },
+    ],
+  },
+  {
+    id: 'guessable-room-called-out',
+    name: 'Joining a room whose name can be guessed, on the public relay, says so',
+    criticality: 'hot', tier: 1,
+    breaks: 'On a relay anyone can reach, a room\'s name is its only key. A typed name like "night" (this project\'s own room on 3 Oct 2026) lets whoever guesses it read every file and write into every folder, and nothing told the people in it.',
+    proves: [
+      { suite: 'tests/guessable-room-test.mjs', assertion: 'G1 names people type are guessable' },
+      { suite: 'tests/guessable-room-test.mjs', assertion: 'G2 a hosted room\'s id is not (under 0.05% of 20,000 random ids flagged)' },
+      { suite: 'tests/guessable-room-test.mjs', assertion: 'G4 on the public relay, the warning names a guessable room and says so' },
+      { suite: 'tests/guessable-room-test.mjs', assertion: 'G6 hive_join and hive_status both pass the room to the check' },
     ],
   },
   {
@@ -483,7 +495,7 @@ export const FEATURES = [
   {
     id: 'unwritable-file-said-and-retried',
     name: 'A room change that cannot be written to someone\'s disk is said, retried, and never turned into a revert',
-    criticality: 'critical', tier: 1,
+    criticality: 'critical', tier: 3,
     breaks: 'A read-only or locked file (a Perforce checkout, a generated file, a handle another program holds) stayed at the old version on that disk while the room moved on: status read all green, nothing tried again, and the agent working from the stale copy was never told. A first fix that retried it reverted the teammate\'s change for everyone (measured 3 Oct 2026).',
     proves: [
       { suite: 'tests/unwritable-file-test.mjs', assertion: 'U1 Alice\'s change stands: the room and Alice keep it while Bob cannot write it' },

@@ -37,7 +37,9 @@ Read this before you join from a real project.
   relay keeps a copy so the room survives everyone going offline. Your agent's `hive_join` says
   which relay it is using every time, and whose it is.
 - **The link is the key.** Anyone who has it can read and change every file in the room. Share
-  it like a password. If it leaks, start a new room.
+  it like a password. If it leaks, start a new room. Let your agent host the room, so its name is
+  random: a name you type yourself, like `myteam`, can be guessed, and on our relay your agent is
+  warned when it joins one.
 - **These never leave your machine:** anything your `.gitignore` files ignore, `.git/`,
   `node_modules/`, `.env` and `.env.*`, keys and certificates (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
   `*.p8`, `*.ppk`, `*.jks`, `*.keystore`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), and login

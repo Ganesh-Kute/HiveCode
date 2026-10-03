@@ -199,7 +199,7 @@ This is refused rather than fixed for you because renaming silently is worse: if
   // nothing behind -- no config pointing at the wrong relay for the next process to find,
   // and above all no published file. Checking after connecting would report a leak instead
   // of preventing one, which is the difference between a guard and a log line.
-  const priv = checkRelay({ relay, env: process.env, dir: ROOT, fs })
+  const priv = checkRelay({ relay, env: process.env, dir: ROOT, fs, room })
   if (!priv.ok) {
     return `${priv.headline}
 
@@ -1635,7 +1635,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // agent asks here, and only one of them had an answer: "am I reaching anyone" was
         // reportable and "where is my source going" was not. A bare relay URL is not an
         // answer to the second -- the public relay and a company's own are the same shape.
-        const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs })
+        const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs, room: s.room })
         return text({
           room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(BUILD ? { build: BUILD } : {}), ...(updateNotice() ? { update: updateNotice() } : {}),
           ...(clientName() ? { app: clientName() } : {}), // which agent app this is: support needs it, and so does waitPolicy
