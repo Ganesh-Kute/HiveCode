@@ -642,6 +642,22 @@ function waitForWork(timeoutMs, opts = {}) {
 const explained = new Set()
 const firstTime = (key) => (explained.has(key) ? false : (explained.add(key), true))
 
+// A ROOM CHANGE THAT COULD NOT LAND HERE (3 Oct 2026). sync.js tells the room when a file in this
+// folder is read-only or locked and so stays behind the room's copy, but that line goes out in this
+// agent's own name, and an agent is never handed its own lines: the one participant working from
+// the stale copy was the one nobody told. Said once per file, on a call the agent was making anyway.
+function unwritableNotice(s) {
+  try {
+    const fresh = (s.hive.unwritable ? s.hive.unwritable() : []).filter((u) => firstTime('unwritable:' + u.path))
+    if (!fresh.length) return ''
+    const shown = fresh.slice(0, 5)
+    return `\n\n⚠ ${fresh.length} file(s) in your folder could not be written (read-only, or locked by another program), so your copy is OLDER than the room's:\n` +
+      shown.map((u) => `  - ${u.path} (${u.code})`).join('\n') +
+      (fresh.length > shown.length ? `\n  ... (+${fresh.length - shown.length} more; hive_status lists all)` : '') +
+      `\nDo not work from that copy. Make it writable or close what holds it, or tell your person: it is written as soon as it can be, and anything you changed in it is merged, not lost.`
+  } catch { return '' }
+}
+
 const TOOLS = [
   { name: 'hive_join', description: 'Join a Hivecode room, or host a new one, for a folder. Uses the join link if given, else <dir>/.hive.json, else hosts. Returns the room details and the rules you must follow.',
     inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch (npx -y hivecode-mcp@latest branch <name>)' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' } } } },
@@ -1166,7 +1182,7 @@ async function dispatch(req) {
             }
           }
         } catch { }
-        return text(parts.join('\n\n') + owedLine + unsharedPart)
+        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s))
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
       case 'hive_assign': { enforceDcoLock(); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
@@ -1268,14 +1284,14 @@ async function dispatch(req) {
         if (!r) {
           const ll = listenLine(requireSession())
           const listenStr = ll && firstTime('listen') ? ll : ''
-          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${stateStr}${rulesStr}${listenStr}`)
+          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${unwritableNotice(requireSession())}${stateStr}${rulesStr}${listenStr}`)
         }
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)'))
+        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()))
       }
       case 'hive_delivered': {
         const s2 = requireSession()
@@ -1607,6 +1623,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
           ...(conn && conn.folderLost ? { folderLost: conn.folderLost } : {}),
           ...(conn && conn.unsharedFiles && conn.unsharedFiles.length ? { unshared: conn.unsharedFiles } : {}),
+          ...(conn && conn.unwritable && conn.unwritable.length ? { unwritable: { files: conn.unwritable.map((u) => `${u.path} (${u.code})`), meaning: 'read-only or locked in your folder, so your copy is older than the room\'s; each is written as soon as it can be' } } : {}),
         })
       }
       // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity

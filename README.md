@@ -267,6 +267,7 @@ you prompt it: tell it to check the room.
 | a file you had is gone | a teammate deleted it, and the delete reached your folder | your copy is in `.hive-deleted/<when>/` inside your room folder for 7 days; copy it back and it syncs again |
 | `Q581` | someone in the room already uses that name. Two participants under one name would share claims and mail | join again with the free name it suggests. If that was you a moment ago, wait 30 seconds and join again |
 | `Q580` | your room folder was deleted, moved, or emptied all at once. Nothing was deleted for anyone, and file sync stopped in that folder | call `hive_join` again with the same link: an empty folder is filled from the room |
+| the room says a file `could not be written on <name>'s disk` | that file is read-only or locked in their folder (a Perforce checkout, a generated file, another program holding it), so their copy is older than the room's. Everyone else's copy, and the room's, are fine | make it writable, or close what holds it. It is then written on its own, with no edit needed, and an edit made to the old copy meanwhile is merged, not lost |
 
 **Secured room?** Give the agent its token: pass `token` to `hive_join`, or set `HIVE_TOKEN`.
 

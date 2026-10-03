@@ -1773,6 +1773,38 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     } catch { return null }
   }
   const ensuredDirs = new Set()
+  // A ROOM WRITE THAT CANNOT LAND HERE. Measured 3 Oct 2026: a teammate's edit to a file that is
+  // read-only on this disk (a Perforce checkout, a generated file, a handle another program holds)
+  // threw EPERM inside the Yjs observer; y-websocket printed "Caught error while handling a Yjs
+  // update" to stderr, the file stayed at the old version while the room moved on, status() read
+  // all green, and nothing ever tried again. Now the path is recorded, the room is told once that
+  // this copy is behind, status() lists it, and every scan retries (retryUnwritable) until it lands.
+  const unwritable = new Map() // relPath -> error code of the last failed write
+  function noteUnwritable(relPath, e) {
+    const code = (e && e.code) || 'error'
+    const first = !unwritable.has(relPath)
+    unwritable.set(relPath, code)
+    if (!first) return
+    log(`[${name}] could not write ${relPath} (${code}); this folder's copy stays behind the room's until it can be written`)
+    if (SKIP.has(relPath)) return // a rendered control file: it is re-rendered on the next change anyway
+    try { say(`⚠ ${relPath} could not be written on ${name}'s disk (${code}: read-only, locked, or a folder in the way), so ${name}'s copy is older than the room's. It is written as soon as the file can be.`) } catch { }
+  }
+  function clearUnwritable(relPath) {
+    unwritable.delete(relPath)
+    log(`[${name}] ${relPath} written: this folder has the room's copy again`)
+    if (!SKIP.has(relPath)) { try { say(`· ${relPath} is current on ${name}'s disk again.`) } catch { } }
+  }
+  // Through reconcile, not a bare write: if the file was edited here while it could not be written,
+  // that edit is merged with the room's version rather than overwritten by it.
+  function retryUnwritable() {
+    for (const r of [...unwritable.keys()]) {
+      if (SKIP.has(r)) { unwritable.delete(r); continue }
+      const fe = fileDocs.get(r)
+      const disk = readText(path.join(ROOT, r))
+      if (fe && fe.synced && disk !== null && disk === fe.text.toString()) { clearUnwritable(r); continue }
+      try { reconcile(r, 'remote') } catch { }
+    }
+  }
   function writeToDisk(relPath, content) {
     if (!isSafeRelPath(relPath)) return // never write a path that could escape ROOT (defense in depth)
     // The mkdir below would recreate a lost folder holding one file, and the next scan would read
@@ -1798,19 +1830,32 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
     } catch { }
     const dir = path.dirname(full)
-    if (!ensuredDirs.has(dir)) {
-      fs.mkdirSync(dir, { recursive: true })
-      ensuredDirs.add(dir)
+    try {
+      if (!ensuredDirs.has(dir)) {
+        fs.mkdirSync(dir, { recursive: true })
+        ensuredDirs.add(dir)
+      }
+      try { fs.writeFileSync(full, content) } catch (e) {
+        // The cache only skips mkdir; it must never lose a write. A folder someone deleted or renamed
+        // since we made it is simply made again.
+        if (e.code !== 'ENOENT') throw e
+        ensuredDirs.delete(dir)
+        fs.mkdirSync(dir, { recursive: true })
+        ensuredDirs.add(dir)
+        fs.writeFileSync(full, content)
+      }
+    } catch (e) {
+      // The disk still holds the OLD content. Callers record the new content as this file's base and
+      // shadow -- some before writing, some after -- and a base the disk does not hold makes the stale
+      // copy read as a local edit, merged back over the room: measured, a teammate's change reverted
+      // for everyone. So the bookkeeping goes back to what the disk really holds, and the error still
+      // propagates, so no caller goes on to record this write as done.
+      const onDisk = readText(full)
+      if (onDisk !== null) { bases.set(relPath, onDisk); forkBases.set(relPath, onDisk); shadow.set(relPath, onDisk); saveShadowSoon() }
+      noteUnwritable(relPath, e)
+      throw e
     }
-    try { fs.writeFileSync(full, content) } catch (e) {
-      // The cache only skips mkdir; it must never lose a write. A folder someone deleted or renamed
-      // since we made it is simply made again.
-      if (e.code !== 'ENOENT') throw e
-      ensuredDirs.delete(dir)
-      fs.mkdirSync(dir, { recursive: true })
-      ensuredDirs.add(dir)
-      fs.writeFileSync(full, content)
-    }
+    if (unwritable.has(relPath)) clearUnwritable(relPath)
     shadow.set(relPath, content) // record what THE ENGINE wrote — any later disk divergence is an authored edit
     saveShadowSoon()             // ...and survive a restart, or the next join has no ancestor
     known.add(relPath)
@@ -3291,6 +3336,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (folderLost) return 0
     // walk() of a missing folder returns nothing, which used to read as "every file was deleted".
     if (!rootIsDir()) { loseFolder('is gone'); return 0 }
+    if (unwritable.size) retryUnwritable()
     const skippedFulls = []
     const diskFulls = walk(ROOT, [], skippedFulls)
     const diskRel = new Set(diskFulls.map(rel))
@@ -3440,7 +3486,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (!stamp) stamp = deletedStamp() // one folder per batch, so a bulk delete comes back together
         const keptAs = keepDeletedCopy(key, stamp)
         if (keptAs) kept++
-        known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key); shaShadow.delete(key)
+        known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key); shaShadow.delete(key); unwritable.delete(key)
         log(`[${name}] <- deleted ${key}${keptAs ? ` (copy kept: ${keptAs})` : ''}`)
       } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
         if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
@@ -4258,9 +4304,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         evicted,
         scanInterval,
         ...(folderLost ? { folderLost: folderLost.message } : {}),
+        ...(unwritable.size ? { unwritable: [...unwritable].map(([p, code]) => ({ path: p, code })) } : {}),
       }
     },
     unshared: () => [...unsharedWarned.entries()].map(([p, info]) => ({ path: p, reason: info.reason, size: info.size })),
+    // The room is told when a change cannot be written here, but in this participant's own name, and
+    // an agent is never handed its own lines. This is how its tools tell it instead.
+    unwritable: () => [...unwritable].map(([p, code]) => ({ path: p, code })),
     _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
     _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
     _fileDoc: (r) => fileDocs.get(r),

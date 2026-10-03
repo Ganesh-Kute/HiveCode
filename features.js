@@ -442,6 +442,19 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'unwritable-file-said-and-retried',
+    name: 'A room change that cannot be written to someone\'s disk is said, retried, and never turned into a revert',
+    criticality: 'critical', tier: 1,
+    breaks: 'A read-only or locked file (a Perforce checkout, a generated file, a handle another program holds) stayed at the old version on that disk while the room moved on: status read all green, nothing tried again, and the agent working from the stale copy was never told. A first fix that retried it reverted the teammate\'s change for everyone (measured 3 Oct 2026).',
+    proves: [
+      { suite: 'tests/unwritable-file-test.mjs', assertion: 'U1 Alice\'s change stands: the room and Alice keep it while Bob cannot write it' },
+      { suite: 'tests/unwritable-file-test.mjs', assertion: 'U2b the room is told once that Bob\'s copy is behind' },
+      { suite: 'tests/unwritable-file-test.mjs', assertion: 'U5b ...and so does the room: neither edit was dropped or reverted' },
+      { suite: 'tests/unwritable-file-test.mjs', assertion: 'U6 it catches up on its own: nothing waits for an edit to notice it is behind' },
+      { suite: 'tests/unwritable-file-test.mjs', assertion: 'M1 hive_wait tells Cara its m.js is older than the room\'s' },
+    ],
+  },
+  {
     id: 'mail-handed-over-once',
     name: 'A message the listener woke the agent for is not raised again as unread mail',
     criticality: 'hot', tier: 1,
