@@ -352,7 +352,7 @@ export const FEATURES = [
     proves: [
       { suite: 'tests/branch-test.mjs', assertion: 'the checkout was not switched and nothing in it changed' },
       { suite: 'tests/branch-test.mjs', assertion: 'every text file of the branch arrived byte-exact' },
-      { suite: 'tests/branch-test.mjs', assertion: 'binary, over-1MB and always-ignored files were filled from git' },
+      { suite: 'tests/branch-test.mjs', assertion: 'binary, over-1MB, always-ignored and key-holding files were filled from git' },
       { suite: 'tests/branch-test.mjs', assertion: 'deleted in the room, is not recreated by a later joiner' },
     ],
   },
