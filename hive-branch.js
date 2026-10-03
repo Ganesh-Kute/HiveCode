@@ -35,6 +35,7 @@ import { fileURLToPath } from 'url'
 import ignore from 'ignore'
 import { startSync, parseLink, ALWAYS_IGNORE, SKIP } from './sync.js'
 import { PUBLIC_DEFAULT_RELAY, currentRelayFor } from './hive-privacy.js'
+import { findSecrets } from './hive-secrets.js'
 import { validateMemberName, suggestMemberName } from './hive-mailbox.js'
 import { isSafeRelPath } from './token.js'
 
@@ -173,7 +174,11 @@ export function roomCarries(files) {
     }
     return false
   }
-  return (f) => f.buf.length <= TEXT_MAX && !f.buf.includes(0) && !SKIP.has(f.rel) && !ignored(f.rel)
+  // A file holding a key is held at home by every client (sync.js heldForSecret), so a room that
+  // promised to carry it would never finish seeding (measured 3 Oct 2026: Q565, "4 of 5 files",
+  // nothing bound). It is not carried, and each participant gets it from git like a binary.
+  const holdsKey = (f) => process.env.HIVE_SHARE_SECRETS !== '1' && findSecrets(f.buf.toString('utf8')).length > 0
+  return (f) => f.buf.length <= TEXT_MAX && !f.buf.includes(0) && !SKIP.has(f.rel) && !ignored(f.rel) && !holdsKey(f)
 }
 
 // Hivecode's own bookkeeping (.hive.json, .hive-shadow.json, .hive-lock.json, ...). If a repo happens

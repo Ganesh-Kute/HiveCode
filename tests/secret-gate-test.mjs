@@ -10,7 +10,7 @@
 //   S1  a new file holding a key is not shared: no peer gets it, and the room never has the key
 //   S2  the holder's status names the file, the kind and the line -- and nothing it lists or says
 //       contains the key itself
-//   S3  the room is told once
+//   S3  a file the room never had is not announced there (nobody waits on it); one it has is, once
 //   S4  an edit that adds a key to a shared file is held: the peer keeps the previous version...
 //   S5  ...a teammate's edit to that file meanwhile reaches the room, and the room still never has the key
 //   S6  once the key is read from the environment instead, the file flows again, both edits kept,
@@ -87,7 +87,7 @@ T('S1 a new file holding a key is not shared: Alice never gets it, and the room 
 const held = (B.status().withheld || []).find((w) => w.path === 'config.js')
 T('S2 Bob\'s status names the file, the kind and the line...', !!held && held.kind === 'OpenAI API key' && held.line === 2, JSON.stringify(B.status().withheld || null))
 T('S2b ...and nothing Bob\'s client lists or says contains the key', !JSON.stringify(B.status()).includes(OPENAI) && !chat().some((t) => t.includes(OPENAI)))
-T('S3 the room is told once', chat().filter((t) => /config\.js: Bob's change stays on Bob's machine/.test(t)).length === 1, JSON.stringify(chat().slice(-3)))
+T('S3 a file the room never had is not announced there: nobody is waiting on it (Bob\'s agent is told instead)', !chat().some((t) => /config\.js/.test(t)), JSON.stringify(chat().slice(-3)))
 
 console.log('\nan edit that adds a key to a file the room already has')
 const V1 = 'export function send(msg) {\n  return post(msg)\n}\n\nexport const retries = 1\n'
@@ -97,6 +97,7 @@ const B_KEYED = V1.replace('  return post(msg)\n', `  return post(msg, { token: 
 fs.writeFileSync(path.join(B_DIR, 'notify.js'), B_KEYED)
 await sleep(3000)
 T('S4 the edit is held: Alice keeps the previous version', read(A_DIR, 'notify.js') === V1 && !roomHas(GITHUB), JSON.stringify(read(A_DIR, 'notify.js')))
+T('S4b ...and the room, which has that file, is told once why Bob\'s change is not arriving', chat().filter((t) => /notify\.js: Bob's change stays on Bob's machine/.test(t)).length === 1, JSON.stringify(chat().slice(-3)))
 fs.writeFileSync(path.join(A_DIR, 'notify.js'), V1.replace('retries = 1', 'retries = 3'))
 await sleep(3000)
 T('S5 Alice\'s edit to it meanwhile reaches the room, and the room still never has the key',

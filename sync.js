@@ -1802,24 +1802,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // which file and what kind of key -- never the key itself -- and the file flows again the moment
   // the key is out of it. A key already in the room holds nothing back: there is nothing left to keep.
   const SHARE_SECRETS = process.env.HIVE_SHARE_SECRETS === '1' // an explicit opt-out, never a default
-  const withheld = new Map() // relPath -> { kind, line } of the first credential found
+  const withheld = new Map() // relPath -> { kind, line, said } of the first credential found
   function heldForSecret(relPath, local, shared) {
     if (SHARE_SECRETS) return false
     const found = newSecrets(local, shared)
     if (!found.length) { if (withheld.has(relPath)) clearWithheld(relPath); return false }
-    const f = { kind: found[0].kind, line: found[0].line }
-    const first = !withheld.has(relPath)
+    const prev = withheld.get(relPath)
+    // Said in the room only for a file the room HAS: there, teammates are waiting on a change that is
+    // not coming. A file the room never had leaves nobody missing anything -- and a repo with a
+    // committed key would otherwise have every teammate who checks it out announce the same file.
+    // The agent is told either way (hive_wait, hive_edit).
+    const said = prev ? prev.said : (!SKIP.has(relPath) && inManifest(relPath))
+    const f = { kind: found[0].kind, line: found[0].line, said }
     withheld.set(relPath, f)
-    if (first) {
+    if (!prev) {
       log(`[${name}] holding ${relPath} on this machine: it contains ${describeSecret(f)}`)
-      if (!SKIP.has(relPath)) { try { say(`⛔ ${relPath}: ${name}'s change stays on ${name}'s machine, because it contains ${describeSecret(f)} and Hivecode does not send keys to the room. It is shared once the key is moved out of the file (into .env, which is never shared).`) } catch { } }
+      if (said) { try { say(`⛔ ${relPath}: ${name}'s change stays on ${name}'s machine, because it contains ${describeSecret(f)} and Hivecode does not send keys to the room. It is shared once the key is moved out of the file (into .env, which is never shared).`) } catch { } }
     }
     return true
   }
   function clearWithheld(relPath) {
+    const w = withheld.get(relPath)
     withheld.delete(relPath)
     log(`[${name}] ${relPath} holds no key now: shared again`)
-    if (!SKIP.has(relPath)) { try { say(`· ${relPath} from ${name} is shared again: the key is out of it.`) } catch { } }
+    if (w && w.said) { try { say(`· ${relPath} from ${name} is shared again: the key is out of it.`) } catch { } }
   }
   // Still on disk: a held file that was since deleted or moved away is no longer anybody's concern.
   function withheldNow() {

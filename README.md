@@ -151,7 +151,8 @@ work is done.
 
 - **Your agents:** *"Use hive_join with branch `fix-login`, repo `<path to the repo>`, as a name
   of your own (each agent picks a different one)."* Each agent gets its own folder holding the
-  branch. Binary files, which a room does not carry, are filled in from git.
+  branch. Files a room does not carry (binaries, files over 1 MB, and any committed file that holds
+  a key or token) are filled in from git instead.
 - **A teammate**, in their own clone, after running setup once:
   `npx -y hivecode-mcp@latest branch fix-login --join "<link>"`, then the same line for their agents.
 - **When the work is done:**

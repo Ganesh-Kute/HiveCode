@@ -54,6 +54,9 @@ const FILES = {
   'logo.png': PNG,            // binary: the room never carries it
   'big.txt': BIG,             // over 1 MB: the room never carries it
   '.env.example': 'API_KEY=\n', // always-ignored ('.env.*'): the room never carries it
+  // A key committed in a text file: the room never carries it either (hive-secrets.js). Made here,
+  // at run time, so this test file holds no key for a scanner to find.
+  'config/keys.js': `export const stripe = '${'sk' + '_live_' + crypto.randomBytes(18).toString('base64url').replace(/[-_]/g, 'q')}'\n`,
 }
 const TEXT = ['app.js', 'lib/util.js', 'README.md', '.gitignore']
 
@@ -88,7 +91,7 @@ try {
   T('A2 the checkout was not switched and nothing in it changed', g(project, 'symbolic-ref', '--short', 'HEAD').out === 'main' && g(project, 'status', '--porcelain').out === '')
   T('A3 the branch exists, at the commit it was cut from', g(project, 'rev-parse', 'refs/heads/feat').out === mainTip)
   T('A4 the room id is random, never the branch name', /^room-[A-Za-z0-9_-]{17,}$/.test(roomId) && !/feat/i.test(roomId), roomId)
-  T('A5 the room holds the text files; binary, large and ignored ones are named as filled from git', /4 file\(s\) in the room/.test(a1.out) && /3 more/.test(a1.out))
+  T('A5 the room holds the text files; binary, large, ignored and key-holding ones are named as filled from git', /4 file\(s\) in the room/.test(a1.out) && /4 more/.test(a1.out), a1.out.slice(-240))
   const a6 = await cli(project, 'branch', 'feat', '--relay', RELAY)
   T('A6 running it again is idempotent: the same room, and it says what is in it', a6.code === 0 && a6.out.includes(link) && /already has a room/.test(a6.out) && /4 file\(s\) in it/.test(a6.out), a6.out.split('\n')[0])
   const project2 = path.join(tmp, 'project2')
@@ -127,7 +130,11 @@ try {
   T('B2 each agent has its own folder, side by side in the room', path.resolve(dirA) !== path.resolve(dirB) && path.dirname(path.resolve(dirA)) === path.dirname(path.resolve(dirB)))
   await waitUntil(() => TEXT.every((f) => read(dirA, f) === FILES[f] && read(dirB, f) === FILES[f]), 15000)
   T('B3 every text file of the branch arrived byte-exact', TEXT.every((f) => read(dirA, f) === FILES[f] && read(dirB, f) === FILES[f]))
-  T('B4 binary, over-1MB and always-ignored files were filled from git', bin(dirA, 'logo.png').equals(PNG) && read(dirA, 'big.txt') === BIG && read(dirA, '.env.example') === FILES['.env.example'] && /Filled from git: 3/.test(ja))
+  T('B4 binary, over-1MB, always-ignored and key-holding files were filled from git', bin(dirA, 'logo.png').equals(PNG) && read(dirA, 'big.txt') === BIG && read(dirA, '.env.example') === FILES['.env.example'] && read(dirA, 'config/keys.js') === FILES['config/keys.js'] && /Filled from git: 4/.test(ja))
+  const roomA = A._test.getSession().hive
+  T('B4b the key-holding file never reached the room, and nobody announced it there',
+    !roomA.doc.getMap('manifest').has('config/keys.js') && !roomA.doc.getArray('chat').toArray().some((m) => /config\/keys\.js/.test(String(m.text || ''))),
+    JSON.stringify({ inRoom: roomA.doc.getMap('manifest').has('config/keys.js'), said: roomA.doc.getArray('chat').toArray().map((m) => String(m.text || '')).filter((t) => /keys\.js/.test(t)) }))
   const inA = g(dirA, 'status')
   T('B5 git refuses inside an agent folder, although it sits inside another repo', inA.code !== 0 && /not a git repository/.test(inA.err), inA.err.slice(0, 90))
   const jn = textOf(await A._test.callTool('hive_join', { branch: 'nobound', repo: project, name: 'Builder' }))
