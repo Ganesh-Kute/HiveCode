@@ -94,6 +94,7 @@ export const ALWAYS_IGNORE = [
   // Copies of files a teammate's delete removed from THIS folder (see keepDeletedCopy). They
   // are this machine's safety net; syncing them would undo every delete in the room.
   '.hive-deleted/',
+  '.hive-case-*',
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 
   // MOBILE AND CLOUD SECRETS. These are the files a mobile project keeps OUT of git via
@@ -1889,23 +1890,71 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const canonicalCaseKeys = new Map() // fold(r) -> canonical relPath
   const collided = new Map()          // collided relPath -> { with: canonical relPath }
   const collidedWarned = new Set()    // relPath announced to room
+  const collidedTimers = new Map()    // relPath -> Timeout (debounced room announcement)
+
+  function clearCollidedTimer(r) {
+    if (collidedTimers.has(r)) {
+      clearTimeout(collidedTimers.get(r))
+      collidedTimers.delete(r)
+    }
+  }
 
   function actualDiskPath(relPath) {
+    if (!isCaseInsensitive) return fs.existsSync(path.join(ROOT, relPath)) ? relPath : null
+    const full = path.join(ROOT, relPath)
+    if (!fs.existsSync(full)) return null
     try {
-      const full = path.join(ROOT, relPath)
-      const native = fs.realpathSync.native(full)
-      return path.relative(ROOT, native).replace(/\\/g, '/')
+      const parts = relPath.replace(/\\/g, '/').split('/').filter(Boolean)
+      let cur = ROOT
+      const matched = []
+      for (const part of parts) {
+        const lower = part.toLowerCase()
+        const entries = fs.readdirSync(cur)
+        const hit = entries.find(e => e.toLowerCase() === lower)
+        if (!hit) return relPath
+        matched.push(hit)
+        cur = path.join(cur, hit)
+      }
+      return matched.join('/')
     } catch {
-      return null
+      return relPath
+    }
+  }
+
+  function fileExistsExact(relPath) {
+    if (!isCaseInsensitive) return fs.existsSync(path.join(ROOT, relPath))
+    return actualDiskPath(relPath) === relPath
+  }
+
+  function ensureExactDiskCasing(relPath) {
+    if (!isCaseInsensitive) return
+    const onDisk = actualDiskPath(relPath)
+    if (onDisk && onDisk !== relPath && fold(onDisk) === fold(relPath)) {
+      const full = path.join(ROOT, relPath)
+      const onDiskFull = path.join(ROOT, onDisk)
+      const dir = path.dirname(full)
+      const hop = path.join(dir, `.hive-case-hop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+      try {
+        fs.renameSync(onDiskFull, hop)
+        try {
+          fs.renameSync(hop, full)
+        } catch {
+          // If second rename failed, attempt to rename the hop back to onDiskFull
+          try { fs.renameSync(hop, onDiskFull) } catch { }
+        }
+      } catch { }
     }
   }
 
   function checkCaseCollision(r) {
     if (!isCaseInsensitive) return false
     const cf = fold(r)
+    const canon = canonicalCaseKeys.get(cf)
+    if (canon === r) return false
+
     const onDisk = actualDiskPath(r)
 
-    if (!canonicalCaseKeys.has(cf)) {
+    if (!canon) {
       if (onDisk) {
         canonicalCaseKeys.set(cf, onDisk)
         if (onDisk !== r) {
@@ -1919,13 +1968,25 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       return false
     }
 
-    const canon = canonicalCaseKeys.get(cf)
-    if (canon === r) return false
-
-    // We have a collision between `canon` and `r`
+    // We have a difference between `canon` and `r` for the same folded name.
     if (onDisk === r && onDisk !== canon) {
       canonicalCaseKeys.set(cf, r)
       collided.delete(r)
+      collidedWarned.delete(r)
+      clearCollidedTimer(r)
+
+      // If `canon` is absent on disk with exact case, it was locally renamed to `r`
+      if (actualDiskPath(canon) !== canon) {
+        collided.delete(canon)
+        collidedWarned.delete(canon)
+        clearCollidedTimer(canon)
+        if (!inManifest(r)) {
+          queueManifestSet(r)
+        }
+        noteLocalDelete(canon)
+        return false
+      }
+
       collided.set(canon, { with: r })
       noteCollided(canon, r)
       return false
@@ -1937,13 +1998,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
 
   function noteCollided(r, withKey) {
-    if (collidedWarned.has(r)) return
-    collidedWarned.add(r)
+        if (collidedWarned.has(r)) return
     log(`[${name}] ${withKey} and ${r} both exist in the room; disk cannot hold both, so ${r} is not written here`)
     if (SKIP.has(r)) return
-    try {
-      say(`${withKey} and ${r} both exist in the room; ${name}'s disk cannot hold both, so ${r} is not written there.`)
-    } catch { }
+    if (collidedTimers.has(r)) return
+    collidedTimers.set(r, setTimeout(() => {
+      collidedTimers.delete(r)
+      if (!collided.has(r) || collidedWarned.has(r)) return
+      if (!inManifest(r) || !inManifest(withKey)) return
+      collidedWarned.add(r)
+      try {
+        say(`${withKey} and ${r} both exist in the room; ${name}'s disk cannot hold both, so ${r} is not written there.`)
+      } catch { }
+    }, 2500))
   }
 
   function writeToDisk(relPath, content) {
@@ -1952,6 +2019,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // The mkdir below would recreate a lost folder holding one file, and the next scan would read
     // every other file as deleted -- the exact wipe loseFolder exists to prevent.
     if (folderLost) return
+    ensureExactDiskCasing(relPath)
     const full = path.join(ROOT, relPath)
     try {
       // Only for a path a scan already found unshared. Every remote edit lands through here, so
@@ -2105,7 +2173,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (SKIP.has(relPath) || isIgnored(relPath) || !canOpen(relPath)) return
     if (collided.has(relPath)) return
     const full = path.join(ROOT, relPath)
-    const exists = fs.existsSync(full)
+    const exists = !isCaseInsensitive ? fs.existsSync(full) : actualDiskPath(relPath) === relPath
     let fe = fileDocs.get(relPath)
     if (!fe) {
       if (!exists) return
@@ -2136,6 +2204,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
                 mtimes.set(relPath, fs.statSync(full).mtimeMs)
               } catch { }
             }
+            } else {
+              ensureExactDiskCasing(relPath)
           }
         }
         return
@@ -2231,7 +2301,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       return
     }
     const full = path.join(ROOT, relPath)
-    const exists = fs.existsSync(full)
+    const exists = !isCaseInsensitive ? fs.existsSync(full) : actualDiskPath(relPath) === relPath
     let fe = fileDocs.get(relPath)
     if (fe && fe.bin && fe.bin.has('data')) {
       reconcileBinary(relPath, origin)
@@ -2360,8 +2430,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       return
     }
     const yt = fe.text
-    if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); forkBases.set(relPath, docText); return }
+    if (disk === null) {
+      if (!inManifest(relPath)) return
+      writeToDisk(relPath, docText); bases.set(relPath, docText); forkBases.set(relPath, docText); return
+    }
     if (disk === docText) {
+      ensureExactDiskCasing(relPath)
       // CREATING a file is editing it. This branch is where a locally-authored NEW file
       // lands: scan() finds it, openFile() syncs the content up, and by the time reconcile
       // runs disk and doc already agree -- so it returns below, before the markEditing() at
@@ -3402,13 +3476,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const pendingLocalDeletes = new Set()
   let deleteTimer = null
   function noteLocalDelete(r) {
-    if (pendingLocalDeletes.has(r)) return // a rescan of the same absence must not keep postponing it
+        if (pendingLocalDeletes.has(r)) return // a rescan of the same absence must not keep postponing it
     pendingLocalDeletes.add(r)
     if (deleteTimer) clearTimeout(deleteTimer)
     deleteTimer = setTimeout(settleLocalDeletes, DELETE_SETTLE_MS)
   }
   function settleLocalDeletes() {
-    if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null }
+        if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null }
     if (!pendingLocalDeletes.size) return
     const pending = [...pendingLocalDeletes]
     pendingLocalDeletes.clear()
@@ -3416,7 +3490,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!rootIsDir()) { loseFolder('is gone'); return }
     // Gone now = still absent, or ignored since (walk() skips both, and both always retracted the
     // file from the room). Anything that came back during the wait is an edit, not a delete.
-    const gone = pending.filter((r) => known.has(r) && inManifest(r) && (!fs.existsSync(path.join(ROOT, r)) || isIgnored(r)))
+    const fileExistsExact = (r) => (!isCaseInsensitive ? fs.existsSync(path.join(ROOT, r)) : actualDiskPath(r) === r)
+    const gone = pending.filter((r) => known.has(r) && inManifest(r) && (!fileExistsExact(r) || isIgnored(r)))
     if (!gone.length) return
     const held = [...known].filter((r) => inManifest(r)).length
     if (held >= 5 && gone.length >= held) { loseFolder(`was emptied: all ${held} of its files vanished at once`); return }
@@ -3432,7 +3507,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (h && h.by && h.by !== name) refused.push([r, h.by]); else send.push(r)
     }
     for (const [r] of refused) {
-      if (fs.existsSync(path.join(ROOT, r))) continue // ignored since, not absent: nothing to put back
+      if (fileExistsExact(r)) continue // ignored since, not absent: nothing to put back
       const e = fileDocs.get(r)
       if (e) writeToDisk(r, e.text.toString())
       else { known.delete(r); mtimes.delete(r); queueOpenFile(r) } // reopened, it arrives like any room file
@@ -3447,6 +3522,24 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     flushRoomDoc()
     for (const r of send) {
       closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
+      if (isCaseInsensitive) {
+        const cf = fold(r)
+        collided.delete(r)
+        collidedWarned.delete(r)
+        clearCollidedTimer(r)
+        if (canonicalCaseKeys.get(cf) === r) {
+          canonicalCaseKeys.delete(cf)
+          for (const [colKey, info] of collided.entries()) {
+            if (info.with === r && inManifest(colKey)) {
+              collided.delete(colKey)
+              collidedWarned.delete(colKey)
+              clearCollidedTimer(colKey)
+              canonicalCaseKeys.set(cf, colKey)
+              break
+            }
+          }
+        }
+      }
     }
     const list = send.slice(0, 3).join(', ') + (send.length > 3 ? ` (+${send.length - 3} more)` : '')
     log(`[${name}] -> deleted for everyone: ${list}`)
@@ -3640,39 +3733,52 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (folderLost) return // nothing in a lost folder is written, moved or recreated
     let stamp = null
     let kept = 0
+    // Process deletions BEFORE additions so that renames (delete old + add new)
+    // retire the old path and free canonicalCaseKeys before the new casing is checked.
+    const deletes = []
+    const others = []
     ev.changes.keys.forEach((change, key) => {
-      if (change.action === 'delete') {
-        let promotedKey = null
-        if (isCaseInsensitive) {
-          const cf = fold(key)
-          if (collided.has(key)) {
-            collided.delete(key)
-            collidedWarned.delete(key)
-          } else if (canonicalCaseKeys.get(cf) === key) {
-            canonicalCaseKeys.delete(cf)
-            for (const [colKey, info] of collided.entries()) {
-              if (info.with === key && inManifest(colKey)) {
-                collided.delete(colKey)
-                collidedWarned.delete(colKey)
-                canonicalCaseKeys.set(cf, colKey)
-                promotedKey = colKey
-                break
-              }
+      if (change.action === 'delete') deletes.push([key, change])
+      else others.push([key, change])
+    })
+
+    for (const [key, change] of deletes) {
+      let promotedKey = null
+      if (isCaseInsensitive) {
+        const cf = fold(key)
+        clearCollidedTimer(key)
+        if (collided.has(key)) {
+          collided.delete(key)
+          collidedWarned.delete(key)
+        } else if (canonicalCaseKeys.get(cf) === key) {
+          canonicalCaseKeys.delete(cf)
+          for (const [colKey, info] of collided.entries()) {
+            if (info.with === key && inManifest(colKey)) {
+              collided.delete(colKey)
+              collidedWarned.delete(colKey)
+              clearCollidedTimer(colKey)
+              canonicalCaseKeys.set(cf, colKey)
+              promotedKey = colKey
+              break
             }
           }
         }
-        pendingManifestOps.delete(key)
-        closeFile(key)
-        { const qi = openQueue.indexOf(key); if (qi >= 0) { openQueue.splice(qi, 1); openQueueSet.delete(key) } } // deleted while queued
-        if (!stamp) stamp = deletedStamp() // one folder per batch, so a bulk delete comes back together
-        const keptAs = keepDeletedCopy(key, stamp)
-        if (keptAs) kept++
-        known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key); shaShadow.delete(key); unwritable.delete(key)
-        log(`[${name}] <- deleted ${key}${keptAs ? ` (copy kept: ${keptAs})` : ''}`)
-        if (promotedKey) {
-          reconcile(promotedKey, 'remote')
-        }
-      } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
+      }
+      pendingManifestOps.delete(key)
+      closeFile(key)
+      { const qi = openQueue.indexOf(key); if (qi >= 0) { openQueue.splice(qi, 1); openQueueSet.delete(key) } } // deleted while queued
+      if (!stamp) stamp = deletedStamp() // one folder per batch, so a bulk delete comes back together
+      const keptAs = keepDeletedCopy(key, stamp)
+      if (keptAs) kept++
+      known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key); shaShadow.delete(key); unwritable.delete(key)
+      log(`[${name}] <- deleted ${key}${keptAs ? ` (copy kept: ${keptAs})` : ''}`)
+      if (promotedKey) {
+        reconcile(promotedKey, 'remote')
+      }
+    }
+
+    for (const [key, change] of others) {
+      if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
         checkCaseCollision(key)
         if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
           openFile(key)
@@ -3680,7 +3786,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           queueOpenFile(key)
         }
       }
-    })
+    }
     if (kept > 1) log(`[${name}] <- ${kept} files deleted by a teammate; copies kept in ${DELETED_DIR}/${stamp}/`)
   })
 
@@ -3767,6 +3873,22 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         continue
       }
 
+      // On case-insensitive filesystems, statSync('Readme.md') succeeds even if the file on disk
+      // was renamed to 'README.md'. Verify exact disk path matches r:
+      if (isCaseInsensitive && actualDiskPath(r) !== r) {
+        dischargeUnshared(r)
+        if (known.has(r) && inManifest(r)) {
+          changes++
+          noteLocalDelete(r)
+          const diskTarget = actualDiskPath(r)
+          if (diskTarget && fold(diskTarget) === fold(r)) {
+            checkCaseCollision(diskTarget)
+            queueManifestSet(diskTarget)
+          }
+          continue
+        }
+      }
+
       if (st.isDirectory()) {
         // If a directory was created/renamed or received a 'rename' event, fall back to full scan
         if (evts.has('rename')) {
@@ -3781,6 +3903,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (!st.isFile()) continue
       if (unsharedMtimes.get(r) === st.mtimeMs && unsharedWarned.has(r)) continue
       if (mtimes.get(r) === st.mtimeMs && inManifest(r)) continue
+      checkCaseCollision(r)
+      if (collided.has(r)) continue
       const unshared = checkUnshared(full, st)
       if (unshared) {
         unsharedMtimes.set(r, st.mtimeMs)
@@ -4526,6 +4650,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       openQueueSet.clear()
       if (scanTimer) clearTimeout(scanTimer)
       if (debounce) { clearTimeout(debounce); debounce = null }
+      for (const tm of collidedTimers.values()) clearTimeout(tm)
+      collidedTimers.clear()
       pendingFsEvents.clear()
       pendingFsFullScan = false
       if (editingClearTimer) clearTimeout(editingClearTimer)
