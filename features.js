@@ -471,6 +471,19 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'case-only-names-on-windows-and-mac',
+    name: 'Room files that differ only by case never overwrite each other on a Windows or Mac disk, and a case-only rename stays a rename',
+    criticality: 'critical', tier: 3,
+    breaks: 'On a case-insensitive disk Case.js and case.js are one file: an edit to one was written over the other and pushed back into the room, overwriting a teammate\'s file for everyone. Renaming Readme.md to README.md left both names in the room, so every Linux teammate got two files (both measured 3 Oct 2026).',
+    proves: [
+      { suite: 'tests/case-collision-test.mjs', assertion: '2 Case.js room content is intact (not corrupted by case.js edit)' },
+      { suite: 'tests/case-collision-test.mjs', assertion: '7 Bob edit did NOT leak to case.js in room' },
+      { suite: 'tests/case-rename-test.mjs', assertion: '1 Room keys after rename 1 are exactly [README.md]' },
+      { suite: 'tests/case-rename-test.mjs', assertion: '9 Junction: room has [a.js, b.js, c.js] and Bob receives all 3' },
+      { suite: 'tests/case-rename-test.mjs', assertion: '14 Junction: room manifest has a.js after round-trip rename' },
+    ],
+  },
+  {
     id: 'guessable-room-called-out',
     name: 'Joining a room whose name can be guessed, on the public relay, says so',
     criticality: 'hot', tier: 1,
