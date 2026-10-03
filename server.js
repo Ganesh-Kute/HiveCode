@@ -66,7 +66,7 @@ function overCapAfterMeasuring(room, tier) {
 }
 import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import { verifyReceipt, contentHash, headOk, contentHealth } from './substrate.js'
-import { makeGovernor } from './governor.js'
+import { makeGovernor, GOV_ORIGIN } from './governor.js'
 import * as decoding from 'lib0/decoding'
 
 // Enforce a read-only connection: drop the client's inbound SYNC writes (sync
@@ -603,6 +603,131 @@ function installProvenanceGuard(room) {
   head.observe(checkHead)
   checkLedger()
   checkHead()
+}
+
+// --- RELAY-SIDE CLAIM DELETE BACKSTOP -----------------------------------------
+// If a client bypasses settleLocalDeletes (e.g. an older client, extension, or script)
+// and deletes a manifest key for a file held by someone else, the relay restores the key
+// via compensating write, audits the event, and announces to the room.
+export const CLAIM_ORIGIN = 'relay-claim-enforce'
+
+function installManifestDeleteGuard(baseRoom) {
+  if (ENFORCE_CLAIMS === 'off') return
+  let baseDoc
+  try { baseDoc = getYDoc(baseRoom) } catch { return }
+  if (!baseDoc || baseDoc._hiveManifestGuard) return
+  baseDoc._hiveManifestGuard = true
+
+  const manifest = baseDoc.getMap('manifest')
+  const claims = baseDoc.getMap('claims')
+
+  const txnClaimsChanges = new WeakMap()
+  const txnManifestDeletes = new WeakMap()
+
+  claims.observe((event, tr) => {
+    if (tr && (tr.origin === CLAIM_ORIGIN || tr.origin === GOV_ORIGIN)) return
+    txnClaimsChanges.set(tr, event.changes.keys)
+  })
+
+  manifest.observe((event, tr) => {
+    if (tr && (tr.origin === CLAIM_ORIGIN || tr.origin === GOV_ORIGIN)) return
+    const deletes = []
+    for (const [key, change] of event.changes.keys) {
+      if (change.action === 'delete') {
+        deletes.push({ key, oldValue: change.oldValue })
+      }
+    }
+    if (deletes.length > 0) {
+      txnManifestDeletes.set(tr, deletes)
+    }
+  })
+
+  baseDoc.on('afterTransaction', (tr) => {
+    if (tr && (tr.origin === CLAIM_ORIGIN || tr.origin === GOV_ORIGIN)) return
+    const deletes = txnManifestDeletes.get(tr)
+    const claimsChanges = txnClaimsChanges.get(tr)
+    if (tr) {
+      txnManifestDeletes.delete(tr)
+      txnClaimsChanges.delete(tr)
+    }
+
+    if (!deletes || deletes.length === 0) return
+
+    const conn = tr ? tr.origin : null
+
+    // Sender attribution:
+    // 1. Verified identity (in required auth mode, secured hs_ room, or with token sub)
+    // 2. Open mode: awareness state controlled by this connection
+    // 3. Fallback to declared name if not 'anon'
+    let senderName = null
+    if (conn && typeof conn === 'object') {
+      const isStrict = AUTH_MODE === 'required' || !!roomFingerprint(baseRoom)
+      if (conn._hive && conn._hive.identity && (isStrict || conn._hive.identity.sub)) {
+        senderName = conn._hive.identity.name
+      } else if (baseDoc.conns && baseDoc.awareness) {
+        const controlled = baseDoc.conns.get(conn)
+        if (controlled) {
+          for (const cid of controlled) {
+            const state = baseDoc.awareness.states.get(cid)
+            if (state && state.user && state.user.name) {
+              senderName = state.user.name
+              break
+            }
+          }
+        }
+      }
+      if (!senderName && conn._hive && conn._hive.identity && conn._hive.identity.name && conn._hive.identity.name !== 'anon') {
+        senderName = conn._hive.identity.name
+      }
+    }
+
+    const now = Date.now()
+    const restores = []
+
+    for (const { key, oldValue } of deletes) {
+      let claim = null
+      if (claimsChanges && claimsChanges.has(key)) {
+        claim = claimsChanges.get(key).oldValue
+      } else {
+        claim = claims.get(key)
+      }
+
+      const live = claim && (!claim.ttl || ((claim.at || 0) + claim.ttl > now))
+      if (live && claim.by) {
+        if (!senderName || senderName !== claim.by) {
+          restores.push({ key, oldValue, claim, heldBy: claim.by })
+        }
+      }
+    }
+
+    if (restores.length > 0) {
+      if (ENFORCE_CLAIMS === 'warn') {
+        for (const { key, heldBy } of restores) {
+          audit('manifest-delete-warn', { room: baseRoom, who: senderName || 'unknown', file: key, heldBy })
+        }
+        return
+      }
+
+      try {
+        baseDoc.transact(() => {
+          for (const { key, oldValue, claim } of restores) {
+            manifest.set(key, oldValue != null ? oldValue : 1)
+            if (claimsChanges && claimsChanges.has(key) && !claims.has(key)) {
+              claims.set(key, claim)
+            }
+          }
+        }, CLAIM_ORIGIN)
+      } catch { /* best effort */ }
+
+      for (const { key, heldBy } of restores) {
+        audit('manifest-delete-blocked', { room: baseRoom, who: senderName || 'unknown', file: key, heldBy })
+      }
+      const what = restores.slice(0, 3).map(({ key, heldBy }) => `${key} (held by ${heldBy})`).join(', ') + (restores.length > 3 ? ` (+${restores.length - 3} more)` : '')
+      try {
+        postNoticeText(baseRoom, `⛔ ${senderName || 'a client'} deleted ${what}, but a file someone else holds is not deleted under them, so that delete was refused and the file is back. Ask the holder to release it first.`)
+      } catch { }
+    }
+  })
 }
 
 const PORT = process.env.PORT || 1234
@@ -1475,6 +1600,7 @@ wss.on('connection', (conn, req) => {
   setupWSConnection(conn, req, { docName: room })
   postNotice(room)                       // service notice, if one is set
   if (PROVENANCE !== 'off') installProvenanceGuard(room) // substrate: verify/enforce the file's provenance ledger (opt-in)
+  if (ENFORCE_CLAIMS !== 'off') installManifestDeleteGuard(baseRoomOf(room))
 })
 
 server.listen(PORT, () => {
