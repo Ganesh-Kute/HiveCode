@@ -69,6 +69,19 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'held-file-not-deleted',
+    name: 'A file someone holds is not deleted under them: refused by the deleting client, and restored by the relay when an older client sends the delete anyway',
+    criticality: 'critical', tier: 1,
+    breaks: 'A teammate\'s delete removes a file another agent holds and is mid-edit on, from every folder, the holder\'s included. A client from before the check, or a script, sends that delete straight to the room.',
+    proves: [
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'H1 Bob keeps the file he holds, with his edit in it' },
+      { suite: 'tests/delete-safety-test.mjs', assertion: 'H3 it is back in Alice\'s folder, with the room\'s content' },
+      { suite: 'tests/relay-claim-delete-test.mjs', assertion: 'A1 Alice direct manifest.delete of held.js is compensated/restored by relay' },
+      { suite: 'tests/relay-claim-delete-test.mjs', assertion: 'C1 Atomic claim-clear + delete-manifest is caught and restored' },
+      { suite: 'tests/relay-claim-delete-test.mjs', assertion: 'B1 Bob (holder) deleting own.js is permitted by relay' },
+    ],
+  },
+  {
     id: 'claim-scope',
     name: 'A claim on a file outside sync scope is refused, with the reason',
     criticality: 'critical', tier: 3,
