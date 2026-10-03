@@ -466,6 +466,8 @@ export const FEATURES = [
       { suite: 'tests/secret-gate-test.mjs', assertion: 'S6 once the key is read from the environment, Bob\'s change flows and both edits are kept' },
       { suite: 'tests/secret-gate-test.mjs', assertion: 'S8 placeholders and documentation examples are shared like any other file' },
       { suite: 'tests/secret-gate-test.mjs', assertion: 'M1 hive_edit says the file was NOT shared, and why' },
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'M4 hive_say refuses a message holding a key, and the room never gets it' },
+      { suite: 'tests/secret-gate-test.mjs', assertion: 'M6 a message that only says where a key is kept is sent as usual' },
     ],
   },
   {

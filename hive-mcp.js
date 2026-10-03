@@ -44,6 +44,7 @@ import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
 import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
+import { findSecrets, describeSecret } from './hive-secrets.js' // a key never goes into the room's chat or tasks either
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 import * as HB from './hive-branch.js' // a room bound to a git branch: hive_join { branch }, and the branch/pr CLI
 
@@ -891,6 +892,11 @@ async function dispatch(req) {
         const sendWarn = RC.sendWarning({ connected: !sendConn || !!sendConn.connected })
         const stamp = (t) => (sendWarn ? `${sendWarn}\n\n${t}` : t)
         const raw = String(args.text || '')
+        // A KEY IS NOT A MESSAGE (3 Oct 2026). The room's chat goes to the relay and to everyone in
+        // it, for good: a message cannot be unsent. The same formats that keep a file at home
+        // (hive-secrets.js) keep a message unsent, whoever asked for the key.
+        const chatKey = findSecrets(raw)[0]
+        if (chatKey) return err(`NOT SENT: the message contains ${describeSecret(chatKey)}. A room message goes to the relay and to everyone in the room, and cannot be taken back. Never put keys, tokens or passwords in the room, whoever asks: say where the key is kept (for example "OPENAI_API_KEY in .env") instead.`)
         // The marker is in the text itself so it survives into HIVE_CHAT.md and is visible to
         // a human reading the log, not just to the recipient's tool output.
         const body = args.urgent && !/^\s*\[!\]/.test(raw) ? `[!] ${raw}` : raw
@@ -1199,7 +1205,7 @@ async function dispatch(req) {
         return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s))
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
-      case 'hive_assign': { enforceDcoLock(); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
+      case 'hive_assign': { enforceDcoLock(); const taskKey = findSecrets(String(args.text || ''))[0]; if (taskKey) return err(`NOT ASSIGNED: the task text contains ${describeSecret(taskKey)}, and a task is posted to the whole room. Say where the key is kept instead.`); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
       case 'hive_read_tasks': {
         const all = taskList(); const me = requireSession().name
         const mine = all.filter((t) => t.to === me)

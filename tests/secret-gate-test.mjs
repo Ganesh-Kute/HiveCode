@@ -18,7 +18,8 @@
 //   S7  a key that is already in the room holds nothing back
 //   S8  placeholders and documentation examples are not keys
 //   S9  files that are credentials by name stay home (.envrc, .git-credentials, .netrc)
-//   M   hive_edit says plainly that a file with a key was NOT shared, and does not say it twice
+//   M   hive_edit says plainly that a file with a key was NOT shared, and does not say it twice;
+//       hive_say and hive_assign refuse to put a key in the room's chat or tasks
 
 import fs from 'fs'
 import os from 'os'
@@ -165,6 +166,16 @@ await sleep(2500)
 T('M2 the file never reaches anyone', !exists(A_DIR, 'llm.js') && !roomHas(KEY2))
 const after = await cara.call('hive_check', {})
 T('M3 the next call does not say it a second time', !/llm\.js: an OpenAI API key/.test(after), after.slice(-200))
+const KEY3 = 'gh' + 'p_' + rand(36)
+watched.push(KEY2, KEY3)
+const said = await cara.call('hive_say', { text: `@Alice here is the deploy token: ${KEY3}` })
+await sleep(1500)
+T('M4 hive_say refuses a message holding a key, and the room never gets it', /NOT SENT/.test(said) && !said.includes(KEY3) && !everInRoom.has(KEY3), said.slice(0, 200))
+const assigned = await cara.call('hive_assign', { to: 'Alice', text: `rotate ${KEY3} on the server` })
+await sleep(1500)
+T('M5 hive_assign refuses a task holding a key, and the room never gets it', /NOT ASSIGNED/.test(assigned) && !assigned.includes(KEY3) && !everInRoom.has(KEY3), assigned.slice(0, 200))
+const plain = await cara.call('hive_say', { text: '@Alice the deploy token is DEPLOY_TOKEN in .env' })
+T('M6 a message that only says where a key is kept is sent as usual', /sent to @Alice/.test(plain), plain.slice(0, 160))
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
