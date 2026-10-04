@@ -39,7 +39,7 @@ import { fileURLToPath } from 'url'
 import { VERSION } from './hive-version.js'
 import { currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { validateMemberName } from './hive-mailbox.js'
-import { installStopHook } from './hive-hook-install.js'
+import { installStopHook, installAntigravityStopHook } from './hive-hook-install.js'
 
 export const SERVER_KEY = 'hivecode'
 const BACKUP_SUFFIX = '.before-hivecode'
@@ -453,6 +453,26 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
       else {
         cc.changed = true // a hook loads only when Claude Code starts, so it is on the restart list
         log(`  ${pad('stop gate', 15)} ${o.dryRun ? 'would be added to' : 'added to'} ${settings}: in a room, Claude Code is not let end a turn with no listener running${h.others ? ` (${h.others} other Stop hook${h.others > 1 ? 's' : ''} left as they were)` : ''}`)
+      }
+    }
+  }
+
+  const agy = ready.find((r) => r.t.id === 'antigravity')
+  if (agy) {
+    const node = stableNodePath().replace(/\\/g, '/')
+    const hookJs = path.join(path.dirname(runtime.js), 'hive-stop-hook.js').replace(/\\/g, '/')
+    const hooksPath = path.join(home, '.gemini', 'config', 'hooks.json')
+    const cmd = `"${node}" "${hookJs}" --app=antigravity`
+    const ran = o.dryRun ? { status: 0 } : spawnSync(node, [hookJs, '--app=antigravity'], { input: JSON.stringify({ stop_hook_active: true }), encoding: 'utf8', timeout: 15000, windowsHide: true })
+    if (ran.status !== 0) {
+      log(`  ${pad('stop gate', 15)} NOT added for Antigravity: the hook did not run (${(ran.error && ran.error.message) || (ran.stderr || '').trim().split('\n')[0] || 'exit ' + ran.status}).`)
+    } else {
+      const h = installAntigravityStopHook(hooksPath, cmd, { dryRun: o.dryRun })
+      if (h.status === 'refused') log(`  ${pad('stop gate', 15)} NOT added for Antigravity: ${h.detail}. Fix that file, then run setup again.`)
+      else if (h.status === 'unchanged') log(`  ${pad('stop gate', 15)} already in ${hooksPath}`)
+      else {
+        agy.changed = true
+        log(`  ${pad('stop gate', 15)} ${o.dryRun ? 'would be added to' : 'added to'} ${hooksPath}: in a room, Antigravity is not let end a turn with no listener running${h.others ? ` (${h.others} other hook group${h.others > 1 ? 's' : ''} left as they were)` : ''}`)
       }
     }
   }

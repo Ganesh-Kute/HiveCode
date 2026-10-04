@@ -54,7 +54,7 @@ const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: proces
 // the agent start a second one. Two listeners for one agent wake it twice for one message, so a
 // listener that finds the file naming another process leaves: that one was started after it.
 const ARMED = armedFile(NAME, room)
-const SESSION = process.env.CLAUDE_CODE_SESSION_ID || ''
+const SESSION = process.env.CLAUDE_CODE_SESSION_ID || process.env.ANTIGRAVITY_CONVERSATION_ID || ''
 const AGAIN = `"${process.execPath.replace(/\\/g, '/')}" "${path.resolve(process.argv[1]).replace(/\\/g, '/')}" "${LINK}" "${NAME}" ${IDLE_MIN}`
 const startedAt = Date.now()
 let synced = false

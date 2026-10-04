@@ -267,8 +267,7 @@ section('the line that keeps a Claude Code agent reachable after its turn (2 Oct
   const am = /"([^"]+)" "([^"]+hive-await\.js)" "([^"]+)" "Ada" 25/.exec(ag)
   T('Antigravity\'s first empty wait orders it to start the listener, in its own tool\'s words', !!am && /BEFORE YOU END THIS TURN/.test(ag) && /run_command/.test(ag) && /WaitMsBeforeAsync/.test(ag) && !/run_in_background/.test(ag), ag.slice(0, 600))
   T('...naming this room and this agent', !!am && am[3] === 'wss://test|room-test')
-  T('...said once: the next empty wait does not repeat it', !/hive-await\.js/.test(textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))))
-  _test.forget('listen') // a new process, as a second app would be
+  T('...not armed: the next empty wait repeats the order', /hive-await\.js/.test(textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))))
   await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.0' } })
   makeRoom('Ada')
   const first = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
@@ -278,8 +277,19 @@ section('the line that keeps a Claude Code agent reachable after its turn (2 Oct
   T('...with a node and a hive-await.js that exist on this disk', !!m && fsm.existsSync(m[1]) && fsm.existsSync(m[2]))
   T('...and the paths use forward slashes, which bash and PowerShell both accept', !!m && !m[1].includes('\\') && !m[2].includes('\\'))
   const second = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
-  T('...said once: the next empty wait does not repeat it', !/hive-await\.js/.test(second))
-  console.log(`  (the line costs about ${Math.round((first.length - second.length) / 4)} tokens, once per session)`)
+  T('...not armed: the next empty wait repeats the order', /hive-await\.js/.test(second))
+
+  const { armedFile } = await import('../hive-listen.js')
+  const path = (await import('path')).default
+  const af = armedFile('Ada', 'room-test')
+  fsm.mkdirSync(path.dirname(af), { recursive: true })
+  fsm.writeFileSync(af, JSON.stringify({ pid: process.pid, at: Date.now(), beat: Date.now(), synced: true }))
+  try {
+    const third = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+    T('...when armed: empty wait says it may end its turn now, listener will wake it', /may end your turn now/i.test(third) && !/hive-await\.js/.test(third))
+  } finally {
+    try { fsm.unlinkSync(af) } catch { }
+  }
 }
 
 section('a mixed build is told to the one who joins (2 Oct 2026)')

@@ -67,35 +67,75 @@ export function installStopHook(settingsPath, command = COMMAND, { dryRun = fals
   return { status: mine.length ? 'updated' : 'installed', others }
 }
 
+/**
+ * Put our Stop entry into Antigravity's `hooksPath` (JSON object keyed by hook name), leaving
+ * every other hook group alone. Returns { status: 'installed' | 'updated' | 'unchanged' | 'refused', others, detail? }.
+ */
+export function installAntigravityStopHook(hooksPath, command = `node "${HOOK}" --app=antigravity`, { dryRun = false } = {}) {
+  let s = {}
+  if (fs.existsSync(hooksPath)) {
+    try { s = JSON.parse(fs.readFileSync(hooksPath, 'utf8')) } catch { s = null }
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return { status: 'refused', others: 0, detail: `${hooksPath} exists but is not valid JSON` }
+  }
+  const otherKeys = Object.keys(s).filter((k) => k !== 'hivecode')
+  const others = otherKeys.length
+  const current = s.hivecode && s.hivecode.Stop && s.hivecode.Stop[0] && s.hivecode.Stop[0].command
+  if (current === command) return { status: 'unchanged', others }
+
+  const had = !!s.hivecode
+  s.hivecode = {
+    Stop: [
+      { type: 'command', command, timeout: TIMEOUT }
+    ]
+  }
+  if (!dryRun) {
+    fs.mkdirSync(path.dirname(hooksPath), { recursive: true })
+    fs.writeFileSync(hooksPath, JSON.stringify(s, null, 2) + '\n')
+  }
+  return { status: had ? 'updated' : 'installed', others }
+}
+
 function cli() {
   const cmd = (process.argv[2] || 'status').toLowerCase()
   const GLOBAL = process.argv.includes('--global')
-  const settingsPath = GLOBAL
-    ? path.join(os.homedir(), '.claude', 'settings.json')
-    : path.join(process.cwd(), '.claude', 'settings.json')
+  const isAntigravity = process.argv.includes('--app=antigravity')
+  const targetApp = isAntigravity ? 'Antigravity' : 'Claude Code'
+  const settingsPath = isAntigravity
+    ? (GLOBAL ? path.join(os.homedir(), '.gemini', 'config', 'hooks.json') : path.join(process.cwd(), '.agents', 'hooks.json'))
+    : (GLOBAL ? path.join(os.homedir(), '.claude', 'settings.json') : path.join(process.cwd(), '.claude', 'settings.json'))
+  const command = isAntigravity ? `node "${HOOK}" --app=antigravity` : COMMAND
 
   const read = () => {
     try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')) } catch { return null }
   }
 
   function install() {
-    const r = installStopHook(settingsPath, COMMAND)
+    const r = isAntigravity
+      ? installAntigravityStopHook(settingsPath, command)
+      : installStopHook(settingsPath, command)
     if (r.status === 'refused') {
       console.error(`refusing to touch ${settingsPath}: it exists but is not valid JSON.`)
       console.error('fix or move it, then run this again.')
       process.exit(1)
     }
     console.log(`\n  ${r.status === 'installed' ? 'installed' : r.status === 'updated' ? 'updated' : 'already installed'}  ${settingsPath}`)
-    console.log(`  command    ${COMMAND}`)
-    if (r.others) console.log(`  alongside  ${r.others} other Stop hook(s), left untouched`)
+    console.log(`  command    ${command}`)
+    if (r.others) console.log(`  alongside  ${r.others} other ${isAntigravity ? 'hook group(s)' : 'Stop hook(s)'}, left untouched`)
     console.log('\n  An agent in a room can no longer end its turn while it has unread mail')
     console.log('  addressed to it, an accepted task still open, or no listener running.\n')
-    console.log('  Restart Claude Code for it to pick this up.\n')
+    console.log(`  Restart ${targetApp} for it to pick this up.\n`)
   }
 
   function uninstall() {
     const s = read()
     if (!s) { console.log(`\n  not installed in ${settingsPath}\n`); return }
+    if (isAntigravity) {
+      if (!s.hivecode) { console.log(`\n  not installed in ${settingsPath}\n`); return }
+      delete s.hivecode
+      fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2) + '\n')
+      console.log(`\n  removed from ${settingsPath}\n`)
+      return
+    }
     const stop = Array.isArray(s.hooks?.Stop) ? s.hooks.Stop : []
     const kept = stop.filter((e) => !isOurs(e))
     if (kept.length === stop.length) { console.log(`\n  not installed in ${settingsPath}\n`); return }
@@ -107,6 +147,15 @@ function cli() {
 
   function status() {
     const s = read() || {}
+    if (isAntigravity) {
+      const mine = !!s.hivecode
+      const others = Object.keys(s).filter((k) => k !== 'hivecode').length
+      console.log(`\n  hooks      ${settingsPath}${fs.existsSync(settingsPath) ? '' : '  (does not exist)'}`)
+      console.log(`  hivecode   ${mine ? 'INSTALLED' : 'not installed'}`)
+      if (others) console.log(`  other      ${others} unrelated hook group(s)`)
+      console.log(`\n  install with:  npx -y -p hivecode-mcp@latest hivecode-hook install --app=antigravity${GLOBAL ? ' --global' : ''}\n`)
+      return
+    }
     const mine = (s.hooks?.Stop || []).filter(isOurs)
     const others = (s.hooks?.Stop || []).length - mine.length
     console.log(`\n  settings   ${settingsPath}${fs.existsSync(settingsPath) ? '' : '  (does not exist)'}`)

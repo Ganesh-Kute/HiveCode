@@ -47,6 +47,7 @@ import * as RC from './hive-receipts.js'
 import { findSecrets, describeSecret } from './hive-secrets.js' // a key never goes into the room's chat or tasks either
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 import * as HB from './hive-branch.js' // a room bound to a git branch: hive_join { branch }, and the branch/pr CLI
+import { isArmed, armedFile, listenCommand, listenHow, listenOrder, LISTEN_IDLE_MIN, AWAIT_JS } from './hive-listen.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 let session = null // { hive, room, relay, dir, name, mailbox }
@@ -1328,9 +1329,13 @@ async function dispatch(req) {
           return text(`⏸ You are PAUSED by mission control. Stop new work and wait. You will be woken if someone @mentions you or assigns you a task; otherwise just call hive_wait again.${stateStr}`)
         }
         if (!r) {
-          const ll = listenLine(requireSession())
-          const listenStr = ll && firstTime('listen') ? ll : ''
-          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${unwritableNotice(requireSession())}${withheldNotice(requireSession())}${collidedNotice(requireSession())}${stateStr}${rulesStr}${listenStr}`)
+          const sess = requireSession()
+          const armed = isArmed(sess)
+          const ll = !armed ? listenLine(sess) : ''
+          const waitMsg = armed
+            ? '(nothing yet — your background listener is running and will wake you when called: you may end your turn now.)'
+            : '(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)'
+          return text(`${waitMsg}${owedStr}${connStr}${unwritableNotice(sess)}${withheldNotice(sess)}${collidedNotice(sess)}${stateStr}${rulesStr}${ll}`)
         }
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
@@ -1907,22 +1912,11 @@ function waitDefaultSeconds() { return waitPolicy().def }
 // same build, and both use forward slashes, which bash and PowerShell each accept. A token-gated
 // room gets no line: the agent's shell does not hold this server's token, and a listener that
 // cannot join is a false "listening". (tests/mcp-wait-test.mjs)
-const LISTEN_IDLE_MIN = 25
-const AWAIT_JS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hive-await.js').replace(/\\/g, '/')
-// ANTIGRAVITY WAKES THE SAME WAY (measured 2 Oct 2026, later the same day): Antigravity1's turn at
-// 06:48:09Z began from its listener exiting, two seconds after a message to it, with nobody typing.
-// It had sat PARKED in the KCDE run only because this line went to Claude Code alone. Each app is
-// told in its own tool's words; an app nobody has measured gets no line.
-function listenHow(app) {
-  if (/claude-code/i.test(app)) return 'Call your Bash tool now, with run_in_background: true, on this command.'
-  if (/antigravity/i.test(app)) return 'Call your run_command tool now on this command, with WaitMsBeforeAsync: 1000, so it runs in the background.'
-  return ''
-}
 function listenLine(s) {
   const how = s && !s.authed ? listenHow(clientName()) : ''
   if (!how) return ''
-  const node = process.execPath.replace(/\\/g, '/')
-  return `\n[BEFORE YOU END THIS TURN] Ending it stops you hearing this room. ${how} It ends, and that wakes you, when someone addresses you or after ${LISTEN_IDLE_MIN} quiet minutes; when it ends, run it again:\n"${node}" "${AWAIT_JS}" "${s.relay}|${s.room}" "${s.name}" ${LISTEN_IDLE_MIN}\n`
+  const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name })
+  return `\n${listenOrder(how, cmd)}\n`
 }
 
 export const _test = {

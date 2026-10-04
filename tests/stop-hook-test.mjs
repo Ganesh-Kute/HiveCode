@@ -197,6 +197,13 @@ section('the hook end to end: session file, room folder, listener file')
   session()
   const ag = hook({}, ['--app=antigravity'])
   T('H9 run by Antigravity, the block is said in Antigravity\'s words ("continue")', ag.out && ag.out.decision === 'continue' && /run_command/.test(ag.out.reason), ag.raw)
+  const agPayload = { workspacePaths: [proj], conversationId: 'AG-1', cwd: undefined, session_id: undefined }
+  armed({ session: 'AG-1' })
+  const agArmed = hook(agPayload, ['--app=antigravity'])
+  T('H10 Antigravity stdin with workspacePaths and conversationId recognizes armed listener', agArmed.out && agArmed.out.decision === 'stop', agArmed.raw)
+  armed({ session: 'AG-OTHER' })
+  const agWrongSession = hook(agPayload, ['--app=antigravity'])
+  T('H11 Antigravity stdin blocks when listener belongs to another conversationId', agWrongSession.out && agWrongSession.out.decision === 'continue', agWrongSession.raw)
   try { fs.rmSync(t, { recursive: true, force: true }) } catch { }
 }
 

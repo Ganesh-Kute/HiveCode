@@ -226,7 +226,7 @@ async function main() {
   // GUARD 1: this stop is already the product of a block. Never stack another on it.
   if (hook.stop_hook_active) return
 
-  const found = findSession(hook.cwd || process.cwd())
+  const found = findSession(hook.cwd || (Array.isArray(hook.workspacePaths) && hook.workspacePaths[0]) || process.cwd())
   if (!found || !found.session || !found.session.dir || !found.session.name) return // not in a room
 
   const { root, session } = found
@@ -250,7 +250,7 @@ async function main() {
   const how = listenHow(APP)
   let listening = null, listenLine = ''
   if (how && cfg.relay && cfg.room && !session.authed && !cfg.token) {
-    listening = isArmed({ name: session.name, room: cfg.room, session: String(hook.session_id || '') })
+    listening = isArmed({ name: session.name, room: cfg.room, session: String(hook.session_id || hook.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || '') })
     listenLine = listenOrder(how, listenCommand({ relay: cfg.relay, room: cfg.room, name: session.name }))
   }
 
@@ -271,6 +271,7 @@ async function main() {
   // Antigravity's Stop hook blocks with "continue" (its engine's own schema: stop | continue |
   // block); Claude Code's with "block". Which app runs this is said in its hook entry (--app).
   if (d.block) process.stdout.write(JSON.stringify({ decision: APP === 'antigravity' ? 'continue' : 'block', reason: d.reason }))
+  else if (APP === 'antigravity') process.stdout.write(JSON.stringify({ decision: 'stop' }))
 }
 
 const APP = (/--app=(\S+)/.exec(process.argv.slice(2).join(' ')) || [])[1] || 'claude-code'

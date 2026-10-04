@@ -293,6 +293,26 @@ section('G. setup arms the stop gate for Claude Code, beside the hooks already t
   T('G6 a settings file that is not valid JSON is left alone, and setup says so', fs.readFileSync(settings, 'utf8') === '{ "model": "kept", broken' && /stop gate\s+NOT added/.test(g3.out), g3.out)
 }
 
+section('H. setup arms the stop gate for Antigravity, beside the hooks already there')
+{
+  const agHome = tmp('aghome')
+  const hooks = path.join(agHome, '.gemini', 'config', 'hooks.json')
+  put(path.join(agHome, '.gemini', 'antigravity', 'mcp_config.json'), '{}')
+  put(hooks, JSON.stringify({ "grm-memory": { PreInvocation: [{ command: "grm" }] } }, null, 2))
+  const g1 = runSetup(agHome, ['--name', 'AgGate'])
+  const s1 = JSON.parse(fs.readFileSync(hooks, 'utf8'))
+  T('H1 setup adds the Hivecode stop gate to ~/.gemini/config/hooks.json', !!s1.hivecode && (s1.hivecode.Stop || []).length === 1, g1.out)
+  T('H2 ...and leaves existing hooks (grm) untouched', !!s1["grm-memory"], JSON.stringify(s1))
+  T('H3 the command specifies --app=antigravity', (s1.hivecode.Stop[0].command || '').includes('--app=antigravity'), s1.hivecode.Stop[0].command)
+  T('H4 setup says it was added', /stop gate\s+added to/.test(g1.out) && /Antigravity/.test(g1.out), g1.out)
+  const g2 = runSetup(agHome, ['--name', 'AgGate'])
+  const s2 = JSON.parse(fs.readFileSync(hooks, 'utf8'))
+  T('H5 running setup again is idempotent', !!s2.hivecode && Object.keys(s2).length === 2 && /stop gate\s+already in/.test(g2.out), g2.out)
+  put(hooks, '{ broken json')
+  const g3 = runSetup(agHome, ['--name', 'AgGate'])
+  T('H6 a hooks.json that is not valid JSON is left alone, and setup says so', fs.readFileSync(hooks, 'utf8') === '{ broken json' && /stop gate\s+NOT added for Antigravity/.test(g3.out), g3.out)
+}
+
 // ---------------------------------------------------------------------------------------------
 if (process.argv.includes('--package')) {
   section('E. the npx path: packed, installed like npx, then the install deleted')
