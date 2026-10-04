@@ -10,6 +10,7 @@
 //   7. A second rename back to Readme.md round-trips cleanly.
 
 import { spawn } from 'child_process'
+import net from 'net'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -29,14 +30,19 @@ const until = async (fn, timeoutMs = 10000, stepMs = 150) => {
 let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? ` (${extra})` : ''}`); c ? pass++ : fail++ }
 
+// A relay that cannot start (its port taken) exits, and nothing else holds this process open: it
+// used to end with node's exit 13 (an unsettled top-level await) and not one line saying why. It
+// fails loudly now, on a port the OS hands out instead of one from a range other suites also use.
 const startRelay = (port, env = {}) => new Promise((res, rej) => {
   const p = spawn(process.execPath, ['server.js'], { env: { ...process.env, PORT: String(port), ...env } })
   p.stderr.on('data', (d) => { if (process.env.HIVE_DEBUG) process.stderr.write(d) })
   p.stdout.on('data', (d) => { if (/listening on/.test(d)) res(p) })
   p.on('error', rej)
+  p.on('exit', (code) => rej(new Error(`the relay exited (code ${code}) before it was listening on ${port}`)))
 })
+const freePort = () => new Promise((res) => { const s = net.createServer(); s.listen(0, () => { const p = s.address().port; s.close(() => res(p)) }) })
 
-const PORT = 27000 + (process.pid % 5000)
+const PORT = await freePort()
 console.log(`# Starting relay on port ${PORT}...`)
 const relay = await startRelay(PORT)
 

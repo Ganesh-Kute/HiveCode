@@ -659,6 +659,21 @@ function unwritableNotice(s) {
   } catch { return '' }
 }
 
+// TWO ROOM FILES, ONE FILE ON THIS DISK (3 Oct 2026; sync.js checkCaseCollision). Case.js and case.js
+// can both be in the room, but a Windows or Mac disk holds only one of them, so the other is not in
+// this folder. The room is told in this agent's own name; this is where the agent is told.
+function collidedNotice(s) {
+  try {
+    const fresh = (s.hive.collided ? s.hive.collided() : []).filter((c) => firstTime('collided:' + c.path))
+    if (!fresh.length) return ''
+    const shown = fresh.slice(0, 5)
+    return `\n\n⚠ ${fresh.length} room file(s) differ from a file in your folder only in upper/lower case. This disk cannot hold both, so they are NOT in your folder:\n` +
+      shown.map((c) => `  - ${c.path} (your folder has ${c.with})`).join('\n') +
+      (fresh.length > shown.length ? `\n  ... (+${fresh.length - shown.length} more; hive_status lists all)` : '') +
+      `\nThey are separate files in the room: editing yours never changes the other. To work on one, ask whoever added it to rename it so the two names differ by more than case.`
+  } catch { return '' }
+}
+
 // A KEY IN A FILE KEEPS THE FILE HERE (3 Oct 2026; sync.js heldForSecret). The agent that pasted it
 // is usually the one that needs telling, and the room line about it is in that agent's own name.
 function withheldNotice(s) {
@@ -1202,7 +1217,7 @@ async function dispatch(req) {
             }
           }
         } catch { }
-        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s))
+        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s) + collidedNotice(s))
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
       case 'hive_assign': { enforceDcoLock(); const taskKey = findSecrets(String(args.text || ''))[0]; if (taskKey) return err(`NOT ASSIGNED: the task text contains ${describeSecret(taskKey)}, and a task is posted to the whole room. Say where the key is kept instead.`); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
@@ -1304,14 +1319,14 @@ async function dispatch(req) {
         if (!r) {
           const ll = listenLine(requireSession())
           const listenStr = ll && firstTime('listen') ? ll : ''
-          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${unwritableNotice(requireSession())}${withheldNotice(requireSession())}${stateStr}${rulesStr}${listenStr}`)
+          return text(`(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)${owedStr}${connStr}${unwritableNotice(requireSession())}${withheldNotice(requireSession())}${collidedNotice(requireSession())}${stateStr}${rulesStr}${listenStr}`)
         }
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()) + withheldNotice(requireSession()))
+        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()) + withheldNotice(requireSession()) + collidedNotice(requireSession()))
       }
       case 'hive_delivered': {
         const s2 = requireSession()
@@ -1648,6 +1663,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           ...(conn && conn.folderLost ? { folderLost: conn.folderLost } : {}),
           ...(conn && conn.unsharedFiles && conn.unsharedFiles.length ? { unshared: conn.unsharedFiles } : {}),
           ...(conn && conn.unwritable && conn.unwritable.length ? { unwritable: { files: conn.unwritable.map((u) => `${u.path} (${u.code})`), meaning: 'read-only or locked in your folder, so your copy is older than the room\'s; each is written as soon as it can be' } } : {}),
+          ...(conn && conn.collided && conn.collided.length ? { collided: { files: conn.collided.map((c) => `${c.path} (your folder has ${c.with})`), meaning: 'in the room, but this disk cannot hold both names, so not in your folder; editing yours never changes it' } } : {}),
           ...(conn && conn.withheld && conn.withheld.length ? { withheld: { files: conn.withheld.map((w) => `${w.path}: ${w.kind}, line ${w.line}`), meaning: 'NOT shared: each contains a key or token the room does not have. Read it from the environment (.env is never shared); the file is shared on its next save without it' } } : {}),
         })
       }

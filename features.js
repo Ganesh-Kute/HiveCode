@@ -481,6 +481,7 @@ export const FEATURES = [
       { suite: 'tests/case-rename-test.mjs', assertion: '1 Room keys after rename 1 are exactly [README.md]' },
       { suite: 'tests/case-rename-test.mjs', assertion: '9 Junction: room has [a.js, b.js, c.js] and Bob receives all 3' },
       { suite: 'tests/case-rename-test.mjs', assertion: '14 Junction: room manifest has a.js after round-trip rename' },
+      { suite: 'tests/collided-notice-test.mjs', assertion: 'C1 hive_wait tells Cara which room file is not in its folder, and which of its own it is not' },
     ],
   },
   {
