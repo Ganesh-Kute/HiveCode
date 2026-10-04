@@ -218,63 +218,68 @@ function findSession(start) {
   return null
 }
 
-async function main() {
-  let input = ''
-  for await (const chunk of process.stdin) input += chunk
-  const hook = (() => { try { return JSON.parse(input) } catch { return {} } })()
-
-  // GUARD 1: this stop is already the product of a block. Never stack another on it.
-  if (hook.stop_hook_active) return
-
-  const found = findSession(hook.cwd || (Array.isArray(hook.workspacePaths) && hook.workspacePaths[0]) || process.cwd())
-  if (!found || !found.session || !found.session.dir || !found.session.name) return // not in a room
-
-  const { root, session } = found
-  const dir = path.isAbsolute(session.dir) ? session.dir : path.join(root, session.dir)
-  const read = (f) => { try { return fs.readFileSync(path.join(dir, f), 'utf8') } catch { return '' } }
-
-  const chat = read('HIVE_CHAT.md')
-  if (!chat) return // room folder not mirrored yet; nothing to be sure about, so allow
-
-  const statePath = path.join(root, STATE_FILE)
-  const prev = readJson(statePath) || {}
-  // Keyed by room: a folder rejoined against a different room must not inherit a watermark from
-  // unrelated history -- the same reasoning as the persisted sync ancestor being room-keyed.
-  const key = String(session.room || session.dir)
-  const st = prev[key] || { seen: 0, taskBlocks: 0, nudged: [] }
-
-  // Is a listener running for this agent? Asked only where the agent could start one: an app that
-  // is woken when a background task ends, the room's link on disk, and a room that does not check
-  // tokens (the agent's shell does not hold the MCP server's token, so a listener could not join).
-  const cfg = readJson(path.join(dir, '.hive.json')) || {}
-  const how = listenHow(APP)
-  let listening = null, listenLine = ''
-  if (how && cfg.relay && cfg.room && !session.authed && !cfg.token) {
-    listening = isArmed({ name: session.name, room: cfg.room, session: String(hook.session_id || hook.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || '') })
-    listenLine = listenOrder(how, listenCommand({ relay: cfg.relay, room: cfg.room, name: session.name }))
-  }
-
-  const d = decide({
-    chat, tasks: read('HIVE_TASKS.md'), me: session.name,
-    seen: Number(st.seen) || 0, taskBlocks: Number(st.taskBlocks) || 0,
-    nudged: Array.isArray(st.nudged) ? st.nudged : [],
-    listening, listenLine, listenBlocks: Number(st.listenBlocks) || 0,
-  })
-
-  // GUARD 2: write the watermark BEFORE returning the block, so this message can never block a
-  // second time even if what happens next goes wrong.
-  try {
-    prev[key] = { seen: d.seen, taskBlocks: d.taskBlocks, nudged: d.nudged || [], listenBlocks: d.listenBlocks, at: Date.now() }
-    fs.writeFileSync(statePath, JSON.stringify(prev, null, 2))
-  } catch { /* a watermark we cannot persist is a reason to allow, never to fail */ }
-
-  // Antigravity's Stop hook blocks with "continue" (its engine's own schema: stop | continue |
-  // block); Claude Code's with "block". Which app runs this is said in its hook entry (--app).
-  if (d.block) process.stdout.write(JSON.stringify({ decision: APP === 'antigravity' ? 'continue' : 'block', reason: d.reason }))
-  else if (APP === 'antigravity') process.stdout.write(JSON.stringify({ decision: 'stop' }))
-}
-
 const APP = (/--app=(\S+)/.exec(process.argv.slice(2).join(' ')) || [])[1] || 'claude-code'
+
+async function main() {
+  const allow = () => { if (APP === 'antigravity') process.stdout.write(JSON.stringify({ decision: 'stop' })) }
+  try {
+    let input = ''
+    for await (const chunk of process.stdin) input += chunk
+    const hook = (() => { try { return JSON.parse(input) } catch { return {} } })()
+
+    // GUARD 1: this stop is already the product of a block. Never stack another on it.
+    if (hook.stop_hook_active || Number(hook.executionNum) > 0) return allow()
+
+    const found = findSession(hook.cwd || (Array.isArray(hook.workspacePaths) && hook.workspacePaths[0]) || process.cwd())
+    if (!found || !found.session || !found.session.dir || !found.session.name) return allow() // not in a room
+
+    const { root, session } = found
+    const dir = path.isAbsolute(session.dir) ? session.dir : path.join(root, session.dir)
+    const read = (f) => { try { return fs.readFileSync(path.join(dir, f), 'utf8') } catch { return '' } }
+
+    const chat = read('HIVE_CHAT.md')
+    if (!chat) return allow() // room folder not mirrored yet; nothing to be sure about, so allow
+
+    const statePath = path.join(root, STATE_FILE)
+    const prev = readJson(statePath) || {}
+    // Keyed by room: a folder rejoined against a different room must not inherit a watermark from
+    // unrelated history -- the same reasoning as the persisted sync ancestor being room-keyed.
+    const key = String(session.room || session.dir)
+    const st = prev[key] || { seen: 0, taskBlocks: 0, nudged: [] }
+
+    // Is a listener running for this agent? Asked only where the agent could start one: an app that
+    // is woken when a background task ends, the room's link on disk, and a room that does not check
+    // tokens (the agent's shell does not hold the MCP server's token, so a listener could not join).
+    const cfg = readJson(path.join(dir, '.hive.json')) || {}
+    const how = listenHow(APP)
+    let listening = null, listenLine = ''
+    if (how && cfg.relay && cfg.room && !session.authed && !cfg.token) {
+      listening = isArmed({ name: session.name, room: cfg.room, session: String(hook.session_id || hook.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || '') })
+      listenLine = listenOrder(how, listenCommand({ relay: cfg.relay, room: cfg.room, name: session.name }))
+    }
+
+    const d = decide({
+      chat, tasks: read('HIVE_TASKS.md'), me: session.name,
+      seen: Number(st.seen) || 0, taskBlocks: Number(st.taskBlocks) || 0,
+      nudged: Array.isArray(st.nudged) ? st.nudged : [],
+      listening, listenLine, listenBlocks: Number(st.listenBlocks) || 0,
+    })
+
+    // GUARD 2: write the watermark BEFORE returning the block, so this message can never block a
+    // second time even if what happens next goes wrong.
+    try {
+      prev[key] = { seen: d.seen, taskBlocks: d.taskBlocks, nudged: d.nudged || [], listenBlocks: d.listenBlocks, at: Date.now() }
+      fs.writeFileSync(statePath, JSON.stringify(prev, null, 2))
+    } catch { /* a watermark we cannot persist is a reason to allow, never to fail */ }
+
+    // Antigravity's Stop hook blocks with "continue" (its engine's own schema: stop | continue |
+    // block); Claude Code's with "block". Which app runs this is said in its hook entry (--app).
+    if (d.block) process.stdout.write(JSON.stringify({ decision: APP === 'antigravity' ? 'continue' : 'block', reason: d.reason }))
+    else allow()
+  } catch {
+    allow()
+  }
+}
 
 // Only run when executed as the hook, so the test can import decide()/parseChat() cleanly.
 if (process.argv[1] && /hive-stop-hook\.js$/.test(process.argv[1])) {

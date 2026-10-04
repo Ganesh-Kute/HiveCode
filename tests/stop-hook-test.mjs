@@ -204,6 +204,13 @@ section('the hook end to end: session file, room folder, listener file')
   armed({ session: 'AG-OTHER' })
   const agWrongSession = hook(agPayload, ['--app=antigravity'])
   T('H11 Antigravity stdin blocks when listener belongs to another conversationId', agWrongSession.out && agWrongSession.out.decision === 'continue', agWrongSession.raw)
+  try { fs.rmSync(armedFile('Ada', 'r1', env)) } catch { }
+  const agReentry = hook({ ...agPayload, executionNum: 1 }, ['--app=antigravity'])
+  T('H12 Antigravity re-entry with executionNum > 0 lets stop through with decision stop', agReentry.out && agReentry.out.decision === 'stop', agReentry.raw)
+  const outside = path.join(t, 'outside')
+  fs.mkdirSync(outside, { recursive: true })
+  const agOutside = hook({ workspacePaths: [outside], cwd: undefined, session_id: undefined }, ['--app=antigravity'])
+  T('H13 Antigravity outside a room folder returns stop decision', agOutside.out && agOutside.out.decision === 'stop', agOutside.raw)
   try { fs.rmSync(t, { recursive: true, force: true }) } catch { }
 }
 
