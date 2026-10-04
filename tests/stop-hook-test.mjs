@@ -211,6 +211,11 @@ section('the hook end to end: session file, room folder, listener file')
   fs.mkdirSync(outside, { recursive: true })
   const agOutside = hook({ workspacePaths: [outside], cwd: undefined, session_id: undefined }, ['--app=antigravity'])
   T('H13 Antigravity outside a room folder returns stop decision', agOutside.out && agOutside.out.decision === 'stop', agOutside.raw)
+  // 4 Oct 2026: `passive` means "never answers", and the room routes nothing to a passive name, so a
+  // gate that ordered one to keep a listener running would spend its turns for nobody.
+  session({ passive: true })
+  const pc = hook({}), pa = hook(agPayload, ['--app=antigravity'])
+  T('H14 a passive participant with no listener is let through, in both apps', pc.raw === '' && !!pa.out && pa.out.decision === 'stop', pc.raw + ' | ' + pa.raw)
   try { fs.rmSync(t, { recursive: true, force: true }) } catch { }
 }
 

@@ -28,7 +28,7 @@ const T = (name, cond) => {
 const section = (s) => console.log(`\n# ${s}`)
 
 /** A session standing in for a joined room: a real doc, no network. */
-function makeRoom(me) {
+function makeRoom(me, extra = {}) {
   const doc = new Y.Doc()
   const chat = doc.getArray('chat')
   const hive = {
@@ -38,7 +38,7 @@ function makeRoom(me) {
     members: () => [],
     stop: () => {},
   }
-  const session = { hive, room: 'room-test', relay: 'wss://test', dir: sandbox, name: me, owner: 'Ganesh', mailbox: null }
+  const session = { hive, room: 'room-test', relay: 'wss://test', dir: sandbox, name: me, owner: 'Ganesh', mailbox: null, ...extra }
   _test.setSession(session)
   // Mirrors joinRoom: the mailbox starts at the current end of history, so a joiner is not
   // handed the whole backlog.
@@ -278,6 +278,11 @@ section('the line that keeps a Claude Code agent reachable after its turn (2 Oct
   T('...and the paths use forward slashes, which bash and PowerShell both accept', !!m && !m[1].includes('\\') && !m[2].includes('\\'))
   const second = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
   T('...not armed: the next empty wait repeats the order', /hive-await\.js/.test(second))
+  // 4 Oct 2026: a passive participant never answers and the room waits on nobody passive, so there
+  // is nothing to wake it for, and an order to keep a listener running would spend its turns.
+  makeRoom('Ada', { passive: true })
+  T('a passive participant is not ordered to start a listener', !/hive-await\.js/.test(textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))))
+  makeRoom('Ada')
 
   const { armedFile } = await import('../hive-listen.js')
   const path = (await import('path')).default

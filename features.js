@@ -597,6 +597,18 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'resume-keeps-who-you-joined-as',
+    name: 'After an MCP restart a participant comes back as what it joined as, and a passive one is never held open for a listener',
+    criticality: 'standard', tier: 2,
+    breaks: 'The MCP host restarts and hive-mcp rejoins from its session file, which held no kind and no passive flag: a human came back as an AI, a passive bot came back as a participant the room waits on, and the Stop hook and hive_wait ordered that bot to keep a listener running for messages it is never sent.',
+    proves: [
+      { suite: 'tests/session-resume-test.mjs', assertion: 'R3 it comes back passive' },
+      { suite: 'tests/session-resume-test.mjs', assertion: 'R4 it comes back human, not as an AI' },
+      { suite: 'tests/stop-hook-test.mjs', assertion: 'H14 a passive participant with no listener is let through, in both apps' },
+      { suite: 'tests/mcp-wait-test.mjs', assertion: 'a passive participant is not ordered to start a listener' },
+    ],
+  },
+  {
     id: 'merge-keeps-every-comment',
     name: 'A merge never ships without a comment one side wrote',
     criticality: 'hot', tier: 1,

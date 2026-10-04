@@ -234,6 +234,9 @@ async function main() {
     if (!found || !found.session || !found.session.dir || !found.session.name) return allow() // not in a room
 
     const { root, session } = found
+    // A passive participant never answers and the room waits on nobody passive: it owes no reply,
+    // no task, and no listener, so there is nothing to hold its turn open for.
+    if (session.passive) return allow()
     const dir = path.isAbsolute(session.dir) ? session.dir : path.join(root, session.dir)
     const read = (f) => { try { return fs.readFileSync(path.join(dir, f), 'utf8') } catch { return '' } }
 

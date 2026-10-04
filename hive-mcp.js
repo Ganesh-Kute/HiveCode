@@ -90,13 +90,16 @@ function resolveRoomRaw(link, dir) {
 // its own MCP process from its own directory) resumes only its own identity. Lets the
 // session survive MCP host restarts, which otherwise silently drop the agent from the room.
 const SESSION_FILE = path.join(process.cwd(), '.hive-mcp-session.json')
-function persistSession({ dir, name, owner, cursor, authed = false }) {
+function persistSession({ dir, name, owner, cursor, authed = false, kind = 'ai', passive = false }) {
   try {
     const prev = readSessionFile() || {}
     const chatCursor = cursor === undefined ? prev.chatCursor : cursor
     // `authed`: the Stop hook reads this file, and must not order a listener into a room that checks
     // tokens -- the agent's shell does not hold this server's token, so that listener could not join.
-    fs.writeFileSync(SESSION_FILE, JSON.stringify({ dir, name, owner, chatCursor, ...(authed ? { authed: true } : {}) }))
+    // `kind` and `passive`: a resume rejoins from this file, and without them a human came back as an
+    // AI and a passive participant as one the room waits on; the Stop hook reads `passive` too.
+    fs.writeFileSync(SESSION_FILE, JSON.stringify({ dir, name, owner, chatCursor, ...(authed ? { authed: true } : {}),
+      ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}) }))
   } catch { /* best-effort */ }
 }
 function readSessionFile() {
@@ -105,7 +108,7 @@ function readSessionFile() {
 /** Save the read cursor so a host restart does not reopen the blind window it just closed. */
 function persistCursor() {
   if (!session || !session.mailbox) return
-  persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor, authed: session.authed })
+  persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor, authed: session.authed, kind: session.kind, passive: session.passive })
   // AND PUBLISH IT INTO THE ROOM. The file above is for resuming THIS session; the room copy is
   // what makes "did they actually read it" answerable by anybody other than me. The cursor only
   // advances inside box.take(), which is the call that hands messages to the agent -- so a cursor
@@ -247,7 +250,7 @@ was not written. Fix the relay and call hive_join again.`
     throw e
   }
   session = { hive, room, relay, dir, name, owner, kind: kind || 'ai', passive: !!passive, authed: !!useToken, mailbox: null }
-  persistSession({ dir, name, owner, authed: !!useToken }) // survive MCP host restarts (see tryResumeSession)
+  persistSession({ dir, name, owner, authed: !!useToken, kind: kind || 'ai', passive: !!passive }) // survive MCP host restarts (see tryResumeSession)
   // Wait for the first sync so members/board/rules are ready.
   //
   // REPORT THE TRUTH ABOUT THIS. Until 18 Sep 2026 the timeout below simply resolved and the
@@ -1913,7 +1916,8 @@ function waitDefaultSeconds() { return waitPolicy().def }
 // room gets no line: the agent's shell does not hold this server's token, and a listener that
 // cannot join is a false "listening". (tests/mcp-wait-test.mjs)
 function listenLine(s) {
-  const how = s && !s.authed ? listenHow(clientName()) : ''
+  // A passive participant never answers and nobody waits on it, so there is nothing to wake it for.
+  const how = s && !s.authed && !s.passive ? listenHow(clientName()) : ''
   if (!how) return ''
   const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name })
   return `\n${listenOrder(how, cmd)}\n`
@@ -1932,6 +1936,7 @@ export const _test = {
   throttleStats: () => throttle.stats(),
   setSession(s) { session = s },
   getSession() { return session },
+  tryResumeSession,
   // One process serves one app, so "said once" is per process; a test that plays two apps in one
   // process forgets between them.
   forget: (key) => explained.delete(key),
