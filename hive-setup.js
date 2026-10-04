@@ -39,6 +39,7 @@ import { fileURLToPath } from 'url'
 import { VERSION } from './hive-version.js'
 import { currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { validateMemberName } from './hive-mailbox.js'
+import { installStopHook } from './hive-hook-install.js'
 
 export const SERVER_KEY = 'hivecode'
 const BACKUP_SUFFIX = '.before-hivecode'
@@ -428,6 +429,32 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
     const how = r.verify.skipped ? 'dry run, nothing written' : `starts in ${(r.verify.ms / 1000).toFixed(1)}s`
     const what = r.status === 'written' ? r.detail : r.changed ? 'updated its second config file' : 'already set up'
     log(`  ${pad(r.t.label, 15)} READY   ${what}  (${how}${extra.length ? `, ${extra.length + 1} config files` : ''})`)
+  }
+
+  // THE STOP GATE, FOR CLAUDE CODE (4 Oct 2026). An agent in a room went deaf the moment it ended a
+  // turn with no listener running, and the gate that stops that (hive-stop-hook.js) was a separate
+  // command nobody ran. Setup configures the agent apps, so it arms the gate too: in
+  // ~/.claude/settings.json beside any Stop hook already there, merged, never replaced. Only once
+  // the hook has been seen to run, and only for a Claude Code setup made READY -- a hook that cannot
+  // start fails on every turn of every session on the machine.
+  const cc = ready.find((r) => r.t.claudeCode)
+  if (cc) {
+    const node = stableNodePath().replace(/\\/g, '/')
+    const hookJs = path.join(path.dirname(runtime.js), 'hive-stop-hook.js').replace(/\\/g, '/')
+    const settings = path.join(home, '.claude', 'settings.json')
+    // stop_hook_active: the hook loads everything it imports, then lets the stop through untouched.
+    const ran = o.dryRun ? { status: 0 } : spawnSync(node, [hookJs], { input: JSON.stringify({ stop_hook_active: true }), encoding: 'utf8', timeout: 15000, windowsHide: true })
+    if (ran.status !== 0) {
+      log(`  ${pad('stop gate', 15)} NOT added: the hook did not run (${(ran.error && ran.error.message) || (ran.stderr || '').trim().split('\n')[0] || 'exit ' + ran.status}).`)
+    } else {
+      const h = installStopHook(settings, `"${node}" "${hookJs}"`, { dryRun: o.dryRun })
+      if (h.status === 'refused') log(`  ${pad('stop gate', 15)} NOT added: ${h.detail}. Fix that file, then run setup again.`)
+      else if (h.status === 'unchanged') log(`  ${pad('stop gate', 15)} already in ${settings}`)
+      else {
+        cc.changed = true // a hook loads only when Claude Code starts, so it is on the restart list
+        log(`  ${pad('stop gate', 15)} ${o.dryRun ? 'would be added to' : 'added to'} ${settings}: in a room, Claude Code is not let end a turn with no listener running${h.others ? ` (${h.others} other Stop hook${h.others > 1 ? 's' : ''} left as they were)` : ''}`)
+      }
+    }
   }
 
   const manual = { mcpServers: { [SERVER_KEY]: serverEntry(runtime.js) } }

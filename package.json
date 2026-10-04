@@ -30,6 +30,7 @@
   "files": [
     "hive-mcp.js",
     "hive-await.js",
+    "hive-listen.js",
     "hive-mux.js",
     "hive-mux-proto.js",
     "hive-version.js",

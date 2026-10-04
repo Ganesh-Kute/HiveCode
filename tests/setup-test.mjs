@@ -264,6 +264,36 @@ const fFresh = setupIn(fresh)
 T('F8 a repo with no commits yet gets no branch line (there is nothing to bring in)', fFresh.code === 0 && !/hivecode-mcp@latest branch/.test(fFresh.out), fFresh.out)
 
 // ---------------------------------------------------------------------------------------------
+// 4 Oct 2026: agents joined a room, answered once, and went deaf. The gate that stops a Claude Code
+// turn ending with no listener running (hive-stop-hook.js) was a separate command nobody ran, so
+// setup now arms it -- in a settings file the user and other tools also write, so beside what is
+// already there, never instead of it.
+section('G. setup arms the stop gate for Claude Code, beside the hooks already there')
+{
+  const hHome = tmp('hhome')
+  const settings = path.join(hHome, '.claude', 'settings.json')
+  put(path.join(hHome, '.claude.json'), '{}')
+  put(settings, JSON.stringify({ model: 'kept', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other-tool hook Stop' }] }] } }, null, 2))
+  const ours = (s) => ((s.hooks || {}).Stop || []).filter((e) => (e.hooks || []).some((h) => /hive-stop-hook\.js/.test(h.command)))
+  const g1 = runSetup(hHome, ['--name', 'Gate'])
+  const s1 = JSON.parse(fs.readFileSync(settings, 'utf8'))
+  T('G1 setup adds the Hivecode stop gate to ~/.claude/settings.json', ours(s1).length === 1, g1.out)
+  T('G2 ...and leaves the Stop hook already there, and the rest of the file, as they were',
+    s1.hooks.Stop.some((e) => (e.hooks || []).some((h) => h.command === 'other-tool hook Stop')) && s1.model === 'kept', JSON.stringify(s1))
+  const cmd = ours(s1).length ? ours(s1)[0].hooks[0].command : ''
+  const parts = [...cmd.matchAll(/"([^"]+)"/g)].map((m) => m[1])
+  const ran = parts.length === 2 ? spawnSync(parts[0], [parts[1]], { input: '{"stop_hook_active":true}', encoding: 'utf8', timeout: 20000, windowsHide: true }) : { status: -1 }
+  T('G3 the command it wrote starts the hook, with no shell and no PATH lookup', ran.status === 0, cmd)
+  T('G4 setup says it did it, and that Claude Code needs a restart for it', /stop gate\s+added to/.test(g1.out) && /\d\. Claude Code:/.test(g1.out), g1.out)
+  const g2 = runSetup(hHome, ['--name', 'Gate'])
+  const s2 = JSON.parse(fs.readFileSync(settings, 'utf8'))
+  T('G5 running setup again does not add a second one', ours(s2).length === 1 && s2.hooks.Stop.length === 2 && /stop gate\s+already in/.test(g2.out), g2.out)
+  put(settings, '{ "model": "kept", broken')
+  const g3 = runSetup(hHome, ['--name', 'Gate'])
+  T('G6 a settings file that is not valid JSON is left alone, and setup says so', fs.readFileSync(settings, 'utf8') === '{ "model": "kept", broken' && /stop gate\s+NOT added/.test(g3.out), g3.out)
+}
+
+// ---------------------------------------------------------------------------------------------
 if (process.argv.includes('--package')) {
   section('E. the npx path: packed, installed like npx, then the install deleted')
   const P = tmp('pkg')

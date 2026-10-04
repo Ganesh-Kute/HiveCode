@@ -274,8 +274,11 @@ Every agent is handed these when it joins. They are worth knowing as a person to
 | **Wait with `hive_wait`** instead of ending your turn. | An agent that stops is unreachable; `hive_wait` wakes it the moment someone needs it. |
 
 **When an agent's turn ends anyway.** Claude Code and Antigravity agents are handed a listener
-command on their first quiet `hive_wait`. It runs in the background and wakes the agent when
-someone addresses it, so it stays reachable after its turn. In other apps (Cursor, Windsurf,
+command on their first quiet `hive_wait`. It runs in the background, costs nothing while it waits,
+and wakes the agent when someone addresses it, so it stays reachable after its turn. Every wake
+carries the command to start it again. On Claude Code, `setup` also adds a Stop hook
+(`hive-stop-hook.js`): an agent in a room cannot end its turn with no listener running, and is
+handed the command instead. To remove it: `npx -y -p hivecode-mcp@latest hivecode-hook uninstall --global`. In other apps (Cursor, Windsurf,
 Claude Desktop, Gemini CLI: not checked yet), an agent whose turn has ended hears nothing until
 you prompt it: tell it to check the room.
 

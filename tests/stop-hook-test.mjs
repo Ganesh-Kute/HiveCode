@@ -135,5 +135,70 @@ section('the system-prompt text')
   T('one-liner exists for small surfaces', ONE_LINER.length > 0 && ONE_LINER.length < 160)
 }
 
+// ── A TURN DOES NOT END WITH NO LISTENER RUNNING (4 Oct 2026) ──────────────────────────────────
+// Agents joined, answered once, and went deaf: the order to start a listener was said once, and an
+// agent had to remember it after every wake. The gate now asks "is one running for you?" before a
+// turn ends. It is still one block per stop, and an agent that will not start one is let go.
+section('a turn does not end with no listener running')
+{
+  const order = '[BEFORE YOU END THIS TURN] Ending it stops you hearing this room.\n"node" "hive-await.js" "ws://r|room" "Ada" 25'
+  const d = run({ chat: chat(), listening: false, listenLine: order })
+  T('L1 none running: the stop is blocked with the command to start one', d.block === true && String(d.reason).includes('hive-await.js'))
+  T('L2 one running: nothing to block', run({ chat: chat(), listening: true, listenLine: order }).block === false)
+  T('L3 not applicable (a room that checks tokens, an app not woken by a task): nothing to block', run({ chat: chat(), listening: null, listenLine: order }).block === false)
+  const both = run({ chat: chat(line('Eve', '@Ada the suite is red')), listening: false, listenLine: order })
+  T('L4 mail AND no listener: ONE block that carries both, since a second block is never given',
+    both.block === true && both.reason.includes('the suite is red') && both.reason.includes('hive-await.js'))
+  let st = { listenBlocks: 0 }, blocks = 0
+  for (let i = 0; i < 6; i++) { const r = run({ chat: chat(), listening: false, listenLine: order, listenBlocks: st.listenBlocks }); if (r.block) blocks++; st = r }
+  T('L5 an agent that never starts one is let go after 3 turns', blocks === 3)
+  T('L6 a listener seen running resets that count', run({ chat: chat(), listening: true, listenLine: order, listenBlocks: 3 }).listenBlocks === 0)
+}
+
+section('the hook end to end: session file, room folder, listener file')
+{
+  const { spawnSync } = await import('child_process')
+  const fs = (await import('fs')).default
+  const os = (await import('os')).default
+  const path = (await import('path')).default
+  const { armedFile } = await import('../hive-listen.js')
+  const HOOK = new URL('../hive-stop-hook.js', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
+  const t = fs.mkdtempSync(path.join(os.tmpdir(), 'hv-stophook-'))
+  const env = { TEMP: t, TMPDIR: t }
+  const proj = path.join(t, 'proj'), roomDir = path.join(t, 'room')
+  fs.mkdirSync(proj, { recursive: true }); fs.mkdirSync(roomDir, { recursive: true })
+  fs.writeFileSync(path.join(roomDir, '.hive.json'), JSON.stringify({ relay: 'ws://127.0.0.1:9', room: 'r1' }))
+  fs.writeFileSync(path.join(roomDir, 'HIVE_CHAT.md'), '# Hive Chat\n')
+  const session = (extra = {}) => fs.writeFileSync(path.join(proj, '.hive-mcp-session.json'), JSON.stringify({ dir: roomDir, name: 'Ada', owner: 'G', ...extra }))
+  const armed = (o) => { fs.mkdirSync(path.dirname(armedFile('Ada', 'r1', env)), { recursive: true }); fs.writeFileSync(armedFile('Ada', 'r1', env), JSON.stringify({ pid: process.pid, at: Date.now(), beat: Date.now(), synced: true, session: 'S1', ...o })) }
+  const hook = (input, args = []) => {
+    try { fs.rmSync(path.join(proj, '.hive-stop-hook.json')) } catch { } // each case starts with no blocks spent
+    const r = spawnSync(process.execPath, [HOOK, ...args], { input: JSON.stringify({ cwd: proj, session_id: 'S1', ...input }), env: { ...process.env, ...env }, encoding: 'utf8', timeout: 20000 })
+    let out = null; try { out = JSON.parse(r.stdout) } catch { }
+    return { code: r.status, out, raw: r.stdout }
+  }
+  session()
+  let h = hook({})
+  T('H1 no listener: blocked, with the command for THIS agent and room', h.code === 0 && h.out && h.out.decision === 'block' && h.out.reason.includes('hive-await.js') && h.out.reason.includes('ws://127.0.0.1:9|r1') && h.out.reason.includes('"Ada"'), h.raw)
+  T('H2 a stop that is already the product of a block is let through', hook({ stop_hook_active: true }).raw === '')
+  armed({})
+  T('H3 a listener running in this session: let through', hook({}).raw === '')
+  T('H4 a listener running in ANOTHER session does not count', (hook({ session_id: 'S2' }).out || {}).decision === 'block')
+  const dead = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' })
+  armed({ pid: Number(dead.stdout.trim()) })
+  T('H5 a listener whose process has gone does not count', (hook({}).out || {}).decision === 'block')
+  armed({ beat: Date.now() - 120000 })
+  T('H6 a listener file nobody has refreshed in two minutes does not count', (hook({}).out || {}).decision === 'block')
+  armed({ synced: false, at: Date.now() - 120000 })
+  T('H7 a listener that never reached the room (refused, say, for want of a token) does not count', (hook({}).out || {}).decision === 'block')
+  fs.rmSync(armedFile('Ada', 'r1', env))
+  session({ authed: true })
+  T('H8 a room that checks tokens: no listener is ordered (one could not join)', hook({}).raw === '')
+  session()
+  const ag = hook({}, ['--app=antigravity'])
+  T('H9 run by Antigravity, the block is said in Antigravity\'s words ("continue")', ag.out && ag.out.decision === 'continue' && /run_command/.test(ag.out.reason), ag.raw)
+  try { fs.rmSync(t, { recursive: true, force: true }) } catch { }
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 assert.strictEqual(fail, 0)

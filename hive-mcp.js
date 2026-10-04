@@ -89,11 +89,13 @@ function resolveRoomRaw(link, dir) {
 // its own MCP process from its own directory) resumes only its own identity. Lets the
 // session survive MCP host restarts, which otherwise silently drop the agent from the room.
 const SESSION_FILE = path.join(process.cwd(), '.hive-mcp-session.json')
-function persistSession({ dir, name, owner, cursor }) {
+function persistSession({ dir, name, owner, cursor, authed = false }) {
   try {
     const prev = readSessionFile() || {}
     const chatCursor = cursor === undefined ? prev.chatCursor : cursor
-    fs.writeFileSync(SESSION_FILE, JSON.stringify({ dir, name, owner, chatCursor }))
+    // `authed`: the Stop hook reads this file, and must not order a listener into a room that checks
+    // tokens -- the agent's shell does not hold this server's token, so that listener could not join.
+    fs.writeFileSync(SESSION_FILE, JSON.stringify({ dir, name, owner, chatCursor, ...(authed ? { authed: true } : {}) }))
   } catch { /* best-effort */ }
 }
 function readSessionFile() {
@@ -102,7 +104,7 @@ function readSessionFile() {
 /** Save the read cursor so a host restart does not reopen the blind window it just closed. */
 function persistCursor() {
   if (!session || !session.mailbox) return
-  persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor })
+  persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor, authed: session.authed })
   // AND PUBLISH IT INTO THE ROOM. The file above is for resuming THIS session; the room copy is
   // what makes "did they actually read it" answerable by anybody other than me. The cursor only
   // advances inside box.take(), which is the call that hands messages to the agent -- so a cursor
@@ -244,7 +246,7 @@ was not written. Fix the relay and call hive_join again.`
     throw e
   }
   session = { hive, room, relay, dir, name, owner, kind: kind || 'ai', passive: !!passive, authed: !!useToken, mailbox: null }
-  persistSession({ dir, name, owner }) // survive MCP host restarts (see tryResumeSession)
+  persistSession({ dir, name, owner, authed: !!useToken }) // survive MCP host restarts (see tryResumeSession)
   // Wait for the first sync so members/board/rules are ready.
   //
   // REPORT THE TRUTH ABOUT THIS. Until 18 Sep 2026 the timeout below simply resolved and the

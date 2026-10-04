@@ -35,6 +35,7 @@ import fs from 'fs'
 import path from 'path'
 import { startSync, parseLink } from './sync.js'
 import * as RC from './hive-receipts.js'
+import { awaitDir, armedFile, BEAT_MS } from './hive-listen.js'
 
 const [, , LINK = '', NAME = '', IDLE_MIN = '10'] = process.argv
 if (!LINK || !NAME) {
@@ -42,9 +43,37 @@ if (!LINK || !NAME) {
   process.exit(2)
 }
 const { relay, room } = parseLink(LINK)
-const dir = (process.env.TEMP || process.env.TMPDIR || '.') + '/hive-await-' + NAME
+const dir = awaitDir(NAME)
 
 const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', syncFiles: false, listener: true, log: () => {} })
+
+// ARMED, AND THE NEWEST LISTENER WINS (4 Oct 2026; see hive-listen.js). This file is how the Stop
+// hook and the MCP server know, with no network call, that the agent will hear the room after its
+// turn ends. It is written at start, not on the first sync: a listener still connecting delivers
+// every mention once it does (check() runs on every resync), and calling it unarmed would only make
+// the agent start a second one. Two listeners for one agent wake it twice for one message, so a
+// listener that finds the file naming another process leaves: that one was started after it.
+const ARMED = armedFile(NAME, room)
+const SESSION = process.env.CLAUDE_CODE_SESSION_ID || ''
+const AGAIN = `"${process.execPath.replace(/\\/g, '/')}" "${path.resolve(process.argv[1]).replace(/\\/g, '/')}" "${LINK}" "${NAME}" ${IDLE_MIN}`
+const startedAt = Date.now()
+let synced = false
+const ownerPid = () => { try { return Number(JSON.parse(fs.readFileSync(ARMED, 'utf8')).pid) || 0 } catch { return 0 } }
+function beat() {
+  try {
+    fs.mkdirSync(path.dirname(ARMED), { recursive: true })
+    fs.writeFileSync(ARMED, JSON.stringify({ pid: process.pid, name: NAME, room, link: LINK, session: SESSION, at: startedAt, beat: Date.now(), synced }))
+  } catch { /* unarmed is the safe reading: the hook asks for a fresh listener, and it replaces this one */ }
+}
+const superseded = () => {
+  const o = ownerPid()
+  if (!o || o === process.pid) return false
+  finish('superseded', { note: `a newer listener for ${NAME} in ${room} took over (pid ${o}). Do not start this one again.` })
+  return true
+}
+beat()
+setInterval(() => { if (!superseded()) beat() }, BEAT_MS).unref()
+process.on('exit', () => { try { if (ownerPid() === process.pid) fs.unlinkSync(ARMED) } catch { } })
 const chat = hive.doc.getArray('chat')
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // `@all` wakes everyone — it is how the room is addressed deliberately. `\b` is NOT enough: "-" is a
@@ -116,6 +145,7 @@ const readCursor = () => { try { return Number(JSON.parse(fs.readFileSync(cursor
 const writeCursor = (n) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ at: n }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
 
 function check() {
+  if (superseded()) return // the newer listener delivers it; consuming it here would hide it from that one
   const msgs = chat.toArray()
   let lastMine = -1
   for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].by === NAME) { lastMine = i; break } }
@@ -130,12 +160,15 @@ function check() {
   if (hits.length) {
     writeCursor(msgs.length)
     publish(msgs.length)
-    finish('mention', { messages: hits.map((m) => `${m.by}(${m.kind}): ${m.text}`) }, 1500)
+    // THE ORDER TO START AGAIN RIDES ON EVERY WAKE. It used to be said once, on the agent's first
+    // quiet hive_wait, and an agent had to remember it after every wake; agents forget (4 Oct 2026).
+    finish('mention', { messages: hits.map((m) => `${m.by}(${m.kind}): ${m.text}`), next: `When you have answered, start this listener again in the background, the same way you started it, or you stop hearing the room when your turn ends: ${AGAIN}` }, 1500)
   }
 }
 
 hive.provider.on('sync', (s) => {
   if (!s) return
+  if (!synced) { synced = true; beat() }
   if (!armed) {
     armed = true
     console.error(`[await] ${NAME} listening in ${room}. In room: ${hive.members().map((m) => m.name).join(', ')}`)
@@ -149,6 +182,6 @@ hive.provider.on('sync', (s) => {
 setTimeout(() => {
   try { writeCursor(chat.length) } catch {}
   publish(chat.length) // nothing in the window named us, so nothing in it is mail the MCP should raise
-  finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again to keep listening.` }, 1500)
+  finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again in the background to keep listening: ${AGAIN}` }, 1500)
 }, Number(IDLE_MIN) * 60 * 1000)
 process.on('SIGINT', () => { try { hive.stop() } catch {}; process.exit(0) })

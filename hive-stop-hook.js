@@ -56,6 +56,7 @@
 import fs from 'fs'
 import path from 'path'
 import { mentionsName, unansweredFor } from './hive-mailbox.js'
+import { isArmed, listenCommand, listenHow, listenOrder } from './hive-listen.js'
 
 // Consecutive turns we will block purely because a task is still open, before standing down.
 // Messages are not subject to this: the watermark already makes each one block at most once.
@@ -97,13 +98,36 @@ export function openTasksFor(src, me) {
   return out
 }
 
+// A TURN THAT ENDS WITH NO LISTENER RUNNING IS A DEAF AGENT NOBODY KNOWS IS DEAF (4 Oct 2026). The
+// order to start one was said once, on the first quiet hive_wait, and an agent had to remember it
+// after every wake; agents forget. So this gate also asks "is a listener running for you?"
+// (hive-listen.js) before the turn ends. It rides on the SAME block as any mail -- one block per
+// stop, never a second -- because a stop that was already blocked once is let through
+// (stop_hook_active), and a listener order queued behind a mail block would never be said. An
+// agent that ignores it MAX_LISTEN_BLOCKS turns running is let go: it cannot or will not, and a gate
+// that nags is a gate the user switches off. Seeing a listener running resets the count.
+const MAX_LISTEN_BLOCKS = 3
+
 /**
  * The whole decision, as a pure function of what is on disk, so the test can drive it without a
  * Claude Code session, a relay, or a room.
  *
- * Returns { block: boolean, reason?: string, seen: number, taskBlocks: number }.
+ * `listening`: true (a listener is running), false (none, and one can be started), or null (not
+ * applicable: no link on disk, a room that checks tokens, an app that is not woken by a background
+ * task). `listenLine`: the order to give when it is false.
+ *
+ * Returns { block: boolean, reason?: string, seen: number, taskBlocks: number, listenBlocks: number }.
  */
-export function decide({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
+export function decide(o) {
+  const d = obligations(o)
+  const { listening = null, listenLine = '' } = o
+  const listenBlocks = Number(o.listenBlocks) || 0
+  if (listening !== false || !listenLine) return { ...d, listenBlocks: listening ? 0 : listenBlocks }
+  if (listenBlocks >= MAX_LISTEN_BLOCKS) return { ...d, listenBlocks }
+  return { ...d, block: true, reason: d.block ? `${d.reason}\n\n${listenLine}` : listenLine, listenBlocks: listenBlocks + 1 }
+}
+
+function obligations({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
   const msgs = parseChat(chat)
   const nowSeen = msgs.length
   // A cursor past the end means this is a different (rebuilt or switched) room -- start over
@@ -219,21 +243,37 @@ async function main() {
   const key = String(session.room || session.dir)
   const st = prev[key] || { seen: 0, taskBlocks: 0, nudged: [] }
 
+  // Is a listener running for this agent? Asked only where the agent could start one: an app that
+  // is woken when a background task ends, the room's link on disk, and a room that does not check
+  // tokens (the agent's shell does not hold the MCP server's token, so a listener could not join).
+  const cfg = readJson(path.join(dir, '.hive.json')) || {}
+  const how = listenHow(APP)
+  let listening = null, listenLine = ''
+  if (how && cfg.relay && cfg.room && !session.authed && !cfg.token) {
+    listening = isArmed({ name: session.name, room: cfg.room, session: String(hook.session_id || '') })
+    listenLine = listenOrder(how, listenCommand({ relay: cfg.relay, room: cfg.room, name: session.name }))
+  }
+
   const d = decide({
     chat, tasks: read('HIVE_TASKS.md'), me: session.name,
     seen: Number(st.seen) || 0, taskBlocks: Number(st.taskBlocks) || 0,
     nudged: Array.isArray(st.nudged) ? st.nudged : [],
+    listening, listenLine, listenBlocks: Number(st.listenBlocks) || 0,
   })
 
   // GUARD 2: write the watermark BEFORE returning the block, so this message can never block a
   // second time even if what happens next goes wrong.
   try {
-    prev[key] = { seen: d.seen, taskBlocks: d.taskBlocks, nudged: d.nudged || [], at: Date.now() }
+    prev[key] = { seen: d.seen, taskBlocks: d.taskBlocks, nudged: d.nudged || [], listenBlocks: d.listenBlocks, at: Date.now() }
     fs.writeFileSync(statePath, JSON.stringify(prev, null, 2))
   } catch { /* a watermark we cannot persist is a reason to allow, never to fail */ }
 
-  if (d.block) process.stdout.write(JSON.stringify({ decision: 'block', reason: d.reason }))
+  // Antigravity's Stop hook blocks with "continue" (its engine's own schema: stop | continue |
+  // block); Claude Code's with "block". Which app runs this is said in its hook entry (--app).
+  if (d.block) process.stdout.write(JSON.stringify({ decision: APP === 'antigravity' ? 'continue' : 'block', reason: d.reason }))
 }
+
+const APP = (/--app=(\S+)/.exec(process.argv.slice(2).join(' ')) || [])[1] || 'claude-code'
 
 // Only run when executed as the hook, so the test can import decide()/parseChat() cleanly.
 if (process.argv[1] && /hive-stop-hook\.js$/.test(process.argv[1])) {

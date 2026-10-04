@@ -39,9 +39,9 @@ const relay = await new Promise((res) => {
 })
 
 // One listener process. Resolves with { code, out, running } -- `running` true if it had not exited by `ms`.
-function listen(name, idleMin, ms) {
-  const child = spawn(process.execPath, ['hive-await.js', link, name, String(idleMin)],
-    { cwd: ROOT, env: { ...process.env, TEMP: tmp, TMPDIR: tmp } })
+function listen(name, idleMin, ms, { lnk = link, env = { TEMP: tmp, TMPDIR: tmp }, cwd = ROOT } = {}) {
+  const child = spawn(process.execPath, [path.join(ROOT, 'hive-await.js'), lnk, name, String(idleMin)],
+    { cwd, env: { ...process.env, ...env } })
   let out = '', err = ''
   child.stdout.on('data', (d) => { out += d })
   child.stderr.on('data', (d) => { err += d })
@@ -110,7 +110,60 @@ try {
     const L = listen('Vega', 0.05, 12000)
     const r = await L.result()
     T('the idle exit tells the agent to run the same command again', !!r.parsed && /again/i.test(String(r.parsed.note || '')), JSON.stringify(r.parsed || {}))
+    T('...and gives that exact command, not a description of it', !!r.parsed && String(r.parsed.note || '').includes('hive-await.js') && String(r.parsed.note || '').includes(link), JSON.stringify(r.parsed || {}))
   }
+
+  // ── ARMED (4 Oct 2026) ─────────────────────────────────────────────────────────────────────
+  // Agents joined, answered once, and went deaf: the order to listen was said once, at join, and an
+  // agent had to remember it after every wake. Now the listener records that it is running, and the
+  // Stop hook and the MCP server check that before a turn ends. A false "running" here is a deaf
+  // agent that nobody knows is deaf, so the "no" cases matter as much as the "yes".
+  const { isArmed, armedFile, awaitDir } = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-listen.js`)
+  const env3 = { TEMP: tmp, TMPDIR: tmp }
+  const room3 = 'aw-' + crypto.randomBytes(5).toString('hex')
+  const link3 = `ws://localhost:${PORT}|${room3}`
+  const P3 = startSync({ relay: `ws://localhost:${PORT}`, room: room3, dir: path.join(tmp, 'poster3'), name: 'Ganesh', kind: 'human', syncFiles: false, log: () => {} })
+  await sleep(1500)
+
+  console.log('# a running listener says so, and stops saying so when it ends')
+  {
+    const L = listen('Wren', 1, 15000, { lnk: link3, env: { ...env3, CLAUDE_CODE_SESSION_ID: 'sess-A' } })
+    await L.ready
+    await sleep(300)
+    T('A1 while it waits, the agent is armed', isArmed({ name: 'Wren', room: room3 }, { env: env3 }))
+    T('A2 ...for the session that started it', isArmed({ name: 'Wren', room: room3, session: 'sess-A' }, { env: env3 }))
+    T('A3 ...and NOT for another session: its exit wakes the session that started it', !isArmed({ name: 'Wren', room: room3, session: 'sess-B' }, { env: env3 }))
+    P3.say('@Wren ping one')
+    const r = await L.result()
+    const next = String((r.parsed && r.parsed.next) || '')
+    T('A4 a wake carries the exact command to listen again, on the wake itself', !r.running && next.includes('hive-await.js') && next.includes(link3) && next.includes('"Wren"'), JSON.stringify(r.parsed || {}).slice(0, 300))
+    T('A5 once it has exited, the agent is no longer armed', !isArmed({ name: 'Wren', room: room3 }, { env: env3 }) && !fs.existsSync(armedFile('Wren', room3, env3)))
+  }
+
+  console.log('# two listeners for one agent: the newest wins, so one message wakes it once')
+  {
+    const fast = { ...env3, HIVE_AWAIT_BEAT_MS: '300' }
+    const L1 = listen('Wren', 1, 15000, { lnk: link3, env: fast })
+    await L1.ready
+    const L2 = listen('Wren', 1, 15000, { lnk: link3, env: fast })
+    await L2.ready
+    const r1 = await L1.result()
+    T('N1 the older listener leaves, saying why', !r1.running && !!r1.parsed && r1.parsed.reason === 'superseded', JSON.stringify(r1.parsed || {}).slice(0, 200))
+    T('N2 ...and the agent is still armed, by the newer one', isArmed({ name: 'Wren', room: room3 }, { env: env3 }))
+    P3.say('@Wren ping two')
+    const r2 = await L2.result()
+    T('N3 the newer one is woken by the mention', !r2.running && !!r2.parsed && r2.parsed.reason === 'mention' && /ping two/.test(r2.parsed.messages.join(' ')), JSON.stringify(r2.parsed || {}).slice(0, 200))
+  }
+
+  console.log('# with TEMP and TMPDIR unset (most Linux), nothing lands in the folder it was started in')
+  {
+    T('L1 its folder is under the system temp folder', path.resolve(awaitDir('Wren', {})).startsWith(path.resolve(os.tmpdir())), awaitDir('Wren', {}))
+    const started = fs.mkdtempSync(path.join(tmp, 'started-in-'))
+    const L = listen('Lin', 0.05, 12000, { lnk: link3, env: { TEMP: '', TMPDIR: '' }, cwd: started })
+    await L.result()
+    T('L2 the listener wrote nothing into the folder it was started in', fs.readdirSync(started).length === 0, JSON.stringify(fs.readdirSync(started)))
+  }
+  try { P3.stop() } catch { }
 
   console.log('# an orphaned listener stops claiming to listen')
   // 2 Oct 2026: a listener outlives the agent that started it when the agent's app is closed. It
