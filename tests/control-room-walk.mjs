@@ -443,12 +443,13 @@ try {
   const nodeSrc = fs.readFileSync(path.join(ROOT, 'hive-secrets.js'), 'utf8')
   const nodePatternMatches = [...nodeSrc.matchAll(/\{\s*kind:\s*'([^']+)',\s*re:\s*(\/[^\n]+\/[a-z]*)\s*\}/g)]
   const nodeKinds = nodePatternMatches.map(m => m[1])
-  const browserKinds = BrowserSecrets.PATTERNS.map(p => p.kind)
+  const allBrowserPatterns = [...BrowserSecrets.PATTERNS, ...(BrowserSecrets.TOKEN_PATTERNS || [])]
+  const browserKinds = allBrowserPatterns.map(p => p.kind)
   T('browser PATTERNS export has identical kind count and names',
     nodeKinds.length === browserKinds.length && nodeKinds.every((k, i) => k === browserKinds[i]),
     `${browserKinds.length} vs ${nodeKinds.length}`)
 
-  const patternSourcesMatch = BrowserSecrets.PATTERNS.every((bp, i) => {
+  const patternSourcesMatch = allBrowserPatterns.every((bp, i) => {
     const rawRe = nodePatternMatches[i][2]
     const lastSlash = rawRe.lastIndexOf('/')
     const expectedSrc = rawRe.slice(1, lastSlash)
@@ -458,10 +459,10 @@ try {
   T('browser PATTERNS regex sources and flags match hive-secrets.js exactly', patternSourcesMatch)
 
   // 3. Live browser window._secrets pattern parity
-  const winPatterns = await evalJS(`window._secrets && window._secrets.PATTERNS ? window._secrets.PATTERNS.map(p => ({ kind: p.kind, src: p.re.source, flags: p.re.flags })) : []`)
+  const winPatterns = await evalJS(`window._secrets && window._secrets.PATTERNS ? [...window._secrets.PATTERNS, ...(window._secrets.TOKEN_PATTERNS || [])].map(p => ({ kind: p.kind, src: p.re.source, flags: p.re.flags })) : []`)
   T('in-browser window._secrets.PATTERNS matches exported patterns',
-    winPatterns.length === BrowserSecrets.PATTERNS.length &&
-    winPatterns.every((wp, i) => wp.kind === BrowserSecrets.PATTERNS[i].kind && wp.src === BrowserSecrets.PATTERNS[i].re.source))
+    winPatterns.length === allBrowserPatterns.length &&
+    winPatterns.every((wp, i) => wp.kind === allBrowserPatterns[i].kind && wp.src === allBrowserPatterns[i].re.source))
 
   // 4. Functional parity across sample credentials generated at runtime
   const genRand = (chars, len) => {
@@ -476,12 +477,13 @@ try {
     { kind: 'GitLab token', val: 'glpat-' + genRand(alnum, 24) },
     { kind: 'Slack token', val: 'xox' + 'b-987654-' + genRand(alnum, 16) },
     { kind: 'Stripe live key', val: 'r' + 'k_live_' + genRand(alnum, 24) },
+    { kind: 'access token', val: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c' },
   ]
   let funcParity = true
   for (const sample of testSamples) {
-    const nodeRes = NodeSecrets.findSecrets(`key = ${sample.val}`)
-    const browserRes = BrowserSecrets.findSecrets(`key = ${sample.val}`)
-    const inWinRes = await evalJS(`window._secrets.findSecrets(${JSON.stringify(`key = ${sample.val}`)})`)
+    const nodeRes = NodeSecrets.findSecrets(`key = ${sample.val}`, { tokens: true })
+    const browserRes = BrowserSecrets.findSecrets(`key = ${sample.val}`, { tokens: true })
+    const inWinRes = await evalJS(`window._secrets.findSecrets(${JSON.stringify(`key = ${sample.val}`)}, { tokens: true })`)
     if (!nodeRes.length || !browserRes.length || !inWinRes.length ||
         nodeRes[0].kind !== sample.kind ||
         browserRes[0].kind !== sample.kind ||

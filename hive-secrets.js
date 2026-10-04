@@ -48,7 +48,7 @@ function placeholder(value, kind) {
 // holds it joins as them, with their access. It is kept out of the room's chat and tasks
 // ({ tokens: true }). It is NOT a reason to hold a FILE back: auth code and its tests are full of
 // sample tokens, most of them expired or fake, and holding each such file would stop real work.
-const TOKEN_PATTERNS = [
+export const TOKEN_PATTERNS = [
   { kind: 'access token', re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/g },
 ]
 

@@ -50,6 +50,7 @@ const envHelper = `function envForKind(kind) {
     case 'DigitalOcean token': return 'DO_TOKEN'
     case 'private key': return 'PRIVATE_KEY'
     case 'registry credential': return 'NPM_TOKEN'
+    case 'access token': return 'HIVE_TOKEN'
     default: return 'TOKEN'
   }
 }
@@ -69,7 +70,7 @@ ${body}
 
 ${envHelper}
 
-export { PATTERNS, PLACEHOLDER, placeholder, findSecrets, newSecrets, describeSecret, envForKind, secretRefusalNotice }
+export { PATTERNS, TOKEN_PATTERNS, PLACEHOLDER, placeholder, findSecrets, newSecrets, describeSecret, envForKind, secretRefusalNotice }
 `
 
 const startTag = '// --- AUTO-GENERATED: hive-secrets ---'
@@ -79,7 +80,7 @@ ${body}
 
 ${envHelper}
 
-window._secrets = { PATTERNS, PLACEHOLDER, placeholder, findSecrets, newSecrets, describeSecret, envForKind, secretRefusalNotice }
+window._secrets = { PATTERNS, TOKEN_PATTERNS, PLACEHOLDER, placeholder, findSecrets, newSecrets, describeSecret, envForKind, secretRefusalNotice }
 ${endTag}`
 
 if (isCheck) {
