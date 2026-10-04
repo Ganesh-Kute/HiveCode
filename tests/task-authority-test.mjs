@@ -32,6 +32,10 @@ console.log('# the human clients carry the same rules (static)')
   T('...and its click handler re-checks owner and status', /own===me/.test(click) && /t\.status==='pending'\|\|t\.status==='denied'/.test(click))
   const ext = fs.readFileSync(path.join(ROOT, 'extension', 'extension.js'), 'utf8')
   T('the VS Code extension refuses to decide a task that is not waiting', /t\.status !== 'pending' && t\.status !== 'denied'/.test(ext))
+  // 4 Oct 2026: an agent between turns is woken by its listener, which wakes on @Name. An approval
+  // that named nobody left the agent asleep on work it had just been cleared to do.
+  T('the panel\'s approval names the agent, so its listener wakes it', /pushChat\(`\$\{ok\?`@\$\{t\.to\} `/.test(click))
+  T('...and so does the VS Code extension\'s', /say\(`\$\{accept \? `@\$\{t\.to\} `/.test(ext))
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-tasks-'))
@@ -66,8 +70,24 @@ try {
   T('the owner denies it', r.ok && await until(() => status(bot, id) === 'denied'))
   r = bot.complete(id)
   T('a DENIED task cannot be completed', !!r.error && status(bot, id) === 'denied', r.error)
+  // Bot's listener, the process that wakes an agent between turns, placed after everything already
+  // said: the assignment above named @Bot, and a listener starting with no cursor would deliver it.
+  const { awaitDir } = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-listen.js`)
+  const lenv = { ...process.env, TEMP: tmp, TMPDIR: tmp }
+  await sleep(500)
+  fs.mkdirSync(awaitDir('Bot', lenv), { recursive: true })
+  fs.writeFileSync(path.join(awaitDir('Bot', lenv), `.await-cursor-${room}.json`), JSON.stringify({ at: ganesh.doc.getArray('chat').length }))
+  const L = spawn(process.execPath, [path.join(ROOT, 'hive-await.js'), `ws://localhost:${PORT}|${room}`, 'Bot', '1'], { cwd: ROOT, env: lenv })
+  let lout = '', lerr = ''
+  L.stdout.on('data', (d) => { lout += d }); L.stderr.on('data', (d) => { lerr += d })
+  const lexit = new Promise((res) => L.on('exit', () => res(true)))
+  await until(() => /listening in/.test(lerr), 10000)
   r = ganesh.decide(id, true)
   T('the owner may change their mind: denied -> accepted', r.ok && await until(() => status(bot, id) === 'accepted'))
+  const woke = await Promise.race([lexit, sleep(10000).then(() => false)])
+  if (!woke) { try { L.kill() } catch { } }
+  let lp = null; try { lp = JSON.parse(lout.trim().split('\n').pop()) } catch { }
+  T('the approval wakes the agent\'s listener: it names the agent', !!woke && !!lp && lp.reason === 'mention' && /APPROVED/.test(lp.messages.join(' ')), (lout || lerr).slice(0, 200))
   await until(() => status(eve, id) === 'accepted')
   r = eve.complete(id)
   T('still only the assignee can complete it', !!r.error && status(bot, id) === 'accepted', r.error)

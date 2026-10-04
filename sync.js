@@ -3123,7 +3123,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (ownerOf && by !== ownerOf) return { error: `only ${ownerOf} (owner of ${t.to}) can approve task ${id}` }
     if (t.status !== 'pending' && t.status !== 'denied') return { error: `task ${id} is ${t.status}, not waiting for a decision` }
     tasks.set(id, { ...t, status: accept ? 'accepted' : 'denied', decidedBy: by })
-    say(`task ${id} ${accept ? 'APPROVED' : 'denied'} by ${by}: "${t.text}"`)
+    // An approval NAMES the agent (4 Oct 2026). An agent waiting between turns is woken by its
+    // listener, and the listener wakes on @Name, so an approval that named nobody left the agent
+    // asleep on work it had just been cleared to do. The same line is in control.html and the extension.
+    say(`${accept ? `@${t.to} ` : ''}task ${id} ${accept ? 'APPROVED' : 'denied'} by ${by}: "${t.text}"`)
     return { ok: true }
   }
   // Only the ASSIGNEE finishes a task, and only work it was cleared to do. Before 29 Sep 2026 anyone

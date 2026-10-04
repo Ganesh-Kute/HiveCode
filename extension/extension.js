@@ -1648,7 +1648,8 @@ function start(root, room, relay, linkToken) {
     // Same rule as sync.js decide(): only a task waiting for a decision can be decided.
     if (t.status !== 'pending' && t.status !== 'denied') { logActivity(`task ${id} is ${t.status}, not waiting for a decision`); return }
     tasks.set(id, { ...t, status: accept ? 'accepted' : 'denied', decidedBy: me })
-    say(`task ${id} ${accept ? 'APPROVED' : 'denied'} by ${me}: "${t.text}"`)
+    // Same line as sync.js decide(): an approval names the agent, so its listener wakes it.
+    say(`${accept ? `@${t.to} ` : ''}task ${id} ${accept ? 'APPROVED' : 'denied'} by ${me}: "${t.text}"`)
   }
   // mission control: pause/resume an agent (cooperative — honored via hive_wait + rules)
   function control(target, state) {

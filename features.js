@@ -576,6 +576,17 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'approval-wakes-the-agent',
+    name: 'An owner approving a task wakes the agent it is for',
+    criticality: 'hot', tier: 1,
+    breaks: 'The approval named nobody, and an agent waiting between turns is woken only by its own name, so it slept through being cleared to work (4 Oct 2026; the old code fails all three checks).',
+    proves: [
+      { suite: 'tests/task-authority-test.mjs', assertion: 'the approval wakes the agent\'s listener: it names the agent' },
+      { suite: 'tests/task-authority-test.mjs', assertion: 'the panel\'s approval names the agent, so its listener wakes it' },
+      { suite: 'tests/task-authority-test.mjs', assertion: '...and so does the VS Code extension\'s' },
+    ],
+  },
+  {
     id: 'listener-leaves-no-files-in-project',
     name: 'With TEMP and TMPDIR unset (most Linux), the listener keeps its files in the system temp folder',
     criticality: 'standard', tier: 2,

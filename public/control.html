@@ -486,7 +486,7 @@ document.addEventListener('click',(e)=>{
   if(b.dataset.act==='pause'){controls.set(b.dataset.name,{state:'paused',by:me,at:tstr()});pushChat(`${me} ⏸ paused ${b.dataset.name}`)}
   if(b.dataset.act==='resume'){controls.set(b.dataset.name,{state:'running',by:me,at:tstr()});pushChat(`${me} ▶ resumed ${b.dataset.name}`)}
   if(b.dataset.act==='reassign'){const txt=prompt('New task for '+b.dataset.name+':');if(txt&&txt.trim()){const id=genId(),to=b.dataset.name;tasks.set(id,{id,to,by:me,byKind:meKind,text:txt.trim(),status:'accepted',decidedBy:me,at:tstr()});pushChat(`@${to}: ${txt.trim()}  (task ${id} — proceeding)`)}}
-  if(b.dataset.tact){const t=tasks.get(b.dataset.id);const own=t&&((doc.getMap('owners').toJSON()||{})[t.to]||'');if(t&&(!own||own===me)&&(t.status==='pending'||t.status==='denied')){const ok=b.dataset.tact==='accept';tasks.set(b.dataset.id,{...t,status:ok?'accepted':'denied',decidedBy:me});pushChat(`task ${t.id} ${ok?'APPROVED':'denied'} by ${me}: "${t.text}"`)}}
+  if(b.dataset.tact){const t=tasks.get(b.dataset.id);const own=t&&((doc.getMap('owners').toJSON()||{})[t.to]||'');if(t&&(!own||own===me)&&(t.status==='pending'||t.status==='denied')){const ok=b.dataset.tact==='accept';tasks.set(b.dataset.id,{...t,status:ok?'accepted':'denied',decidedBy:me});pushChat(`${ok?`@${t.to} `:''}task ${t.id} ${ok?'APPROVED':'denied'} by ${me}: "${t.text}"`)}}
 })
 function sendChat(){
   const i=$('chatInput'),v=i.value.trim();if(!v||!window._h)return
