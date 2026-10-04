@@ -118,6 +118,9 @@ function envForKind(kind) {
 function secretRefusalNotice(f) {
   if (!f) return ''
   const a = /^(?:[aeiou]|npm\b)/i.test(f.kind) ? 'an' : 'a'
+  if (f.kind === 'access token') {
+    return 'Not sent: this message contains an access token. A token is a person, and whoever holds it joins as them. Whoever needs access gets a token of their own (hivecode-token).'
+  }
   const env = envForKind(f.kind)
   return `Not sent: this message contains ${a} ${f.kind}. Keys never go in the room; say where it is kept (e.g. ${env} in .env).`
 }
