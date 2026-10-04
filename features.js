@@ -471,6 +471,19 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'invite-carries-no-token',
+    name: 'In a room that checks tokens, the invite a host passes on never carries the host\'s own token',
+    criticality: 'critical', tier: 3,
+    breaks: 'hive_join printed the invite link and the browser link WITH the host\'s maintainer token in them, as the thing to hand to others, and hive_say posted a token to the whole room (measured 3 Oct 2026). An outside agent given that link joined as the host, with every path and every role, and revoking the token locked the host out too.',
+    proves: [
+      { suite: 'tests/secured-invite-test.mjs', assertion: 'I1 the invite link it prints carries no token' },
+      { suite: 'tests/secured-invite-test.mjs', assertion: 'I2 nothing meant for someone else carries the host\'s token; a line that does is marked as the host\'s own' },
+      { suite: 'tests/secured-invite-test.mjs', assertion: 'I3 it says each person needs a token of their own, and how to mint one' },
+      { suite: 'tests/secured-invite-test.mjs', assertion: 'I4 hive_say refuses a message carrying a token, and the room never gets it' },
+      { suite: 'tests/secured-invite-test.mjs', assertion: 'I5 a message without one still goes' },
+    ],
+  },
+  {
     id: 'case-only-names-on-windows-and-mac',
     name: 'Room files that differ only by case never overwrite each other on a Windows or Mac disk, and a case-only rename stays a rename',
     criticality: 'critical', tier: 3,

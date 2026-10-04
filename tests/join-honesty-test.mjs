@@ -137,7 +137,7 @@ console.log('\n# D. token-required relay refusal (401)')
     link: `${wsUrlD}|${roomD}`, dir, name: 'NoTokenAgent', owner: 'test',
   }))
 
-  T('D1 join with no token says "this room needs a token"', /this room needs a token\. Ask the room owner for an invite that includes one\./.test(refusedNoToken))
+  T('D1 join with no token says "this room needs a token"', /this room needs a token of your own\. Ask the room owner to mint you one\./.test(refusedNoToken))
   T('D1b does NOT say "the relay rejected your token"', !/rejected your token/.test(refusedNoToken))
 
   // D2: Bad / expired token passed

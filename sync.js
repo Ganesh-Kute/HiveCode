@@ -1150,7 +1150,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (code === 401) {
       return token
         ? 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
-        : 'this room needs a token. Ask the room owner for an invite that includes one.'
+        : 'this room needs a token of your own. Ask the room owner to mint you one.'
     }
     if (code === 402) return `this room is over its plan limit. Contact ${SUPPORT} and we will sort it out.`
     if (code === 403) return 'the relay refused this room or path for your token. You are outside the folders you were given.'

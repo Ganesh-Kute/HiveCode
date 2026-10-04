@@ -44,12 +44,21 @@ function placeholder(value, kind) {
   return new Set(value).size < 10
 }
 
-/** Every credential in `text`: [{ kind, line, value }]. `value` is for comparing, never for showing. */
-export function findSecrets(text) {
+// A SIGNED ACCESS TOKEN -- a JWT, which is what Hivecode's own room tokens are -- is a person: whoever
+// holds it joins as them, with their access. It is kept out of the room's chat and tasks
+// ({ tokens: true }). It is NOT a reason to hold a FILE back: auth code and its tests are full of
+// sample tokens, most of them expired or fake, and holding each such file would stop real work.
+const TOKEN_PATTERNS = [
+  { kind: 'access token', re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}/g },
+]
+
+/** Every credential in `text`: [{ kind, line, value }]. `value` is for comparing, never for showing.
+ *  `tokens: true` adds signed access tokens, for what goes into the room's chat and tasks. */
+export function findSecrets(text, { tokens = false } = {}) {
   const s = String(text || '')
   if (!s) return []
   const out = []
-  for (const { kind, re } of PATTERNS) {
+  for (const { kind, re } of tokens ? [...PATTERNS, ...TOKEN_PATTERNS] : PATTERNS) {
     re.lastIndex = 0
     let m
     while ((m = re.exec(s)) !== null) {

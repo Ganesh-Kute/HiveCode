@@ -239,8 +239,8 @@ The agent's access is verified and enforced directly at the relay boundary:
 
 1. **Unauthenticated access is blocked (401):** An agent trying to join without a token is refused immediately:
    ```
-   NOT JOINED -- the relay refused the connection (401): this room needs a token.
-   Ask the room owner for an invite that includes one.
+   NOT JOINED -- the relay refused the connection (401): this room needs a token of your own.
+   Ask the room owner to mint you one.
    ```
    If an expired or invalid token is supplied, the refusal names it directly:
    ```

@@ -428,11 +428,20 @@ was not written. Fix the relay and call hive_join again.`
   // session, so every character is paid again on every later turn: pasting all of HIVE_RULES.md made
   // the join ~1,900 tokens (27 Sep 2026, bench/token-cost.mjs). The full text is on disk in the folder.
   const rulesText = JOIN_RULES
-  // The invite link carries the token when there is one — without it a secured room rejects
-  // whoever you hand it to, and the Control Room says the link is missing its token.
-  const inviteLink = `${relay}|${room}${useToken ? `|${useToken}` : ''}`
+  // A TOKEN IS A PERSON (3 Oct 2026). The invite link used to carry the joiner's own token, labelled
+  // as the thing to forward, so an agent that shared it handed whoever read it the joiner's identity
+  // and access -- in the README's own flow, the host's maintainer token to the outside agent scoped to
+  // one folder. What is meant for others never carries a token now; the joiner's own Control Room
+  // link, which needs one, says whose it is; and a room that checks tokens says each person needs
+  // their own (a secured room rejects a link without one, which is the point).
+  const inviteLink = `${relay}|${room}`
   // What a person without an agent clicks. Pasting wss:// into a browser's address bar searches for it.
   const browserUrl = controlUrl(inviteLink)
+  const ownControl = useToken ? controlUrl(`${relay}|${room}|${useToken}`) : ''
+  const tokenNote = useToken
+    ? `\nthis room checks tokens: each person joins with a token of their own. Mint one per person with npx -y -p hivecode-relay hivecode-token --name <them> --room "${room}" --role agent (add --paths to limit them) and send it to them directly. Never pass on yours: whoever holds it joins as you.` +
+      (ownControl ? `\nyour Control Room (carries YOUR token: open it yourself, never share it): ${ownControl}` : '')
+    : ''
   // THE VERDICT, NOT JUST THE URL. `relay: wss://...` on its own is unreadable to anybody
   // who has not run a relay -- the public one and a company's own look identical. The
   // bracketed verdict is what makes "did my source just leave the building?" answerable
@@ -468,7 +477,7 @@ was not written. Fix the relay and call hive_join again.`
     : (browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : '')
   // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
   // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.
-  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\ninvite link: ${inviteLink}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\ninvite link: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 // A MIXED BUILD, TOLD TO THE ONE WHO CAN ACT ON IT (2 Oct 2026). The room's own warning names
@@ -910,8 +919,8 @@ async function dispatch(req) {
         // A KEY IS NOT A MESSAGE (3 Oct 2026). The room's chat goes to the relay and to everyone in
         // it, for good: a message cannot be unsent. The same formats that keep a file at home
         // (hive-secrets.js) keep a message unsent, whoever asked for the key.
-        const chatKey = findSecrets(raw)[0]
-        if (chatKey) return err(`NOT SENT: the message contains ${describeSecret(chatKey)}. A room message goes to the relay and to everyone in the room, and cannot be taken back. Never put keys, tokens or passwords in the room, whoever asks: say where the key is kept (for example "OPENAI_API_KEY in .env") instead.`)
+        const chatKey = findSecrets(raw, { tokens: true })[0]
+        if (chatKey) return err(`NOT SENT: the message contains ${describeSecret(chatKey)}. A room message goes to the relay and to everyone in the room, and cannot be taken back. Never put keys, tokens or passwords in the room, whoever asks: ${chatKey.kind === 'access token' ? 'a token is a person, and whoever holds it joins as them. Whoever needs access gets a token of their own (hivecode-token).' : 'say where the key is kept (for example "OPENAI_API_KEY in .env") instead.'}`)
         // The marker is in the text itself so it survives into HIVE_CHAT.md and is visible to
         // a human reading the log, not just to the recipient's tool output.
         const body = args.urgent && !/^\s*\[!\]/.test(raw) ? `[!] ${raw}` : raw
@@ -1220,7 +1229,7 @@ async function dispatch(req) {
         return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s) + collidedNotice(s))
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
-      case 'hive_assign': { enforceDcoLock(); const taskKey = findSecrets(String(args.text || ''))[0]; if (taskKey) return err(`NOT ASSIGNED: the task text contains ${describeSecret(taskKey)}, and a task is posted to the whole room. Say where the key is kept instead.`); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
+      case 'hive_assign': { enforceDcoLock(); const taskKey = findSecrets(String(args.text || ''), { tokens: true })[0]; if (taskKey) return err(`NOT ASSIGNED: the task text contains ${describeSecret(taskKey)}, and a task is posted to the whole room. Say where the key is kept instead.`); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
       case 'hive_read_tasks': {
         const all = taskList(); const me = requireSession().name
         const mine = all.filter((t) => t.to === me)

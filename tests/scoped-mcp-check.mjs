@@ -71,7 +71,7 @@ try {
   const unauthJoin = await clientUnauth._test.callTool('hive_join', { link: LINK, dir: dirUnauth, name: 'UnauthAgent' })
   const unauthText = (unauthJoin && unauthJoin.content && unauthJoin.content[0] && unauthJoin.content[0].text) || ''
   T('Fact 1 unauth join refused 401', /NOT JOINED -- the relay refused the connection \(401\)/.test(unauthText))
-  T('Fact 1 unauth join says "this room needs a token"', /this room needs a token\. Ask the room owner for an invite that includes one\./.test(unauthText))
+  T('Fact 1 unauth join says "this room needs a token"', /this room needs a token of your own\. Ask the room owner to mint you one\./.test(unauthText))
 
   // Fact 1b: Joining with bad/expired token
   const badTokenJoin = await clientUnauth._test.callTool('hive_join', { link: LINK, dir: dirUnauth, name: 'BadTokenAgent', token: 'bad.token' })

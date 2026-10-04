@@ -216,7 +216,7 @@ export function explainStatus(code, relay = '', opts = {}) {
   const c = Number(code)
   if (c === 401) {
     if (opts && opts.hasToken === false) {
-      return 'this room needs a token. Ask the room owner for an invite that includes one.'
+      return 'this room needs a token of your own. Ask the room owner to mint you one.'
     }
     return 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
   }
