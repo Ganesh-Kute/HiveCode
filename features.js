@@ -591,7 +591,10 @@ export const FEATURES = [
     name: 'With TEMP and TMPDIR unset (most Linux), the listener keeps its files in the system temp folder',
     criticality: 'standard', tier: 2,
     breaks: 'The listener fell back to the folder it was started in, so its cursor folder landed in the agent\'s project, where a room folder would share it with everyone, and a Stop hook started elsewhere could not find it.',
-    proves: [{ suite: 'tests/hive-await-test.mjs', assertion: 'L2 the listener wrote nothing into the folder it was started in' }],
+    proves: [
+      { suite: 'tests/hive-await-test.mjs', assertion: 'L2 the listener wrote nothing into the folder it was started in' },
+      { suite: 'tests/hive-await-test.mjs', assertion: 'L3 ...it wrote them under the system temp folder, which here is this test\'s own' },
+    ],
   },
   {
     id: 'merge-keeps-every-comment',
