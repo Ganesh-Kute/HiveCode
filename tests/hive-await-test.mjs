@@ -159,9 +159,12 @@ try {
   {
     T('L1 its folder is under the system temp folder', path.resolve(awaitDir('Wren', {})).startsWith(path.resolve(os.tmpdir())), awaitDir('Wren', {}))
     const started = fs.mkdtempSync(path.join(tmp, 'started-in-'))
-    const L = listen('Lin', 0.05, 12000, { lnk: link3, env: { TEMP: '', TMPDIR: '' }, cwd: started })
+    // TMP points into this test's folder: with TEMP and TMPDIR empty, os.tmpdir() falls back to TMP,
+    // and while it was inherited this test left a cursor file in the real temp folder on every run.
+    const L = listen('Lin', 0.05, 12000, { lnk: link3, env: { TEMP: '', TMPDIR: '', TMP: tmp }, cwd: started })
     await L.result()
     T('L2 the listener wrote nothing into the folder it was started in', fs.readdirSync(started).length === 0, JSON.stringify(fs.readdirSync(started)))
+    T('L3 ...it wrote them under the system temp folder, which here is this test\'s own', fs.existsSync(path.join(tmp, 'hive-await-Lin')))
   }
   try { P3.stop() } catch { }
 
