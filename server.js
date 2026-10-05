@@ -37,6 +37,7 @@ import * as meter from './usage-meter.js'
 // ONE SOCKET PER PARTICIPANT: the wire format and the session that serves it. Static imports, so
 // scripts/build-relay.mjs puts both in the published relay.
 import { MUX_PREFIX, MUX_VERSION } from './hive-mux-proto.js'
+import { VERSION, BUILD } from './hive-version.js'
 import { serveMux } from './relay-mux.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
@@ -46,9 +47,26 @@ import { serveMux } from './relay-mux.js'
 // integrateStructs and is silently DROPPED. Symptom in production: a room reloaded
 // from a snapshot "eats" ledger receipts / edits and rolls clients back. (yjs#438)
 const Y = createRequire(import.meta.url)('yjs')
+
+// THE DOC SIZE COUNTER ONLY GROWS. limits.js noteDocBytes adds every write and nothing subtracts, so
+// a doc that is rewritten reads as larger than it is: a 5 MB image saved twice is 10 MB to the
+// counter, and on the free tier (8 MB a doc) its second version was refused with Q435 while the doc
+// held 5 MB; a long-occupied room's chat and claims add up the same way. Before refusing, measure
+// what the doc really holds and decide on that -- at most once a minute per doc, because encoding a
+// large doc on every write is the cost the counter exists to avoid.
+const REMEASURE_MS = process.env.HIVE_DOC_REMEASURE_MS !== undefined ? Number(process.env.HIVE_DOC_REMEASURE_MS) : 60000
+const lastMeasured = new Map() // docName -> when its real size was last measured
+function overCapAfterMeasuring(room, tier) {
+  if (!docOverCap(room, tier)) return false
+  const now = Date.now()
+  if (now - (lastMeasured.get(room) || 0) < REMEASURE_MS) return true
+  lastMeasured.set(room, now)
+  try { setDocBytes(room, Y.encodeStateAsUpdate(getYDoc(room)).length) } catch { return true }
+  return docOverCap(room, tier)
+}
 import { verify, scopeForRoom, baseRoomOf, pathOf, pathAllowed, writeAllowed, isSafeRelPath, decodeUnsafe, keyFingerprint, roomFingerprint } from './token.js'
 import { verifyReceipt, contentHash, headOk, contentHealth } from './substrate.js'
-import { makeGovernor } from './governor.js'
+import { makeGovernor, GOV_ORIGIN } from './governor.js'
 import * as decoding from 'lib0/decoding'
 
 // Enforce a read-only connection: drop the client's inbound SYNC writes (sync
@@ -59,11 +77,21 @@ import * as decoding from 'lib0/decoding'
 // signature checks). If a flood reaches them, the limits have already failed. This wrapper
 // runs before y-websocket's handler is registered, so a refused frame costs a length check.
 //
-// A refusal is ANNOUNCED to the offending client over the room chat and never silently
-// dropped -- an agent whose writes vanish retries forever and reads as a broken product,
-// whereas one told `Q432 over the message rate` can back off. Reads are never throttled.
+// OVER THE RATE, A FRAME WAITS. IT IS NEVER DROPPED (27 Sep 2026). This used to drop it, and a
+// dropped Yjs update is not one lost message but a GAP: every later update from that client
+// builds on it, so the relay parks them all as pending and the document silently stops moving
+// for that client until it reconnects. A 1,000-file first publish on the free tier froze the
+// room's file list at 305 entries that way, with every socket reporting healthy. Now the frame
+// waits in order, the connection stops being READ (so TCP pushes back on the sender), and the
+// queue drains at the tier's rate: the same budget, nothing lost. What can pile up is what
+// arrived between pause() and the socket actually stopping -- about one read -- and the
+// backstop closes a connection that keeps pushing anyway, which is lossless too: the reconnect
+// resyncs everything the relay lacks.
+//
 // A doc past its size cap keeps serving reads and refuses writes: closing the socket would
 // take the client's unsaved work with it.
+const HOLD_TICK_MS = 50
+const HOLD_MAX_FRAMES = Number(process.env.HIVE_HOLD_MAX_FRAMES || 20000)
 function installUsageLimits(conn) {
   const room = (conn._hive && conn._hive.room) || 'default'
   const who = (conn._hive && conn._hive.identity && conn._hive.identity.name) || 'a client'
@@ -74,22 +102,70 @@ function installUsageLimits(conn) {
   const tier = (conn._hive && conn._hive.tier) || null
   const account = (conn._hive && conn._hive.account) || null
   const limiter = attachRateLimit(conn, tier)
-  let told = 0
-  const tell = (reason) => {
-    // Announce at most twice per connection. A tight loop trips the limit hundreds of times
-    // and a message per refusal would make the relay the flooder.
-    if (told >= 2) return
-    told++
+  const told = new Map() // Q-code -> times said on this connection
+  // A REFUSED WRITE IS TOLD TO THE WRITER, IN THE ROOM (27 Sep 2026). This only ever reached the
+  // relay's own log, so a client whose writes were refused -- a file at its size cap (Q435), a free
+  // workspace past its allowance (Q436), an oversized frame (Q433) -- learned nothing: the file just
+  // stopped moving for everyone, and the one message saying what to do was printed where only the
+  // operator could read it. `toRoom` posts it to the room chat addressed to the writer, so it lands
+  // as their mail; a system notice opens no reply debt. A wait over the rate (Q432/Q434) loses
+  // nothing, so it stays in the log.
+  const tell = (reason, { toRoom = false } = {}) => {
+    // At most twice per code per connection. A tight loop trips a limit hundreds of times and a
+    // message per refusal would make the relay the flooder; per CODE, so a burst of waits cannot
+    // use up the announcement of a refusal that follows it.
+    const code = (/^Q\d{3}/.exec(reason) || ['other'])[0]
+    const n = told.get(code) || 0
+    if (n >= 2) return
+    told.set(code, n + 1)
     try { console.warn(`[relay] ${who} in ${baseRoomOf(room)}: ${reason}`) } catch { }
     try { audit('rate-limit', { room, identity: who, reason }) } catch { }
+    if (toRoom) {
+      const name = conn._hive && conn._hive.identity && conn._hive.identity.name
+      const at = name && name !== 'anon' && /^[\w-]+$/.test(name) ? `@${name} ` : ''
+      try { postNoticeText(baseRoomOf(room), `${at}${reason}`) } catch { }
+    }
   }
   const realOn = conn.on.bind(conn)
+  // One queue per connection, in arrival order. Only one 'message' handler is ever registered
+  // through this wrapper (y-websocket's, via the gates stacked on top of it).
+  const held = []
+  let heldBytes = 0
+  let drainTimer = null
+  let paused = false
+  let dead = false
+  const holdMaxBytes = 2 * ((tier && tier.maxFrameBytes) || LIMITS.maxFrameBytes)
+  const pauseReads = () => {
+    if (paused || typeof conn.pause !== 'function') return
+    paused = true
+    try { conn.pause() } catch { }
+  }
+  const resumeReads = () => {
+    if (!paused) return
+    paused = false
+    try { conn.resume() } catch { }
+  }
+  realOn('close', () => {
+    dead = true
+    held.length = 0; heldBytes = 0
+    if (drainTimer) { clearTimeout(drainTimer); drainTimer = null }
+  })
   conn.on = (event, handler) => {
     if (event !== 'message') return realOn(event, handler)
-    return realOn('message', (data, ...rest) => {
-      const len = data && (data.byteLength ?? data.length) || 0
-      const bad = limiter.check(len)
-      if (bad) { tell(bad.reason); return }
+    const drain = () => {
+      drainTimer = null
+      while (held.length && !dead) {
+        const h = held[0]
+        const bad = limiter.check(h.len)
+        if (bad && bad.hold) { drainTimer = setTimeout(drain, Math.max(HOLD_TICK_MS, bad.retryMs)); return }
+        held.shift(); heldBytes -= h.len
+        if (bad) { tell(bad.reason, { toRoom: true }); continue }
+        // From a timer, so a throw here would take the whole relay down, not one frame.
+        try { admit(h.data, h.rest, h.len) } catch (e) { try { console.error(`[relay] a held frame failed in ${baseRoomOf(room)}: ${e && e.message}`) } catch { } }
+      }
+      resumeReads()
+    }
+    const admit = (data, rest, len) => {
       // Only WRITES are refused past the doc cap; step1/awareness must keep flowing or the
       // client cannot even see the state it is being told it may not grow.
       if (len > 0) {
@@ -102,9 +178,9 @@ function installUsageLimits(conn) {
           }
         } catch { /* unparseable -> treat as non-write; the gates below still see it */ }
         if (isWrite) {
-          if (docOverCap(room, tier)) {
+          if (overCapAfterMeasuring(room, tier)) {
             const cap = (tier && tier.maxDocBytes) || LIMITS.maxDocBytes
-            tell(`Q435 ${pathOf(room) || 'this room'} has reached the ${Math.round(cap / 1048576)} MB size limit${tier ? ` for the ${tier.tier} tier` : ''}; writes refused, reads still served`)
+            tell(`Q435 ${pathOf(room) || 'this room'} has reached the ${cap >= 1048576 ? Math.round(cap / 1048576) + " MB" : Math.ceil(cap / 1024) + " KB"} size limit${tier ? ` for the ${tier.tier} tier` : ''}; writes refused, reads still served`, { toRoom: true })
             return
           }
           // THE AUTO-LOCK. A free account past its monthly allowance stops being able to
@@ -117,7 +193,7 @@ function installUsageLimits(conn) {
             // both the wrong domain (the site is hivecode.getgrm.tech) and a page that has since
             // been retired -- so the one message a blocked customer reads sent them to a 404.
             // An email address cannot go stale the way a route can.
-            tell(`Q436 this workspace has used its free monthly allowance (${Math.round(meter.FREE_PERIOD.writeBytes / 1048576)} MB of writes). Reads still work. Email support@getgrm.tech to lift the limit.`)
+            tell(`Q436 this workspace has used its free monthly allowance (${Math.round(meter.FREE_PERIOD.writeBytes / 1048576)} MB of writes). Reads still work. Email support@getgrm.tech to lift the limit.`, { toRoom: true })
             return
           }
           noteDocBytes(room, len)
@@ -136,6 +212,35 @@ function installUsageLimits(conn) {
         }
       }
       return handler(data, ...rest)
+    }
+    return realOn('message', (data, ...rest) => {
+      if (dead) return
+      const len = data && (data.byteLength ?? data.length) || 0
+      if (!held.length) {
+        const bad = limiter.check(len)
+        if (!bad) return admit(data, rest, len)
+        if (!bad.hold) { tell(bad.reason, { toRoom: true }); return }
+        tell(`${bad.reason}; reading paused until it drains, nothing dropped`)
+        drainTimer = setTimeout(drain, Math.max(HOLD_TICK_MS, bad.retryMs))
+      }
+      // Behind whatever is already waiting, even if this frame alone would fit: order is the
+      // whole point, since a later update admitted ahead of an earlier one is the same gap.
+      held.push({ data, rest, len }); heldBytes += len
+      limiter.noteThrottled()
+      pauseReads()
+      if (held.length > HOLD_MAX_FRAMES || heldBytes > holdMaxBytes) {
+        // Still pushing past a paused read: stop holding and let the client resync.
+        dead = true
+        held.length = 0; heldBytes = 0
+        if (drainTimer) { clearTimeout(drainTimer); drainTimer = null }
+        try { console.warn(`[relay] ${who} in ${baseRoomOf(room)}: Q432 kept sending past a paused read; closing so it resyncs`) } catch { }
+        try { audit('rate-limit-close', { room, identity: who, held: HOLD_MAX_FRAMES }) } catch { }
+        // terminate, not close: a close handshake needs the client's reply READ, and this
+        // socket is paused, so close() would leave it half-open for ws's 30 s timeout with the
+        // client neither connected nor reconnecting.
+        resumeReads()
+        try { if (typeof conn.terminate === 'function') conn.terminate(); else conn.close(1013, 'Q432 over the rate; reconnect to resync') } catch { }
+      }
     })
   }
 }
@@ -214,7 +319,7 @@ function isSyncWrite(data) {
 const PATH_BLOCK = {
   DELETED_UNWRITABLE: 'path had a delete propagate — a write here vanishes or resurrects deleted content',
   CORRUPT: 'path content is unusable in every folder that measured it — publish to a new path',
-  DIVERGED: 'peers hold different bytes for this path — no single truth to write on top of',
+  DIVERGED: 'peers hold different content for this path — no single truth to write on top of',
   POISONED: 'path is marked poisoned (legacy flag)',
   FROZEN: 'path is frozen by the state machine',
   SUPERSEDED: 'path has been replaced — read it, do not write it',
@@ -500,6 +605,136 @@ function installProvenanceGuard(room) {
   checkHead()
 }
 
+// --- RELAY-SIDE CLAIM DELETE BACKSTOP -----------------------------------------
+// If a client bypasses settleLocalDeletes (e.g. an older client, extension, or script)
+// and deletes a manifest key for a file held by someone else, the relay restores the key
+// via compensating write, audits the event, and announces to the room.
+export const CLAIM_ORIGIN = 'relay-claim-enforce'
+
+function installManifestDeleteGuard(baseRoom) {
+  if (ENFORCE_CLAIMS === 'off') return
+  let baseDoc
+  try { baseDoc = getYDoc(baseRoom) } catch { return }
+  if (!baseDoc || baseDoc._hiveManifestGuard) return
+  baseDoc._hiveManifestGuard = true
+
+  const manifest = baseDoc.getMap('manifest')
+  const claims = baseDoc.getMap('claims')
+
+  const txnClaimsChanges = new WeakMap()
+  const txnManifestDeletes = new WeakMap()
+
+  claims.observe((event, tr) => {
+    if (tr && (tr.origin === CLAIM_ORIGIN || tr.origin === GOV_ORIGIN)) return
+    txnClaimsChanges.set(tr, event.changes.keys)
+  })
+
+  manifest.observe((event, tr) => {
+    if (tr && (tr.origin === CLAIM_ORIGIN || tr.origin === GOV_ORIGIN)) return
+    const deletes = []
+    for (const [key, change] of event.changes.keys) {
+      if (change.action === 'delete') {
+        deletes.push({ key, oldValue: change.oldValue })
+      }
+    }
+    if (deletes.length > 0) {
+      txnManifestDeletes.set(tr, deletes)
+    }
+  })
+
+  baseDoc.on('afterTransaction', (tr) => {
+    if (tr && (tr.origin === CLAIM_ORIGIN || tr.origin === GOV_ORIGIN)) return
+    const deletes = txnManifestDeletes.get(tr)
+    const claimsChanges = txnClaimsChanges.get(tr)
+    if (tr) {
+      txnManifestDeletes.delete(tr)
+      txnClaimsChanges.delete(tr)
+    }
+
+    if (!deletes || deletes.length === 0) return
+
+    const conn = tr ? tr.origin : null
+
+    // Sender attribution:
+    // 1. Verified identity (in required auth mode, secured hs_ room, or with token sub)
+    // 2. Open mode: awareness state controlled by this connection
+    // 3. Fallback to declared name if not 'anon'
+    let senderName = null
+    if (conn && typeof conn === 'object') {
+      const isStrict = AUTH_MODE === 'required' || !!roomFingerprint(baseRoom)
+      if (conn._hive && conn._hive.identity && (isStrict || conn._hive.identity.sub)) {
+        senderName = conn._hive.identity.name
+      } else if (baseDoc.conns && baseDoc.awareness) {
+        const controlled = baseDoc.conns.get(conn)
+        if (controlled) {
+          for (const cid of controlled) {
+            const state = baseDoc.awareness.states.get(cid)
+            if (state && state.user && state.user.name) {
+              senderName = state.user.name
+              break
+            }
+          }
+        }
+      }
+      if (!senderName && conn._hive && conn._hive.identity && conn._hive.identity.name && conn._hive.identity.name !== 'anon') {
+        senderName = conn._hive.identity.name
+      }
+    }
+
+    const now = Date.now()
+    const restores = []
+
+    for (const { key, oldValue } of deletes) {
+      let claim = null
+      if (claimsChanges && claimsChanges.has(key)) {
+        claim = claimsChanges.get(key).oldValue
+      } else {
+        claim = claims.get(key)
+      }
+
+      const live = claim && (!claim.ttl || ((claim.at || 0) + claim.ttl > now))
+      if (live && claim.by) {
+        if (!senderName || senderName !== claim.by) {
+          restores.push({ key, oldValue, claim, heldBy: claim.by })
+        }
+      }
+    }
+
+    if (restores.length > 0) {
+      if (ENFORCE_CLAIMS === 'warn') {
+        for (const { key, heldBy } of restores) {
+          audit('manifest-delete-warn', { room: baseRoom, who: senderName || 'unknown', file: key, heldBy })
+        }
+        return
+      }
+
+      // SYNCHRONOUS, HERE, ON PURPOSE. Yjs encodes a transaction's broadcast from the live store and
+      // emits it only after afterTransaction has run, so this restore rides inside the delete's own
+      // update: peers see one 'update' and never a delete. Deferred (setImmediate, a timer), peers get
+      // delete-then-restore, and the holder's file is moved to .hive-deleted and rewritten from the
+      // room, taking any edit not yet pushed with it. relay-claim-delete A3/A4/A6 fail if this moves.
+      try {
+        baseDoc.transact(() => {
+          for (const { key, oldValue, claim } of restores) {
+            manifest.set(key, oldValue != null ? oldValue : 1)
+            if (claimsChanges && claimsChanges.has(key) && !claims.has(key)) {
+              claims.set(key, claim)
+            }
+          }
+        }, CLAIM_ORIGIN)
+      } catch { /* best effort */ }
+
+      for (const { key, heldBy } of restores) {
+        audit('manifest-delete-blocked', { room: baseRoom, who: senderName || 'unknown', file: key, heldBy })
+      }
+      const what = restores.slice(0, 3).map(({ key, heldBy }) => `${key} (held by ${heldBy})`).join(', ') + (restores.length > 3 ? ` (+${restores.length - 3} more)` : '')
+      try {
+        postNoticeText(baseRoom, `⛔ ${senderName || 'a client'} deleted ${what}, but a file someone else holds is not deleted under them, so that delete was refused and the file is back. Ask the holder to release it first.`)
+      } catch { }
+    }
+  })
+}
+
 const PORT = process.env.PORT || 1234
 
 // --- access control (Phase 1: token-gated rooms; opt-in, off by default) ---
@@ -538,6 +773,36 @@ function audit(event, fields) {
   const line = JSON.stringify({ ts: new Date().toISOString(), event, ...fields })
   if (AUDIT_FILE) { try { fs.appendFileSync(AUDIT_FILE, line + '\n') } catch { console.error('[relay] audit write failed') } }
   else console.log('[relay][audit]', line)
+}
+
+// ONE LINE PER PARTICIPANT PER BURST, NOT ONE PER FILE (27 Sep 2026). A mux channel is a file, so a
+// 1,000-file join logged 1,000 'connect' lines, each a synchronous console write: in a relay CPU
+// profile of that join, 7.7 s of the main thread -- a third of it -- was console.log from here,
+// and every room on the relay waited behind it. Channel opens and closes are now tallied per
+// (workspace, participant) and written as one 'channels' line 2 s after a burst begins: counts,
+// three sample paths, and the workspace census as it stood last. An operator who set
+// HIVE_AUDIT_FILE asked for a full trail, so there every channel still gets its own line.
+const channelTallies = new Map() // `${baseRoom}\0${name}` -> tally
+function auditChannel(kind, baseRoom, identity, file, census) {
+  if (AUDIT_FILE) return audit(kind === 'opened' ? 'connect' : 'disconnect', { baseRoom, file, identity, via: 'mux', ...census })
+  const k = `${baseRoom}\u0000${(identity && identity.name) || 'anon'}`
+  let t = channelTallies.get(k)
+  if (!t) {
+    t = { baseRoom, identity, opened: 0, closed: 0, files: [], census: null, timer: null }
+    channelTallies.set(k, t)
+    t.timer = setTimeout(() => flushChannelTally(k), 2000)
+    if (t.timer.unref) t.timer.unref()
+  }
+  t[kind]++
+  if (file && t.files.length < 3) t.files.push(file)
+  t.census = census
+}
+function flushChannelTally(k) {
+  const t = channelTallies.get(k)
+  if (!t) return
+  channelTallies.delete(k)
+  clearTimeout(t.timer)
+  audit('channels', { baseRoom: t.baseRoom, identity: t.identity, opened: t.opened, closed: t.closed, files: t.files, via: 'mux', ...t.census })
 }
 
 // Per-room revocation, set live by the owner via POST /__hive/revoke. Persisted to
@@ -694,13 +959,64 @@ async function handleRevoke(req, res) {
 const PERSIST_DIR = process.env.HIVE_PERSIST_DIR === 'off'
   ? null
   : (process.env.HIVE_PERSIST_DIR || (process.env.RENDER ? path.join(__dirname, '.hive-relay-data') : null))
+// Everything persistence still owes the disk, for the shutdown handler below. A no-op without it.
+let persistFlushAll = async () => { }
 if (PERSIST_DIR) {
   fs.mkdirSync(PERSIST_DIR, { recursive: true })
   const fileFor = (docName) => path.join(PERSIST_DIR, encodeURIComponent(docName) + '.bin')
-  const flush = (docName, ydoc) => { try { fs.writeFileSync(fileFor(docName), Buffer.from(Y.encodeStateAsUpdate(ydoc))) } catch (e) { console.error('[relay] persist write failed', e.message) } }
+  // IN SMALL TURNS, AND NEVER HALF-WRITTEN (27 Sep 2026). Every flush was a writeFileSync straight
+  // onto the snapshot, straight from its debounce timer. A first publish of 1,000 files arms 1,000
+  // timers that fire about a second later, so the relay did 1,001 synchronous writes in a row and
+  // answered no room in the meantime (1,000 such writes: 4.9 s on the dev machine; in a relay
+  // profile, open/write/close were 28% of the main thread across a publish). And a relay killed
+  // mid-write -- a deploy, an OOM -- left a truncated snapshot, which bindState reads as "no prior
+  // state". Now a due flush joins a queue drained PERSIST_BATCH docs per event-loop turn, so other
+  // rooms are served between batches; every write goes to a temp file renamed over the snapshot.
+  // Writes stay synchronous on purpose: fs.promises moved the work to a 4-thread pool that fell
+  // behind (303 of 1,001 snapshots written six seconds after a publish), which is the durability
+  // this exists for.
+  const PERSIST_BATCH = 16
+  // Which docs have a snapshot at all, read once. bindState used to try a readFileSync for every
+  // doc it created, and on a first publish every one of those is a miss: 1,000 failed reads, all
+  // inside the burst of 1,000 channel opens.
+  const persisted = new Set()
+  try { for (const f of fs.readdirSync(PERSIST_DIR)) if (f.endsWith('.bin')) persisted.add(f) } catch { }
+  const writeSync = (docName, ydoc) => {
+    const f = fileFor(docName), tmp = f + '.tmp'
+    try { fs.writeFileSync(tmp, Buffer.from(Y.encodeStateAsUpdate(ydoc))); fs.renameSync(tmp, f); persisted.add(path.basename(f)) }
+    catch (e) { console.error('[relay] persist write failed', e.message) }
+  }
+  const due = new Map() // docName -> ydoc, oldest first; a doc already waiting keeps its place
+  let draining = false
+  const drain = () => {
+    draining = false
+    let n = 0
+    for (const [docName, ydoc] of due) {
+      due.delete(docName)
+      writeSync(docName, ydoc)
+      if (++n >= PERSIST_BATCH && due.size) { draining = true; setImmediate(drain); return }
+    }
+  }
+  const enqueue = (docName, ydoc) => {
+    due.set(docName, ydoc)
+    if (!draining) { draining = true; setImmediate(drain) }
+  }
+  const pendingTimers = new Map() // docName -> { timer, ydoc }
+  // Now, synchronously, for one doc: its timer and its place in the queue are both spent.
+  const flushNow = (docName, ydoc) => {
+    const p = pendingTimers.get(docName)
+    if (p) { clearTimeout(p.timer); pendingTimers.delete(docName) }
+    due.delete(docName)
+    writeSync(docName, ydoc)
+  }
+  persistFlushAll = async () => {
+    for (const [docName, p] of [...pendingTimers]) flushNow(docName, p.ydoc)
+    for (const [docName, ydoc] of [...due]) flushNow(docName, ydoc)
+  }
   setPersistence({
     bindState: async (docName, ydoc) => {
       try {
+        if (!persisted.has(path.basename(fileFor(docName)))) throw new Error('no snapshot')
         const buf = fs.readFileSync(fileFor(docName))
         Y.applyUpdate(ydoc, new Uint8Array(buf))
         // Seed the size counter from what we just loaded. Without this a restart resets
@@ -708,10 +1024,14 @@ if (PERSIST_DIR) {
         // grow again -- the limit would only ever hold until the next deploy.
         setDocBytes(docName, buf.length)
       } catch { /* no prior state */ }
-      let pending = null
-      ydoc.on('update', () => { if (pending) return; pending = setTimeout(() => { pending = null; flush(docName, ydoc) }, 1000) })
+      ydoc.on('update', () => {
+        if (pendingTimers.has(docName)) return
+        const timer = setTimeout(() => { pendingTimers.delete(docName); enqueue(docName, ydoc) }, 1000)
+        pendingTimers.set(docName, { timer, ydoc })
+      })
     },
-    writeState: async (docName, ydoc) => flush(docName, ydoc),
+    // The last connection leaving: now, as it always was -- the doc is destroyed right after.
+    writeState: async (docName, ydoc) => flushNow(docName, ydoc),
   })
   console.log(`[relay] persistence ON -> ${PERSIST_DIR}`)
 }
@@ -735,6 +1055,11 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     return res.end(JSON.stringify({
       ok: true,
+      // WHICH BUILD is answering. On 29 Sep 2026 a night of relay fixes had been pushed and the hosted
+      // relay was still the old build, and the only evidence was its uptime. build is the commit
+      // (Render's RENDER_GIT_COMMIT, or a checkout's HEAD); null when the relay cannot know it.
+      version: VERSION,
+      build: BUILD || null,
       uptimeSec: Math.round(process.uptime()),
       connections: s.connections,
       // Files open over mux sockets. `connections` counts physical sockets; a mux participant is
@@ -1146,7 +1471,8 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
     }
     leaveWorkspace(baseRoom, agentId)
     const c = census(baseRoom)
-    audit('disconnect', {
+    if (channel) auditChannel('closed', baseRoom, auth.identity, pathOf(room), { stillInWorkspace: c.peers, workspace: c })
+    else audit('disconnect', {
       room,
       baseRoom,
       file: pathOf(room),
@@ -1155,12 +1481,12 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
       stillInRoom: (roomAgents.get(room) || new Set()).size,
       stillInWorkspace: c.peers,
       workspace: c,
-      ...(channel ? { via: 'mux' } : {}),
     })
   })
 
   const c = census(baseRoom)
-  audit('connect', {
+  if (channel) auditChannel('opened', baseRoom, auth.identity, pathOf(room), { inWorkspace: c.peers, workspace: c })
+  else audit('connect', {
     room,
     // Split out so the log is greppable without anyone having to know that the room
     // name is two values joined by a control character.
@@ -1174,7 +1500,6 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
     inRoom: (roomAgents.get(room) || new Set()).size,
     inWorkspace: c.peers,
     workspace: c,
-    ...(channel ? { via: 'mux' } : {}),
   })
   wss.emit('connection', conn, req)
 }
@@ -1209,7 +1534,7 @@ async function upgradeMux(req, socket, head, q) {
     serveMux(ws, {
       baseRoom,
       audit,
-      limits: { maxChannelsPerSocket: LIMITS.maxChannelsPerSocket },
+      limits: { maxChannelsPerSocket: LIMITS.maxChannelsPerSocket, opensPerTurn: LIMITS.opensPerTurn },
       openChannel: (id, docName, session) => {
         // Only files of THIS socket's room: a grant for one room must not open another's.
         // The name is used EXACTLY as sent. A per-file client puts it raw into a URL, where '#',
@@ -1253,10 +1578,13 @@ wss.on('connection', (conn, req) => {
   // an oversized payload) -- and nothing else catches it, so one bad client took down the
   // relay and every room on it. The socket still closes; the process no longer dies.
   if (!conn.isVirtual) conn.on('error', (e) => { try { audit('socket-error', { room, reason: e && e.message }) } catch { } })
-  // One line per file is unavoidable (a room IS a file), but it should at least say
-  // what is being opened and by how many people -- the previous version printed the
-  // raw joined room name, control character and all, and no occupancy at all.
-  if (conn._hive) {
+  // One line per file, but it should at least say what is being opened and by how many people
+  // -- the previous version printed the raw joined room name, control character and all, and
+  // no occupancy at all. Not for a mux channel: those are one 'channels' line per burst
+  // (auditChannel), because a 1,000-file join is otherwise 1,000 synchronous console writes.
+  if (conn.isVirtual) {
+    // counted by auditChannel
+  } else if (conn._hive) {
     const c = census(baseRoomOf(room))
     const f = pathOf(room)
     console.log(`[relay] ${conn._hive.identity.name} (${conn._hive.role}) opened ${f ? `"${f}"` : 'the workspace'} in ${baseRoomOf(room)} -- ${c.peers} in workspace [${c.human}h/${c.ai}ai/${c.unattested}?]`)
@@ -1277,6 +1605,7 @@ wss.on('connection', (conn, req) => {
   setupWSConnection(conn, req, { docName: room })
   postNotice(room)                       // service notice, if one is set
   if (PROVENANCE !== 'off') installProvenanceGuard(room) // substrate: verify/enforce the file's provenance ledger (opt-in)
+  if (ENFORCE_CLAIMS !== 'off') installManifestDeleteGuard(baseRoomOf(room))
 })
 
 server.listen(PORT, () => {
@@ -1313,11 +1642,13 @@ server.listen(PORT, () => {
 })
 
 // Flush on the way out so the last minute of a shut-down relay is not lost. Best-effort and
-// time-boxed: a slow meter must never hold a deploy open.
+// time-boxed: a slow meter must never hold a deploy open. The documents too: a doc edited in the
+// second before a deploy's SIGTERM sat in its debounce timer and never reached the disk.
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     meter.stop()
-    Promise.race([meter.flush(), new Promise((r) => setTimeout(r, 2500))]).finally(() => process.exit(0))
+    for (const k of [...channelTallies.keys()]) flushChannelTally(k)
+    Promise.race([Promise.all([meter.flush(), persistFlushAll()]), new Promise((r) => setTimeout(r, 2500))]).finally(() => process.exit(0))
   })
 }
 

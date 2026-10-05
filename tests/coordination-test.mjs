@@ -61,6 +61,16 @@ section('reply debts — who is still waiting on me')
     unansweredFor([m('Eve', '⚠ MERGE CONFLICT in a.md — it has <<<<<<< markers. Whoever owns it: @Ada')], 'Ada').length === 0)
   T('two senders are two debts',
     unansweredFor([m('Eve', '@Ada one'), m('Sam', '@Ada two')], 'Ada').length === 2)
+  // TURNS, NOT MENTIONS (27 Sep 2026): an answer must not open a debt against the one who asked.
+  T('an answer to my question opens NO debt against me', unansweredFor([m('Ada', '@Bo can you take src/auth.js?'), m('Bo', '@Ada yes, taking it now')], 'Ada').length === 0)
+  T('...unless it asks something back', unansweredFor([m('Ada', '@Bo can you take src/auth.js?'), m('Bo', '@Ada yes -- the session code too?')], 'Ada').length === 1)
+  T('...or is urgent', unansweredFor([m('Ada', '@Bo can you take it?'), m('Bo', '[!] @Ada it is broken')], 'Ada').length === 1)
+  T('the politeness loop ends: a thanks for my answer opens nothing', unansweredFor([m('Bo', '@Ada can you review it?'), m('Ada', '@Bo done, looks good'), m('Bo', '@Ada thanks')], 'Ada').length === 0)
+  T('a first contact still counts with no question mark', unansweredFor([m('Bo', '@Ada the suite is red, can you take it')], 'Ada').length === 1)
+  T('a second message in a row from them still counts', unansweredFor([m('Ada', '@Bo can you take it?'), m('Bo', '@Ada yes'), m('Bo', '@Ada also, the build is red')], 'Ada').length === 1)
+  // Antigravity1's attack on the turn rule (27 Sep 2026): two holes, both closed.
+  T('a PERSON directing an agent right after its report is always owed an answer', unansweredFor([m('Antigravity1', '@Ganesh finished step 1, ready for review'), m('Ganesh', '@Antigravity1 deploy to staging and run the smoke tests', '19:00:00', 'human')], 'Antigravity1').length === 1)
+  T('a question mark before a quote or bracket still asks', unansweredFor([m('Ada', '@Bo which port?'), m('Bo', '@Ada 8080 -- or did you mean the "debug port?"')], 'Ada').length === 1)
   T('the same sender asking twice is still one debt',
     unansweredFor([m('Eve', '@Ada one'), m('Eve', '@Ada two')], 'Ada').length === 1)
   T('empty input is safe', unansweredFor([], 'Ada').length === 0 && unansweredFor(null, '').length === 0)

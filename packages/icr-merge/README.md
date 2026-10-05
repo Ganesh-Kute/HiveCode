@@ -22,7 +22,7 @@ Two authors (humans, AI agents, or one of each) edit the same file concurrently.
 
 ICR sees code. It parses both sides, merges declaration-by-declaration with formatting preserved, detects renames and rewrites stale call sites (scope-aware), refuses to output anything that doesn't parse, and reports *semantic* conflicts — the same function changed both sides, a deleted declaration still referenced — that a line merge can't even represent.
 
-When ICR can't act safely (unparseable input, unsupported language), it falls back to a git-style line merge. **The floor is never worse than git. No edit is ever lost.**
+When ICR can't act safely (unparseable input, unsupported language), it falls back to a line merge: a real diff3, the same algorithm git uses.
 
 ## Install
 
@@ -85,13 +85,15 @@ r.method     // 'resolved' when it was
 r.text       // the reconciled file — or, if the judge failed validation, a safe conflict (never broken)
 ```
 
-If no `judge` is supplied, or the judge declines or returns code that doesn't survive re-validation, `resolveMerge` degrades to exactly what `merge()` returns — a safe conflict. **Broken code can never ship, even when an AI does the resolving.** This is the piece built specifically for multi-agent code, and nothing else on the market does it.
+If no `judge` is supplied, or the judge declines or returns code that doesn't survive re-validation, `resolveMerge` degrades to exactly what `merge()` returns — a safe conflict. **Broken code can never ship, even when an AI does the resolving.** This is the piece built specifically for multi-agent code.
 
 ## Use as a git merge driver
 
 ```bash
 npx --package icr-merge@latest icr-merge-install     # this repo   (--global for all repos)
 ```
+
+The driver it registers is pinned to that version of icr-merge. After an upgrade, run it again.
 
 then route file types to it in `.gitattributes`:
 

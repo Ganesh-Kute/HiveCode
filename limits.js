@@ -148,8 +148,11 @@ export const LIMITS = {
   // can take more than half the relay.
   maxChannelsTotal: num('HIVE_MAX_CHANNELS_TOTAL', 8192),
   maxChannelsPerSocket: num('HIVE_MUX_MAX_DOCS', 4096),
-  // How long a client stays refused after tripping a rate limit. Long enough that a tight
-  // loop actually yields, short enough that a human does not notice a one-off burst.
+  // How many channel OPENs one participant's socket gets per event-loop turn (relay-mux.js).
+  opensPerTurn: num('HIVE_MUX_OPENS_PER_TURN', 64),
+  // UNUSED since 27 Sep 2026, kept so a relay configured with it still starts. It was how long
+  // a client stayed refused after tripping a rate limit; a frame over the rate now waits and
+  // drains at the tier's rate instead (attachRateLimit), so there is nothing to cool off from.
   cooloffMs: num('HIVE_RATE_COOLOFF_MS', 5000),
 }
 
@@ -163,14 +166,28 @@ class Bucket {
     this.tokens = capacity
     this.last = Date.now()
   }
-  take(n, now = Date.now()) {
+  refill(now) {
     const elapsed = (now - this.last) / 1000
     if (elapsed > 0) {
       this.tokens = Math.min(this.cap, this.tokens + elapsed * this.rate)
       this.last = now
     }
-    if (this.tokens >= n) { this.tokens -= n; return true }
+  }
+  take(n, now = Date.now()) {
+    this.refill(now)
+    // A request bigger than the whole burst could never be covered, so it passes when the
+    // bucket is FULL and leaves a debt the rate repays. Needed now that an over-budget frame
+    // waits instead of being dropped: a frame between the byte burst and the frame cap would
+    // otherwise wait forever.
+    if (this.tokens >= n || (n > this.cap && this.tokens >= this.cap)) { this.tokens -= n; return true }
     return false
+  }
+  give(n) { this.tokens = Math.min(this.cap, this.tokens + n) }
+  /** Milliseconds until take(n) could succeed. */
+  msUntil(n, now = Date.now()) {
+    this.refill(now)
+    const need = Math.min(n, this.cap) - this.tokens
+    return need <= 0 ? 0 : Math.ceil((need / this.rate) * 1000)
   }
 }
 
@@ -260,7 +277,13 @@ export function forgetDoc(docName) { docBytes.delete(docName) }
 // ── per-connection rate limiting ────────────────────────────────────────────────────────
 /**
  * Attach buckets to one connection. Returns a `check(byteLength)` the message handler calls
- * for every inbound frame: null to allow, or {reason} to refuse.
+ * for every inbound frame: null to allow (the budget is charged), {reason, hold:true, retryMs}
+ * when the frame is over the rate and must WAIT (nothing is charged, so the retry is charged
+ * once), or {reason} to refuse it outright -- only an oversized frame, which no wait can fix.
+ *
+ * Over the rate means wait, never drop: a dropped Yjs update is a gap that every later update
+ * from the same client builds on, so the document freezes for that client (server.js,
+ * installUsageLimits). There is no cooloff any more; a held frame drains at the tier's rate.
  *
  * State lives on the connection object, so it is freed with the socket and there is no map
  * to leak or sweep.
@@ -269,10 +292,8 @@ export function attachRateLimit(conn, tier = null) {
   const T = tier || LIMITS
   const msgs = new Bucket(T.msgsPerSec, T.msgBurst)
   const bytes = new Bucket(T.bytesPerSec, T.byteBurst)
-  const cooloff = T.cooloffMs || LIMITS.cooloffMs
   const frameCap = T.maxFrameBytes || LIMITS.maxFrameBytes
-  let cooloffUntil = 0
-  let refusedCount = 0
+  let refusedCount = 0, throttledCount = 0
   // Usage, per connection. This is the raw material for the per-agent visibility below,
   // and it is counted here because this is the only place every inbound frame passes.
   let msgCount = 0, byteCount = 0, writeCount = 0, writeBytes = 0
@@ -283,37 +304,33 @@ export function attachRateLimit(conn, tier = null) {
     seats: T.seats || null,
     check(byteLength) {
       const now = Date.now()
-      if (now < cooloffUntil) {
-        refusedCount++
-        return { reason: `Q432 over the message rate; backing off for ${Math.ceil((cooloffUntil - now) / 1000)}s` }
-      }
       if (byteLength > frameCap) {
-        // Not a rate problem and no cooloff: one oversized frame is a bug in the client,
-        // and a cooloff would punish its next, valid message.
+        // Not a rate problem: one oversized frame is a bug in the client.
         refusedCount++
         return { reason: `Q433 frame of ${byteLength} bytes exceeds the ${frameCap}-byte limit` }
       }
       if (!msgs.take(1, now)) {
-        cooloffUntil = now + cooloff
-        refusedCount++
-        return { reason: `Q432 over the message rate (${T.msgsPerSec}/s sustained, ${T.msgBurst} burst${T.tier ? `, ${T.tier} tier` : ''})` }
+        return { hold: true, retryMs: msgs.msUntil(1, now), reason: `Q432 over the message rate (${T.msgsPerSec}/s sustained, ${T.msgBurst} burst${T.tier ? `, ${T.tier} tier` : ''})` }
       }
       if (!bytes.take(byteLength, now)) {
-        cooloffUntil = now + cooloff
-        refusedCount++
-        return { reason: `Q434 over the byte rate (${Math.round(T.bytesPerSec / 1024)} KB/s sustained${T.tier ? `, ${T.tier} tier` : ''})` }
+        msgs.give(1)
+        return { hold: true, retryMs: bytes.msUntil(byteLength, now), reason: `Q434 over the byte rate (${Math.round(T.bytesPerSec / 1024)} KB/s sustained${T.tier ? `, ${T.tier} tier` : ''})` }
       }
       msgCount++; byteCount += byteLength
       return null
     },
     /** Called by the relay once it knows a passing frame was a write, not a read. */
     noteWrite(byteLength) { writeCount++; writeBytes += byteLength },
+    /** Called by the relay once per frame it made wait, however many retries that took. */
+    noteThrottled() { throttledCount++ },
     get refused() { return refusedCount },
+    get throttled() { return throttledCount },
     usage() {
       return {
         msgs: msgCount, bytes: byteCount,
         writes: writeCount, writeBytes,
         refused: refusedCount,
+        throttled: throttledCount,
         heldMs: Date.now() - openedAt,
       }
     },
@@ -340,12 +357,13 @@ export function recordUsage(room, who, u, file = null) {
   if (!room || !who || !u) return
   const k = UKEY(room, who)
   let e = usage.get(k)
-  if (!e) { e = { msgs: 0, bytes: 0, writes: 0, writeBytes: 0, refused: 0, files: new Set(), sessions: 0, heldMs: 0, lastAt: 0 }; usage.set(k, e) }
+  if (!e) { e = { msgs: 0, bytes: 0, writes: 0, writeBytes: 0, refused: 0, throttled: 0, files: new Set(), sessions: 0, heldMs: 0, lastAt: 0 }; usage.set(k, e) }
   e.msgs += u.msgs || 0
   e.bytes += u.bytes || 0
   e.writes += u.writes || 0
   e.writeBytes += u.writeBytes || 0
   e.refused += u.refused || 0
+  e.throttled += u.throttled || 0
   e.heldMs += u.heldMs || 0
   e.sessions += 1
   if (file) e.files.add(file)
@@ -363,6 +381,7 @@ export function usageFor(room = null) {
       msgs: e.msgs, bytes: e.bytes,
       writes: e.writes, writeBytes: e.writeBytes,
       refused: e.refused,
+      throttled: e.throttled,
       files: e.files.size,
       sessions: e.sessions,
       connectedMs: e.heldMs,

@@ -43,8 +43,10 @@ export class Server {
     this._inflight = new Map() // request id -> AbortController, so a cancel can find it
     this.onclose = null
     this.oninitialized = null
+    this._clientInfo = null // who connected: the app's name and version, from initialize
     this._requestHandlers.set('initialize', (req) => {
       const requested = req.params && req.params.protocolVersion
+      this._clientInfo = (req.params && req.params.clientInfo) || null
       return {
         protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : LATEST_PROTOCOL_VERSION,
         capabilities: this._capabilities,
@@ -54,6 +56,8 @@ export class Server {
     })
     this._requestHandlers.set('ping', () => ({}))
   }
+  /** The connecting app's clientInfo ({ name, version }), as the SDK's Server exposes it. */
+  getClientVersion() { return this._clientInfo || undefined }
 
   setRequestHandler(schema, handler) {
     const method = typeof schema === 'string' ? schema : schema && schema.method

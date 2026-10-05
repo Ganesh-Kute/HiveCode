@@ -2582,7 +2582,9 @@ function mergeKeyed(lang, baseU, aU, bU, mopts = {}) {
     }
     if (text != null) { parts.push(text); provenance.push({ key: k, from }); order.push(k); textByKey.set(k, text) }
   }
-  return { conflicts: [], parts, provenance, order, textByKey }
+  // aU/bU are the sides AFTER repairSide re-keyed them: a caller that splices into a side's own
+  // text must use these keys, or a re-keyed unit reads as deleted-plus-new.
+  return { conflicts: [], parts, provenance, order, textByKey, aU, bU }
 }
 
 // FINER GRANULARITY: both sides edited the same function OR class. If the signature
@@ -2624,6 +2626,12 @@ function tryStructuralInner(lang, baseText, aText, bText, mopts = {}) {
   const pb = lang.splitUnit(baseText), pa = lang.splitUnit(aText), pbb = lang.splitUnit(bText)
   if (!pb || !pa || !pbb) return null
   if (pa.sig.trim() !== pbb.sig.trim()) return null
+  // THE TEXT AROUND THE BODY IS MERGED TOO. open/close are the declaration's own bytes either
+  // side of its body, and they were always taken from the FIRST argument: what the second side
+  // wrote there was dropped, so a result depended on argument order. Three-way instead: the
+  // side that changed it wins, and both changing it differently is not ours to pick.
+  const open = pick3(pb.open, pa.open, pbb.open), close = pick3(pb.close, pa.close, pbb.close)
+  if (open == null || close == null) return null
   const m = mergeKeyed(lang, pb.units, pa.units, pbb.units, mopts)
   if (m.conflicts.length) return null
   // FORMAT-PRESERVING inner assembly: when the provider exposes the body text + byte-ranged
@@ -2636,20 +2644,28 @@ function tryStructuralInner(lang, baseText, aText, bText, mopts = {}) {
   const spliceable = pb.spliceable && typeof pb.body === 'string' && pb.units.every((u) => typeof u.start === 'number' && typeof u.end === 'number')
   if (spliceable) {
     // COMMENT-EDIT PRESERVATION: gaps (comments/blank lines between statements) come from
-    // the splice BASIS. Splicing from base loses a side's comment-only edit. So: if exactly
-    // ONE side changed only gaps (its units are byte-identical to base's), splice into THAT
-    // side's body — its comment edit survives and the other side's code edits land on top.
-    // If BOTH sides changed only gaps, refuse (null) so the unit surfaces as a conflict
-    // instead of silently dropping either side's comment.
+    // the splice BASIS. Splicing from base loses a side's comment edit. So: if exactly ONE
+    // side changed the gaps, splice into THAT side's body — its comment edit survives and the
+    // other side's code edits land on top. If BOTH did, refuse (null), and the line tier
+    // below keeps both or reports a conflict, instead of silently dropping either side's.
+    // A side counts as having changed the gaps when it changed nothing else (the original
+    // rule, which keeps a whitespace-only edit), and ALSO when the comment text itself
+    // changed: the original rule alone lost a comment whenever the same side had also
+    // edited a statement (2 Oct 2026, tests/icr-gap-comments-test.mjs).
     const sameUnits = (u1, u2) => u1.length === u2.length && u1.every((u, i) => u.key === u2[i].key && u.text === u2[i].text)
-    const aGapOnly = pa.body !== pb.body && sameUnits(pa.units, pb.units)
-    const bGapOnly = pbb.body !== pb.body && sameUnits(pbb.units, pb.units)
-    if (aGapOnly && bGapOnly) return null
-    const [basisBody, basisUnits] = aGapOnly ? [pa.body, pa.units] : bGapOnly ? [pbb.body, pbb.units] : [pb.body, pb.units]
+    const gBase = gapLines(pb.body, pb.units)
+    const aGap = (pa.body !== pb.body && sameUnits(pa.units, pb.units)) || !sameLines(gapLines(pa.body, m.aU), gBase)
+    const bGap = (pbb.body !== pb.body && sameUnits(pbb.units, pb.units)) || !sameLines(gapLines(pbb.body, m.bU), gBase)
+    if (aGap && bGap) return null
+    const [basisBody, basisUnits] = aGap ? [pa.body, m.aU] : bGap ? [pbb.body, m.bU] : [pb.body, pb.units]
     const body = spliceUnits(basisBody, basisUnits, m.order, m.textByKey, { trimLeadingBlank: false })
-    text = pa.sig + pa.open + body + pa.close
+    text = pa.sig + open + body + close
+    // ...and the same no-silent-loss check the top level runs (addedLinesKept).
+    const pm = lang.splitUnit(text)
+    if (pm && hasRanges(pm.units) &&
+        !addedLinesKept(gBase, gapLines(pa.body, m.aU), gapLines(pbb.body, m.bU), gapLines(pm.body, pm.units))) return null
   } else {
-    text = pa.sig + pa.open + m.parts.join(pa.join) + pa.close
+    text = pa.sig + open + m.parts.join(pa.join) + close
   }
   const valid = lang.parsesUnit || lang.parses // accept class-member fragments when supported
   return valid(text) ? text : null
@@ -2860,6 +2876,66 @@ function lineMerge3(baseText, aText, bText, mopts = {}) {
   return out.join('')
 }
 
+// THE TEXT BETWEEN UNITS, as the lines a reader would call content: every non-blank line
+// outside the units' byte ranges, trimmed, in order. Comments, mostly. Trimmed so a CRLF file
+// or an editor's trailing-space cleanup does not read as a comment edit, and blank lines are
+// dropped so a reformat does not either.
+function gapLines(text, units) {
+  const out = []
+  const take = (from, to) => {
+    if (to <= from) return
+    for (const line of text.slice(from, to).split('\n')) { const t = line.trim(); if (t) out.push(t) }
+  }
+  let pos = 0
+  for (const u of [...units].sort((x, y) => x.start - y.start)) { take(pos, u.start); pos = Math.max(pos, u.end) }
+  take(pos, text.length)
+  return out
+}
+const sameLines = (x, y) => x.length === y.length && x.every((l, i) => l === y[i])
+const hasRanges = (units) => units.every((u) => typeof u.start === 'number')
+// Three-way pick of one piece of text: the side that changed it wins; null when both did, differently.
+const pick3 = (base, a, b) => (a === base ? b : b === base ? a : a === b ? a : null)
+
+// EVERY COMMENT IN A FILE, as lines: a comment-only line, a block comment's ` * ` line, or the
+// comment that ends a line of code. The style comes from the file name (# for Python, Ruby, YAML
+// and TOML; // and /* for the rest; none for JSON). It is a heuristic and errs one way only: text
+// that merely looks like a comment can make a merge refuse and fall back to the line merge,
+// never make one ship without a side's comment.
+const HASH_COMMENTS = /\.(py|pyw|pyi|rb|rake|ya?ml|toml)$/i
+function commentLines(text, filename) {
+  if (/\.json$/i.test(filename || '')) return []
+  const hash = HASH_COMMENTS.test(filename || '')
+  const rx = hash ? /(?:^|\s)(#.*)$/ : /(?:^|\s)(\/\/.*|\/\*.*)$/
+  const out = []
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    if (!hash && t.startsWith('*')) { out.push(t); continue }
+    const m = rx.exec(line)
+    if (m) out.push(m[1].trim())
+  }
+  return out
+}
+
+// NO SILENT LOSS BETWEEN UNITS (2 Oct 2026). Every between-unit line a side ADDED must be in
+// the merged result, counted: a side that added a second "// TODO" is not satisfied by base's
+// first. What the other side deleted may go, so the bound for each line is what a side added
+// net of the other side's removals. False means a merge would ship without a side's comment:
+// the caller refuses it, and the line merge (which keeps both or conflicts) takes over.
+// Found because a whole night of real merges came back 'structural', clean, and short of
+// 17 comment lines that only one side had written.
+function addedLinesKept(baseG, aG, bG, mergedG) {
+  const count = (lines) => { const m = new Map(); for (const l of lines) m.set(l, (m.get(l) || 0) + 1); return m }
+  const B = count(baseG), A = count(aG), Bb = count(bG), M = count(mergedG)
+  for (const line of new Set([...A.keys(), ...Bb.keys()])) {
+    const inBase = B.get(line) || 0, inA = A.get(line) || 0, inB = Bb.get(line) || 0
+    if (inA <= inBase && inB <= inBase) continue
+    const need = Math.max(inA - Math.max(0, inBase - inB), inB - Math.max(0, inBase - inA))
+    if ((M.get(line) || 0) < need) return false
+  }
+  return true
+}
+
 // FORMAT-PRESERVING assembly: rebuild the merged file by splicing the merged units back
 // into the BASE text at their original byte ranges. Unchanged units — and all the
 // whitespace/comments BETWEEN units — survive verbatim; only changed units carry the
@@ -2980,7 +3056,7 @@ function structuralMerge(base, a, b, opts = {}) {
   // side verbatim (format perfectly preserved); otherwise do the keyed 3-way merge and
   // splice it back into base. Either way the INTENT layer below still runs, so a deletion
   // that leaves a dangling reference is caught even when only one side changed.
-  let text, provenance
+  let text, provenance, gapCheck = null
   if (a === base) { text = b; provenance = [] }
   else if (b === base) { text = a; provenance = [] }
   else if (lang.mergeWhole) {
@@ -2999,8 +3075,26 @@ function structuralMerge(base, a, b, opts = {}) {
     if (merge.conflicts.length) return { status: 'semantic-conflict', text: null, conflicts: merge.conflicts, resolvable: merge.conflictUnits }
     // Prefer the format-preserving splice (units carry byte ranges); fall back to a plain
     // join for languages whose units don't expose ranges.
-    const canSplice = baseUnits.every((u) => typeof u.start === 'number')
-    text = canSplice ? spliceUnits(base, baseUnits, merge.order, merge.textByKey) : merge.parts.join('\n\n') + '\n'
+    if (hasRanges(baseUnits)) {
+      // THE SPLICE BASIS DECIDES WHOSE COMMENTS SURVIVE (2 Oct 2026). Everything between
+      // top-level units comes from the text we splice into, and this used to be base, always:
+      // a comment one side added above a function, after an import, or at the end of the file
+      // vanished whenever the other side changed anything else, and the merge still said
+      // 'auto'. Both real merges of that night lost comments this way, with code identical to
+      // git's. So, as the inner splice does: if exactly one side changed the between-unit
+      // lines, splice into that side's text; if both did, refuse, and the line merge keeps both
+      // or conflicts. addedLinesKept() then checks the result, which also covers any provider
+      // whose units leave a side's comment outside every range. (tests/icr-gap-comments-test.mjs)
+      let basisText = base, basisUnits = baseUnits
+      if (hasRanges(merge.aU) && hasRanges(merge.bU)) {
+        const gBase = gapLines(base, baseUnits), gA = gapLines(a, merge.aU), gB = gapLines(b, merge.bU)
+        const aGap = !sameLines(gA, gBase), bGap = !sameLines(gB, gBase)
+        if (aGap && bGap) return { status: 'fallback', text: null, conflicts: [], reason: 'both sides edited the comments between declarations' }
+        if (aGap) { basisText = a; basisUnits = merge.aU } else if (bGap) { basisText = b; basisUnits = merge.bU }
+        gapCheck = { gBase, gA, gB }
+      }
+      text = spliceUnits(basisText, basisUnits, merge.order, merge.textByKey)
+    } else text = merge.parts.join('\n\n') + '\n'
     provenance = merge.provenance
   }
 
@@ -3009,6 +3103,12 @@ function structuralMerge(base, a, b, opts = {}) {
   // caller can ever mistake broken output for a merge. (Debugging wants the bytes? That is
   // what `debugText` is for; it is deliberately not `text`.)
   if (!lang.parses(text)) return { status: 'fallback', text: null, debugText: text, conflicts: [], reason: 'merge would not parse' }
+  // ...and it must not drop a comment one side wrote between declarations (see the splice basis).
+  if (gapCheck) {
+    const mu = lang.units(text)
+    if (!hasRanges(mu) || !addedLinesKept(gapCheck.gBase, gapCheck.gA, gapCheck.gB, gapLines(text, mu)))
+      return { status: 'fallback', text: null, debugText: text, conflicts: [], reason: 'merge would drop a comment one side added' }
+  }
 
   // RENAME DETECTION (intent): a declaration gone from base whose identical-bodied twin
   // appears under a new name is a rename — rewrite stale call sites to the new name.
@@ -3068,6 +3168,12 @@ function structuralMerge(base, a, b, opts = {}) {
     if (dangling.length)
       return { status: 'semantic-conflict', text: null, conflicts: dangling.map((n) => 'ref:' + n), reason: 'dangling reference: a declaration was removed/renamed but is still used' }
   }
+  // NO COMMENT EITHER SIDE ADDED MAY GO MISSING, wherever it sits and whichever path merged it
+  // (2 Oct 2026). The splice basis and the inner rules above handle the cases found so far; this
+  // is the net under all of them, because the defect class is a merge that is green and short.
+  // An independent fuzz found the Python case after the JS fix had passed its own tests.
+  if (!addedLinesKept(commentLines(base, opts.filename), commentLines(a, opts.filename), commentLines(b, opts.filename), commentLines(merged, opts.filename)))
+    return { status: 'fallback', text: null, debugText: merged, conflicts: [], reason: 'merge would drop a comment one side added' }
   // PROVENANCE: attribute each surviving unit to the author whose version we kept. With
   // opts.authors = { a, b, base } the labels are real names; otherwise they're 'a'/'b'/etc.
   return {

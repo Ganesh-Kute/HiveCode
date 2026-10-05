@@ -86,6 +86,28 @@ const docs = new Map()
 // exporting docs so that others can use it
 exports.docs = docs
 
+// ONE PRESENCE SWEEP FOR THE WHOLE RELAY, NOT ONE PER DOCUMENT (Hivecode, 27 Sep 2026).
+// y-protocols' Awareness starts its own 3-second interval, so a relay holding N documents ran N/3
+// timer callbacks a second -- measured at idle: 2.9 ms of CPU per second with 10 open files, 24 ms/s
+// with 4,000, which is a quarter of a free Render instance's 0.1 CPU -- almost all of it over file
+// documents nobody has presence in. This does the same job (drop a remote state that has not been
+// renewed for outdatedTimeout) once every 3 s, and only for documents that hold any state at all.
+const presenceDocs = new Set()
+const sweepPresence = (now = Date.now()) => {
+  for (const doc of presenceDocs) {
+    const aw = doc.awareness
+    if (!aw || aw.states.size === 0) continue
+    const removed = []
+    aw.meta.forEach((meta, clientid) => {
+      if (clientid !== aw.clientID && awarenessProtocol.outdatedTimeout <= now - meta.lastUpdated && aw.states.has(clientid)) removed.push(clientid)
+    })
+    if (removed.length > 0) awarenessProtocol.removeAwarenessStates(aw, removed, 'timeout')
+  }
+}
+const presenceSweep = setInterval(sweepPresence, Math.floor(awarenessProtocol.outdatedTimeout / 10))
+if (presenceSweep.unref) presenceSweep.unref()
+exports.sweepPresence = sweepPresence
+
 const messageSync = 0
 const messageAwareness = 1
 // const messageAuth = 2
@@ -101,7 +123,13 @@ const updateHandler = (update, _origin, doc, _tr) => {
   encoding.writeVarUint(encoder, messageSync)
   syncProtocol.writeUpdate(encoder, update)
   const message = encoding.toUint8Array(encoder)
-  doc.conns.forEach((_, conn) => send(doc, conn, message))
+  // NOT BACK TO THE CONNECTION THAT SENT IT (Hivecode, 27 Sep 2026). readSyncMessage applies a
+  // client's update with that connection as the transaction origin, and stock y-websocket then sent
+  // the update straight back to it: a write on the relay and a decode on the client, for an edit the
+  // client made itself. Under a 5,000-edit load, 30% of the relay's CPU was socket writes. An update
+  // the RELAY makes (a replayed held write, a reverted head, the governor) has another origin and
+  // still reaches everyone.
+  doc.conns.forEach((_, conn) => { if (conn !== _origin) send(doc, conn, message) })
 }
 
 /**
@@ -136,6 +164,11 @@ class WSSharedDoc extends Y.Doc {
      */
     this.awareness = new awarenessProtocol.Awareness(this)
     this.awareness.setLocalState(null)
+    // The relay-wide sweep above replaces this document's own 3-second timer. If a future y-protocols
+    // renames the private field, clearInterval(undefined) is a no-op and the old timer simply stays.
+    clearInterval(this.awareness._checkInterval)
+    presenceDocs.add(this)
+    this.on('destroy', () => { presenceDocs.delete(this) })
     /**
      * @param {{ added: Array<number>, updated: Array<number>, removed: Array<number> }} changes
      * @param {Object | null} conn Origin is the connection that made the change

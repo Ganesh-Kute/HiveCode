@@ -43,6 +43,8 @@
 // Silence or an empty string could be read as "no mixed build here"; this cannot.
 
 import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
 /** Recomputed never: a running process cannot change which build it is. */
 export const VERSION = (() => {
@@ -55,5 +57,54 @@ export const VERSION = (() => {
 
 /** The sentinel, exported so callers and tests can name it instead of retyping the literal. */
 export const UNKNOWN_VERSION = '0.0.0-unknown'
+
+// BUILD: WHICH COMMIT, not just which version (29 Sep 2026).
+//
+// VERSION alone could not see a mixed build. On 28-29 Sep release-gate HEAD and the published
+// tarball both said "0.12.2" while differing by a night of fixes, and the hosted relay's /health
+// reported no version at all -- "is the fix deployed?" was answered from its uptime. So a build
+// carries its commit when it knows one:
+//   RENDER_GIT_COMMIT  set by Render for a deployed relay (its image has no .git)
+//   a git checkout     .git beside package.json: a folder, or a worktree's `gitdir:` file
+//   otherwise ''       an npm install: VERSION is the whole identity, and it is the true one
+// VERSION itself is untouched -- the update notice compares it with the registry's -- so the
+// commit travels separately, and VERSION_LABEL is what people and agents are shown.
+//
+// It never walks UP. hivecode-mcp installed into someone's repo would otherwise report THAT repo's
+// commit as its own build, which is the lie this exists to prevent. And like VERSION it never throws.
+const HEX = /^[0-9a-f]{7,40}$/
+export function buildOf(root, env = process.env) {
+  try {
+    const rc = String(env.RENDER_GIT_COMMIT || '').trim().toLowerCase()
+    if (HEX.test(rc)) return rc.slice(0, 7)
+    const dotGit = path.join(root, '.git')
+    let gitDir = dotGit
+    if (fs.statSync(dotGit).isFile()) { // a worktree: ".git" is a file holding "gitdir: <path>"
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf8'))
+      if (!m) return ''
+      gitDir = path.resolve(root, m[1])
+    }
+    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim()
+    if (/^[0-9a-f]{40}$/.test(head)) return head.slice(0, 7) // detached
+    const ref = /^ref:\s*(\S+)$/.exec(head)
+    if (!ref) return ''
+    let common = gitDir // a worktree keeps its branches in the main repo's .git
+    try { common = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim()) } catch { }
+    for (const d of [gitDir, common]) {
+      try { const h = fs.readFileSync(path.join(d, ref[1]), 'utf8').trim(); if (/^[0-9a-f]{40}$/.test(h)) return h.slice(0, 7) } catch { }
+    }
+    for (const line of fs.readFileSync(path.join(common, 'packed-refs'), 'utf8').split('\n')) {
+      const [h, r] = line.trim().split(/\s+/)
+      if (r === ref[1] && /^[0-9a-f]{40}$/.test(h)) return h.slice(0, 7)
+    }
+  } catch { /* no .git, unreadable, malformed: no commit to report -- see IT NEVER THROWS */ }
+  return ''
+}
+
+/** This build's commit, or '' when it has none to report (an npm install). */
+export const BUILD = buildOf(fileURLToPath(new URL('.', import.meta.url)))
+
+/** What people and agents are shown: "0.12.2+fe1d89e" from a checkout, "0.12.2" from npm. */
+export const VERSION_LABEL = BUILD ? `${VERSION}+${BUILD}` : VERSION
 
 export default VERSION

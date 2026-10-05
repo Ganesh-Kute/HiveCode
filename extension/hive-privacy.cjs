@@ -137,6 +137,17 @@ function isPublicTunnel(host) {
  * 'own' does not mean audited -- it means "not the relay we ship". A team that pastes a
  * link from a blog post lands in 'own' too, which is exactly why the pin exists.
  */
+// Where a PERSON opens a room: the relay's own Control Room, with the room's link in the hash.
+// The host comes from the link, never from a default -- a self-hosted room printed with the
+// public panel's address would send them to the wrong relay -- and a URL hash is never sent to
+// any server, so a token in the link stays in the browser. null when there is no room to open.
+function controlUrl(link) {
+  const s = String(link || '').trim()
+  const [relay = '', room = ''] = s.split('|')
+  if (!/^wss?:\/\//i.test(relay.trim()) || !room.trim()) return null
+  return `${relay.trim().replace(/^ws/i, 'http').replace(/\/+$/, '')}/control#${encodeURIComponent(s)}`
+}
+
 function classifyRelay(url) {
   const origin = relayOrigin(url)
   if (!origin) return { kind: 'unknown', origin: null, host: null, encrypted: false, url: String(url || '') }
@@ -195,6 +206,30 @@ const HEADLINE = {
 }
 
 /**
+ * A ROOM'S NAME IS ITS ONLY KEY ON A RELAY ANYONE CAN REACH (3 Oct 2026). Joining needs nothing but
+ * the name, and a relay creates whatever room it is asked for. A hosted room's id is 104 random bits;
+ * a name somebody typed -- "night", "acme-backend" -- can be guessed, and whoever guesses it reads
+ * every file and writes into every member's folder.
+ *
+ * A string cannot prove it is random, but the generator can be recognised: hosted rooms and branch
+ * rooms are always `room-` + exactly 18 random base64url characters, which switch between lower
+ * case, upper case and digits at least twice in all but 3 of 100,000 (measured). That form is
+ * trusted. Any other name was typed by someone, and passes only with a long run that keeps
+ * switching the way generated strings do. Measured: a switch threshold low enough to pass every
+ * random id also passed camel-case words ("teamAlphaBravo2026"), and one high enough to stop the
+ * words flagged 367 in 100,000 random hosted ids -- hence trusting the form, not the threshold.
+ */
+const charClass = (ch) => (/[a-z]/.test(ch) ? 'l' : /[A-Z]/.test(ch) ? 'u' : /[0-9]/.test(ch) ? 'd' : '')
+function classSwitches(run) { let n = 0, prev = ''; for (const ch of run) { const c = charClass(ch); if (!c) continue; if (prev && c !== prev) n++; prev = c } return n }
+function guessableRoom(room) {
+  const id = String(room || '')
+  if (/^hs_/.test(id)) return false // a secured room: joining it takes a token signed by its owner
+  if (/^room-[A-Za-z0-9_-]{18}$/.test(id) && new Set(id.slice(5)).size >= 8 && classSwitches(id.slice(5)) >= 2) return false // the hosted form
+  const runs = id.match(/[A-Za-z0-9_-]{16,}/g) || []
+  return !runs.some((r) => new Set(r).size >= 10 && classSwitches(r) >= 8)
+}
+
+/**
  * The one call a client makes before opening a socket.
  *
  * Returns { ok, code, headline, detail, classification, pin }. `ok:false` means DO NOT
@@ -207,7 +242,7 @@ const HEADLINE = {
  *   Q551  HIVE_PRIVATE is set and this is the public relay we ship
  *   Q552  the pin itself is malformed, so nothing is actually pinned
  */
-function checkRelay({ relay, env = process.env, dir = null, fs = null } = {}) {
+function checkRelay({ relay, env = process.env, dir = null, fs = null, room = null } = {}) {
   const c = classifyRelay(relay)
   const pin = readPin({ env, dir, fs })
   const strict = String((env && env.HIVE_PRIVATE) || '') === '1'
@@ -265,6 +300,10 @@ function checkRelay({ relay, env = process.env, dir = null, fs = null } = {}) {
     warn = 'Your files are being sent to a relay run by the Hivecode author, not by you. ' +
       'Anyone who learns this room id can read them. For private work run your own relay ' +
       '(npx hivecode-relay) and set HIVE_RELAY.'
+    if (room && guessableRoom(room)) {
+      warn += ` THE ROOM NAME "${room}" CAN BE GUESSED: anyone who tries it joins, reads every file, ` +
+        'and writes into every folder in it. For real code, host a new room (its id is random) and share that link instead.'
+    }
   } else if (c.kind === 'tunnel') {
     warn = `${c.host} is a public tunnel. The relay is yours, but the tunnel provider decrypts ` +
       'traffic at its edge and can read it, and anyone with this URL can reach the relay. Fine for ' +
@@ -291,4 +330,4 @@ function privacyLine(relay, opts = {}) {
   return `relay: ${relay}  [${v.headline}]`
 }
 
-module.exports = { PUBLIC_DEFAULT_RELAY, RETIRED_PUBLIC_RELAYS, currentRelayFor, relayOrigin, classifyRelay, readPin, checkRelay, privacyLine }
+module.exports = { PUBLIC_DEFAULT_RELAY, RETIRED_PUBLIC_RELAYS, currentRelayFor, relayOrigin, controlUrl, classifyRelay, readPin, guessableRoom, checkRelay, privacyLine }

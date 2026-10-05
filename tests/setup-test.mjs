@@ -32,7 +32,10 @@ const section = (s) => console.log(`\n${s}`)
 const rd = (p) => { try { return fs.readFileSync(p, 'utf8') } catch { return null } }
 const json = (p) => JSON.parse(rd(p))
 const tmp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `hv-setup-${tag}-`))
-const envFor = (home) => ({ ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: path.join(home, '.config') })
+// GIT_CEILING_DIRECTORIES: setup now reads the git repo it runs in, and on a machine whose real home
+// is a git repo (this one) every temp folder is inside it. The fake home here is not that home, so
+// without the ceiling every run below would look like it was run inside a project.
+const envFor = (home) => ({ ...process.env, USERPROFILE: home, HOME: home, APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: path.join(home, '.config'), GIT_CEILING_DIRECTORIES: os.tmpdir().replace(/\\/g, '/') })
 const runSetup = (home, args = [], bin = [process.execPath, MCP]) => {
   const r = spawnSync(bin[0], [...bin.slice(1), 'setup', ...args], { cwd: home, env: envFor(home), encoding: 'utf8', timeout: 180000, windowsHide: true })
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }
@@ -84,7 +87,7 @@ T('A9 keys setup has no business with are untouched', json(F.claude).numStartups
 T('A10 each original is backed up before the first change', ['claude', 'anti', 'cursor'].every((k) => rd(F[k] + '.before-hivecode') === ORIG[k]))
 T('A11 Antigravity\'s 2nd config has no hivecode entry, so it is not touched', rd(F.anti2) === ORIG.anti2)
 T('A12 apps that are not installed get no config created', !fs.existsSync(path.join(home, '.codeium')) && !fs.existsSync(path.join(home, '.gemini', 'settings.json')))
-T('A13 without a link, both sentences are printed: join one, or host one', /join the Hivecode room <the link you were sent> as Tester/.test(r1.out) && /host a new Hivecode room as Tester/.test(r1.out))
+T('A13 without a link, both sentences are printed: join one, or host one', /join the Hivecode room <the link you were sent> as Tester/.test(r1.out) && /host a new, empty Hivecode room as Tester/.test(r1.out))
 
 // second run: the broken file repaired by hand, everything else must be a no-op
 const after1 = Object.fromEntries(['claude', 'anti', 'cursor'].map((k) => [k, rd(F[k])]))
@@ -106,6 +109,21 @@ const lone = tmp('lone')
 put(path.join(lone, '.gemini', 'antigravity', 'mcp_config.json'), '{}')
 const r5 = runSetup(lone, ['--name', 'Tester'])
 T('A20 an app\'s second config path is never printed as an app that is "not installed"', r5.code === 0 && !/\(2nd\)/.test(r5.out) && /READY/.test(lineFor(r5.out, 'Antigravity')), r5.out)
+// Antigravity1's second stranger run (27 Sep): "Antigravity (2nd) READY" as an app of its own, and a
+// numbered restart for every installed app, including ones that were already right.
+const foldHome = tmp('both')
+put(path.join(foldHome, '.claude.json'), '{}')
+put(path.join(foldHome, '.gemini', 'antigravity', 'mcp_config.json'), '{}')
+put(path.join(foldHome, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: { hivecode: { command: 'node', args: ['old-hive-mcp.js'] } } }))
+const rFold1 = runSetup(foldHome, ['--name', 'Tester'])
+const nextFold1 = rFold1.out.split('NEXT')[1] || ''
+T('A25 two config files of one app print as ONE line, never as an app of their own', rFold1.code === 0 && !/\(2nd\)/.test(rFold1.out) && /2 config files/.test(lineFor(rFold1.out, 'Antigravity')), rFold1.out)
+T('A26 a first run numbers a restart for every app it wrote', /1\. Claude Code:/.test(nextFold1) && /2\. Antigravity:/.test(nextFold1) && !/Already set up/.test(nextFold1), nextFold1)
+const rFold2 = runSetup(foldHome, ['--name', 'Tester'])
+const nextFold2 = rFold2.out.split('NEXT')[1] || ''
+T('A27 a second run numbers no restart, and still names the unchanged apps (never silence)', rFold2.code === 0 && !/^\s+\d+\. /m.test(nextFold2) && /Already set up: Claude Code, Antigravity\. Restart them only if the hivecode tools are missing there\./.test(nextFold2), nextFold2)
+const rFoldLink = runSetup(foldHome, ['ws://127.0.0.1:9|room-probe', '--name', 'Tester'])
+T('A28 with a link, people get a clickable Control Room on THAT relay, not the public one', rFoldLink.out.includes('http://127.0.0.1:9/control#' + encodeURIComponent('ws://127.0.0.1:9|room-probe')), rFoldLink.out.split('\n').filter((l) => /browser/.test(l)).join(' | '))
 // The paste-by-hand entry is all a user of any other MCP app gets. Parse it the way a person
 // would -- the brace-balanced block -- and then LAUNCH it: a snippet that parses but does not
 // start is the old README all over again.
@@ -187,6 +205,7 @@ if (up) {
   const out = await M._test.callTool('hive_join', { link: `ws://localhost:${PORT}|room-nodir`, name: 'Solo' })
   const text = (out.content || []).map((c) => c.text).join('\n')
   T('D8 hive_join with no dir writes the room into ~/hivecode/<room>/<name>', fs.existsSync(path.join(dHome, 'room-nodir', 'Solo', '.hive.json')), text.split('\n').slice(0, 4).join(' | '))
+  T('D8b hive_join hands a person a clickable Control Room link on the same relay', text.includes(`browser (people without an agent): http://localhost:${PORT}/control#` + encodeURIComponent(`ws://localhost:${PORT}|room-nodir`)), text.split('\n').slice(0, 9).join(' | '))
   T('D9 ...and not into ./workspace under whatever directory the server started in', !fs.existsSync(path.join(dCwd, 'workspace', 'Solo')) && json(path.join(dCwd, 'workspace', '.hive.json')).room === 'room-old')
   // The rejoin cases, read while the session record exists -- as it does after a disconnect or a
   // restart. hive_leave deletes it, which is what makes a later bare hive_join host a new room.
@@ -198,6 +217,101 @@ if (up) {
 }
 relay.kill()
 process.chdir(ROOT)
+
+// ---------------------------------------------------------------------------------------------
+// The onboarding audit (2 Oct 2026): a team runs setup in its project, is told to "host a new
+// room", and gets an EMPTY one in ~/hivecode -- its code is not there and nothing says how to bring
+// it in. The way in already existed (`branch`, run in the repo) and setup never mentioned it.
+section('F. setup run inside a project\'s git repo points at the way to bring its code in')
+const gHome = tmp('ghome')
+put(path.join(gHome, '.claude.json'), '{}')
+// Git must not find a repo ABOVE the temp folder: on a machine whose real home is a git repo (this
+// one), every temp folder is inside it, and that would answer for the cases meant to have no repo.
+const gEnv = { ...envFor(gHome), GIT_CEILING_DIRECTORIES: os.tmpdir().replace(/\\/g, '/') }
+const gitIn = (dir, ...args) => spawnSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { encoding: 'utf8', windowsHide: true, env: gEnv })
+const repoAt = (dir) => { fs.mkdirSync(dir, { recursive: true }); gitIn(dir, 'init', '-q'); fs.writeFileSync(path.join(dir, 'a.txt'), 'a\n'); gitIn(dir, 'add', '-A'); return gitIn(dir, 'commit', '-q', '-m', 'first') }
+const setupIn = (cwd, args = []) => {
+  const r = spawnSync(process.execPath, [MCP, 'setup', '--dry-run', '--name', 'Tester', ...args], { cwd, env: gEnv, encoding: 'utf8', timeout: 180000, windowsHide: true })
+  return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }
+}
+const gProj = path.join(gHome, 'gProj')
+const made = repoAt(gProj)
+T('F0 (setup) the test repo has a commit', made.status === 0, made.stderr)
+const fIn = setupIn(path.join(gProj))
+const fNext = fIn.out.split('NEXT')[1] || ''
+const branchAt = fNext.indexOf('npx -y hivecode-mcp@latest branch hive-work')
+T('F1 inside a repo, NEXT gives the command that brings the repo in, before the lines to paste', branchAt > 0 && branchAt < fNext.indexOf('hive_join'), fNext)
+T('F2 ...it names the repo, says the checkout is not switched, and warns before anything is published', fNext.includes(path.resolve(gProj)) && /without switching your checkout/.test(fNext) && /anyone with the room's link can read/.test(fNext.slice(0, fNext.indexOf('hive_join'))), fNext)
+// Antigravity1's stranger walk (3 Oct): next to the branch command, "host a new, empty room" is the
+// trap itself, so inside a repo it is gone and only the line for someone SENT a link stays.
+T('F3 inside a repo there is no line that hosts an empty room, only the one for a link you were sent', !/host a new/.test(fNext) && /If you were sent a link instead/.test(fNext) && /join the Hivecode room <the link you were sent> as Tester/.test(fNext), fNext)
+const plain = tmp('plain')
+const fOut = setupIn(plain)
+T('F4 outside any repo, no branch line', fOut.code === 0 && /hive_join/.test(fOut.out) && !/hivecode-mcp@latest branch/.test(fOut.out), fOut.out)
+T('F4b ...and the line that hosts a room says the room is EMPTY', /host a new, empty Hivecode room as Tester/.test(fOut.out), fOut.out)
+const fLink = setupIn(gProj, ['ws://127.0.0.1:9|room-probe'])
+T('F5 with a link (a teammate joining), no branch line', /join the Hivecode room ws:\/\/127\.0\.0\.1:9\|room-probe/.test(fLink.out) && !/hivecode-mcp@latest branch/.test(fLink.out), fLink.out)
+// A home folder kept in git is a dotfiles repo, not a project -- this machine's own home is one.
+const madeHome = repoAt(gHome)
+const below = path.join(gHome, 'Downloads')
+fs.mkdirSync(below, { recursive: true })
+const fHome = setupIn(below)
+T('F6 (setup) the home folder itself is a repo with a commit', madeHome.status === 0, madeHome.stderr)
+T('F7 a folder whose repo is the HOME folder gets no branch line', fHome.code === 0 && /hive_join/.test(fHome.out) && !/hivecode-mcp@latest branch/.test(fHome.out), fHome.out)
+const fresh = path.join(tmp('fresh'), 'r')
+fs.mkdirSync(fresh, { recursive: true }); gitIn(fresh, 'init', '-q')
+const fFresh = setupIn(fresh)
+T('F8 a repo with no commits yet gets no branch line (there is nothing to bring in)', fFresh.code === 0 && !/hivecode-mcp@latest branch/.test(fFresh.out), fFresh.out)
+
+// ---------------------------------------------------------------------------------------------
+// 4 Oct 2026: agents joined a room, answered once, and went deaf. The gate that stops a Claude Code
+// turn ending with no listener running (hive-stop-hook.js) was a separate command nobody ran, so
+// setup now arms it -- in a settings file the user and other tools also write, so beside what is
+// already there, never instead of it.
+section('G. setup arms the stop gate for Claude Code, beside the hooks already there')
+{
+  const hHome = tmp('hhome')
+  const settings = path.join(hHome, '.claude', 'settings.json')
+  put(path.join(hHome, '.claude.json'), '{}')
+  put(settings, JSON.stringify({ model: 'kept', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other-tool hook Stop' }] }] } }, null, 2))
+  const ours = (s) => ((s.hooks || {}).Stop || []).filter((e) => (e.hooks || []).some((h) => /hive-stop-hook\.js/.test(h.command)))
+  const g1 = runSetup(hHome, ['--name', 'Gate'])
+  const s1 = JSON.parse(fs.readFileSync(settings, 'utf8'))
+  T('G1 setup adds the Hivecode stop gate to ~/.claude/settings.json', ours(s1).length === 1, g1.out)
+  T('G2 ...and leaves the Stop hook already there, and the rest of the file, as they were',
+    s1.hooks.Stop.some((e) => (e.hooks || []).some((h) => h.command === 'other-tool hook Stop')) && s1.model === 'kept', JSON.stringify(s1))
+  const cmd = ours(s1).length ? ours(s1)[0].hooks[0].command : ''
+  const parts = [...cmd.matchAll(/"([^"]+)"/g)].map((m) => m[1])
+  const ran = parts.length === 2 ? spawnSync(parts[0], [parts[1]], { input: '{"stop_hook_active":true}', encoding: 'utf8', timeout: 20000, windowsHide: true }) : { status: -1 }
+  T('G3 the command it wrote starts the hook, with no shell and no PATH lookup', ran.status === 0, cmd)
+  T('G4 setup says it did it, and that Claude Code needs a restart for it', /stop gate\s+added to/.test(g1.out) && /\d\. Claude Code:/.test(g1.out), g1.out)
+  const g2 = runSetup(hHome, ['--name', 'Gate'])
+  const s2 = JSON.parse(fs.readFileSync(settings, 'utf8'))
+  T('G5 running setup again does not add a second one', ours(s2).length === 1 && s2.hooks.Stop.length === 2 && /stop gate\s+already in/.test(g2.out), g2.out)
+  put(settings, '{ "model": "kept", broken')
+  const g3 = runSetup(hHome, ['--name', 'Gate'])
+  T('G6 a settings file that is not valid JSON is left alone, and setup says so', fs.readFileSync(settings, 'utf8') === '{ "model": "kept", broken' && /stop gate\s+NOT added/.test(g3.out), g3.out)
+}
+
+section('H. setup arms the stop gate for Antigravity, beside the hooks already there')
+{
+  const agHome = tmp('aghome')
+  const hooks = path.join(agHome, '.gemini', 'config', 'hooks.json')
+  put(path.join(agHome, '.gemini', 'antigravity', 'mcp_config.json'), '{}')
+  put(hooks, JSON.stringify({ "grm-memory": { PreInvocation: [{ command: "grm" }] } }, null, 2))
+  const g1 = runSetup(agHome, ['--name', 'AgGate'])
+  const s1 = JSON.parse(fs.readFileSync(hooks, 'utf8'))
+  T('H1 setup adds the Hivecode stop gate to ~/.gemini/config/hooks.json', !!s1.hivecode && (s1.hivecode.Stop || []).length === 1, g1.out)
+  T('H2 ...and leaves existing hooks (grm) untouched', !!s1["grm-memory"], JSON.stringify(s1))
+  T('H3 the command specifies --app=antigravity', (s1.hivecode.Stop[0].command || '').includes('--app=antigravity'), s1.hivecode.Stop[0].command)
+  T('H4 setup says it was added', /stop gate\s+added to/.test(g1.out) && /Antigravity/.test(g1.out), g1.out)
+  const g2 = runSetup(agHome, ['--name', 'AgGate'])
+  const s2 = JSON.parse(fs.readFileSync(hooks, 'utf8'))
+  T('H5 running setup again is idempotent', !!s2.hivecode && Object.keys(s2).length === 2 && /stop gate\s+already in/.test(g2.out), g2.out)
+  put(hooks, '{ broken json')
+  const g3 = runSetup(agHome, ['--name', 'AgGate'])
+  T('H6 a hooks.json that is not valid JSON is left alone, and setup says so', fs.readFileSync(hooks, 'utf8') === '{ broken json' && /stop gate\s+NOT added for Antigravity/.test(g3.out), g3.out)
+}
 
 // ---------------------------------------------------------------------------------------------
 if (process.argv.includes('--package')) {

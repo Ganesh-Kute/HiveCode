@@ -1,0 +1,35 @@
+name: Stay reachable (macOS + Linux)
+
+# Run by hand from the Actions tab. The repo is private, so macOS minutes count ten times over:
+# this does not run on every push.
+#
+# What it answers: the listener, the Stop hook and the wait loop have only ever run on Windows.
+# macOS gives every user their own TMPDIR (/var/folders/...); most Linux sets neither TEMP nor
+# TMPDIR. The listener's files, and the armed file the Stop hook reads, are found through those.
+on:
+  workflow_dispatch:
+
+jobs:
+  suites:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: listener, stop hook, wait loop, setup, resume, approvals
+        run: |
+          echo "TEMP=${TEMP:-unset} TMPDIR=${TMPDIR:-unset} os.tmpdir()=$(node -p 'require("os").tmpdir()')"
+          fail=0
+          for t in hive-await-test.mjs stop-hook-test.mjs mcp-wait-test.mjs setup-test.mjs session-resume-test.mjs task-authority-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail

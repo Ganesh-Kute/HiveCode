@@ -15,7 +15,7 @@
 //   --owner  approving human (agents)
 //   --room   room id or pattern ("acme/*", "*"); repeat or comma-separate
 //   --role   admin|maintainer|writer|reader|agent (default agent)
-//   --paths  comma globs for path scoping (stored now, enforced in a later phase)
+//   --paths  comma globs for path scoping (enforced by relay scopeCheck in token-gated rooms)
 //   --ttl    lifetime: 3600, 90m, 24h, 7d (default 24h)
 //   --sub    principal id (default = name)   --jti  token id (default random)
 //   --secret HS256 secret (else $HIVE_JWT_SECRET)   --key  RSA private key file (RS256)

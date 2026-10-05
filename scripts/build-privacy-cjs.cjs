@@ -27,7 +27,11 @@ const ROOT = path.join(__dirname, '..')
 const SRC = path.join(ROOT, 'hive-privacy.js')
 const OUT = path.join(ROOT, 'extension', 'hive-privacy.cjs')
 
-const src = fs.readFileSync(SRC, 'utf8')
+// LF ALWAYS. The source arrives with whatever line endings the checkout gave it (CRLF on a Windows
+// clone with core.autocrlf), while the header below is LF -- so the output used to depend on the
+// machine, and extension-privacy-parity-test failed on every fresh Windows clone (29 Sep 2026)
+// while passing in the folder that last ran this script. .gitattributes pins the output to eol=lf.
+const src = fs.readFileSync(SRC, 'utf8').replace(/\r\n/g, '\n')
 
 // hive-privacy.js is deliberately dependency-free. If that ever stops being true this
 // script would silently emit a file with undefined bindings, which the extension swallows

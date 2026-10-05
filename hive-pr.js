@@ -31,8 +31,10 @@
 // than the data supports.
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { spawnSync } from 'child_process'
+import { fileURLToPath } from 'url'
 import { startSync, parseLink } from './sync.js'
 import { accountFor, verdict, explain, DIVERGED } from './hive-pr-staleness.js'
 
@@ -114,7 +116,15 @@ export function commitMessage(g, room) {
 }
 
 // ---- main ---------------------------------------------------------------------------------
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+// COMPARED AS REAL PATHS, as hive-mcp.js does. The old test built `file:///` + argv[1], which is
+// right only on Windows: on macOS and Linux argv[1] already starts with '/', the URL came out as
+// `file:////...`, never matched, and the script exited 0 having done nothing at all.
+const isMain = (() => {
+  if (!process.argv[1]) return false
+  const me = fileURLToPath(import.meta.url)
+  try { return fs.realpathSync(process.argv[1]) === fs.realpathSync(me) } catch { return path.resolve(process.argv[1]) === path.resolve(me) }
+})()
+if (isMain) {
   if (!LINK || !REPO) {
     console.error('usage: node hive-pr.js "<relay|room>" <YourName> --repo <path> [--branch b] [--dry-run] [--push] [--pr] [--force "<reason>"]')
     process.exit(2)
@@ -127,7 +137,9 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const TITLE = flag('title') || `Hivecode: work from room ${room}`
 
   // A scratch mirror of the room, so nothing here can disturb anyone's working folder.
-  const dir = path.join(process.env.TEMP || '.', `hive-pr-${room}-${process.pid}`)
+  // os.tmpdir(), not $TEMP: TEMP is a Windows variable, and without it the mirror was made in the
+  // current directory -- inside the very checkout the PR is cut from.
+  const dir = path.join(os.tmpdir(), `hive-pr-${room}-${process.pid}`)
   fs.mkdirSync(dir, { recursive: true })
 
   // Provenance is what this whole tool reads. Without it the ledger is empty and every
@@ -138,19 +150,47 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', syncFiles: true, log: () => {} })
 
   let done = false
+  // Cleared once the room answers. It used to stay armed for the whole run, so a landing that
+  // took longer than 20 s was killed as "could not reach the relay" -- mid-commit, possibly.
+  const unreachable = setTimeout(() => die('Q470', `could not reach the relay at ${relay}`), 20000)
   hive.provider.on('sync', (s) => {
     if (!s || done) return
     done = true
-    // The file sub-docs arrive after the room doc, so give the ledgers a moment to land.
-    // Reading immediately yields files with no receipts and a plan with nothing in it.
-    setTimeout(run, 2500)
+    clearTimeout(unreachable)
+    whenWholeRoomArrived()
   })
-  setTimeout(() => die('Q470', `could not reach the relay at ${relay}`), 20000)
+
+  // THE WHOLE ROOM, OR NOTHING. The file sub-docs arrive after the room doc, and this used to wait
+  // a flat 2.5 s for them. On a room bigger than what arrives in 2.5 s, the files still in flight
+  // were simply not in the mirror: not planned, not committed, not mentioned -- a PR that looks
+  // complete and silently leaves agents' work behind. Now the plan waits until every file the room
+  // lists is on disk here (a file's receipts travel in its own doc, so on disk means its ledger
+  // arrived too), keeps the 2.5 s floor, and refuses rather than land part of the room.
+  function whenWholeRoomArrived() {
+    const t0 = Date.now()
+    const limit = Number(process.env.HIVE_PR_WAIT_MS) || 120000
+    const tick = () => {
+      let st = null
+      try { st = hive.status() } catch { /* not ready yet */ }
+      if (st && st.filesMissing === 0 && Date.now() - t0 >= 2500) return run()
+      if (Date.now() - t0 > limit) {
+        const have = st ? `${st.filesHeld} of ${st.roomFiles}` : 'an unknown number'
+        console.error(`Q507 only ${have} of the room's files arrived in ${Math.round(limit / 1000)} s. Refusing to land part of the room: the missing files' work would be left out of the PR without anyone being told.`)
+        return finish(1)
+      }
+      setTimeout(tick, 250)
+    }
+    tick()
+  }
 
   function walk(root, base = '') {
     const out = []
     for (const e of fs.readdirSync(path.join(root, base), { withFileTypes: true })) {
-      if (e.name.startsWith('.')) continue
+      // Git's own and this client's bookkeeping (.hive.json, .hive-shadow.json, ...). Every other
+      // dotfile is project content: this skipped ALL of them, so an agent's edit to .gitignore or
+      // .github/workflows never reached the PR, and nothing said so. Only files with a verified
+      // receipt are committed either way, so bookkeeping that slipped through would still be left out.
+      if (e.name === '.git' || e.name.startsWith('.hive')) continue
       const rel = base ? `${base}/${e.name}` : e.name
       if (e.isDirectory()) out.push(...walk(root, rel))
       else out.push(rel)

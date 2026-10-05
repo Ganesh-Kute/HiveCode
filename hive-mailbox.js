@@ -28,12 +28,13 @@
  */
 export function mentionsName(text, me) {
   if (!text || !me) return false
-  if (mentionsAll(text)) return true // @all reaches everyone by definition
+  const clean = stripSpansAndQuotes(text)
+  if (mentionsAll(clean)) return true // @all reaches everyone by definition
   const escaped = String(me).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   // Both boundaries, and the same ones the extractor uses. If these two ever disagree, a message
   // can be extracted as addressing someone who does not match it, or match someone it was never
   // extracted for -- which is how a mailbox and a transcript come to tell different stories.
-  return new RegExp(`${MENTION_START}@${escaped}${MENTION_END}`, 'i').test(String(text))
+  return new RegExp(`${MENTION_START}@${escaped}${MENTION_END}`, 'i').test(clean)
 }
 
 /**
@@ -49,21 +50,42 @@ export function mentionsName(text, me) {
  * that is the exact failure this room already had once.
  */
 export function mentionsAll(text) {
-  // CODE SPANS ARE STRIPPED FIRST, AND ONLY HERE. Every other false mention is handled by the
-  // boundary rules below plus `obligationTargets`, which refuses to open a debt against somebody
-  // who is not in the room. `@all` is the one case neither can save: it is not a member, so the
-  // membership gate does not apply to it, and it wakes EVERYONE. So writing `@all` inside
-  // backticks -- which is how anybody documents this feature -- paged the entire room, every time.
-  //
-  // This is deliberately NOT a Markdown parser. Nested spans, unclosed fences and indented blocks
-  // are all out of scope, because the question is not "what is code here" but the much smaller
-  // "is this one token wrapped in backticks". A tokenizer would be the wrong tool and a permanent
-  // source of edge cases; one replace is the whole fix.
-  return /@all(?![\w-])/i.test(stripCodeSpans(text))
+  return /@all(?![\w-])/i.test(stripSpansAndQuotes(text))
 }
 
-/** Inline code spans blanked out, so a token quoted as code is not read as an address. */
-const stripCodeSpans = (text) => String(text || '').replace(/`[^`]*`/g, ' ')
+/** Code spans and quoted text blanked out, so a token quoted as code or prose is not read as an address. */
+export function stripSpansAndQuotes(text) {
+  const raw = String(text || '')
+  const trimmed = raw.trim()
+  const quotePairs = [
+    ['"', '"'],
+    ["'", "'"],
+    ['“', '”'],
+    ['‘', '’'],
+  ]
+  for (const [open, close] of quotePairs) {
+    if (trimmed.startsWith(open) && trimmed.endsWith(close) && trimmed.length >= 2) {
+      if (trimmed.indexOf(close, open.length) === trimmed.length - close.length) {
+        // A single quote pair spans the entire message: preserve inner content (stripping internal code spans)
+        const inner = trimmed.slice(open.length, trimmed.length - close.length)
+        return inner
+          .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+          .replace(/`[^`\n]*`/g, ' ')
+      }
+    }
+  }
+
+  return raw
+    .replace(/```[\s\S]*?(?:```|$)/g, ' ')      // fenced code blocks
+    .replace(/`[^`\n]*`/g, ' ')                 // inline code spans
+    .replace(/"[^"\n]*"/g, ' ')                 // double quoted text
+    .replace(/(?:^|[\s(\[{<])'[^'\n]*'(?=$|[\s)\]}>.,!?:;])/g, ' ') // single quoted text (preserving contractions)
+    .replace(/[“”][^“”\n]*[“”]/g, ' ')          // curly double quotes
+    .replace(/[‘’][^‘’\n]*[‘’]/g, ' ')          // curly single quotes
+}
+
+/** Inline code spans blanked out, kept for backward compatibility. */
+const stripCodeSpans = stripSpansAndQuotes
 
 /**
  * WHERE A MENTION MAY BEGIN, AND WHERE IT MAY NOT.
@@ -80,11 +102,7 @@ const stripCodeSpans = (text) => String(text || '').replace(/`[^`]*`/g, ' ')
  * could ever have closed them. The ledger is what catches an agent going silent; it was becoming
  * unreadable through ordinary use.
  *
- * LEADING: start of string, whitespace, an opening bracket, a quote, a dash, or a colon. Quotes
- * are INCLUDED on purpose. A quoted example ("the parser reads "@antigravity"") is then extracted
- * for the transcript and creates no debt, because `obligationTargets` gates on membership. The
- * opposite choice would silently drop a real mention that opens a quoted sentence, and a dropped
- * mention is the worse failure: the sender believes it was delivered.
+ * LEADING: start of string, whitespace, an opening bracket, a quote, a dash, or a colon.
  *
  * TRAILING: not a word character, a hyphen, or a SLASH. The slash is what distinguishes
  * `@scope/package` from `@person`. It is written as one lookahead rather than a separate check so
@@ -96,8 +114,9 @@ const MENTION_END = '(?![\\w\\-/])'
 
 /** Everyone addressed in a message, so a broadcast can be told from a direct call. */
 export function mentionedNames(text) {
+  const clean = stripSpansAndQuotes(text)
   const re = new RegExp(`${MENTION_START}@([\\w-]+)${MENTION_END}`, 'g')
-  return [...new Set([...String(text || '').matchAll(re)].map((m) => m[1]))]
+  return [...new Set([...clean.matchAll(re)].map((m) => m[1]))]
 }
 
 /**
@@ -216,12 +235,36 @@ export function suggestMemberName(name) {
  *
  * Derived from the chat log rather than stored, so it cannot drift out of sync with what was
  * actually said, and needs no new state to persist or migrate.
+ /**
+ * Is this message a bare acknowledgement or thank-you?
  *
+ * WHITELISTED ONLY (Item 5.1). An acknowledgement from anyone (human or AI) must never open a
+ * reply debt. To prevent dropping real instructions ("ok, go ahead" or "thanks, can you also check X"),
+ * the WHOLE message (after stripping @names, emoji and punctuation) must match the whitelist.
+ * Anything with additional words or directives still opens a debt.
+ */
+export function isAcknowledgement(text) {
+  if (!text || typeof text !== 'string') return false
+  const noCode = stripSpansAndQuotes(text)
+  const noMentions = noCode.replace(/@[\w-]+/g, ' ')
+  const noEmoji = noMentions.replace(/\p{Extended_Pictographic}/gu, ' ')
+  const noPunct = noEmoji.replace(/[.,!?:;'"“”‘’/\\()[\]{}~*`_#^<>=+|–—\-]/g, ' ')
+  const s = noPunct.replace(/\s+/g, ' ').trim().toLowerCase()
+  if (!s) return false
+
+  const CORE = 'thanks|thank\\s+you|thx|ty|ok|okay|got\\s+it|lgtm|looks\\s+good|sounds\\s+good|great|nice|cool|perfect|noted|ack'
+  const MOD = 'bro|all|team'
+  const re = new RegExp(`^(?:(?:${CORE})(?:\\s+(?:${MOD}))?|(?:(?:${MOD})\\s+)?(?:${CORE}))$`, 'i')
+  return re.test(s)
+}
+
+/**
  * THREE THINGS DO NOT COUNT AS A DEBT, all for the same reason -- an obligation that fires on
  * traffic nobody chose to send is noise wearing a rule's clothes:
  *   - `@all` broadcasts (see mentionsAll)
  *   - system messages, and the client's own auto-posted conflict/adopt notices
  *   - my own messages, however many times I say my own name
+ *   - bare acknowledgements ("thanks", "ok", "lgtm"), even from a human
  *
  * @param {Array<{by?: string, kind?: string, text?: string, at?: string}>} messages
  * @param {string} me
@@ -235,18 +278,35 @@ export function unansweredFor(messages, me) {
   const AUTO = /^(⚠ MERGE CONFLICT|✓ conflict|↓ )/ // posted by the sync client, not by a person
 
   const owed = new Map()   // sender (lowercased) -> the message I owe a reply to
+  // TURNS, NOT MENTIONS (27 Sep 2026). Every mention used to open a debt, so an ANSWER opened one
+  // against the person who asked: Ada asks Bo, Bo says "on it", and Ada is told on every hive_check
+  // that she owes Bo a reply -- which she pays ("thanks"), which opens one against Bo. A politeness
+  // loop, paid in tokens and chat by both. So it goes by whose turn it is between two people: a
+  // message from someone I spoke to last is their reply, and opens a debt only if it asks something
+  // back or is urgent. Anything else still counts, question mark or not -- "can you take it" has none.
+  // A PERSON is always answered (Antigravity1's review): humans type directives, not needsReply flags,
+  // and "deploy to staging and run the smoke tests" right after an agent's report is an order, not a
+  // reply. Any '?' counts, so 'the port?"' and 'ready? (check it)' are questions too.
+  const turn = new Map()   // other person (lowercased) -> 'me' when I spoke to them last, else 'them'
+  const asks = (t) => /\?/.test(String(t || '')) || priorityOf(t) === 'stop'
   for (const m of list) {
     if (!m || m.kind === 'system' || AUTO.test(String(m.text || ''))) continue
     if (low(m.by) === mine) {
       // Anything I name is discharged. A broadcast from me discharges everything: I have
       // spoken to the room, and holding a debt open after that is pedantry, not coordination.
       if (mentionsAll(m.text)) { owed.clear(); continue }
-      for (const n of mentionedNames(m.text)) owed.delete(low(n))
+      for (const n of mentionedNames(m.text)) { const k = low(n); if (k === mine) continue; owed.delete(k); turn.set(k, 'me') }
       continue
     }
     // Directly addressed, not merely broadcast to.
     if (mentionsAll(m.text)) continue
-    if (mentionsName(m.text, me)) owed.set(low(m.by), { from: m.by, at: m.at || '', text: m.text || '' })
+    if (mentionsName(m.text, me)) {
+      const k = low(m.by)
+      if (!isAcknowledgement(m.text)) {
+        if (turn.get(k) !== 'me' || m.kind === 'human' || asks(m.text)) owed.set(k, { from: m.by, at: m.at || '', text: m.text || '' })
+      }
+      turn.set(k, 'them')
+    }
   }
   return [...owed.values()]
 }
@@ -260,12 +320,83 @@ export function unansweredFor(messages, me) {
  * A marker is an explicit prefix so it is unambiguous, plus a small set of words that mean
  * stop in every room whether or not the sender knew about markers. An agent about to
  * overwrite someone's work is not going to be helped by correct syntax.
+ *
+ * THE WORDS COUNT ONLY WHERE AN ORDER WOULD BE (Item 5.4). Narrowed to explicit directives
+ * so routine prose ("reaching a stopping point", "commit c56214b: revert earlier broken test",
+ * "revert PR #12 merged") does not arrive under a false STOP banner.
  */
+const ORDER_WINDOW = 160
 export function priorityOf(text) {
   const s = String(text || '')
   if (/^\s*\[!\]|^\s*\[stop\]/i.test(s)) return 'stop'
-  if (/\b(stop|halt|abort|don'?t\s+(?:edit|touch|write)|revert)\b/i.test(s)) return 'stop'
+  const head = s
+    .replace(/```[\s\S]*?(?:```|$)/g, ' ')          // fenced code, closed or not
+    .replace(/`[^`\n]*`/g, ' ')                    // inline code spans
+    .replace(/"[^"\n]*"/g, ' ')                    // double quotes
+    .replace(/(?:^|[\s(\[{<])'[^'\n]*'(?=$|[\s)\]}>.,!?:;])/g, ' ') // single quotes
+    .replace(/[“”][^“”\n]*[“”]/g, ' ')             // curly double quotes
+    .replace(/^(?:\s*@[\w-]+[\s,:;.!-]*)+/, '')    // the leading @names being addressed
+    .trimStart()
+    .slice(0, ORDER_WINDOW)
+
+  // Directives at start of head (immediate orders)
+  if (/^(?:please\s+)?(?:stop\b(?!\s*\(|\.\w)|halt\b|abort\b|revert\s+(?:that|this|it|now|[\w./-]+\.\w+)\b)/i.test(head)) return 'stop'
+  if (/^stop-ship\b/i.test(head)) return 'stop'
+
+  // Imperative directives within head window
+  if (/\b(?:please\s+)?don'?t\s+(?:edit|touch|write|modify)\b/i.test(head)) return 'stop'
+  if (/\bplease\s+stop\b/i.test(head)) return 'stop'
+  if (/\b(?:stop|revert)\s+(?:that|this|it\s+)?now\b/i.test(head)) return 'stop'
+  if (/\bstop\s+(?:editing|touching|writing)\b/i.test(head)) return 'stop'
+
   return 'normal'
+}
+
+/** Standard Levenshtein distance between two strings, case-insensitively. */
+export function levenshtein(a, b) {
+  const s1 = String(a || '').toLowerCase()
+  const s2 = String(b || '').toLowerCase()
+  const m = s1.length, n = s2.length
+  if (!m) return n
+  if (!n) return m
+  const d = Array.from({ length: m + 1 }, () => new Array(n + 1))
+  for (let i = 0; i <= m; i++) d[i][0] = i
+  for (let j = 0; j <= n; j++) d[0][j] = j
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost
+      )
+    }
+  }
+  return d[m][n]
+}
+
+/** Find closest known name within edit distance <= 2 (or <= 1 for names <= 4 chars) for typo detection. */
+export function findClosestKnown(name, knownNames) {
+  const s = String(name || '').toLowerCase()
+  let best = null
+  let bestDist = Infinity
+  for (const k of knownNames || []) {
+    const orig = String(k)
+    const dist = levenshtein(s, orig.toLowerCase())
+    if (dist < bestDist) {
+      bestDist = dist
+      best = orig
+    }
+  }
+  const maxAllowed = (best && best.length <= 4) || s.length <= 4 ? 1 : 2
+  return bestDist <= maxAllowed ? { name: best, distance: bestDist } : null
+}
+
+/** Does this mention sit at the direct-address position (start of the message)? */
+export function isDirectAddress(text, name) {
+  const s = String(text || '').trimStart()
+  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^@${escaped}(?![\\w\\-/])`, 'i').test(s)
 }
 
 /**

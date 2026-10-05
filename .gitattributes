@@ -5,3 +5,7 @@
 *.js  merge=icr
 *.mjs merge=icr
 *.cjs merge=icr
+
+# Generated files are compared byte-for-byte by their parity tests, so their line endings must
+# not depend on the checkout (core.autocrlf rewrote them to CRLF on a fresh Windows clone).
+extension/hive-privacy.cjs text eol=lf

@@ -18,6 +18,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import crypto from 'crypto'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
@@ -35,7 +36,14 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 // ReferenceError and killed the sync process outright. Nothing caught it -- the client
 // simply died mid-session, which reads to a user as "sync stopped working". Rewriting a
 // whole file is the most common thing an agent does, so this fired constantly.
-import grmLink from './grm-link.cjs' // hands this room's history to GRM, so the ROOM has a memory
+import { createRequire } from 'module'
+import { VERSION, VERSION_LABEL } from './hive-version.js' // which build this client is, carried in presence
+// GRM STAYS PRIVATE (29 Sep 2026). grm-link.cjs hands this room's history to a LOCAL GRM, so the room
+// has a memory -- and it is not in the published package: GRM never goes on the internet. A checkout
+// that has the file links the room; an npm install simply has no room-memory link, and nothing else
+// changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
+let grmLink = null
+try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
 import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from './hive-pr-staleness.js' // room-versus-branch provenance staleness checks (HIV-P9)
 // HIV-P8. The map key MUST be the string 'obligations' — hive-mcp.js:656 reads that exact key, and
@@ -43,6 +51,7 @@ import { accountFor, sameText, DESCENDS, IDENTICAL, DIVERGED, UNPROVEN } from '.
 // the defect this ticket is about, one level down.
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
 import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
+import { newSecrets, describeSecret } from './hive-secrets.js' // a credential inside a file is held here, not sent to the room
 import * as OB from './hive-obligations.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
@@ -52,9 +61,22 @@ const PROTOCOL_VERSION = 2
 
 // Never sync these, even if not in .gitignore — secrets and obvious junk. This
 // prevents pushing a teammate's .env / private keys / build output to the room.
-const ALWAYS_IGNORE = [
+// Exported so hive-branch.js can tell, before seeding a room from a git tree, which tracked
+// files the room will never carry.
+export const ALWAYS_IGNORE = [
   '.git/', 'node_modules/',
+  // `.git` as a FILE too. '.git/' matches only a directory, and in a git worktree (or a submodule,
+  // or a branch-room folder, which holds a `.git` file that makes git refuse to run there) `.git`
+  // is a one-line file naming THIS machine's git directory. The walk skips it by name, but a
+  // watcher event does not. Measured 30 Sep 2026 with '.git/' alone: an edit to A's sub/.git was
+  // published, then retracted as "deleted" by A's next safety-net scan (whose walk skips it) --
+  // and in between, peer B's OWN sub/.git, a submodule pointer to B's git directory, was first
+  // overwritten with conflict markers and then deleted. tests/branch-test.mjs pins it (D1, D2).
+  '.git',
   '.env', '.env.*', '*.pem', '*.key', '*.pfx', '*.p12', 'id_rsa', 'id_ed25519', '*.keystore',
+  // Files that are credentials by name, whatever is in them on a given day: direnv's exports, the
+  // login stores of curl/git/pip, and the other private key formats.
+  '.envrc', '.netrc', '_netrc', '.git-credentials', '.pypirc', 'id_ecdsa', 'id_dsa', '*.ppk', '*.p8', '*.jks',
   '.hive-id.json', // this client's substrate signing identity (holds a PRIVATE key) — never sync it
   // This client's own session + chat read cursor. Syncing it would push one agent's identity
   // and read position into every other agent's folder, and a shared cursor means one agent
@@ -69,6 +91,10 @@ const ALWAYS_IGNORE = [
   // Names a PID on THIS machine. Syncing it would tell every peer their folder is locked by
   // a process that does not exist for them.
   '.hive-lock.json',
+  // Copies of files a teammate's delete removed from THIS folder (see keepDeletedCopy). They
+  // are this machine's safety net; syncing them would undo every delete in the room.
+  '.hive-deleted/',
+  '.hive-case-*',
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 
   // MOBILE AND CLOUD SECRETS. These are the files a mobile project keeps OUT of git via
@@ -136,14 +162,49 @@ export function fusionReason(merged, mine, theirs, lang) {
   return ''
 }
 
+const endNl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
+
+// HIV-P17. Why a creation race of relPath must NOT land, '' when it may: 'CONFLICT' when two whole
+// files collide in a file with a language, else fusionReason's answer when a clean-looking union
+// broke code both sides could parse. No language (Markdown) is never refused.
+export function creationRaceVerdict(r0, mine, theirs, relPath) {
+  const code = supports(relPath)
+  return r0.conflict ? (code ? 'CONFLICT' : '') : fusionReason(r0.text, endNl(mine), endNl(theirs), code ? languageFor(relPath) : null)
+}
+
+// HIV-P17 dead heat: several clients published one file into an empty doc before any saw another, and
+// the CRDT unioned them. textsByClient = each creator's live text, keyed by Yjs client id. The winner
+// is the lowest id -- every peer holds the same union, so every peer picks the same one. The creators
+// are folded in ONE BY ONE and each step is judged, because the union is what would land: with three
+// creators, two can each merge cleanly with the winner and still fuse with each other.
+export function deadHeatVerdict(textsByClient, relPath) {
+  const [winner, ...others] = [...textsByClient.keys()].sort((a, b) => a - b)
+  const winnerText = textsByClient.get(winner) || ''
+  let acc = winnerText
+  for (const c of others) {
+    const t = textsByClient.get(c) || ''
+    const r = icrMerge3('', endNl(acc), endNl(t), relPath)
+    const why = creationRaceVerdict(r, acc, t, relPath)
+    if (why) return { winner, winnerText, why }
+    acc = r.text
+  }
+  return { winner, winnerText, why: '' }
+}
+
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
+const MAX_BINARY_BYTES = Number(process.env.HIVE_MAX_BINARY_BYTES) || (5 * 1024 * 1024)
 const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
 const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents' conversation
 const TASKS_FILE = 'HIVE_TASKS.md' // generated locally from `tasks`; directed work + approvals
 const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
 const SHADOW_FILE = '.hive-shadow.json' // what THIS client last wrote per file; the cross-restart ancestor
 const LOCK_FILE = '.hive-lock.json'     // one sync client per folder; see acquireFolderLock
+const DELETED_DIR = '.hive-deleted'     // copies of files a teammate's delete removed here; see keepDeletedCopy
+const DELETED_KEEP_MS = 7 * 24 * 3600 * 1000 // ...pruned at start once they are a week old
+// Local deletes wait this long for the deleting to stop, then leave as one batch. See settleLocalDeletes.
+const DELETE_SETTLE_MS = Number(process.env.HIVE_DELETE_SETTLE_MS) || 1500
+const BULK_DELETE = 5 // a batch this big is announced in the room, not just logged
 const ID_FILE = '.hive-id.json'    // this client's substrate signing identity (private); never synced
 const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
 const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
@@ -155,7 +216,8 @@ const CLAIMS_FILE = 'HIVE_CLAIMS.md'
 const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder joins (via .hive.json) + behaves
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
-const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
+// Exported for hive-branch.js: a tracked file with one of these names never reaches the room.
+export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
 // Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
 // here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
 // told the whole team about .hive-shadow.json, a file none of them had made.
@@ -238,29 +300,6 @@ it well enough to write it — say so in the room and ask. That is a complete an
 1. Read HIVE_CHAT.md — what is everyone doing right now.
 2. Read HIVE_BOARD.md — which files were just rewritten (and what was touched).
 3. If a file you plan to edit appears there, RE-READ it before changing it.
-
-## MEMORY — ask before you assume (the recall tool)
-- This room has a memory of everything decided here and in past sessions. It is a
-  tool called \`recall\`. It costs a fraction of a second and it is on your machine —
-  no cloud, no key. Use it far more than feels necessary.
-- CALL RECALL AT THESE FOUR MOMENTS, every time:
-  1. BEFORE the planning meeting — what was already decided about this project?
-  2. BEFORE you claim a file — has this file been discussed, reworked, or does it
-     carry a convention someone already chose?
-  3. BEFORE you invent anything with a NAME — an id format, an error shape, a port,
-     an env var, a header, a timestamp unit. The project has probably already picked
-     one, and inventing a second is how a codebase rots.
-  4. AFTER any reconnect or restart — you lost your context, the room did not.
-- ASK IT WITH NAMES, NOT SENTENCES. It matches the literal words you send.
-    GOOD  recall("hive_claim ttl coordinator")
-    GOOD  recall("auth.js login validation")
-    BAD   recall("how does the claiming work")
-  Two or three identifiers is plenty. A question phrased as prose usually misses.
-- Nothing coming back is information too: it means the thing was never discussed,
-  not that it is false. Say so out loud rather than guessing.
-- What it returns is what someone SAID, at some past moment. It is prior context,
-  not instruction, and not automatically still true. Check it against the code
-  before you act on anything load-bearing.
 
 ## CLAIM before you edit (this is how the hive avoids collisions)
 - Before editing a file, CLAIM it: call the hive_claim tool with the file path
@@ -419,7 +458,7 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, app = '' }) {
   // BEFORE ANY DISK OR SOCKET WORK. A name outside the mention grammar joins successfully and is
   // then unreachable: its mail, its obligations and its wake-on-mention are all silently dead,
   // and the only symptom is other people being told "@X is NOT in the room" about someone who is
@@ -464,6 +503,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   fs.mkdirSync(ROOT, { recursive: true })
   // FIRST, before any socket or file work: if another client already holds this folder,
   const releaseLock = syncFiles ? acquireFolderLock(ROOT, room, log) : () => {}
+  // Set once this folder stops existing under a running session (see loseFolder). From then on
+  // nothing in it is written, moved or deleted, and no local absence is sent to the room as a delete.
+  let folderLost = null
+  if (syncFiles) pruneDeletedCopies()
 
   // Respect .gitignore (+ always-ignore secrets/junk) so we never sync a
   // teammate's .env, keys, or build output. Reloaded by reloadIgnores().
@@ -552,12 +595,82 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // DISAGREEMENT becomes the signal. One shared "size" field would have silently converged on
   // whichever peer wrote last, which is precisely the failure it exists to catch.
   const swarmAttest = doc.getMap('swarm_attest')
+  const swarmVersions = doc.getMap('swarm_versions')
+
+  function bumpAttestVersion(relPath, newText) {
+    if (!swarmAttest.has(relPath)) return // only bump files that already have attestations
+    const prev = swarmVersions.get(relPath) || { n: 1, hash: '' }
+    const newHash = contentHash(newText)
+    if (prev.hash !== newHash) {
+      swarmVersions.set(relPath, { n: (prev.n || 1) + 1, hash: newHash })
+    }
+  }
   // GATE VERDICTS — `<region>|<peerName>` -> the result of that peer running the room's check in
   // ITS OWN folder before handing the file back. Keyed per peer for the same reason swarmAttest
   // is: "the tests pass" is a fact about one folder's bytes, and storing it as a single shared
   // value would converge on whoever released last, silently erasing the disagreement that is the
   // entire signal. Two agents reporting different verdicts for one path both survive here.
   const gateResults = doc.getMap('gate_results')
+
+  // --- BATCHED ROOM-DOC MUTATIONS (manifest + historyMeta) ---
+  // A seeder publishing N files previously sent N manifest.set() updates and N historyMeta.set()
+  // updates — 2N distinct Yjs updates on the base-room socket. On the free tier (burst 600, 60/s)
+  // this throttled the base room at file ~300.
+  // We batch pending operations into a single doc.transact() flushed on setImmediate (or synchronously on stop()).
+  const pendingManifestOps = new Map() // relPath -> 'set' | 'delete'
+  const pendingHistoryMeta = new Map() // id -> { op: 'set' | 'delete', record?: any }
+  let roomFlushTimer = null
+
+  function inManifest(relPath) {
+    if (pendingManifestOps.has(relPath)) {
+      return pendingManifestOps.get(relPath) === 'set'
+    }
+    return manifest.has(relPath)
+  }
+
+  function flushRoomDoc() {
+    if (roomFlushTimer) {
+      clearImmediate(roomFlushTimer)
+      roomFlushTimer = null
+    }
+    if (!pendingManifestOps.size && !pendingHistoryMeta.size) return
+    doc.transact(() => {
+      for (const [r, op] of pendingManifestOps) {
+        if (op === 'set') manifest.set(r, 1)
+        else manifest.delete(r)
+      }
+      pendingManifestOps.clear()
+
+      for (const [id, item] of pendingHistoryMeta) {
+        if (item.op === 'set') historyMeta.set(id, item.record)
+        else historyMeta.delete(id)
+      }
+      pendingHistoryMeta.clear()
+      pruneMeta()
+    })
+  }
+
+  function scheduleRoomFlush() {
+    if (stopped) { flushRoomDoc(); return }
+    if (!roomFlushTimer) {
+      roomFlushTimer = setImmediate(flushRoomDoc)
+    }
+  }
+
+  function queueManifestSet(relPath) {
+    pendingManifestOps.set(relPath, 'set')
+    scheduleRoomFlush()
+  }
+
+  function queueManifestDelete(relPath) {
+    if (!manifest.has(relPath)) {
+      pendingManifestOps.delete(relPath)
+    } else {
+      pendingManifestOps.set(relPath, 'delete')
+    }
+    scheduleRoomFlush()
+  }
+
   // CLAIM LEASE. Expiry is evaluated lazily on read, so the moment a lease passes its TTL the
   // next agent that tries simply gets the file -- that is what stops a stalled agent
   // deadlocking the room.
@@ -686,6 +799,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const base = shadow.get(relPath)
     if (base == null || disk === base) return false // no baseline yet, or nothing new on disk
     if (hasConflictMarkers(disk)) return false      // half-edited conflict block — not an authored state
+    if (!SHARE_SECRETS && newSecrets(disk, fe.text.toString()).length) return false // the ledger is shared: a key stays out of it
     stampIntent(relPath, base, disk)                // into the provenance DAG NOW — clobber-proof
     shadow.set(relPath, disk)                       // the captured state is the new baseline
     return true
@@ -864,6 +978,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!canWrite(relPath)) return { ok: false, reason: `${relPath} is read-only for you` }
     if (typeof proposal !== 'string' || !proposal.trim()) return { ok: false, reason: 'empty resolution' }
     if (hasConflictMarkers(proposal)) return { ok: false, reason: 'resolution still contains <<<<<<< conflict markers — send the final clean file' }
+    if (!SHARE_SECRETS) {
+      const key = newSecrets(proposal, fe.text.toString())[0]
+      if (key) return { ok: false, reason: `the resolution contains ${describeSecret(key)}, and a resolution is sent to everyone in the room. Read the key from the environment (.env is never shared) and resolve again` }
+    }
     let landed = proposal
     if (supports(relPath) && rec.base != null) {
       const v = structuralMerge(rec.base, proposal, rec.base, { filename: relPath })
@@ -913,6 +1031,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     relPath = String(relPath || '').replace(/\\/g, '/')
     if (!relPath || typeof content !== 'string') return { error: 'need a file path and string content' }
     if (!isSafeRelPath(relPath)) return { error: 'unsafe path' }
+    if (folderLost) return { error: folderLost.message }
     if (SKIP.has(relPath) || isIgnored(relPath)) return { error: `${relPath} is not a syncable file` }
     if (!canOpen(relPath)) return { error: `${relPath} is out of your scope` }
     if (!canWrite(relPath)) return { error: `${relPath} is read-only for you` }
@@ -928,7 +1047,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const fe = fileDocs.get(relPath)
     const landed = fe && fe.synced ? fe.text.toString() : content
     let disk = content; try { disk = fs.readFileSync(full, 'utf8') } catch { }
-    return { ok: true, file: relPath, landed, conflicted: hasConflictMarkers(disk) }
+    // A new file's doc has not synced yet when this returns, so the gate in reconcile has not run:
+    // judge the content here too, or the answer would be "syncing to every peer" for a file that
+    // the gate is about to hold.
+    const held = withheld.get(relPath) || (SHARE_SECRETS ? null : newSecrets(content, fe && fe.synced ? fe.text.toString() : '')[0])
+    return { ok: true, file: relPath, landed, conflicted: hasConflictMarkers(disk), ...(held ? { withheld: describeSecret(held) } : {}) }
   }
   // Detect a live fork and record it. The version set is a CRDT UNION (per-hash keys), so
   // this is monotonic + convergent: every peer contributes what it sees and the set grows
@@ -994,7 +1117,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets() })
   let stopped = false
   const provider = new WebsocketProvider(relay, room, doc, wsOpts)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, passive: !!passive }) // identity is implicit in the client
+  // WHICH COPY OF AN AGENT THIS IS: this machine plus this folder, hashed. Everything in a room is
+  // keyed by NAME (claims, mail, presence), so two different agents under one name are one identity
+  // to everybody; this is what lets a join tell another agent with the same name (refused, see
+  // sameNameElsewhere) from this agent a moment ago, restarting in the same folder (allowed).
+  const IID = crypto.createHash('sha256').update(`${os.hostname()}|${ROOT}`).digest('hex').slice(0, 12)
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -1019,7 +1147,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
 
   function explain(code) {
-    if (code === 401) return 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
+    if (code === 401) {
+      return token
+        ? 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
+        : 'this room needs a token of your own. Ask the room owner to mint you one.'
+    }
     if (code === 402) return `this room is over its plan limit. Contact ${SUPPORT} and we will sort it out.`
     if (code === 403) return 'the relay refused this room or path for your token. You are outside the folders you were given.'
     // 429 at the UPGRADE is always Q431 "room at capacity" -- never rate limiting. The rate
@@ -1196,6 +1328,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function fetchFile(relPath, { timeoutMs = 15000 } = {}) {
     const r = String(relPath)
     if (!canOpen(r)) return Promise.resolve({ ok: false, reason: `${r} is out of your scope` })
+    if (collided.has(r)) {
+      return Promise.resolve({
+        ok: false,
+        collided: true,
+        file: r,
+        reason: `${r} collides in case with ${collided.get(r).with} already on disk. A case-insensitive disk cannot hold both.`,
+      })
+    }
     const full = path.join(ROOT, r)
     // Already here: report it, and say so rather than implying we went and got it.
     if (fs.existsSync(full)) return Promise.resolve({ ok: true, alreadyLocal: true, file: r })
@@ -1245,6 +1385,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const fdoc = new Y.Doc()
     const fprovider = fileTransport.provide(fileRoom(room, relPath), fdoc)
     const text = fdoc.getText('content')
+    const bin = fdoc.getMap('bin')
     // `snap` (in the FILE's own doc, so it's scope-protected with the file) holds
     // restore points: id -> { id, file, by, at, ts, content, churn, kind, label }.
     // `undo` is a per-file UndoManager tracking THIS client's local edits, so a
@@ -1272,16 +1413,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // each peer's DISK — never into the shared text — so conflict markers can't fuse.
     const conflict = fdoc.getMap('conflict')
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
-    e = { doc: fdoc, provider: fprovider, text, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
+    e = { doc: fdoc, provider: fprovider, text, bin, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
     fileDocs.set(relPath, e)
+    // From the mtime scan() already took, not two more syscalls per open: a 1,000-file join opens
+    // 1,000 files, and fileCreationTs() still falls back to a stat for any file this missed.
+    if (!createdTimes.has(relPath) && mtimes.has(relPath)) createdTimes.set(relPath, mtimes.get(relPath))
     text.observe((_ev, txn) => { if (!txn.local) reconcile(relPath, 'remote') }) // remote content edits
+    bin.observe((_ev, txn) => { if (!txn.local) reconcileBinary(relPath, 'remote') }) // remote binary edits
     // A divergent receipt can arrive slightly after (or before) the fused content — so
     // re-run the fork check whenever the provenance ledger changes too, not only on edits.
     ledger.observe((_ev, txn) => { if (!txn.local) detectFork(relPath) })
     // The fork record arrived/changed from a peer: render it locally, or — if it was
     // cleared (resolved elsewhere) — adopt the now-clean shared text to disk.
     conflict.observe((_ev, txn) => { if (txn.local) return; if (e.conflict.has('meta')) renderConflict(relPath); else adoptResolved(relPath) })
-    fprovider.on('sync', (s) => { if (s) { e.synced = true; refusedFiles.delete(relPath); reconcile(relPath, 'remote'); detectFork(relPath) } }) // initial pull settled
+    fprovider.on('sync', (s) => {
+      if (s) {
+        e.synced = true
+        refusedFiles.delete(relPath)
+        if (e.bin.has('data')) {
+          reconcileBinary(relPath, 'remote')
+        } else {
+          reconcile(relPath, 'remote')
+          detectFork(relPath)
+        }
+      }
+    })
     // A refused upgrade lands here. The provider will keep retrying by itself, which is the
     // right behaviour and exactly why nothing surfaces it — so count it and let noteRefusals
     // decide whether this is a blip or a relay that will not take us.
@@ -1493,11 +1649,24 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (SKIP.has(p)) return `${p} is a Hivecode control file, not shared source`
     if (!canOpen(p)) return `your access token's scope does not cover ${p}, so its bytes stay in this folder`
     if (isIgnored(p)) return `${p} is ignored by a .gitignore here, so this client never opens a sync connection for it -- anything you write stays in this folder and no other agent will ever see it`
+    if (onDisk) {
+      const full = path.join(ROOT, p)
+      const unshared = checkUnshared(full)
+      if (unshared) {
+        if (unshared.reason === 'oversized') {
+          return `${p} is oversized (${Math.round(unshared.size / 1024)}KB > 1MB limit), so it cannot be shared -- anything you write stays in this folder and no other agent will see it`
+        }
+        return `${p} contains binary data (null bytes), so it cannot be shared -- anything you write stays in this folder and no other agent will see it`
+      }
+    }
     return ''
   }
 
   const known = new Set()
   const mtimes = new Map()
+  const createdTimes = new Map() // relPath -> timestamp of creation/genesis publish
+  const genesisPublished = new Set() // relPath -> files THIS client genesis-published this session
+  const deadHeatResolved = new Set() // relPath -> files where dead-heat creation-race detection already resolved
   // Paths that already existed on disk when this client STARTED. This is the
   // discriminator between "I cloned a repo and joined a room that already has these
   // files" (adopt the room's copy) and "this file was created during the session"
@@ -1511,6 +1680,25 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let roomAtJoin = null
   let firstScanDone = false
   const shadow = new Map()     // relPath -> exact bytes THIS ENGINE last wrote/captured (source-level edit capture)
+  const shaShadow = new Map()  // relPath -> sha256 hex string of binary bytes written/seen locally (echo suppression)
+  // Per-file pre-serialized JSON fragments: relPath -> '"path": "content"'.
+  // Assembled into v:1 JSON in saveShadow() without re-stringifying all files, cutting save CPU by ~6.6x.
+  const shadowFragments = new Map()
+  const origShadowSet = shadow.set.bind(shadow)
+  const origShadowDelete = shadow.delete.bind(shadow)
+  shadow.set = (k, v) => {
+    origShadowSet(k, v)
+    if (typeof v === 'string' && v.length <= MAX_BYTES) {
+      shadowFragments.set(k, JSON.stringify(k) + ':' + JSON.stringify(v))
+    } else {
+      shadowFragments.delete(k)
+    }
+    return shadow
+  }
+  shadow.delete = (k) => {
+    shadowFragments.delete(k)
+    return origShadowDelete(k)
+  }
   // THE SAME THING, FROM THE PREVIOUS SESSION, and the reason it exists:
   //
   // `shadow` in memory is enough to tell an authored edit from our own write while we are
@@ -1560,16 +1748,324 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   function readText(full) {
     try {
+      const st = fs.statSync(full)
+      if (st.size > MAX_BYTES) return null
       const buf = fs.readFileSync(full)
-      if (buf.length > MAX_BYTES || buf.includes(0)) return null
+      if (buf.includes(0)) return null
       return buf.toString('utf8')
     } catch { return null }
   }
-  function writeToDisk(relPath, content) {
-    if (!isSafeRelPath(relPath)) return // never write a path that could escape ROOT (defense in depth)
+  // BRANCH ROOMS CARRY TEXT ONLY, BY DESIGN (hive-branch.js roomCarries): binaries are filled into
+  // each folder from git, and `pr` reads a carried file missing from the room as DELETED. Binary sync
+  // pushed every git-filled image into the room (tests/branch-test A6: 5 files where the seed put 4),
+  // and once one was deleted there, the next joiner's fill would write it back and binary sync would
+  // publish the undo to everyone. So binary sync is off in a branch-room folder, recognised by the
+  // `.git` FILE hive-branch writes into it (NOT_A_CHECKOUT; not imported, hive-branch imports us).
+  // A binary the room already holds (someone pushed it from a plain folder) is still received.
+  const BINARY_SYNC = !process.env.HIVE_NO_BINARY_SYNC &&
+    !(() => { try { return fs.readFileSync(path.join(ROOT, '.git'), 'utf8').includes('hivecode-live-room-not-a-git-checkout') } catch { return false } })()
+  function isBinaryFile(full, st) {
+    if (!BINARY_SYNC) return false
+    try {
+      const s = st || fs.statSync(full)
+      if (!s.isFile()) return false
+      if (s.size > MAX_BINARY_BYTES) return false
+      const buf = fs.readFileSync(full)
+      return buf.includes(0)
+    } catch { return false }
+  }
+  function checkUnshared(full, st) {
+    try {
+      const s = st || fs.statSync(full)
+      if (!s.isFile()) return null
+      if (s.size > MAX_BINARY_BYTES) {
+        return { reason: 'oversized', size: s.size }
+      }
+      const buf = fs.readFileSync(full)
+      if (buf.includes(0)) {
+        if (!BINARY_SYNC) {
+          return { reason: 'binary', size: s.size }
+        }
+        return null
+      }
+      if (s.size > MAX_BYTES) {
+        return { reason: 'oversized', size: s.size }
+      }
+      return null
+    } catch { return null }
+  }
+  const ensuredDirs = new Set()
+  // A CREDENTIAL INSIDE A FILE STAYS ON THIS MACHINE (3 Oct 2026). A file in a room goes to the relay
+  // and to every participant's disk, so a key an agent pasted into config.js "to try something" went
+  // to all of them. Now a file whose content holds a credential the room does not already have
+  // (hive-secrets.js) is not sent: not its first version, not its edits, and a teammate's edits to it
+  // wait too, because a merge made here would carry the key out with them. The person is told once
+  // which file and what kind of key -- never the key itself -- and the file flows again the moment
+  // the key is out of it. A key already in the room holds nothing back: there is nothing left to keep.
+  const SHARE_SECRETS = process.env.HIVE_SHARE_SECRETS === '1' // an explicit opt-out, never a default
+  const withheld = new Map() // relPath -> { kind, line, said } of the first credential found
+  function heldForSecret(relPath, local, shared) {
+    if (SHARE_SECRETS) return false
+    const found = newSecrets(local, shared)
+    if (!found.length) { if (withheld.has(relPath)) clearWithheld(relPath); return false }
+    const prev = withheld.get(relPath)
+    // Said in the room only for a file the room HAS: there, teammates are waiting on a change that is
+    // not coming. A file the room never had leaves nobody missing anything -- and a repo with a
+    // committed key would otherwise have every teammate who checks it out announce the same file.
+    // The agent is told either way (hive_wait, hive_edit).
+    const said = prev ? prev.said : (!SKIP.has(relPath) && inManifest(relPath))
+    const f = { kind: found[0].kind, line: found[0].line, said }
+    withheld.set(relPath, f)
+    if (!prev) {
+      log(`[${name}] holding ${relPath} on this machine: it contains ${describeSecret(f)}`)
+      if (said) { try { say(`⛔ ${relPath}: ${name}'s change stays on ${name}'s machine, because it contains ${describeSecret(f)} and Hivecode does not send keys to the room. It is shared once the key is moved out of the file (into .env, which is never shared).`) } catch { } }
+    }
+    return true
+  }
+  function clearWithheld(relPath) {
+    const w = withheld.get(relPath)
+    withheld.delete(relPath)
+    log(`[${name}] ${relPath} holds no key now: shared again`)
+    if (w && w.said) { try { say(`· ${relPath} from ${name} is shared again: the key is out of it.`) } catch { } }
+  }
+  // Still on disk: a held file that was since deleted or moved away is no longer anybody's concern.
+  function withheldNow() {
+    return [...withheld].filter(([p]) => fs.existsSync(path.join(ROOT, p))).map(([p, f]) => ({ path: p, kind: f.kind, line: f.line }))
+  }
+  // A ROOM WRITE THAT CANNOT LAND HERE. Measured 3 Oct 2026: a teammate's edit to a file that is
+  // read-only on this disk (a Perforce checkout, a generated file, a handle another program holds)
+  // threw EPERM inside the Yjs observer; y-websocket printed "Caught error while handling a Yjs
+  // update" to stderr, the file stayed at the old version while the room moved on, status() read
+  // all green, and nothing ever tried again. Now the path is recorded, the room is told once that
+  // this copy is behind, status() lists it, and every scan retries (retryUnwritable) until it lands.
+  const unwritable = new Map() // relPath -> error code of the last failed write
+  function noteUnwritable(relPath, e) {
+    const code = (e && e.code) || 'error'
+    const first = !unwritable.has(relPath)
+    unwritable.set(relPath, code)
+    if (!first) return
+    log(`[${name}] could not write ${relPath} (${code}); this folder's copy stays behind the room's until it can be written`)
+    if (SKIP.has(relPath)) return // a rendered control file: it is re-rendered on the next change anyway
+    try { say(`⚠ ${relPath} could not be written on ${name}'s disk (${code}: read-only, locked, or a folder in the way), so ${name}'s copy is older than the room's. It is written as soon as the file can be.`) } catch { }
+  }
+  function clearUnwritable(relPath) {
+    unwritable.delete(relPath)
+    log(`[${name}] ${relPath} written: this folder has the room's copy again`)
+    if (!SKIP.has(relPath)) { try { say(`· ${relPath} is current on ${name}'s disk again.`) } catch { } }
+  }
+  // Through reconcile, not a bare write: if the file was edited here while it could not be written,
+  // that edit is merged with the room's version rather than overwritten by it.
+  function retryUnwritable() {
+    for (const r of [...unwritable.keys()]) {
+      if (SKIP.has(r)) { unwritable.delete(r); continue }
+      const fe = fileDocs.get(r)
+      const disk = readText(path.join(ROOT, r))
+      if (fe && fe.synced && disk !== null && disk === fe.text.toString()) { clearUnwritable(r); continue }
+      try { reconcile(r, 'remote') } catch { }
+    }
+  }
+  // --- CASE-INSENSITIVE PATH COLLISION GUARD ---
+  // On case-insensitive file systems (Windows/macOS), two room paths that differ only
+  // in case (e.g. Case.js and case.js) map to the exact same file on disk. Writing both
+  // causes alternating disk writes and watcher echo loops that clobber the room doc.
+  // We probe case-sensitivity at startup, keep the key already on disk (or first seen),
+  // never write the collided key to disk, never let a scan push the physical file into
+  // the collided key, report collided paths in status(), and announce once to the room.
+  const isCaseInsensitive = (() => {
+    try {
+      const probeName = `.hive-case-probe-${process.pid}-${Date.now()}.tmp`
+      const probePath = path.join(ROOT, probeName)
+      fs.writeFileSync(probePath, '')
+      const probeLower = probePath.toLowerCase()
+      const probeTarget = probePath === probeLower ? probePath.toUpperCase() : probeLower
+      const insensitive = fs.existsSync(probeTarget)
+      try { fs.unlinkSync(probePath) } catch { }
+      return insensitive
+    } catch {
+      return process.platform === 'win32' || process.platform === 'darwin'
+    }
+  })()
+  const fold = (r) => isCaseInsensitive ? r.toLowerCase() : r
+
+  const canonicalCaseKeys = new Map() // fold(r) -> canonical relPath
+  const collided = new Map()          // collided relPath -> { with: canonical relPath }
+  const collidedWarned = new Set()    // relPath announced to room
+  const collidedTimers = new Map()    // relPath -> Timeout (debounced room announcement)
+
+  function clearCollidedTimer(r) {
+    if (collidedTimers.has(r)) {
+      clearTimeout(collidedTimers.get(r))
+      collidedTimers.delete(r)
+    }
+  }
+
+  function actualDiskPath(relPath) {
+    if (!isCaseInsensitive) return fs.existsSync(path.join(ROOT, relPath)) ? relPath : null
     const full = path.join(ROOT, relPath)
-    fs.mkdirSync(path.dirname(full), { recursive: true })
-    fs.writeFileSync(full, content)
+    if (!fs.existsSync(full)) return null
+    try {
+      const parts = relPath.replace(/\\/g, '/').split('/').filter(Boolean)
+      let cur = ROOT
+      const matched = []
+      for (const part of parts) {
+        const lower = part.toLowerCase()
+        const entries = fs.readdirSync(cur)
+        const hit = entries.find(e => e.toLowerCase() === lower)
+        if (!hit) return relPath
+        matched.push(hit)
+        cur = path.join(cur, hit)
+      }
+      return matched.join('/')
+    } catch {
+      return relPath
+    }
+  }
+
+  function fileExistsExact(relPath) {
+    if (!isCaseInsensitive) return fs.existsSync(path.join(ROOT, relPath))
+    return actualDiskPath(relPath) === relPath
+  }
+
+  function ensureExactDiskCasing(relPath) {
+    if (!isCaseInsensitive) return
+    const onDisk = actualDiskPath(relPath)
+    if (onDisk && onDisk !== relPath && fold(onDisk) === fold(relPath)) {
+      const full = path.join(ROOT, relPath)
+      const onDiskFull = path.join(ROOT, onDisk)
+      const dir = path.dirname(full)
+      const hop = path.join(dir, `.hive-case-hop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+      try {
+        fs.renameSync(onDiskFull, hop)
+        try {
+          fs.renameSync(hop, full)
+        } catch {
+          // If second rename failed, attempt to rename the hop back to onDiskFull
+          try { fs.renameSync(hop, onDiskFull) } catch { }
+        }
+      } catch { }
+    }
+  }
+
+  function checkCaseCollision(r) {
+    if (!isCaseInsensitive) return false
+    const cf = fold(r)
+    const canon = canonicalCaseKeys.get(cf)
+    if (canon === r) return false
+
+    const onDisk = actualDiskPath(r)
+
+    if (!canon) {
+      if (onDisk) {
+        canonicalCaseKeys.set(cf, onDisk)
+        if (onDisk !== r) {
+          collided.set(r, { with: onDisk })
+          noteCollided(r, onDisk)
+          return true
+        }
+        return false
+      }
+      canonicalCaseKeys.set(cf, r)
+      return false
+    }
+
+    // We have a difference between `canon` and `r` for the same folded name.
+    if (onDisk === r && onDisk !== canon) {
+      canonicalCaseKeys.set(cf, r)
+      collided.delete(r)
+      collidedWarned.delete(r)
+      clearCollidedTimer(r)
+
+      // If `canon` is absent on disk with exact case, it was locally renamed to `r`
+      if (actualDiskPath(canon) !== canon) {
+        collided.delete(canon)
+        collidedWarned.delete(canon)
+        clearCollidedTimer(canon)
+        if (!inManifest(r)) {
+          queueManifestSet(r)
+        }
+        noteLocalDelete(canon)
+        return false
+      }
+
+      collided.set(canon, { with: r })
+      noteCollided(canon, r)
+      return false
+    }
+
+    collided.set(r, { with: canon })
+    noteCollided(r, canon)
+    return true
+  }
+
+  function noteCollided(r, withKey) {
+        if (collidedWarned.has(r)) return
+    log(`[${name}] ${withKey} and ${r} both exist in the room; disk cannot hold both, so ${r} is not written here`)
+    if (SKIP.has(r)) return
+    if (collidedTimers.has(r)) return
+    collidedTimers.set(r, setTimeout(() => {
+      collidedTimers.delete(r)
+      if (!collided.has(r) || collidedWarned.has(r)) return
+      if (!inManifest(r) || !inManifest(withKey)) return
+      collidedWarned.add(r)
+      try {
+        say(`${withKey} and ${r} both exist in the room; ${name}'s disk cannot hold both, so ${r} is not written there.`)
+      } catch { }
+    }, 2500))
+  }
+
+  function writeToDisk(relPath, content) {
+    if (collided.has(relPath)) return
+    if (!isSafeRelPath(relPath)) return // never write a path that could escape ROOT (defense in depth)
+    // The mkdir below would recreate a lost folder holding one file, and the next scan would read
+    // every other file as deleted -- the exact wipe loseFolder exists to prevent.
+    if (folderLost) return
+    ensureExactDiskCasing(relPath)
+    const full = path.join(ROOT, relPath)
+    try {
+      // Only for a path a scan already found unshared. Every remote edit lands through here, so
+      // checking every file would read each one in full before writing it -- double the disk work
+      // on the hottest path, to guard a case the scan has already seen.
+      if ((unsharedMtimes.has(relPath) || unsharedWarned.has(relPath)) && fs.existsSync(full)) {
+        const unshared = checkUnshared(full)
+        if (unshared) {
+          const stamp = deletedStamp()
+          const keptAs = keepDeletedCopy(relPath, stamp)
+          if (keptAs) {
+            log(`[${name}] local unshared file ${relPath} overwritten by room write; copy preserved in ${keptAs}`)
+            try {
+              say(`· ${relPath} on ${name}'s disk was ${unshared.reason} and was overwritten by a room write — local copy preserved in ${keptAs}.`)
+            } catch { }
+          }
+        }
+      }
+    } catch { }
+    const dir = path.dirname(full)
+    try {
+      if (!ensuredDirs.has(dir)) {
+        fs.mkdirSync(dir, { recursive: true })
+        ensuredDirs.add(dir)
+      }
+      try { fs.writeFileSync(full, content) } catch (e) {
+        // The cache only skips mkdir; it must never lose a write. A folder someone deleted or renamed
+        // since we made it is simply made again.
+        if (e.code !== 'ENOENT') throw e
+        ensuredDirs.delete(dir)
+        fs.mkdirSync(dir, { recursive: true })
+        ensuredDirs.add(dir)
+        fs.writeFileSync(full, content)
+      }
+    } catch (e) {
+      // The disk still holds the OLD content. Callers record the new content as this file's base and
+      // shadow -- some before writing, some after -- and a base the disk does not hold makes the stale
+      // copy read as a local edit, merged back over the room: measured, a teammate's change reverted
+      // for everyone. So the bookkeeping goes back to what the disk really holds, and the error still
+      // propagates, so no caller goes on to record this write as done.
+      const onDisk = readText(full)
+      if (onDisk !== null) { bases.set(relPath, onDisk); forkBases.set(relPath, onDisk); shadow.set(relPath, onDisk); saveShadowSoon() }
+      noteUnwritable(relPath, e)
+      throw e
+    }
+    if (unwritable.has(relPath)) clearUnwritable(relPath)
     shadow.set(relPath, content) // record what THE ENGINE wrote — any later disk divergence is an authored edit
     saveShadowSoon()             // ...and survive a restart, or the next join has no ancestor
     known.add(relPath)
@@ -1600,15 +2096,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (shadowTimer.unref) shadowTimer.unref() // never hold the process open just to save this
   }
   function saveShadow() {
-    const files = {}
-    // Only what we could actually merge against later. A file over MAX_BYTES is not synced
-    // in the first place, so storing it would inflate this file for no benefit.
-    for (const [k, v] of shadow) if (typeof v === 'string' && v.length <= MAX_BYTES) files[k] = v
     const tmp = path.join(ROOT, SHADOW_FILE + '.tmp')
     try {
-      // Write-then-rename: a half-written ancestor file is worse than none, because the
-      // loader would read a truncated body as the real previous content and merge against it.
-      fs.writeFileSync(tmp, JSON.stringify({ v: 1, room, files }))
+      // Assemble v:1 JSON from cached fragments: avoids walking/stringifying all files
+      // on every debounced flush. The resulting payload is byte-for-byte valid JSON matching
+      // { v: 1, room, files }, preserving the atomic write-then-rename.
+      const parts = []
+      for (const frag of shadowFragments.values()) parts.push(frag)
+      const payload = `{"v":1,"room":${JSON.stringify(room)},"files":{${parts.join(',')}}}`
+      fs.writeFileSync(tmp, payload)
       fs.renameSync(tmp, path.join(ROOT, SHADOW_FILE))
     } catch (e) {
       try { fs.unlinkSync(tmp) } catch { }
@@ -1618,13 +2114,211 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   const conflicted = new Set() // files currently holding unresolved <<<<<<< markers
   const icrWarned = new Map()  // relPath -> last ICR semantic warning announced (dedupe)
+  // HIV-P17: a creation race of CODE that cannot merge lands NOTHING. The doc keeps roomText, the disk
+  // keeps the local draft (also saved as a manual snapshot, so it survives whatever happens next), and
+  // the bases point at roomText, so the next normal edit merges against the room's copy. One function
+  // for all three race paths -- first contact, a dead heat, and a dead heat the peer already resolved
+  // -- so their recovery and their announcement cannot drift apart.
+  function refuseCreationRace(relPath, why, disk, roomText) {
+    conflicted.add(relPath)
+    captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local draft preserved (creation-race refused)' })
+    bases.set(relPath, roomText); forkBases.set(relPath, roomText); shadow.set(relPath, roomText)
+    if (!inManifest(relPath)) queueManifestSet(relPath)
+    if (icrWarned.get(relPath) === why) return
+    icrWarned.set(relPath, why)
+    const conflict = why === 'CONFLICT'
+    log(`[${name}] !! HIV-P17 REFUSED a ${conflict ? 'conflicting' : 'fused'} creation-race merge of ${relPath}${conflict ? '' : `: ${why}`}`)
+    try {
+      say(conflict
+        ? `[!] @all ${relPath}: a creation-race merge was REFUSED — two participants created it with conflicting content, and landing both whole files in the room's copy would fuse them. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`
+        : `[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+    } catch { /* the log still carries it */ }
+  }
+  // ONE MESSAGE PER JOIN, IN PLAIN WORDS (onboarding audit, 2 Oct 2026). HIV-P9's outcomes (in
+  // reconcile, below) are right, but each file used to be announced on its own chat line in engine
+  // words ("UNPROVEN", "Resolve deliberately"), so a teammate a few commits behind filled the chat,
+  // and a Windows checkout (CRLF, against a room seeded from git's LF) made nearly every text file
+  // "differ". The outcomes are unchanged. They are collected until the join goes quiet and said
+  // once; the per-file log lines stay. Line endings alone are not worth a chat line: when nothing
+  // else differs, nothing is said. The window slides, so one join of a big repo stays one message.
+  const firstContact = { eol: [], adopted: [], kept: [], timer: null }
+  function noteFirstContact(kind, relPath) {
+    firstContact[kind].push(relPath)
+    if (firstContact.timer) clearTimeout(firstContact.timer)
+    firstContact.timer = setTimeout(flushFirstContact, 3000)
+  }
+  function flushFirstContact() {
+    if (firstContact.timer) { clearTimeout(firstContact.timer); firstContact.timer = null }
+    const { eol, adopted, kept } = firstContact
+    firstContact.eol = []; firstContact.adopted = []; firstContact.kept = []
+    if (!adopted.length && !kept.length) return
+    const total = eol.length + adopted.length + kept.length
+    const names = (l) => l.slice(0, 5).join(', ') + (l.length > 5 ? ` and ${l.length - 5} more` : '')
+    const parts = [`↓ ${name} joined with ${total === 1 ? '1 file that differs' : `${total} files that differ`} from the room's copy.`]
+    if (eol.length) parts.push(`${eol.length} differed only in line endings and now match the room.`)
+    if (adopted.length) {
+      parts.push(`${adopted.length === 1 ? '1 was an older version' : `${adopted.length} were older versions`} the room had already moved past, so ${name} now has the room's copy (the old one is in the file's history): ${names(adopted)}.`)
+    }
+    if (kept.length) {
+      const one = kept.length === 1
+      parts.push(`${one ? '1 holds' : `${kept.length} hold`} content the room has never seen, so neither copy was changed and the room's copy was NOT adopted: ${names(kept)}. ` +
+        `In ${name}'s folder ${one ? 'it still holds' : 'they still hold'} ${name}'s version. To make one the room's version, claim it and hive_edit it with the full file. ` +
+        `Don't delete a local copy to get the room's: a deletion syncs, and removes the file for everyone.`)
+    }
+    try { say(parts.join(' ')) } catch { }
+  }
+
+  function reconcileBinary(relPath, origin = 'local') {
+    if (folderLost) return
+    if (SKIP.has(relPath) || isIgnored(relPath) || !canOpen(relPath)) return
+    if (collided.has(relPath)) return
+    const full = path.join(ROOT, relPath)
+    const exists = !isCaseInsensitive ? fs.existsSync(full) : actualDiskPath(relPath) === relPath
+    let fe = fileDocs.get(relPath)
+    if (!fe) {
+      if (!exists) return
+      openFile(relPath)
+      fe = fileDocs.get(relPath)
+      if (!fe) return
+    }
+    if (!fe.synced && origin !== 'local') return
+    touchFile(relPath)
+
+    if (origin === 'local') {
+      if (!canWrite(relPath)) {
+        if (fe && fe.synced && fe.bin.has('data')) {
+          const remoteData = fe.bin.get('data')
+          const remoteSha = fe.bin.get('sha')
+          if (remoteData && remoteSha) {
+            let localSha = null
+            if (exists) {
+              try {
+                const localBuf = fs.readFileSync(full)
+                localSha = crypto.createHash('sha256').update(localBuf).digest('hex')
+              } catch { }
+            }
+            if (localSha !== remoteSha) {
+              try {
+                fs.writeFileSync(full, Buffer.from(remoteData))
+                shaShadow.set(relPath, remoteSha)
+                mtimes.set(relPath, fs.statSync(full).mtimeMs)
+              } catch { }
+            }
+            } else {
+              ensureExactDiskCasing(relPath)
+          }
+        }
+        return
+      }
+      if (!exists) return
+      let st
+      try { st = fs.statSync(full) } catch { return }
+      if (!st.isFile()) return
+      if (st.size > MAX_BINARY_BYTES) {
+        noticeUnsharedOne(relPath, { reason: 'oversized', size: st.size })
+        return
+      }
+      let buf
+      try { buf = fs.readFileSync(full) } catch { return }
+      const sha = crypto.createHash('sha256').update(buf).digest('hex')
+      if (shaShadow.get(relPath) === sha) return // echo suppression
+      shaShadow.set(relPath, sha)
+      mtimes.set(relPath, st.mtimeMs)
+
+      fe.doc.transact(() => {
+        fe.bin.set('data', new Uint8Array(buf))
+        fe.bin.set('sha', sha)
+        fe.bin.set('size', buf.length)
+        fe.bin.set('by', name)
+        fe.bin.set('at', Date.now())
+        if (fe.text.length > 0) fe.text.delete(0, fe.text.length)
+      })
+      if (!inManifest(relPath)) manifest.set(relPath, 1)
+      known.add(relPath)
+      dischargeUnshared(relPath)
+      return
+    }
+
+    // origin === 'remote'
+    if (!fe.bin.has('data')) return
+    const remoteData = fe.bin.get('data')
+    const remoteSha = fe.bin.get('sha')
+    const remoteBy = fe.bin.get('by')
+    if (!remoteData || !remoteSha) return
+
+    let localSha = null
+    if (exists) {
+      try {
+        const localBuf = fs.readFileSync(full)
+        localSha = crypto.createHash('sha256').update(localBuf).digest('hex')
+      } catch { }
+    }
+
+    if (localSha === remoteSha) {
+      shaShadow.set(relPath, remoteSha)
+      try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
+      known.add(relPath)
+      return
+    }
+
+    let keptAs = null
+    if (exists) {
+      const stamp = deletedStamp()
+      keptAs = keepDeletedCopy(relPath, stamp)
+      if (keptAs) {
+        log(`[${name}] local binary ${relPath} overwritten by remote write (winner: ${remoteBy || 'teammate'}); copy preserved in ${keptAs}`)
+        try {
+          say(`· ${relPath} updated from room (winner: ${remoteBy || 'teammate'}). Your local copy saved to ${keptAs}.`)
+        } catch { }
+      }
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(full), { recursive: true })
+      fs.writeFileSync(full, Buffer.from(remoteData))
+      shaShadow.set(relPath, remoteSha)
+      mtimes.set(relPath, fs.statSync(full).mtimeMs)
+      known.add(relPath)
+      dischargeUnshared(relPath)
+      log(`[${name}] <- binary ${relPath} (${remoteData.length} bytes${keptAs ? `, previous saved to ${keptAs}` : ''})`)
+    } catch (err) {
+      log(`[${name}] error writing binary ${relPath}: ${err.message}`)
+    }
+  }
+
   function reconcile(relPath, origin = 'local') {
+    if (process.env.HIVE_TEST_STUCK_SYNC && relPath === process.env.HIVE_TEST_STUCK_SYNC) return
     if (SKIP.has(relPath) || isIgnored(relPath)) return // never sync secrets/ignored files
     if (!canOpen(relPath)) return // out-of-scope OR unsafe path (traversal/control char) — never materialize it
+    if (collided.has(relPath)) {
+      if (origin === 'local') return // never push physical file into collided key
+      const fe = fileDocs.get(relPath)
+      if (fe && fe.synced) {
+        const dt = fe.text.toString()
+        bases.set(relPath, dt)
+        forkBases.set(relPath, dt)
+      }
+      return
+    }
     const full = path.join(ROOT, relPath)
-    const exists = fs.existsSync(full)
+    const exists = !isCaseInsensitive ? fs.existsSync(full) : actualDiskPath(relPath) === relPath
+    let fe = fileDocs.get(relPath)
+    if (fe && fe.bin && fe.bin.has('data')) {
+      reconcileBinary(relPath, origin)
+      return
+    }
     const disk = exists ? readText(full) : null
-    if (exists && disk === null) return // present on disk but binary/too-large to represent — leave it untouched (never clobber with stale doc text)
+    if (exists && disk === null) {
+      if (isBinaryFile(full)) {
+        if (origin === 'local') {
+          reconcileBinary(relPath, 'local')
+          return
+        }
+      }
+      const unshared = checkUnshared(full)
+      if (unshared) noticeUnsharedOne(relPath, unshared)
+      return // present on disk but binary/too-large to represent — leave it untouched (never clobber with stale doc text)
+    }
     // View-only file: never PUSH our local change/creation (the relay would drop it
     // anyway — it connects this file-room as a reader). Keep disk in sync with the
     // shared copy if we already have it; a brand-new local-only file just stays local
@@ -1639,9 +2333,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // "empty file" — acting now would re-seed from disk and fork the CRDT history
     // (duplicated/garbled content on rejoin). So: open if needed, then defer until
     // the 'sync' handler re-runs us. Once synced, "" genuinely means empty.
-    let fe = fileDocs.get(relPath)
+    fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
+    // Before anything below can publish this disk's content, merge it, or stamp it into the ledger:
+    // a key on disk that the room does not have holds the whole file here (heldForSecret).
+    {
+      const shared0 = fe.text.toString()
+      if (disk !== null && disk !== shared0) { if (heldForSecret(relPath, disk, shared0)) return }
+      else if (withheld.has(relPath)) clearWithheld(relPath)
+    }
     touchFile(relPath) // reconciling a file IS using it — keep it in the working set
     // SOURCE CAPTURE (fork gate): before ANYTHING in this pass can merge over or render into
     // this file, record any authored edit sitting on disk. The edit enters the provenance
@@ -1711,22 +2412,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         `priorShadow=${priorShadow.has(relPath)} inManifest=${manifest.has(relPath)} ` +
         `preexisting=${preexisting.has(relPath)}`)
     }
-    if (docText === '' && (!manifest.has(relPath) || (disk && noHistory))) {
+    if (docText === '' && (!inManifest(relPath) || (disk && noHistory))) {
       // the relay has no usable copy of this path -> publish ours (a genuinely new file,
       // or one whose registration outlived the join that promised it)
       if (disk === null) return
-      if (process.env.HIVE_P14_DEBUG) log(`[P14] BRANCH=genesis-publish ${relPath}`)
-      fe.doc.transact(() => applyDiff(fe.text, disk))
+      const now = Date.now()
+      createdTimes.set(relPath, now)
+      genesisPublished.add(relPath)
+      fe.doc.transact(() => {
+        applyDiff(fe.text, disk)
+        if (fe.head && !fe.head.has('genesis')) fe.head.set('genesis', { at: now, by: name })
+      })
       stampProvenance(relPath, '', disk) // genesis: sign the file's first content (base = empty)
-      manifest.set(relPath, 1)
+      queueManifestSet(relPath)
       known.add(relPath); bases.set(relPath, disk); forkBases.set(relPath, disk); shadow.set(relPath, disk)
       try { mtimes.set(relPath, fs.statSync(full).mtimeMs) } catch { }
-      captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'created' }); snappedBase.add(relPath)
       return
     }
     const yt = fe.text
-    if (disk === null) { writeToDisk(relPath, docText); bases.set(relPath, docText); forkBases.set(relPath, docText); return }
+    if (disk === null) {
+      if (!inManifest(relPath)) return
+      writeToDisk(relPath, docText); bases.set(relPath, docText); forkBases.set(relPath, docText); return
+    }
     if (disk === docText) {
+      ensureExactDiskCasing(relPath)
       // CREATING a file is editing it. This branch is where a locally-authored NEW file
       // lands: scan() finds it, openFile() syncs the content up, and by the time reconcile
       // runs disk and doc already agree -- so it returns below, before the markEditing() at
@@ -1743,7 +2452,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // THIS author's fork on first sight or our own local activity (a remote
       // change landing on disk doesn't mean the local author has seen it).
       if (!forkBases.has(relPath) || origin === 'local') forkBases.set(relPath, disk)
-      if (!snappedBase.has(relPath) && disk) { captureSnapshot(relPath, disk, name, { force: true, kind: 'base', label: 'baseline' }); snappedBase.add(relPath) }
       return
     }
     // FIRST-CONTACT ADOPT (no common ancestor). We have never reconciled this file
@@ -1843,23 +2551,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // rewrites of the same module and nobody was told. Now we run the same check:
         // if both inputs parsed but the merged result does not, or if the merge duplicated
         // structure, refuse it — keep both sides intact and announce loudly.
-        if (!r0.conflict) {
-          const why = fusionReason(r0.text, nl(disk), nl(docText), supports(relPath) ? languageFor(relPath) : null)
+        //
+        // A CONFLICTED race is refused the same way (27 Sep 2026). Two different whole files at one
+        // point used to reach this check "clean": the old one-range merge3 treated two insertions
+        // at the same place as disjoint and CONCATENATED them, and fusionReason caught the result.
+        // The real diff3 (d487e0e) reports them as the conflict they are -- and the lines below
+        // would then have landed both whole files, with markers, in the room's copy. HIV-P17's
+        // answer to a creation race of CODE that cannot merge is to land nothing; that holds
+        // either way. Same scope as the parse check: a file with no language (Markdown) is not
+        // refused, and keeps both versions visibly, with markers, as any other conflict does.
+        {
+          const why = creationRaceVerdict(r0, disk, docText, relPath)
           if (why) {
-            conflicted.add(relPath)
-            // Do NOT write the fused result to doc or disk. The doc already holds docText
-            // (the room's copy) and disk holds the local draft — both are intact. Setting
-            // bases to docText means the next normal edit will merge against the room's copy,
-            // which is the same recovery path the normal-merge refusal uses.
-            bases.set(relPath, docText); forkBases.set(relPath, docText); shadow.set(relPath, docText)
-            if (!manifest.has(relPath)) manifest.set(relPath, 1)
-            if (icrWarned.get(relPath) !== why) {
-              icrWarned.set(relPath, why)
-              log(`[${name}] !! HIV-P17 REFUSED a fused creation-race merge of ${relPath}: ${why}`)
-              try {
-                say(`[!] @all ${relPath}: a creation-race merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
-              } catch { /* the log still carries it */ }
-            }
+            refuseCreationRace(relPath, why, disk, docText)
             return
           }
         }
@@ -1867,7 +2571,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (r0.text !== disk) writeToDisk(relPath, r0.text)
         if (r0.conflict) conflicted.add(relPath)
         bases.set(relPath, r0.text); forkBases.set(relPath, r0.text); shadow.set(relPath, r0.text)
-        if (!manifest.has(relPath)) manifest.set(relPath, 1)
+        if (!inManifest(relPath)) queueManifestSet(relPath)
         try { say(`⚠ ${relPath} was created by two participants at once — both versions were merged${r0.conflict ? ', and CONFLICT markers need resolving' : ''}.`) } catch { }
         return
       }
@@ -1882,7 +2586,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           // the room's copy is strictly newer and adopting it loses nothing.
           writeToDisk(relPath, docText)
           bases.set(relPath, docText); forkBases.set(relPath, docText)
-          if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'room copy adopted on rejoin (local was unchanged)' }); snappedBase.add(relPath) }
           return
         }
         // Divergent AND we know the ancestor: merge the two, do not pick a winner. Snapshot
@@ -1893,7 +2596,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (rj.text !== disk) writeToDisk(relPath, rj.text)
         if (rj.conflict) conflicted.add(relPath)
         bases.set(relPath, rj.text); forkBases.set(relPath, rj.text); shadow.set(relPath, rj.text)
-        if (!manifest.has(relPath)) manifest.set(relPath, 1)
+        if (!inManifest(relPath)) queueManifestSet(relPath)
         try { say(`⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`) } catch { }
         return
       }
@@ -1908,8 +2611,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy at join (room copy adopted)' })
         writeToDisk(relPath, docText)
         bases.set(relPath, docText); forkBases.set(relPath, docText)
-        if (!snappedBase.has(relPath)) { captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'adopted from room at join' }); snappedBase.add(relPath) }
-        try { say(`↓ ${relPath} already existed in this room — ${name} adopted the room's copy. The local version before joining is saved in the file's history.`) } catch { }
+        // Past the `disk === docText` return above, IDENTICAL can only mean the line endings differ.
+        log(`[${name}] ↓ ${relPath} already existed in this room (${st.state}) — adopted the room's copy; the local version is in the file's history`)
+        noteFirstContact(st.state === IDENTICAL ? 'eol' : 'adopted', relPath)
         return
       }
 
@@ -1919,10 +2623,69 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // Refuse adoption: keep local disk untouched, keep room doc untouched, snapshot local, and announce loudly.
       captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: `local copy preserved at join (${st.state}: room copy refused)` })
       bases.set(relPath, disk); forkBases.set(relPath, disk)
-      try {
-        say(`⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted. Local disk was preserved. Resolve deliberately.`)
-      } catch { }
+      log(`[${name}] ⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted; local disk preserved`)
+      noteFirstContact('kept', relPath)
       return
+    }
+    // DEAD-HEAT GENESIS COLLISION DETECTION & RESOLUTION.
+    // When two peers publish to an empty document at genesis concurrently before either
+    // sees the other, both set bases to their own genesis text. When the remote update
+    // lands, bases.has(relPath) is true on both peers, so neither enters the first-contact
+    // creation race branch above. The CRDT unions both inserts. Normal diff3 merge against
+    // base === disk accepts docText (the union), and fusionReason is blinded because 'theirs'
+    // is already the invalid union. Both peers silently write the broken union to disk.
+    //
+    // Detection (bounded): only runs for files THIS client genesis-published this session,
+    // on remote reconciles before anything writes to disk, and at most once per file.
+    if (origin === 'remote' && genesisPublished.has(relPath) && !deadHeatResolved.has(relPath)) {
+      const allGenesisClients = new Set()
+      const liveGenesisClients = new Set()
+      const liveTexts = new Map()
+
+      let it = fe.text._start
+      while (it) {
+        if (it.origin === null && it.rightOrigin === null) {
+          allGenesisClients.add(it.id.client)
+          if (!it.deleted) liveGenesisClients.add(it.id.client)
+        }
+        if (!it.deleted) {
+          const c = it.id.client
+          const s = typeof it.content?.str === 'string'
+            ? it.content.str
+            : (Array.isArray(it.content?.getContent?.()) ? it.content.getContent().join('') : '')
+          liveTexts.set(c, (liveTexts.get(c) || '') + s)
+        }
+        it = it.right
+      }
+
+      if (liveGenesisClients.size >= 2) {
+        deadHeatResolved.add(relPath)
+        const { winner: winnerClient, winnerText, why } =
+          deadHeatVerdict(new Map([...liveGenesisClients].map((c) => [c, liveTexts.get(c) || ''])), relPath)
+        // DISJOINT = LEAVE THE UNION ALONE. The CRDT union already holds every author's work.
+        if (why) {
+          // Conflicting or fused: the room keeps ONE whole file, the winner's; the losers keep theirs on disk.
+          fe.doc.transact(() => applyDiff(fe.text, winnerText))
+          if (fe.doc.clientID === winnerClient || disk === winnerText) {
+            // The winner's disk already holds winnerText. Nothing to write, nothing to refuse, and not
+            // marked conflicted: its next clean edit would otherwise announce a "resolved" conflict.
+            bases.set(relPath, winnerText); forkBases.set(relPath, winnerText); shadow.set(relPath, winnerText)
+            if (!inManifest(relPath)) queueManifestSet(relPath)
+            log(`[${name}] HIV-P17 creation-race dead heat resolved: kept local genesis as winner for ${relPath}`)
+            return
+          }
+          refuseCreationRace(relPath, why, disk, winnerText)
+          return
+        }
+      } else if (allGenesisClients.size >= 2 && allGenesisClients.has(fe.doc.clientID) && disk !== docText) {
+        // The winner resolved before this client reconciled: this client's genesis item is already deleted.
+        const why = creationRaceVerdict(icrMerge3('', endNl(disk), endNl(docText), relPath), disk, docText, relPath)
+        if (why) {
+          deadHeatResolved.add(relPath)
+          refuseCreationRace(relPath, why, disk, docText)
+          return
+        }
+      }
     }
     const base = bases.has(relPath) ? bases.get(relPath) : disk
     const fork = forkBases.has(relPath) ? forkBases.get(relPath) : base
@@ -1995,6 +2758,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // Snapshot the state JUST BEFORE this author's edit lands, attributed to them —
     // captured only on local origin so each change is recorded once, by its author.
     if (origin === 'local' && res.text !== docText) {
+      let hasBase = false
+      for (const e of fe.snap.values()) {
+        if (e.kind === 'base') { hasBase = true; break }
+      }
+      if (!hasBase) {
+        const createTs = fileCreationTs(fe, relPath)
+        captureSnapshot(relPath, docText, name, { force: true, kind: 'base', label: 'created', ts: createTs })
+      }
       const sc = summarizeChange(docText, res.text)
       captureSnapshot(relPath, docText, name, { force: sc.isRewrite, churn: `${sc.changedLines}/${sc.totalLines} lines` })
       lastLocalEdit = relPath
@@ -2006,6 +2777,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // fusing. Recording (fork, disk) keeps every concurrent same-line edit anchored to the
     // SAME clean parent, so the fork stays detectable no matter how the char-CRDT fuses.
     if (origin === 'local') {
+      if (res.text !== docText) bumpAttestVersion(relPath, res.text)
       // Gate ON: the author's INTENT was already captured at the source (captureLocal, top
       // of this pass) — here we only advance the authority head to the landed content.
       // Gate OFF (default): the proven landed-transition stamp, unchanged.
@@ -2054,7 +2826,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     detectFork(relPath)
   }
 
-  const fmtTime = () => new Date().toTimeString().slice(0, 8)
+  const fmtTime = (d = Date.now()) => new Date(d).toTimeString().slice(0, 8)
   // Log file activity to the shared board: EVERY meaningful edit (so the live
   // activity feed reflects ongoing work), tagged with whether it was a full-file
   // `rewrite` and a numeric `ts` for ordering. HIVE_BOARD.md stays rewrites-only
@@ -2065,6 +2837,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!s.changedLines) return
     board.set(relPath, { by: name, at: fmtTime(), ts: Date.now(), churn: `${s.changedLines}/${s.totalLines} lines`, symbols: s.symbols, rewrite: s.isRewrite })
     if (s.isRewrite) log(`[${name}] board: logged REWRITE of ${relPath} (${s.changedLines}/${s.totalLines} lines; touched ${s.symbols.join(', ') || 'n/a'})`)
+  }
+  let renderBoardTimer = null
+  function renderBoardSoon() {
+    if (stopped) return
+    if (!renderBoardTimer) {
+      renderBoardTimer = setImmediate(() => {
+        renderBoardTimer = null
+        renderBoard()
+        linkMemory()
+      })
+    }
   }
   function renderBoard() {
     // HIVE_BOARD.md is the coordination doc: full-file REWRITES only (small edits
@@ -2079,7 +2862,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     for (const e of entries) out.push(`- ${e.at}  ${e.by} rewrote \`${e.file}\` (${e.churn}) — touched: ${(e.symbols || []).join(', ') || 'n/a'}`)
     writeToDisk(BOARD_FILE, out.join('\n') + '\n')
   }
-  if (syncFiles) board.observe(() => { renderBoard(); linkMemory() })
+  if (syncFiles) board.observe(renderBoardSoon)
 
   // --- rollback: restore points + per-author revert + undo --------------------
   // Every meaningful change captures a RESTORE POINT: the file's content from JUST
@@ -2092,7 +2875,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const SNAP_MIN_GAP_MS = 4000  // throttle auto-capture per file (fine-grained undo is the editor's job)
   const META_KEEP = 400         // global cap on the parent timeline index
   const lastSnapAt = new Map()  // relPath -> ts of last auto-capture
-  const snappedBase = new Set() // files we've already floored with a baseline snapshot
   const snapId = () => 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 
   function pruneMeta() {
@@ -2103,20 +2885,43 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     doc.transact(() => { for (let i = 0; i < Math.min(overflow, all.length); i++) historyMeta.delete(all[i].id) })
   }
 
+  // Find file creation timestamp from createdTimes, genesis head, provenance ledger, head cur, mtimes, or disk stat.
+  function fileCreationTs(fe, relPath) {
+    if (createdTimes.has(relPath)) return createdTimes.get(relPath)
+    try {
+      const g = fe && fe.head ? fe.head.get('genesis') : null
+      if (g && typeof g.at === 'number' && !isNaN(g.at)) return g.at
+    } catch { }
+    try {
+      const l0 = fe && fe.ledger && fe.ledger.length > 0 ? fe.ledger.get(0) : null
+      if (l0 && typeof l0.at === 'number' && !isNaN(l0.at)) return l0.at
+    } catch { }
+    try {
+      const cur = fe && fe.head ? fe.head.get('cur') : null
+      if (cur && typeof cur.at === 'number' && !isNaN(cur.at)) return cur.at
+    } catch { }
+    if (mtimes.has(relPath)) return mtimes.get(relPath)
+    try {
+      const full = path.join(ROOT, relPath)
+      if (fs.existsSync(full)) return fs.statSync(full).mtimeMs
+    } catch { }
+    return Date.now()
+  }
+
   // Capture `content` as a restore point for relPath, attributed to `byWho`.
   // kind: 'auto' (an ordinary edit), 'base' (a file's floor), 'manual' (a named
   // checkpoint), 'restore' (the pre-restore state, kept so restore is reversible).
-  function captureSnapshot(relPath, content, byWho, { force = false, churn = '', kind = 'auto', label = '' } = {}) {
+  function captureSnapshot(relPath, content, byWho, { force = false, churn = '', kind = 'auto', label = '', ts = null } = {}) {
     if (content == null) return null
     const fe = fileDocs.get(relPath); if (!fe) return null
-    const now = Date.now()
+    const now = (typeof ts === 'number' && !isNaN(ts)) ? ts : Date.now()
     if (kind === 'auto' && !force && now - (lastSnapAt.get(relPath) || 0) < SNAP_MIN_GAP_MS) return null
     const snap = fe.snap
     let latest = null
     for (const e of snap.values()) if (!latest || (e.ts || 0) > (latest.ts || 0)) latest = e
     if (latest && latest.content === content) return null // identical to the most recent point — nothing to keep
     const id = snapId()
-    const at = fmtTime()
+    const at = fmtTime(now)
     const pruned = []
     fe.doc.transact(() => {
       snap.set(id, { id, file: relPath, by: byWho, at, ts: now, content, churn, kind, label })
@@ -2124,17 +2929,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (let i = 0; i < autos.length - SNAP_KEEP; i++) { snap.delete(autos[i].id); pruned.push(autos[i].id) }
     })
     if (kind === 'auto') lastSnapAt.set(relPath, now)
-    doc.transact(() => {
-      historyMeta.set(id, { id, file: relPath, by: byWho, at, ts: now, churn, kind, label }) // metadata only — no content
-      for (const pid of pruned) historyMeta.delete(pid) // keep the index in step with evicted content
-    })
-    pruneMeta()
+    pendingHistoryMeta.set(id, { op: 'set', record: { id, file: relPath, by: byWho, at, ts: now, churn, kind, label } })
+    for (const pid of pruned) pendingHistoryMeta.set(pid, { op: 'delete' })
+    scheduleRoomFlush()
     return id
   }
 
   // Find which file a restore-point id belongs to (via the index, else by scanning
   // open file docs as a fallback).
   function fileOfSnap(id) {
+    flushRoomDoc()
     const m = historyMeta.get(id)
     if (m && m.file) return m.file
     for (const [rp, fe] of fileDocs) if (fe.snap.has(id)) return rp
@@ -2171,7 +2975,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!fe) return { error: 'file not open' }
     let best = null
     for (const e of fe.snap.values()) if ((e.ts || 0) <= ts && (!best || (e.ts || 0) > (best.ts || 0))) best = e
-    if (!best) return { error: 'no restore point at/before that time' }
+    if (!best) {
+      if (fe.snap.size === 0) {
+        const createTs = fileCreationTs(fe, relPath)
+        if (typeof ts === 'number' && ts >= createTs) {
+          return { ok: true, unchanged: true, file: relPath }
+        }
+      }
+      return { error: 'no restore point at/before that time' }
+    }
     return restore(best.id, by)
   }
 
@@ -2182,6 +2994,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // For the dangerous case — an agent rewriting files — that's exactly right.
   function revertAuthor(who, sinceTs = 0, by = name) {
     if (!who) return { error: 'no author given' }
+    flushRoomDoc()
     const earliest = new Map() // file -> earliest meta authored by `who` in the window
     for (const m of historyMeta.values()) {
       if (m.by !== who || (m.ts || 0) < sinceTs) continue
@@ -2197,6 +3010,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   // The timeline (newest first), read from the parent index. Optional filters.
   function listHistory({ file = null, by = null, limit = 200 } = {}) {
+    flushRoomDoc()
     return [...historyMeta.values()]
       .filter((e) => (!file || e.file === file) && (!by || e.by === by))
       .sort((a, b) => (b.ts || 0) - (a.ts || 0))
@@ -2256,10 +3070,20 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // compares before it writes, so calling it per message costs four stat() calls and no
   // disk write, and the relay watcher never sees needless churn.
   let memoryLinked = false
+  let lastLinkedFilesCount = 0
   function linkMemory() {
     if (!syncFiles) return
+    let count = 0
+    for (const f of ['HIVE_CHAT.md', 'HIVE_BOARD.md', 'HIVE_TASKS.md', 'HIVE_MEMBERS.md']) {
+      try { if (fs.existsSync(path.join(ROOT, f))) count++ } catch { }
+    }
+    if (count === 0 || (memoryLinked && count === lastLinkedFilesCount)) return
+    if (!grmLink) return
     const r = grmLink.linkRoom(ROOT, memoryLinked ? () => {} : log) // announce once, not per message
-    if (r.linked) memoryLinked = true
+    if (r.linked) {
+      memoryLinked = true
+      lastLinkedFilesCount = (r.files && r.files.length) || count
+    }
   }
 
   if (syncFiles) chat.observe(() => { renderChat(); linkMemory() })
@@ -2289,17 +3113,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     else say(`@${to}: ${text}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
     return id
   }
+  // A decision is about a task that is WAITING for one. Approving an accepted or done task used to
+  // rewrite it to 'accepted', which hands finished work straight back to the agent to do again.
+  // 'denied' stays decidable: an owner may change their mind.
   function decide(id, accept, by = name) {
     const t = tasks.get(id)
     if (!t) return { error: 'no such task' }
     const ownerOf = owners.get(t.to)
     if (ownerOf && by !== ownerOf) return { error: `only ${ownerOf} (owner of ${t.to}) can approve task ${id}` }
+    if (t.status !== 'pending' && t.status !== 'denied') return { error: `task ${id} is ${t.status}, not waiting for a decision` }
     tasks.set(id, { ...t, status: accept ? 'accepted' : 'denied', decidedBy: by })
-    say(`task ${id} ${accept ? 'APPROVED' : 'denied'} by ${by}: "${t.text}"`)
+    // An approval NAMES the agent (4 Oct 2026). An agent waiting between turns is woken by its
+    // listener, and the listener wakes on @Name, so an approval that named nobody left the agent
+    // asleep on work it had just been cleared to do. The same line is in control.html and the extension.
+    say(`${accept ? `@${t.to} ` : ''}task ${id} ${accept ? 'APPROVED' : 'denied'} by ${by}: "${t.text}"`)
     return { ok: true }
   }
+  // Only the ASSIGNEE finishes a task, and only work it was cleared to do. Before 29 Sep 2026 anyone
+  // could mark anyone's task done -- including one still PENDING its owner's approval, or DENIED --
+  // so "done" could mean the owner said no and the room was told otherwise. Done twice is done.
   function complete(id, note = '') {
     const t = tasks.get(id); if (!t) return { error: 'no such task' }
+    if (t.to !== name) return { error: `task ${id} is ${t.to}'s -- only ${t.to} can complete it` }
+    if (t.status === 'done') return { ok: true, already: true }
+    if (t.status !== 'accepted') return { error: `task ${id} is ${t.status}: only accepted work can be completed${t.status === 'pending' ? ` (it is waiting for ${owners.get(t.to) || 'its owner'} to approve)` : ''}` }
     tasks.set(id, { ...t, status: 'done', decidedBy: t.decidedBy })
     say(`task ${id} done by ${name}${note ? ': ' + note : ''}`)
     return { ok: true }
@@ -2337,7 +3174,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, passive: !!passive })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -2436,6 +3273,43 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       log(`[${name}] ⚠ ${u.name} is on ${theirs} (incompatible with v${PROTOCOL_VERSION}) — they won't sync correctly until everyone updates.`)
       try { say(`⚠ ${u.name} is on an incompatible version — files won't sync with them until everyone updates Hivecode.`) } catch { }
     }
+    checkBuilds()
+  }
+  // MIXED BUILDS, SEEN BY THE ROOM ITSELF (29 Sep 2026). The same protocol does not mean the same
+  // engine: two builds that merge differently corrupt each other's files with every write green.
+  // Until now the only detector was each agent remembering to say "joined on hivecode X". Every
+  // engine client now carries its build in presence (hv), so the room can see a mismatch without
+  // anyone announcing it. Rules, each against a false alarm:
+  //   - only clients that report a build are compared, EXCEPT an AI on this protocol reporting none:
+  //     that is an engine older than build reporting, the rollout case, and it cannot warn itself
+  //   - humans are not flagged: the extension and the browser panel carry no engine build
+  //   - one side of each pair speaks (the name that sorts first), once per build it sees
+  const buildWarned = new Set()
+  function checkBuilds() {
+    // An old engine cannot speak for itself, so SOMEBODY current must -- but only one: the reporting
+    // client whose name sorts first. Otherwise every current client in the room says the same thing.
+    const reporters = [name]
+    for (const s of provider.awareness.getStates().values()) { const u = s && s.user; if (u && u.name && u.hv) reporters.push(u.name) }
+    const speakForOld = reporters.sort()[0] === name
+    for (const s of provider.awareness.getStates().values()) {
+      const u = s && s.user
+      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION) continue
+      const human = String(u.kind || '').toLowerCase() === 'human'
+      let theirs = ''
+      if (u.hv) {
+        if (u.hv === VERSION_LABEL || name > u.name) continue
+        theirs = `hivecode ${u.hv}`
+      } else if (!human) {
+        if (!speakForOld) continue
+        theirs = `a hivecode build older than build reporting (before ${VERSION})`
+      } else continue
+      const key = `${u.name}|${u.hv || '-'}`
+      if (buildWarned.has(key)) continue
+      buildWarned.add(key)
+      const same = u.hv && u.hv.split('+')[0] === VERSION ? ' (the same release from different commits)' : ''
+      log(`[${name}] ⚠ MIXED BUILDS: ${u.name} runs ${theirs}, this client runs ${VERSION_LABEL}${same}`)
+      try { say(`⚠ MIXED BUILDS: ${u.name} runs ${theirs}, ${name} runs hivecode ${VERSION_LABEL}${same}. Two builds in one room can lose file content with no error on either side -- everyone should run the same build.`) } catch { }
+    }
   }
   if (syncFiles) provider.awareness.on('change', () => { renderMembers(); renderClaims(); checkVersions() })
 
@@ -2469,6 +3343,65 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // scroll past — but deleting the case entirely is worse than announcing it cheaply.
   const ENGINE_ID = 'hivecode'
   const invisibleWarned = new Map()  // relPath -> obligation id, or null for the ambient case
+  const unsharedWarned = new Map()   // relPath -> { id: obligation id | null, reason: 'binary' | 'oversized', size: number }
+  const unsharedMtimes = new Map()   // relPath -> mtimeMs (for CPU skip in scan)
+
+  function noticeUnshared(currentUnshared) {
+    for (const r of [...unsharedWarned.keys()]) if (!currentUnshared.has(r)) dischargeUnshared(r)
+    for (const [r, info] of currentUnshared) noticeUnsharedOne(r, info)
+  }
+
+  function dischargeUnshared(r) {
+    if (!unsharedWarned.has(r) && !unsharedMtimes.has(r)) return
+    const entry = unsharedWarned.get(r)
+    if (entry && entry.id) {
+      try { OB.discharge(doc.getMap('obligations'), { id: entry.id, by: ENGINE_ID }) } catch { }
+    }
+    unsharedWarned.delete(r)
+    unsharedMtimes.delete(r)
+  }
+
+  function noticeUnsharedOne(r, info) {
+    if (SKIP.has(r) || OWN_LOCAL.has(r)) return
+    const holder = coordinator.sense(r)
+    const existing = unsharedWarned.get(r)
+    if (existing && (existing.id || !holder || !holder.by)) return
+
+    const reasonText = info.reason === 'oversized'
+      ? `oversized (${Math.round(info.size / 1024)}KB > 1MB limit)`
+      : 'binary (contains null bytes)'
+    const inRoom = inManifest(r)
+    const contextPrefix = inRoom
+      ? `${r} is in the room as text, but local file is ${reasonText}`
+      : `${r} is ${reasonText}`
+
+    if (holder && holder.by) {
+      const guidance = `stays on ${holder.by}'s machine only: teammates will not get it from the room. Share it another way (commit it).`
+      let id = null
+      try {
+        const rec = OB.open(doc.getMap('obligations'), {
+          from: ENGINE_ID,
+          to: holder.by,
+          text: `⛔ ${r} is on disk and claimed by you, but cannot be shared because it is ${reasonText} — it ${guidance}`,
+          absent: false,
+          neverSeen: false,
+        })
+        id = rec && rec.id
+      } catch { }
+      unsharedWarned.set(r, { id, reason: info.reason, size: info.size })
+      try {
+        say(`⛔ ${contextPrefix} and claimed by ${holder.by} — it ${guidance}`)
+      } catch { }
+    } else {
+      const guidance = `stays on ${name}'s machine only: teammates will not get it from the room. Share it another way (commit it).`
+      unsharedWarned.set(r, { id: null, reason: info.reason, size: info.size })
+      if (!preexisting.has(r) || inRoom) {
+        try {
+          say(`· ${contextPrefix} — it ${guidance}`)
+        } catch { }
+      }
+    }
+  }
 
   function noticeBornInvisible(ignoredRel) {
     // DISCHARGE FIRST. A file that has gone away takes its debt with it: the question "this will
@@ -2476,44 +3409,190 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // fills with debts about paths that no longer exist, which is the noise the three-state
     // lifecycle exists to prevent. Its expiry cannot help here — that only covers names never seen
     // in the room, and this path was seen, on disk, by us.
-    for (const [r, id] of [...invisibleWarned]) {
-      if (ignoredRel.has(r)) continue
-      if (id) { try { OB.discharge(doc.getMap('obligations'), { id, by: ENGINE_ID }) } catch { } }
-      invisibleWarned.delete(r)
+    for (const r of [...invisibleWarned.keys()]) if (!ignoredRel.has(r)) dischargeInvisible(r)
+    for (const r of ignoredRel) noticeInvisibleOne(r)
+  }
+  function dischargeInvisible(r) {
+    if (!invisibleWarned.has(r)) return
+    const id = invisibleWarned.get(r)
+    if (id) { try { OB.discharge(doc.getMap('obligations'), { id, by: ENGINE_ID }) } catch { } }
+    invisibleWarned.delete(r)
+  }
+  // Would walk() list this path as an ignored FILE -- the only kind noticeBornInvisible speaks
+  // about? Not when a directory above it is pruned, as node_modules/ and .git/ are: an npm install
+  // must not become ten thousand chat lines because a watcher event named each file.
+  function walkSkipsAsIgnoredFile(r) {
+    const segs = r.split('/')
+    for (let i = 0; i < segs.length - 1; i++) {
+      if (IGNORE.has(segs[i]) || isIgnored(segs.slice(0, i + 1).join('/') + '/')) return false
     }
-    for (const r of ignoredRel) {
-      if (SKIP.has(r) || OWN_LOCAL.has(r)) continue // control files are ours and are supposed to be invisible
-      if (preexisting.has(r)) continue    // it was already here; nobody did this during the session
-      if (invisibleWarned.has(r)) continue // once per path, not once per scan tick
-      const holder = coordinator.sense(r)
-      if (holder && holder.by) {
-        let id = null
-        try {
-          const rec = OB.open(doc.getMap('obligations'), {
-            from: ENGINE_ID,
-            to: holder.by,
-            text: `${r} is on disk and claimed by you, but it is ignored by a .gitignore here — ` +
-              `no sync connection is opened for it, so nothing written to it will ever reach the room. ` +
-              `Add it to the allow-list, or confirm the work is deliberately local.`,
-            absent: false,
-            neverSeen: false,
-          })
-          id = rec && rec.id
-        } catch { }
-        invisibleWarned.set(r, id)
-        try {
-          say(`⛔ ${r} is claimed and on disk, but it is ignored by a .gitignore here — its bytes will never leave this folder.`)
-        } catch { }
-      } else {
-        invisibleWarned.set(r, null)
-        try {
-          say(`· ${r} was created here but is ignored by a .gitignore — it stays local, and no other agent will see it.`)
-        } catch { }
-      }
+    return !IGNORE.has(segs[segs.length - 1]) && isIgnored(r)
+  }
+  function noticeInvisibleOne(r) {
+    if (SKIP.has(r) || OWN_LOCAL.has(r)) return // control files are ours and are supposed to be invisible
+    if (preexisting.has(r)) return    // it was already here; nobody did this during the session
+    if (invisibleWarned.has(r)) return // once per path, not once per scan tick
+    const holder = coordinator.sense(r)
+    if (holder && holder.by) {
+      let id = null
+      try {
+        const rec = OB.open(doc.getMap('obligations'), {
+          from: ENGINE_ID,
+          to: holder.by,
+          text: `${r} is on disk and claimed by you, but it is ignored by a .gitignore here — ` +
+            `no sync connection is opened for it, so nothing written to it will ever reach the room. ` +
+            `Add it to the allow-list, or confirm the work is deliberately local.`,
+          absent: false,
+          neverSeen: false,
+        })
+        id = rec && rec.id
+      } catch { }
+      invisibleWarned.set(r, id)
+      try {
+        say(`⛔ ${r} is claimed and on disk, but it is ignored by a .gitignore here — its bytes will never leave this folder.`)
+      } catch { }
+    } else {
+      invisibleWarned.set(r, null)
+      try {
+        say(`· ${r} was created here but is ignored by a .gitignore — it stays local, and no other agent will see it.`)
+      } catch { }
     }
   }
 
+  // ---- deletes: a missing folder is not a deletion, and a delete from the room keeps a copy ----
+  //
+  // Measured 3 Oct 2026 on a local relay, before any of this existed: one agent's `rm -rf src`
+  // took 30 files out of its teammate's folder within seconds, and nothing kept them -- a delete
+  // from the room was a bare rmSync. Deleting the agent's WHOLE room folder was worse: on Windows
+  // fs.watch threw EPERM with no handler and the agent's hivecode server died, and wherever the
+  // watcher survives, the next scan walked a folder that was not there, read every file as
+  // deleted, and emptied the room for everyone (12 of 12 files gone from the teammate's folder).
+  function rootIsDir() { try { return fs.statSync(ROOT).isDirectory() } catch { return false } }
+
+  // LOCAL DELETES SETTLE, THEN LEAVE AS ONE BATCH. `rm -rf` removes the files first and the folder
+  // last, and each removal used to reach the room 40 ms after its watcher event -- so on a big
+  // folder most of the deletes were already out while the folder still existed, and no check of
+  // the folder could catch it. Nobody needs a delete in 40 ms. Waiting for the deleting to stop
+  // lets the batch be judged whole: the folder gone, or every file in it gone at once, reads as a
+  // lost folder (loseFolder), never as N deliberate deletes. It also stops an editor that saves by
+  // delete-then-write from sending a delete and a re-create of the same file.
+  const pendingLocalDeletes = new Set()
+  let deleteTimer = null
+  function noteLocalDelete(r) {
+        if (pendingLocalDeletes.has(r)) return // a rescan of the same absence must not keep postponing it
+    pendingLocalDeletes.add(r)
+    if (deleteTimer) clearTimeout(deleteTimer)
+    deleteTimer = setTimeout(settleLocalDeletes, DELETE_SETTLE_MS)
+  }
+  function settleLocalDeletes() {
+        if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null }
+    if (!pendingLocalDeletes.size) return
+    const pending = [...pendingLocalDeletes]
+    pendingLocalDeletes.clear()
+    if (folderLost) return
+    if (!rootIsDir()) { loseFolder('is gone'); return }
+    // Gone now = still absent, or ignored since (walk() skips both, and both always retracted the
+    // file from the room). Anything that came back during the wait is an edit, not a delete.
+    const fileExistsExact = (r) => (!isCaseInsensitive ? fs.existsSync(path.join(ROOT, r)) : actualDiskPath(r) === r)
+    const gone = pending.filter((r) => known.has(r) && inManifest(r) && (!fileExistsExact(r) || isIgnored(r)))
+    if (!gone.length) return
+    const held = [...known].filter((r) => inManifest(r)).length
+    if (held >= 5 && gone.length >= held) { loseFolder(`was emptied: all ${held} of its files vanished at once`); return }
+    // A FILE SOMEONE ELSE HOLDS IS NOT DELETED UNDER THEM. Measured 3 Oct 2026, with claims enforced
+    // as queue and as block alike: Bob claimed a.js and was editing it, Alice deleted it, and it left
+    // the room and Bob's folder -- a claim stopped every write except the largest one. Such a delete is
+    // not sent; the file goes back into this folder from the room, so the folder matches the room
+    // and the next scan does not try again; and the room is told why, once.
+    const refused = []
+    const send = []
+    for (const r of gone) {
+      const h = coordinator.sense(r)
+      if (h && h.by && h.by !== name) refused.push([r, h.by]); else send.push(r)
+    }
+    for (const [r] of refused) {
+      if (fileExistsExact(r)) continue // ignored since, not absent: nothing to put back
+      const e = fileDocs.get(r)
+      if (e) writeToDisk(r, e.text.toString())
+      else { known.delete(r); mtimes.delete(r); queueOpenFile(r) } // reopened, it arrives like any room file
+    }
+    if (refused.length) {
+      const what = refused.slice(0, 3).map(([r, by]) => `${r} (held by ${by})`).join(', ') + (refused.length > 3 ? ` (+${refused.length - 3} more)` : '')
+      log(`[${name}] delete not sent, the file is held by someone else: ${what}`)
+      try { say(`⛔ ${name} deleted ${what}, but a file someone else holds is not deleted under them, so that delete was not sent and the file is back in ${name}'s folder. Ask the holder to release it first.`) } catch { }
+    }
+    if (!send.length) return
+    for (const r of send) queueManifestDelete(r)
+    flushRoomDoc()
+    for (const r of send) {
+      closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
+      if (isCaseInsensitive) {
+        const cf = fold(r)
+        collided.delete(r)
+        collidedWarned.delete(r)
+        clearCollidedTimer(r)
+        if (canonicalCaseKeys.get(cf) === r) {
+          canonicalCaseKeys.delete(cf)
+          for (const [colKey, info] of collided.entries()) {
+            if (info.with === r && inManifest(colKey)) {
+              collided.delete(colKey)
+              collidedWarned.delete(colKey)
+              clearCollidedTimer(colKey)
+              canonicalCaseKeys.set(cf, colKey)
+              break
+            }
+          }
+        }
+      }
+    }
+    const list = send.slice(0, 3).join(', ') + (send.length > 3 ? ` (+${send.length - 3} more)` : '')
+    log(`[${name}] -> deleted for everyone: ${list}`)
+    if (send.length >= BULK_DELETE) {
+      try { say(`· ${name} deleted ${send.length} files for everyone: ${list}. Teammates' folders keep a copy of what they held, in ${DELETED_DIR}/, for 7 days.`) } catch { }
+    }
+  }
+
+  // A DELETE FROM THE ROOM KEEPS A COPY. The file moves to .hive-deleted/<when>/<path> in this
+  // folder (ALWAYS_IGNORE, so it never syncs back). If the move fails -- an editor holding the file
+  // on Windows -- it is copied, then removed. If even the copy fails it is still removed, as
+  // before: a file left in place would be read as new by the next scan and resurrected for everyone.
+  function deletedStamp() { return new Date().toISOString().replace(/[:.]/g, '-') }
+  function keepDeletedCopy(relPath, stamp) {
+    if (!isSafeRelPath(relPath)) return null
+    const from = path.join(ROOT, relPath)
+    let st
+    try { st = fs.statSync(from) } catch { return null } // never reached this disk: nothing to keep
+    if (!st.isFile()) return null
+    const keptAs = `${DELETED_DIR}/${stamp}/${relPath}`
+    const to = path.join(ROOT, keptAs)
+    try { fs.mkdirSync(path.dirname(to), { recursive: true }) } catch { }
+    try { fs.renameSync(from, to); return keptAs } catch { }
+    let copied = false
+    try { fs.copyFileSync(from, to); copied = true } catch { }
+    try { fs.rmSync(from) } catch { }
+    return copied ? keptAs : null
+  }
+  // Only folders this code named (an ISO stamp) and only once they are a week old: anything else a
+  // person put in .hive-deleted/ is theirs.
+  function pruneDeletedCopies() {
+    const base = path.join(ROOT, DELETED_DIR)
+    let names = []
+    try { names = fs.readdirSync(base) } catch { return }
+    const cutoff = Date.now() - DELETED_KEEP_MS
+    for (const n of names) {
+      const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(n)
+      if (!m) continue
+      const t = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`)
+      if (t < cutoff) { try { fs.rmSync(path.join(base, n), { recursive: true, force: true }) } catch { } }
+    }
+  }
+
+  let scanCount = 0
   function scan() {
+    scanCount++
+    if (folderLost) return 0
+    // walk() of a missing folder returns nothing, which used to read as "every file was deleted".
+    if (!rootIsDir()) { loseFolder('is gone'); return 0 }
+    if (unwritable.size) retryUnwritable()
     const skippedFulls = []
     const diskFulls = walk(ROOT, [], skippedFulls)
     const diskRel = new Set(diskFulls.map(rel))
@@ -2539,61 +3618,399 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       firstScanDone = true
     }
     noticeBornInvisible(ignoredRel)
+    const currentUnshared = new Map()
+    let changes = 0
     for (const full of diskFulls) {
       const r = rel(full)
       if (SKIP.has(r)) continue
+      checkCaseCollision(r)
+      if (collided.has(r)) continue
       let mt
       try { mt = fs.statSync(full).mtimeMs } catch { continue }
-      if (mtimes.get(r) === mt && manifest.has(r)) continue
-      if (readText(full) === null) continue
+
+      // 1. If previously known unshared and mtime hasn't changed, skip re-reading buffer!
+      if (unsharedMtimes.get(r) === mt && unsharedWarned.has(r)) {
+        currentUnshared.set(r, unsharedWarned.get(r))
+        continue
+      }
+
+      // 2. If known shareable and mtime hasn't changed, skip!
+      if (mtimes.get(r) === mt && inManifest(r)) continue
+
+      // 3. mtime changed or new file: check unshared
+      const unshared = checkUnshared(full)
+      if (unshared) {
+        unsharedMtimes.set(r, mt)
+        currentUnshared.set(r, unshared)
+        continue
+      } else {
+        unsharedMtimes.delete(r)
+      }
+
+      if (readText(full) === null) {
+        if (isBinaryFile(full)) {
+          mtimes.set(r, mt)
+          reconcileBinary(r, 'local')
+          changes++
+          continue
+        }
+        continue
+      }
       mtimes.set(r, mt)
       reconcile(r, 'local')
+      changes++
     }
-    const removed = [...known].filter((r) => !diskRel.has(r) && manifest.has(r))
+    noticeUnshared(currentUnshared)
+    const removed = [...known].filter((r) => !diskRel.has(r) && inManifest(r) && !pendingLocalDeletes.has(r) && !collided.has(r))
     if (removed.length) {
-      doc.transact(() => { for (const r of removed) manifest.delete(r) })
-      for (const r of removed) { closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r) }
+      changes += removed.length
+      for (const r of removed) {
+        dischargeUnshared(r)
+        noteLocalDelete(r) // leaves with its batch; see settleLocalDeletes
+      }
+    }
+    return changes
+  }
+
+  // Non-blocking chunked file opening:
+  // When an existing room doc syncs on join, 150-900 files arrive in manifest at once.
+  // Opening them all synchronously inside Y.applyUpdate froze the Node event loop for
+  // 5-8+ seconds, blowing past hive_join's 8s sync timeout and causing false join failures.
+  // Chunking opens via setImmediate drains the batch smoothly in 32-file slices, firing
+  // provider.on('sync') within milliseconds while keeping single-file live edits instant.
+  const openQueue = []
+  const openQueueSet = new Set()
+  let openTimer = null
+  // Test-only: hold the first drain this long, so a test can land a peer's delete while a key waits.
+  const OPEN_DELAY_MS = Number(process.env.HIVE_TEST_OPEN_DELAY_MS) || 0
+  let openTurns = 0 // drains run; tests/join-scale-test.mjs pins how few a big join takes
+  function drainOpenQueue() {
+    openTimer = null
+    openTurns++
+    // 256 A TURN ON ONE SOCKET, 32 ON A SOCKET PER FILE (27 Sep 2026). Each turn boundary waits
+    // behind whatever else the loop runs in between, and during a big join that is a lot: measured
+    // on a 1,000-file room arriving in one manifest event, every 32-file turn ran 1.1-1.4 s after
+    // the last, so the joiner took ~49 s to have the files on disk; 256 a turn, 25 s. On the mux
+    // transport an OPEN is one frame on a socket that already exists; on per-file sockets each is
+    // a new connection, so that path keeps 32. The 100 ms ceiling keeps a slow machine from
+    // holding the loop through a turn -- past the first 32, a turn stops when it runs out of time.
+    const BATCH = fileTransport.mode === 'mux' ? 256 : 32
+    const t0 = Date.now()
+    let openedCount = 0
+    while (openQueue.length && openedCount < BATCH && !stopped && (openedCount < 32 || Date.now() - t0 < 100)) {
+      const key = openQueue.shift()
+      openQueueSet.delete(key)
+      if (fileDocs.size >= maxOpen()) {
+        openQueue.length = 0
+        openQueueSet.clear()
+        break
+      }
+      // STILL WANTED? A key can wait here while a peer deletes the file. Its document still exists on
+      // the relay, so opening it would bring the deleted file back to this disk and publish it again
+      // for everyone. Wanted = still in the room, or on this disk (a new local file not yet published).
+      const wanted = inManifest(key) || fs.existsSync(path.join(ROOT, key))
+      if (wanted && canOpen(key) && !SKIP.has(key) && !isIgnored(key) && !fileDocs.has(key)) {
+        openFile(key)
+        openedCount++
+      }
+    }
+    if (openQueue.length && !stopped && fileDocs.size < maxOpen()) {
+      openTimer = setImmediate(drainOpenQueue)
+    }
+  }
+
+  function queueOpenFile(key) {
+    if (fileDocs.has(key) || fileDocs.size >= maxOpen() || openQueueSet.has(key)) return
+    openQueueSet.add(key)
+    if (fs.existsSync(path.join(ROOT, key))) openQueue.unshift(key)
+    else openQueue.push(key)
+    if (!openTimer && !stopped) {
+      openTimer = OPEN_DELAY_MS ? setTimeout(drainOpenQueue, OPEN_DELAY_MS) : setImmediate(drainOpenQueue)
     }
   }
 
   // Manifest changes from OTHERS: a new path -> open its file-room (its sync pulls
-  // the content); a removed path -> tear down + delete the local file.
+  // the content); a removed path -> tear down, and move the local file into .hive-deleted/.
   if (syncFiles) manifest.observe((ev, txn) => {
     if (txn.local) return
+    if (folderLost) return // nothing in a lost folder is written, moved or recreated
+    let stamp = null
+    let kept = 0
+    // Process deletions BEFORE additions so that renames (delete old + add new)
+    // retire the old path and free canonicalCaseKeys before the new casing is checked.
+    const deletes = []
+    const others = []
     ev.changes.keys.forEach((change, key) => {
-      if (change.action === 'delete') {
-        closeFile(key)
-        try { fs.rmSync(path.join(ROOT, key)) } catch { }
-        known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key)
-        log(`[${name}] <- deleted ${key}`)
-      } else if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
-        // Same rule as the initial sweep: a path this client ignores must not cost it a
-        // socket just because somebody else registered it.
-        //
-        // AND the same BOUND. This observer is how a joining client learns the room's whole
-        // manifest — every existing path arrives here as a remote change — so capping only
-        // the sweep achieved nothing: the first measurement of this cap showed a client with
-        // cap 8 holding 30 file docs, every one of them opened right here. A path we decline
-        // to open now is not lost; it opens when something touches it.
-        if (fileDocs.size < maxOpen()) openFile(key)
-      }
+      if (change.action === 'delete') deletes.push([key, change])
+      else others.push([key, change])
     })
+
+    for (const [key, change] of deletes) {
+      let promotedKey = null
+      if (isCaseInsensitive) {
+        const cf = fold(key)
+        clearCollidedTimer(key)
+        if (collided.has(key)) {
+          collided.delete(key)
+          collidedWarned.delete(key)
+        } else if (canonicalCaseKeys.get(cf) === key) {
+          canonicalCaseKeys.delete(cf)
+          for (const [colKey, info] of collided.entries()) {
+            if (info.with === key && inManifest(colKey)) {
+              collided.delete(colKey)
+              collidedWarned.delete(colKey)
+              clearCollidedTimer(colKey)
+              canonicalCaseKeys.set(cf, colKey)
+              promotedKey = colKey
+              break
+            }
+          }
+        }
+      }
+      pendingManifestOps.delete(key)
+      closeFile(key)
+      { const qi = openQueue.indexOf(key); if (qi >= 0) { openQueue.splice(qi, 1); openQueueSet.delete(key) } } // deleted while queued
+      if (!stamp) stamp = deletedStamp() // one folder per batch, so a bulk delete comes back together
+      const keptAs = keepDeletedCopy(key, stamp)
+      if (keptAs) kept++
+      known.delete(key); bases.delete(key); forkBases.delete(key); mtimes.delete(key); shadow.delete(key); shaShadow.delete(key); unwritable.delete(key)
+      log(`[${name}] <- deleted ${key}${keptAs ? ` (copy kept: ${keptAs})` : ''}`)
+      if (promotedKey) {
+        reconcile(promotedKey, 'remote')
+      }
+    }
+
+    for (const [key, change] of others) {
+      if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
+        checkCaseCollision(key)
+        if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
+          openFile(key)
+        } else {
+          queueOpenFile(key)
+        }
+      }
+    }
+    if (kept > 1) log(`[${name}] <- ${kept} files deleted by a teammate; copies kept in ${DELETED_DIR}/${stamp}/`)
   })
 
   // INSTANT propagation: fs.watch fires on the actual edit, so changes go out in
   // ~tens of ms instead of waiting for the poll. A periodic scan stays as a
   // safety net (and the only mechanism where recursive watch isn't supported).
+  //
+  // ADAPTIVE SAFETY NET:
+  // When fs.watch is healthy, scanning untouched files every 2s wastes ~37ms of CPU
+  // on a 900-file folder (1,108ms/min). If a scan detects ZERO changes that fs.watch
+  // hadn't already reconciled, we double the interval: 2s -> 4s -> 8s -> 16s.
+  // The instant a scan catches an unobserved disk change (e.g. editor atomic save
+  // or network drive missing watcher events), interval snaps back to 2s immediately.
+  // When recursive watch is unsupported (!watcher), interval stays fixed at 400ms.
+  const SCAN_MIN_MS = 2000
+  const SCAN_MAX_MS = 16000
+  const SCAN_NO_WATCHER_MS = 400
+  let scanInterval = SCAN_MIN_MS
   let scanTimer = null
   let watcher = null
   let debounce = null
-  const onFsEvent = (_evt, fname) => {
+
+  function scheduleNextScan(ms) {
+    if (stopped || folderLost) return
+    if (scanTimer) clearTimeout(scanTimer)
+    // Ref'd, like the setInterval it replaced: a headless client whose socket is down may have
+    // nothing else holding the process open, and an unref'd net would let it exit silently.
+    scanTimer = setTimeout(runAdaptiveScan, ms)
+  }
+
+  const pendingFsEvents = new Map() // relPath -> Set<'change'|'rename'>
+  let pendingFsFullScan = false
+
+  function flushFsEvents() {
+    debounce = null
+    if (stopped || folderLost) return
+    if (!rootIsDir()) { pendingFsEvents.clear(); loseFolder('is gone'); return }
+    if (!firstScanDone || pendingFsFullScan || pendingFsEvents.size > 256) {
+      pendingFsEvents.clear()
+      pendingFsFullScan = false
+      scan()
+      return
+    }
+
+    const entries = [...pendingFsEvents.entries()]
+    pendingFsEvents.clear()
+    pendingFsFullScan = false
+
+    let changes = 0
+    for (const [r, evts] of entries) {
+      if (SKIP.has(r) || OWN_LOCAL.has(r)) continue
+      if (isIgnored(r)) {
+        // Never reconciled -- but HIV-P8's born-invisible notice must not wait for the next full
+        // scan (up to 16 s away), and a deleted one takes its debt with it, exactly as scan() does.
+        if (walkSkipsAsIgnoredFile(r)) {
+          let isFile = false
+          try { isFile = fs.statSync(path.join(ROOT, r)).isFile() } catch { }
+          if (isFile) noticeInvisibleOne(r); else dischargeInvisible(r)
+        }
+        continue
+      }
+      const full = path.join(ROOT, r)
+      let st
+      try {
+        st = fs.statSync(full)
+      } catch {
+        // Path does not exist on disk (deleted file or directory)
+        dischargeUnshared(r)
+        if (known.has(r) && inManifest(r)) {
+          changes++
+          noteLocalDelete(r) // leaves with its batch; see settleLocalDeletes
+          continue
+        }
+        // Check if r might have been a directory containing tracked files
+        const dirPrefix = r + '/'
+        let wasKnownDir = false
+        for (const k of known) {
+          if (k.startsWith(dirPrefix)) { wasKnownDir = true; break }
+        }
+        if (wasKnownDir) {
+          scan()
+          return
+        }
+        continue
+      }
+
+      // On case-insensitive filesystems, statSync('Readme.md') succeeds even if the file on disk
+      // was renamed to 'README.md'. Verify exact disk path matches r:
+      if (isCaseInsensitive && actualDiskPath(r) !== r) {
+        dischargeUnshared(r)
+        if (known.has(r) && inManifest(r)) {
+          changes++
+          noteLocalDelete(r)
+          const diskTarget = actualDiskPath(r)
+          if (diskTarget && fold(diskTarget) === fold(r)) {
+            checkCaseCollision(diskTarget)
+            queueManifestSet(diskTarget)
+          }
+          continue
+        }
+      }
+
+      if (st.isDirectory()) {
+        // If a directory was created/renamed or received a 'rename' event, fall back to full scan
+        if (evts.has('rename')) {
+          scan()
+          return
+        }
+        // On Windows (and some other OSes), writing to a file inside a directory also emits 'change' on the directory.
+        // Ignore the directory 'change' event; the file itself is processed in this batch.
+        continue
+      }
+
+      if (!st.isFile()) continue
+      if (unsharedMtimes.get(r) === st.mtimeMs && unsharedWarned.has(r)) continue
+      if (mtimes.get(r) === st.mtimeMs && inManifest(r)) continue
+      checkCaseCollision(r)
+      if (collided.has(r)) continue
+      const unshared = checkUnshared(full, st)
+      if (unshared) {
+        unsharedMtimes.set(r, st.mtimeMs)
+        noticeUnsharedOne(r, unshared)
+        continue
+      } else {
+        unsharedMtimes.delete(r)
+        dischargeUnshared(r)
+      }
+      if (readText(full) === null) {
+        if (isBinaryFile(full, st)) {
+          mtimes.set(r, st.mtimeMs)
+          reconcileBinary(r, 'local')
+          changes++
+          continue
+        }
+        continue
+      }
+      mtimes.set(r, st.mtimeMs)
+      reconcile(r, 'local')
+      changes++
+    }
+  }
+
+  function runAdaptiveScan() {
+    scanTimer = null
+    if (debounce) { clearTimeout(debounce); debounce = null }
+    pendingFsEvents.clear()
+    pendingFsFullScan = false
+    const changes = scan()
+    if (!watcher) {
+      scanInterval = SCAN_NO_WATCHER_MS
+      scheduleNextScan(scanInterval)
+      return
+    }
+    if (changes > 0) {
+      // Caught a change fs.watch missed! Snap back to minimum interval.
+      scanInterval = SCAN_MIN_MS
+    } else {
+      // Nothing missed: back off by doubling interval up to 16s cap.
+      scanInterval = Math.min(SCAN_MAX_MS, scanInterval * 2)
+    }
+    scheduleNextScan(scanInterval)
+  }
+
+  const onFsEvent = (evt, fname) => {
     if (fname && String(fname).endsWith('.gitignore')) reloadIgnores()
+    if (!fname) {
+      pendingFsFullScan = true
+    } else {
+      const norm = String(fname).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+      if (!norm || norm === '.') {
+        pendingFsFullScan = true
+      } else {
+        let set = pendingFsEvents.get(norm)
+        if (!set) {
+          set = new Set()
+          pendingFsEvents.set(norm, set)
+        }
+        set.add(evt)
+        if (pendingFsEvents.size > 256) pendingFsFullScan = true
+      }
+    }
     if (debounce) return
-    debounce = setTimeout(() => { debounce = null; scan() }, 40)
+    debounce = setTimeout(flushFsEvents, 40)
   }
   function startWatch() {
     try { watcher = fs.watch(ROOT, { recursive: true }, onFsEvent) }
     catch { watcher = null } // recursive watch unsupported (some Linux) -> rely on scan
+    // A watcher error used to be an uncaught 'error' event: deleting the room folder on Windows
+    // (EPERM) killed the whole process, and with it the agent's hivecode server.
+    if (watcher) watcher.on('error', onWatchError)
+  }
+  function onWatchError(e) {
+    try { watcher && watcher.close() } catch { }
+    watcher = null
+    if (stopped || folderLost) return
+    if (!rootIsDir()) { loseFolder('is gone'); return }
+    log(`[${name}] the folder watcher failed (${(e && e.code) || e}); checking the folder every ${SCAN_NO_WATCHER_MS} ms instead`)
+    scheduleNextScan(SCAN_NO_WATCHER_MS)
+  }
+
+  // THE FOLDER IS GONE: say so once, and stop touching the disk. Every way back is a fresh join,
+  // which compares the folder with the room the same way a first join does, so nothing a person
+  // put back is overwritten. Stopping, rather than carrying on, is deliberate: a remote write would
+  // recreate the folder holding one file, and the next pass would read the rest as deleted.
+  function loseFolder(why) {
+    if (folderLost || stopped) return
+    folderLost = {
+      at: Date.now(),
+      message: `Q580: this room's folder ${why} (${ROOT}). Nothing was deleted for anyone: ` +
+        `file sync stopped here, so the room keeps every file. Chat and claims still work. To get the ` +
+        `room's files back, call hive_join again with the same link: an empty folder is filled from ` +
+        `the room. If the folder was moved on purpose, join from its new place.`,
+    }
+    try { watcher && watcher.close() } catch { }
+    watcher = null
+    if (scanTimer) { clearTimeout(scanTimer); scanTimer = null }
+    if (debounce) { clearTimeout(debounce); debounce = null }
+    if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null }
+    pendingFsEvents.clear()
+    pendingLocalDeletes.clear()
+    log(`[${name}] ${folderLost.message}`)
   }
 
   provider.on('sync', (s) => {
@@ -2636,7 +4053,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         return la - lb
       })
       const cap = maxOpen()
-      for (const key of localFirst.slice(0, cap)) openFile(key)
+      for (const k of localFirst) checkCaseCollision(k)
+      for (const key of localFirst.slice(0, cap)) queueOpenFile(key)
       if (final && localFirst.length > cap) {
         log(`[${name}] ${localFirst.length} files in this room, holding ${cap} open (HIVE_MAX_OPEN_FILES). The rest sync when touched.`)
       }
@@ -2670,9 +4088,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fileTransport.ready.then(() => setTimeout(() => {
       try {
         const want = [...manifest.keys()].filter((r) => canOpen(r) && !SKIP.has(r))
+        if (want.length <= maxOpen() || stopped) return // the bound leaves nothing out: no need to stat every file
         const have = want.filter((r) => fs.existsSync(path.join(ROOT, r)))
         const short = want.length - have.length
-        if (short <= 0 || want.length <= maxOpen() || stopped) return
+        if (short <= 0) return
         log(`[${name}] !! THIS FOLDER IS INCOMPLETE ON PURPOSE. The room has ${want.length} files; ` +
           `${have.length} are on disk here and ${short} are NOT. The working set is bounded to ` +
           `${maxOpen()} open files (HIVE_MAX_OPEN_FILES), because ` +
@@ -2684,9 +4103,77 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }, 4000).unref?.())
     if (!scanTimer) {
       startWatch()
-      scanTimer = setInterval(scan, watcher ? 2000 : 400) // watch handles fast path; scan is the net
+      scanInterval = watcher ? SCAN_MIN_MS : SCAN_NO_WATCHER_MS
+      scheduleNextScan(scanInterval)
     }
   })
+
+  // Evaluates consensus across peer measurements for a path and version.
+  function evaluateAttestations(rec, curVer, roomDocHash) {
+    const currentPeers = []
+    const formattedPeers = {}
+    for (const [peerName, v] of Object.entries(rec || {})) {
+      if (!v) continue
+      const isCurrent = (v.version || 1) === (curVer.n || 1)
+      if (isCurrent) {
+        currentPeers.push({ peer: peerName, ...v })
+        let note = ''
+        if (v.stuckLagging) {
+          note = ` (${v.stuckReason || 'stuck lagging'})`
+        } else if (v.lagging) {
+          note = ` (${v.lagNotice || 'your folder has not caught up yet'})`
+        }
+        formattedPeers[peerName] = { ...v, stale: false, note }
+      } else {
+        formattedPeers[peerName] = {
+          ...v,
+          stale: true,
+          staleReason: `stale: attested version ${v.version || 0}, room is at ${curVer.n}`
+        }
+      }
+    }
+
+    // Peers that are present, have a hash, and are NOT lagging (stuck peers are kept out of quorum too)
+    const presentValid = currentPeers.filter((v) => !v.absent && v.hash && !v.lagging && !v.stuckLagging)
+    const validHashes = [...new Set(presentValid.map((v) => v.hash))]
+    const validSizes = [...new Set(presentValid.map((v) => v.bytes))]
+
+    // Peers that count toward comparison:
+    // A peer lagging inside the grace period counts toward NEITHER quorum NOR divergence!
+    // Compare hashes over non-lagging peers plus stuck peers only.
+    const comparisonPeers = currentPeers.filter((v) => !v.absent && v.hash && (!v.lagging || v.stuckLagging))
+    const comparisonHashes = [...new Set(comparisonPeers.map((v) => v.hash))]
+    const comparisonSizes = [...new Set(comparisonPeers.map((v) => v.bytes))]
+    const anyAbsent = currentPeers.some((v) => v.absent)
+    const anyStuck = currentPeers.some((v) => v.stuckLagging)
+
+    // Quorum: requires at least 2 non-lagging peers of current version with identical hash, no absent, no stuck
+    let quorum = presentValid.length >= 2 && validHashes.length === 1 && !anyAbsent && !anyStuck
+
+    // Divergence:
+    // 1. Two comparison peers (non-lagging or stuck) disagree on disk hash
+    // 2. OR one comparison peer is absent while another is present
+    // 3. OR any peer is stuck lagging (>grace period passed without catching up)
+    const split = comparisonHashes.length > 1 || (anyAbsent && comparisonPeers.length > 0) || anyStuck
+
+    let quorumOnOlder = false
+    if (quorum && roomDocHash && validHashes[0] && roomDocHash !== validHashes[0]) {
+      quorum = false
+      quorumOnOlder = true
+    }
+
+    return {
+      peers: formattedPeers,
+      currentPeers,
+      count: currentPeers.length,
+      totalCount: Object.keys(rec || {}).length,
+      sizes: comparisonSizes.length ? comparisonSizes : [...new Set(currentPeers.filter(v => !v.absent && v.hash).map(v => v.bytes))],
+      diverged: split,
+      quorum,
+      quorumOnOlder,
+      version: curVer.n || 1
+    }
+  }
 
   return {
     doc,
@@ -2757,24 +4244,140 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // whether the peers DISAGREE — see the swarm_attest declaration for why it is keyed per peer.
     attest: (relPath, bytes, lines) => {
       const p = String(relPath)
-      const prev = swarmAttest.get(p) || {}
-      const next = { ...prev, [name]: { bytes: Number(bytes), lines: Number(lines), at: new Date().toISOString() } }
-      swarmAttest.set(p, next)
-      const sizes = [...new Set(Object.values(next).map((v) => v && v.bytes))]
-      const split = sizes.length > 1
-      if (split) {
-        // Announce, do not throw. The measuring agent did nothing wrong and its report is valid; the
-        // ROOM is what is broken. Throwing here would punish whoever happened to measure second.
-        const detail = Object.entries(next).map(([who, v]) => `${who}:${v.bytes}b/${v.lines}L`).join('  ')
-        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT bytes: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+      const full = path.join(ROOT, p)
+      let measuredHash = null
+      let measuredBytes = null
+      let measuredLines = null
+      let absent = false
+      let mismatch = null
+      let diskContent = null
+
+      if (fs.existsSync(full)) {
+        try {
+          diskContent = fs.readFileSync(full, 'utf8')
+          measuredHash = contentHash(diskContent)
+          measuredBytes = Buffer.byteLength(diskContent, 'utf8')
+          const normalized = diskContent.endsWith('\n') ? diskContent.slice(0, -1) : diskContent
+          measuredLines = diskContent.length === 0 ? 0 : normalized.split(/\r?\n/).length
+          const statedBytes = Number(bytes)
+          if (Number.isFinite(statedBytes) && statedBytes > 0 && statedBytes !== measuredBytes) {
+            mismatch = { stated: statedBytes, measured: measuredBytes }
+          }
+        } catch {
+          absent = true
+        }
+      } else {
+        absent = true
       }
-      return { path: p, peers: next, count: Object.keys(next).length, sizes, diverged: split }
+
+      // Check if room doc exists and whether disk differs from room doc
+      const fe = fileDocs.get(p)
+      let roomDocHash = null
+      let roomDocBytes = null
+      let lagging = false
+      let lagDirection = null
+      let lagNotice = null
+
+      if (fe && fe.text && fe.text.length > 0 && measuredHash) {
+        const docText = fe.text.toString()
+        roomDocHash = contentHash(docText)
+        roomDocBytes = Buffer.byteLength(docText, 'utf8')
+        if (measuredHash !== roomDocHash) {
+          lagging = true
+          const base = bases.get(p)
+          if (base !== undefined && base === docText) {
+            lagDirection = 'ahead'
+            lagNotice = 'disk ahead of room doc: local edit not published to room yet (your folder has not caught up yet)'
+          } else if (base !== undefined && base === diskContent) {
+            lagDirection = 'behind'
+            lagNotice = 'disk behind room doc: your folder has not caught up yet'
+          } else {
+            lagDirection = 'lagging'
+            lagNotice = 'disk out of step with the room\'s copy (your folder has not caught up yet)'
+          }
+        }
+      }
+
+      let curVer = swarmVersions.get(p)
+      if (!curVer) {
+        curVer = { n: 1, hash: measuredHash || '' }
+        swarmVersions.set(p, curVer)
+      }
+
+      const GRACE_MS = Number(process.env.HIVE_ATTEST_GRACE_MS) || 10000
+      const prev = swarmAttest.get(p) || {}
+      const prevAttest = prev[name]
+
+      let stuckLagging = false
+      let stuckReason = null
+      if (lagging && prevAttest && (prevAttest.lagging || prevAttest.stuckLagging) && prevAttest.laggingDocHash === roomDocHash) {
+        const prevAt = prevAttest.at ? new Date(prevAttest.at).getTime() : 0
+        const elapsedMs = Date.now() - prevAt
+        if (elapsedMs >= GRACE_MS) {
+          stuckLagging = true
+          stuckReason = `not catching up to room doc after ${Math.round(elapsedMs / 1000)}s: disk ${measuredBytes}b vs doc ${roomDocBytes}b (${lagDirection || 'lagging'})`
+        }
+      }
+
+      const next = {
+        ...prev,
+        [name]: {
+          bytes: measuredBytes,
+          lines: measuredLines,
+          hash: measuredHash,
+          absent,
+          mismatch,
+          lagging: lagging && !stuckLagging,
+          lagDirection: lagDirection || undefined,
+          lagNotice: lagNotice || undefined,
+          laggingDocHash: lagging ? roomDocHash : undefined,
+          stuckLagging,
+          stuckReason: stuckReason || undefined,
+          version: curVer.n,
+          at: (lagging && prevAttest && (prevAttest.lagging || prevAttest.stuckLagging) && prevAttest.laggingDocHash === roomDocHash)
+            ? prevAttest.at
+            : new Date().toISOString()
+        }
+      }
+      swarmAttest.set(p, next)
+
+      const evaluated = evaluateAttestations(next, curVer, roomDocHash)
+      if (evaluated.diverged) {
+        const detail = evaluated.currentPeers.map((v) => {
+          if (v.absent) return `${v.peer}:ABSENT`
+          if (v.stuckLagging) return `${v.peer}:${v.bytes}b/${v.lines}L[STUCK:${v.stuckReason || 'not catching up'}]`
+          return `${v.peer}:${v.bytes}b/${v.lines}L`
+        }).join('  ')
+        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+      }
+
+      return {
+        path: p,
+        mismatch,
+        measuredBytes,
+        measuredLines,
+        measuredHash,
+        lagging: lagging && !stuckLagging,
+        lagNotice,
+        stuckLagging,
+        stuckReason,
+        ...evaluated
+      }
     },
     verified: (relPath) => {
       const p = String(relPath)
+      const curVer = swarmVersions.get(p) || { n: 1, hash: '' }
       const rec = swarmAttest.get(p) || {}
-      const sizes = [...new Set(Object.values(rec).map((v) => v && v.bytes))]
-      return { path: p, peers: rec, count: Object.keys(rec).length, sizes, diverged: sizes.length > 1, quorum: Object.keys(rec).length >= 2 && sizes.length === 1 }
+      const fe = fileDocs.get(p)
+      let roomDocHash = null
+      if (fe && fe.text && fe.text.length > 0) {
+        roomDocHash = contentHash(fe.text.toString())
+      }
+      const evaluated = evaluateAttestations(rec, curVer, roomDocHash)
+      return {
+        path: p,
+        ...evaluated
+      }
     },
     say,                 // post a coordination message
     assign,              // direct a task at a participant (needs approval if target AI has an owner)
@@ -2797,7 +4400,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const held = coordinator.acquire(r, i)
       // Fire-and-forget on purpose: claim's contract is synchronous and changing that would
       // break every caller. Use fetch(path) directly when you need to WAIT for the bytes.
-      if (held) { try { fetchFile(r).catch(() => {}) } catch { } }
+      if (held) {
+        try { fetchFile(r).catch(() => {}) } catch { }
+        try {
+          const full = path.join(ROOT, r)
+          const unshared = checkUnshared(full)
+          if (unshared) noticeUnsharedOne(r, unshared)
+        } catch { }
+      }
       return held
     }, // true iff you hold it (my intent recorded either way — it's what my receipts sign)
     // HIV-P18: bring a file the room has but this folder does not. Resolves when the BYTES have
@@ -2906,9 +4516,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         const u = s.user
         if (!u || !u.name) continue
         const prev = seen.get(u.name) || {}
-        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive) })
+        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined, app: u.app || prev.app || undefined })
       }
       return [...seen.values()]
+    },
+    // ANOTHER PARTICIPANT ALREADY USING THIS NAME. Measured 3 Oct 2026: a second agent joined as
+    // "Claude" beside the first, was told "others here: none yet", and BOTH were then told
+    // "claimed x.js -- it's yours"; the second one's write landed in the first one's folder while
+    // the first held the file. hive_members showed a single Claude. (The same thing once fused a
+    // file to 32,038 lines between two agents called Hermes.) Not counted: this connection, a
+    // listener (it runs under its agent's name on purpose), this same agent a moment ago in this
+    // same folder (same iid), and a person in a second window when this is a person too. A state
+    // with no iid is an older build that cannot say, so it counts.
+    sameNameElsewhere: () => {
+      const me = provider.awareness.clientID
+      const lc = String(name).toLowerCase()
+      const out = []
+      for (const [id, s] of provider.awareness.getStates()) {
+        const u = s && s.user
+        if (id === me || !u || !u.name || String(u.name).toLowerCase() !== lc) continue
+        if (u.listener || u.iid === IID) continue
+        if (kind === 'human' && u.kind === 'human') continue
+        out.push({ name: u.name, kind: u.kind, owner: u.owner, app: u.app })
+      }
+      return out
     },
     // Live connection state. An agent parked on hive_wait has no way to tell a quiet
     // room from a dead socket, so it guesses -- and the guess it reaches for is
@@ -2945,10 +4576,18 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // So the trade stays and the reporting changes. `files` keeps meaning open docs, because
       // tests/open-file-cap-test.mjs:71 pins it as the proof the cap is respected. What is added
       // is the pair that was missing: what the ROOM has, and what this client actually HOLDS.
+      flushRoomDoc()
       const roomFiles = (() => { try { return [...manifest.keys()].filter((r) => canOpen(r)).length } catch { return 0 } })()
+      // One directory walk, not one existsSync per file: that loop cost 292 ms a call in a
+      // 1,000-file room (dev machine) and blocked the loop throughout. walk() reads a directory
+      // per call; only a path the walk did not list (not on disk yet, or ignored since it was
+      // added) is still checked on its own, so the count means exactly what it meant before.
       const held = (() => {
         let n = 0
-        try { for (const r of manifest.keys()) { if (canOpen(r) && fs.existsSync(path.join(ROOT, r))) n++ } } catch { }
+        try {
+          const onDisk = new Set(walk(ROOT).map(rel))
+          for (const r of manifest.keys()) { if (canOpen(r) && !collided.has(r) && (onDisk.has(r) || fs.existsSync(path.join(ROOT, r)))) n++ }
+        } catch { }
         return n
       })()
       return {
@@ -2963,6 +4602,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         filesMissing: Math.max(0, roomFiles - held),
         notSyncing: notSyncing.length,
         notSyncingFiles: notSyncing.slice(0, 20),
+        unsharedFiles: [...unsharedWarned.entries()].map(([p, info]) => ({
+          path: p,
+          reason: info.reason,
+          size: info.size,
+        })),
         // The working set and its bound. `openCap` x agents must stay under the relay's
         // maxConnsTotal, and `evicted` climbing steadily means the cap is too small for
         // how this room actually works — both are things an operator can only act on if
@@ -2971,14 +4615,50 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // 'mux' = every file on this client's one socket; 'socket' = a socket per file.
         transport: fileTransport.mode,
         evicted,
+        scanInterval,
+        ...(folderLost ? { folderLost: folderLost.message } : {}),
+        ...(unwritable.size ? { unwritable: [...unwritable].map(([p, code]) => ({ path: p, code })) } : {}),
+        ...(withheldNow().length ? { withheld: withheldNow() } : {}),
+        ...(collided.size ? { collided: [...collided.entries()].map(([p, info]) => ({ path: p, with: info.with })) } : {}),
       }
     },
+    unshared: () => [...unsharedWarned.entries()].map(([p, info]) => ({ path: p, reason: info.reason, size: info.size })),
+    // The room is told when a change cannot be written here, but in this participant's own name, and
+    // an agent is never handed its own lines. This is how its tools tell it instead.
+    unwritable: () => [...unwritable].map(([p, code]) => ({ path: p, code })),
+    // Files held here because they contain a key: path, kind, line. Never the key.
+    withheld: () => withheldNow(),
+    collided: () => [...collided.entries()].map(([p, info]) => ({ path: p, with: info.with })),
+    _fileSnapSize: (r) => fileDocs.get(r)?.snap?.size || 0,
+    _fileSnaps: (r) => [...(fileDocs.get(r)?.snap?.values() || [])],
+    _fileDoc: (r) => fileDocs.get(r),
+    _fileText: (r) => fileDocs.get(r)?.text?.toString() || '',
+    _watcher: () => watcher,
+    _scanInterval: () => scanInterval,
+    // Just the two booleans hive_say, hive_check/hive_wait and hive_delivered need on every call.
+    // status() also counts filesHeld, one existsSync per file in the room -- 1,000 on a 1,000-file
+    // room, every call; in one profile 0.8 s of a 12 s publish went to polling status() alone.
+    // ...plus folderLost, because the agent learns its folder is gone only where it is looking.
+    connection: () => ({ connected: !!provider.wsconnected, connecting: !!provider.wsconnecting, ...(folderLost ? { folderLost: folderLost.message } : {}) }),
+    _openTurns: () => openTurns,
+    _scanCount: () => scanCount,
     stop: () => {
-      if (scanTimer) clearInterval(scanTimer)
-      if (debounce) clearTimeout(debounce)
+      try { flushFirstContact() } catch { } // before `stopped`: a join cut short still says what it kept
+      try { settleLocalDeletes() } catch { } // a delete made just before leaving still leaves, judged like any other
+      stopped = true
+      try { flushRoomDoc() } catch { }
+      if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
+      if (renderBoardTimer) { clearImmediate(renderBoardTimer); renderBoardTimer = null }
+      openQueue.length = 0
+      openQueueSet.clear()
+      if (scanTimer) clearTimeout(scanTimer)
+      if (debounce) { clearTimeout(debounce); debounce = null }
+      for (const tm of collidedTimers.values()) clearTimeout(tm)
+      collidedTimers.clear()
+      pendingFsEvents.clear()
+      pendingFsFullScan = false
       if (editingClearTimer) clearTimeout(editingClearTimer)
       try { watcher && watcher.close() } catch { }
-      stopped = true
       // The shared socket first: closing it ends every channel at once on the relay, instead of
       // one CLOSE frame per file down a socket that is about to go anyway.
       try { fileTransport.stop() } catch { }
@@ -2987,7 +4667,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { provider.destroy() } catch { }
       try { doc.destroy() } catch { }
       // A room you have left should stop colouring what your agents recall.
-      if (memoryLinked) try { grmLink.unlinkRoom(ROOT, log) } catch { }
+      if (memoryLinked && grmLink) try { grmLink.unlinkRoom(ROOT, log) } catch { }
       // Last, so a crash anywhere above still frees the folder on the next run via the
       // stale-PID path rather than leaving it locked.
       try { releaseLock() } catch { }

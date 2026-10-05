@@ -81,15 +81,26 @@ try {
     'export default function main() {\n  console.log("version A")\n  return { author: "A", port: 3000 }\n}\n')
   fs.writeFileSync(path.join(dirB, CONFLICT),
     'export default function main() {\n  console.log("version B")\n  return { author: "B", port: 4000 }\n}\n')
-  await sleep(14000)
-
-  const chatB = (A.doc.getArray('chat').toArray() || [])
-    .map((m) => String((m && m.text) || '')).filter((t) => t.includes(CONFLICT))
+  // POLL, DO NOT SLEEP A FIXED 14 s (27 Sep 2026): on a loaded machine the refusal lands later,
+  // and the fixed window reported a refusal that did happen as one that did not -- 2 of 6 failing
+  // runs, on code with and without the change under suspicion. The NEGATIVE cases (A3, C1) keep
+  // fixed waits: "nothing appeared" is only evidence after waiting the whole window.
+  const mentions = (f) => (A.doc.getArray('chat').toArray() || [])
+    .map((m) => String((m && m.text) || '')).filter((t) => t.includes(f))
+  let chatB = []
+  const deadline = Date.now() + 45000
+  while (Date.now() < deadline) {
+    chatB = mentions(CONFLICT)
+    if (chatB.some((t) => /fused rather than merged|would fuse them/.test(t))) break
+    await sleep(500)
+  }
   T('B1 a REFUSED announcement was posted for the conflicting merge',
     chatB.some((t) => /REFUSED/.test(t)),
     chatB.map((t) => t.slice(0, 100)).join(' || '))
+  // Either reason is a refusal that says why: the merge fused the two, or (real diff3, 27 Sep
+  // 2026) they conflict and landing both would. What must not appear is a plain conflict notice.
   T('B2 the announcement mentions fusion, not just conflict markers',
-    chatB.some((t) => /fused rather than merged/.test(t)),
+    chatB.some((t) => /fused rather than merged|would fuse them/.test(t)) && !chatB.some((t) => /CONFLICT markers need resolving/.test(t)),
     chatB.map((t) => t.slice(0, 100)).join(' || '))
 
   // ─── C. Non-code files: MUST stay silent ────────────────────────────────────────────────

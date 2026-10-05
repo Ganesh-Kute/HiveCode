@@ -58,16 +58,18 @@ L._reset()
 const fake = { on: () => { }, _hive: { room: 'r' } }
 const lim = L.attachRateLimit(fake)
 T('a normal frame passes', lim.check(100) === null)
-let firstRefusalAt = -1
+let firstRefusalAt = -1, refusal = null
 for (let i = 0; i < L.LIMITS.msgBurst + 50; i++) {
-  if (lim.check(10) && firstRefusalAt < 0) firstRefusalAt = i
+  const r = lim.check(10)
+  if (r && firstRefusalAt < 0) { firstRefusalAt = i; refusal = r }
 }
-T('a sustained flood is eventually refused', firstRefusalAt > 0)
-T('...and the burst allowance was honoured first (not refused immediately)', firstRefusalAt > 100)
-const refusal = lim.check(10)
-T('a refusal carries a Q-code and a reason', !!refusal && /^Q43[24]/.test(refusal.reason))
-T('the refusal says how long to back off', !!refusal && /backing off|rate/.test(refusal.reason))
-T('refusals are counted', lim.refused > 0)
+T('a sustained flood is eventually held back', firstRefusalAt > 0)
+T('...and the burst allowance was honoured first (not held immediately)', firstRefusalAt > 100)
+// Over the rate is a WAIT, never a drop (27 Sep 2026): a dropped Yjs update wedges the document
+// for that client. tests/rate-hold-test.mjs pins the relay half against a real relay.
+T('a wait carries a Q-code and a reason', !!refusal && /^Q43[24]/.test(refusal.reason))
+T('...and says how long to wait', !!refusal && refusal.hold === true && refusal.retryMs > 0)
+T('a wait is not counted as a refusal', lim.refused === 0)
 
 const lim2 = L.attachRateLimit({ on: () => { } })
 const big = lim2.check(L.LIMITS.maxFrameBytes + 1)

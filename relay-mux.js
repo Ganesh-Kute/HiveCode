@@ -43,12 +43,20 @@ export class VirtualConn extends EventEmitter {
     if (this.readyState !== OPEN) return
     setImmediate(() => { if (this.readyState === OPEN) this.emit('pong') })
   }
+  /**
+   * A channel over its own rate stops the PHYSICAL socket being read (installUsageLimits in
+   * server.js), since one channel cannot be paused on a shared socket. That stalls only this
+   * participant, only until the channel's held frames drain -- the other way is dropping them.
+   */
+  pause() { this._session.hold(this, true) }
+  resume() { this._session.hold(this, false) }
   close(_code, reason) { this._shut(true, reason) }
   terminate() { this._shut(true) }
   /** The relay side closed it: tell the client, which will reopen it after a back-off. */
   _shut(notifyClient, reason = '') {
     if (this.readyState === CLOSED) return
     this.readyState = CLOSED
+    this._session.hold(this, false) // a channel closed while paused must not leave the socket paused
     this._session.forget(this._id, this)
     if (notifyClient) this._session.sendFrame(encodeFrame(F.CLOSED, this._id, reason || ''))
     setImmediate(() => this.emit('close', 1000, Buffer.alloc(0)))
@@ -75,12 +83,38 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
   let closed = false
   let throttled = 0
   let paused = false
+  // Everything currently asking for the socket not to be read: the aggregate budget below and
+  // any channel over its own rate. Reading resumes only when NONE of them still holds it, so
+  // one holder's resume can never undo another's pause.
+  const holders = new Set()
+  const AGGREGATE = 'aggregate'
+  // OPENS IN TURNS, NOT IN ONE SITTING (27 Sep 2026). A joiner's OPEN frames for a big room arrive
+  // in one or two socket reads, and each costs the relay real work (gates, a document, its first
+  // sync). All 1,000 of a 1,000-file join ran back to back, and the relay answered no room on it
+  // until they were done: seconds on the dev machine, more on a 0.1-CPU host. Past OPEN_TURN in
+  // one event-loop turn an OPEN waits its turn in order; every other room is served in between.
+  // Nothing about a channel can race this: the client sends a channel nothing until OPENED.
+  const OPEN_TURN = limits.opensPerTurn || 64
+  const openWaiting = []          // OPEN frames past this turn's allowance, in arrival order
+  const openWaitingIds = new Set()
+  let openedThisTurn = 0
+  let turnArmed = false
+  let drainArmed = false
+  // ONE WRITE PER TURN, NOT PER FRAME (27 Sep 2026). Every channel of a participant rides this one
+  // socket, so a burst -- a first sync, a fan-out of many files' updates -- cost one socket write per
+  // frame; a relay profile under 5,000 edits put 30% of its CPU in writev. The socket is corked for
+  // the rest of the current event-loop turn and uncorked on the next tick, so everything queued in
+  // one turn leaves as one write. Node counts cork() calls, so ws's own per-frame cork nests inside.
+  let corked = false
+  const uncork = () => { corked = false; try { if (ws._socket) ws._socket.uncork() } catch { } }
 
   const session = {
     baseRoom,
     get size() { return channels.size },
     sendFrame(bytes, cb) {
       if (ws.readyState !== 1) { if (cb) process.nextTick(cb, new Error('socket closed')); return }
+      const sock = ws._socket
+      if (sock && !corked) { corked = true; sock.cork(); process.nextTick(uncork) }
       try { ws.send(bytes, { binary: true }, cb) } catch (e) { if (cb) process.nextTick(cb, e) }
     },
     makeConn(id, docName) {
@@ -91,6 +125,13 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
     forget(id, vc) { if (channels.get(id) === vc) channels.delete(id) },
     /** Sent BEFORE the accept path runs, so OPENED reaches the client ahead of the relay's step 1. */
     opened(id) { session.sendFrame(encodeFrame(F.OPENED, id)) },
+    hold(who, on) {
+      const before = holders.size
+      if (on) holders.add(who); else holders.delete(who)
+      if (!before && holders.size) { try { ws.pause() } catch { } }
+      else if (before && !holders.size) { try { ws.resume() } catch { } }
+    },
+    get holding() { return holders.size },
   }
 
   ws.on('error', (e) => { audit('mux-socket-error', { baseRoom, reason: e && e.message }) })
@@ -120,34 +161,67 @@ export function serveMux(ws, { baseRoom, openChannel, onClose, audit = () => { }
       if (!msgBucket.take(1) && !paused) {
         paused = true
         if (throttled++ < 2) audit('mux-rate-limit', { baseRoom, reason: 'Q432 aggregate message rate on one participant socket; reading paused' })
-        try { ws.pause() } catch { }
-        const t = setTimeout(() => { paused = false; try { ws.resume() } catch { } }, 250)
+        session.hold(AGGREGATE, true)
+        const t = setTimeout(() => { paused = false; session.hold(AGGREGATE, false) }, 250)
         if (t.unref) t.unref()
       }
       vc._deliver(f.payload)
     } else if (f.kind === F.OPEN) {
-      if (channels.has(f.id)) return session.sendFrame(encodeFrame(F.REFUSED, f.id, 409, 'Q439 channel id already open on this socket'))
-      if (channels.size >= maxChannels) return session.sendFrame(encodeFrame(F.REFUSED, f.id, 503, `Q439 this participant already has ${maxChannels} files open (HIVE_MUX_MAX_DOCS)`))
+      if (channels.has(f.id) || openWaitingIds.has(f.id)) return session.sendFrame(encodeFrame(F.REFUSED, f.id, 409, 'Q439 channel id already open on this socket'))
+      if (channels.size + openWaiting.length >= maxChannels) return session.sendFrame(encodeFrame(F.REFUSED, f.id, 503, `Q439 this participant already has ${maxChannels} files open (HIVE_MUX_MAX_DOCS)`))
       if (!openBucket.take(1)) return session.sendFrame(encodeFrame(F.REFUSED, f.id, 503, 'Q432 opening files too fast on one socket; backing off'))
-      let r
-      try { r = openChannel(f.id, f.docName, session) } catch (e) { r = { code: 500, reason: `open failed: ${e && e.message}` } }
-      if (!r || !r.ok) {
-        // A throw can land AFTER makeConn: the channel would stay registered while the client is
-        // told REFUSED, and its retry under the same id would then meet 409 forever. Shut whatever
-        // was made (it emits close once, so any counter it took is given back) before refusing.
-        const made = channels.get(f.id)
-        if (made) { try { made._shut(false) } catch { } }
-        session.sendFrame(encodeFrame(F.REFUSED, f.id, (r && r.code) || 500, (r && r.reason) || 'refused'))
+      if (openWaiting.length || openedThisTurn >= OPEN_TURN) {
+        openWaiting.push(f); openWaitingIds.add(f.id)
+        armDrain()
+        return
       }
+      openNow(f)
     } else if (f.kind === F.CLOSE) {
+      if (openWaitingIds.has(f.id)) { // closed before its turn came: it never opens
+        openWaitingIds.delete(f.id)
+        const i = openWaiting.findIndex((w) => w.id === f.id)
+        if (i >= 0) openWaiting.splice(i, 1)
+        return
+      }
       const vc = channels.get(f.id)
       if (vc) vc._shut(false)
     }
   })
 
+  function openNow(f) {
+    openedThisTurn++
+    if (!turnArmed) { turnArmed = true; setImmediate(() => { openedThisTurn = 0; turnArmed = false }) }
+    let r
+    try { r = openChannel(f.id, f.docName, session) } catch (e) { r = { code: 500, reason: `open failed: ${e && e.message}` } }
+    if (!r || !r.ok) {
+      // A throw can land AFTER makeConn: the channel would stay registered while the client is
+      // told REFUSED, and its retry under the same id would then meet 409 forever. Shut whatever
+      // was made (it emits close once, so any counter it took is given back) before refusing.
+      const made = channels.get(f.id)
+      if (made) { try { made._shut(false) } catch { } }
+      session.sendFrame(encodeFrame(F.REFUSED, f.id, (r && r.code) || 500, (r && r.reason) || 'refused'))
+    }
+  }
+  function armDrain() {
+    if (drainArmed || closed) return
+    drainArmed = true
+    setImmediate(() => {
+      drainArmed = false
+      if (closed) return
+      openedThisTurn = 0
+      while (openWaiting.length && openedThisTurn < OPEN_TURN) {
+        const f = openWaiting.shift()
+        openWaitingIds.delete(f.id)
+        openNow(f)
+      }
+      if (openWaiting.length) armDrain()
+    })
+  }
+
   ws.on('close', () => {
     if (closed) return
     closed = true
+    openWaiting.length = 0; openWaitingIds.clear()
     clearInterval(beat)
     const all = [...channels.values()]
     channels.clear()

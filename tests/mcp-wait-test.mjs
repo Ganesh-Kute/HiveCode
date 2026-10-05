@@ -28,7 +28,7 @@ const T = (name, cond) => {
 const section = (s) => console.log(`\n# ${s}`)
 
 /** A session standing in for a joined room: a real doc, no network. */
-function makeRoom(me) {
+function makeRoom(me, extra = {}) {
   const doc = new Y.Doc()
   const chat = doc.getArray('chat')
   const hive = {
@@ -38,7 +38,7 @@ function makeRoom(me) {
     members: () => [],
     stop: () => {},
   }
-  const session = { hive, room: 'room-test', relay: 'wss://test', dir: sandbox, name: me, owner: 'Ganesh', mailbox: null }
+  const session = { hive, room: 'room-test', relay: 'wss://test', dir: sandbox, name: me, owner: 'Ganesh', mailbox: null, ...extra }
   _test.setSession(session)
   // Mirrors joinRoom: the mailbox starts at the current end of history, so a joiner is not
   // handed the whole backlog.
@@ -217,6 +217,103 @@ section('hive_say urgency')
 
   await _test.callTool('hive_say', { text: 'taking auth.js' })
   T('an ordinary message is unchanged', room.chat.toArray().pop().text === 'taking auth.js')
+}
+
+section('hive_read_chat keeps other people\'s long messages short (27 Sep 2026)')
+{
+  const { post } = makeRoom('Ada')
+  const essay = 'x'.repeat(1000)
+  post('Bo', `status report ${essay}`)
+  post('Bo', `@Ada here is your review ${essay}`)
+  post('Cy', 'build is red'); post('Cy', 'build is red'); post('Cy', 'build is red')
+  const read = async (a) => ((await _test.callTool('hive_read_chat', a)).content || []).map((c) => c.text).join('\n')
+  const out = await read({})
+  T('someone else\'s long message is cut, and says how much was cut', /status report x{200,280} …\(\+\d+ chars; full:true shows it\)/.test(out))
+  T('a message addressed to me stays whole', out.includes(`@Ada here is your review ${essay}`))
+  T('identical consecutive lines collapse to one with a count', (out.match(/build is red/g) || []).length === 1 && /\(×3\)/.test(out))
+  const full = await read({ full: true })
+  T('full:true returns every message whole', full.includes(`status report ${essay}`))
+}
+
+section('hive_wait default by app (27 Sep 2026)')
+{
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.0' } })
+  T('Claude Code waits 110s by default: under its two-minute move-to-background line', _test.waitDefaultSeconds() === 110)
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'cursor', version: '1.0' } })
+  T('an app whose limit is unverified keeps 60s', _test.waitDefaultSeconds() === 60)
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'Antigravity', version: '1.0' } })
+  T('Antigravity waits 110s by default (measured: 110s runs to the end there)', _test.waitPolicy().def === 110)
+  T('...and never asks it for more than 170s: its tool deadline is a hard 180s', _test.waitPolicy().max === 170)
+  await _test.initialize({ protocolVersion: '2025-06-18' })
+  T('no clientInfo at all keeps 60s', _test.waitDefaultSeconds() === 60)
+  T('...and the 300s ceiling', _test.waitPolicy().max === 300)
+}
+
+section('the line that keeps a Claude Code agent reachable after its turn (2 Oct 2026)')
+{
+  const fsm = await import('fs')
+  // An app nobody has measured is not told to run something that may never wake it: a listener
+  // that cannot wake its agent is a false "listening".
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'cursor', version: '1.0' } })
+  makeRoom('Ada')
+  const cu = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  T('an app nobody has measured (Cursor) is not told to start a listener', !/hive-await\.js/.test(cu))
+  // Antigravity DOES wake when a background command ends. Measured 2 Oct 2026: Antigravity1's turn at
+  // 06:48:09Z began from its listener exiting, two seconds after a message to it, with nobody typing.
+  // It sat PARKED in the KCDE run only because this line was never given to it.
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'Antigravity', version: '1.0' } })
+  makeRoom('Ada')
+  const ag = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  const am = /"([^"]+)" "([^"]+hive-await\.js)" "([^"]+)" "Ada" 25/.exec(ag)
+  T('Antigravity\'s first empty wait orders it to start the listener, in its own tool\'s words', !!am && /BEFORE YOU END THIS TURN/.test(ag) && /run_command/.test(ag) && /WaitMsBeforeAsync/.test(ag) && !/run_in_background/.test(ag), ag.slice(0, 600))
+  T('...naming this room and this agent', !!am && am[3] === 'wss://test|room-test')
+  T('...not armed: the next empty wait repeats the order', /hive-await\.js/.test(textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))))
+  await _test.initialize({ protocolVersion: '2025-06-18', clientInfo: { name: 'claude-code', version: '2.1.0' } })
+  makeRoom('Ada')
+  const first = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  const m = /"([^"]+)" "([^"]+hive-await\.js)" "([^"]+)" "Ada" 25/.exec(first)
+  T('Claude Code\'s first empty wait orders it to start the listener in the background', !!m && /BEFORE YOU END THIS TURN/.test(first) && /run_in_background/.test(first))
+  T('...naming this room and this agent, every argument quoted', !!m && m[3] === 'wss://test|room-test')
+  T('...with a node and a hive-await.js that exist on this disk', !!m && fsm.existsSync(m[1]) && fsm.existsSync(m[2]))
+  T('...and the paths use forward slashes, which bash and PowerShell both accept', !!m && !m[1].includes('\\') && !m[2].includes('\\'))
+  const second = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+  T('...not armed: the next empty wait repeats the order', /hive-await\.js/.test(second))
+  // 4 Oct 2026: a passive participant never answers and the room waits on nobody passive, so there
+  // is nothing to wake it for, and an order to keep a listener running would spend its turns.
+  makeRoom('Ada', { passive: true })
+  T('a passive participant is not ordered to start a listener', !/hive-await\.js/.test(textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))))
+  makeRoom('Ada')
+
+  const { armedFile } = await import('../hive-listen.js')
+  const path = (await import('path')).default
+  const af = armedFile('Ada', 'room-test')
+  fsm.mkdirSync(path.dirname(af), { recursive: true })
+  fsm.writeFileSync(af, JSON.stringify({ pid: process.pid, at: Date.now(), beat: Date.now(), synced: true }))
+  try {
+    const third = textOf(await _test.callTool('hive_wait', { timeoutSeconds: 1 }))
+    T('...when armed: empty wait says it may end its turn now, listener will wake it', /may end your turn now/i.test(third) && !/hive-await\.js/.test(third))
+  } finally {
+    try { fsm.unlinkSync(af) } catch { }
+  }
+}
+
+section('a mixed build is told to the one who joins (2 Oct 2026)')
+{
+  // The room posts a warning naming nobody, which agents are told to skip; the joiner is the one
+  // who can act, so the join reply names each AI member whose reported build differs.
+  const L = '0.12.4+aaaaaaa'
+  const ms = [
+    { name: 'Me', kind: 'ai', hv: L },
+    { name: 'Old', kind: 'ai', hv: '0.12.2+bbbbbbb' },
+    { name: 'Same', kind: 'ai', hv: L },
+    { name: 'Hana', kind: 'human' },
+    { name: 'Quiet', kind: 'ai' },
+  ]
+  const mixedLine = _test.mixedLine || (() => '') // so the old build fails on the assertion, not a TypeError
+  const line = mixedLine(ms, 'Me', L)
+  T('a member on another build is named, with both builds', /MIXED BUILDS: Old runs 0\.12\.2\+bbbbbbb; you run 0\.12\.4\+aaaaaaa/.test(line), line)
+  T('...and nobody on the same build, no human, and no client that reports no build', !/Same|Hana|Quiet/.test(line), line)
+  T('one build in the room: nothing is said', !!_test.mixedLine && mixedLine(ms.filter((m) => m.name !== 'Old'), 'Me', L) === '')
 }
 
 console.log(`\n=== MCP WAIT: ${pass} passed, ${fail} failed ===`)

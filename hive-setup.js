@@ -34,11 +34,12 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { VERSION } from './hive-version.js'
-import { currentRelayFor, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
+import { currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { validateMemberName } from './hive-mailbox.js'
+import { installStopHook, installAntigravityStopHook } from './hive-hook-install.js'
 
 export const SERVER_KEY = 'hivecode'
 const BACKUP_SUFFIX = '.before-hivecode'
@@ -59,7 +60,7 @@ export function agentTargets(home = os.homedir(), env = process.env, platform = 
     // Antigravity also reads this one. It is only touched when it ALREADY has a hivecode entry --
     // a stale one there could shadow the fresh one above -- and never created.
     { id: 'antigravity-2', label: 'Antigravity (2nd)', file: path.join(home, '.gemini', 'config', 'mcp_config.json'), present: path.join(home, '.gemini', 'config', 'mcp_config.json'),
-      onlyIfHasEntry: true, restart: 'same refresh as above' },
+      onlyIfHasEntry: true, secondaryOf: 'antigravity', restart: 'same refresh as above' },
     { id: 'cursor', label: 'Cursor', file: path.join(home, '.cursor', 'mcp.json'), present: path.join(home, '.cursor'),
       restart: 'Cursor Settings > MCP, then turn hivecode off and on (or restart Cursor)' },
     { id: 'windsurf', label: 'Windsurf', file: path.join(home, '.codeium', 'windsurf', 'mcp_config.json'), present: path.join(home, '.codeium', 'windsurf'),
@@ -306,6 +307,23 @@ export function installRuntime(home = os.homedir(), here = fileURLToPath(import.
   return { mode: 'installed', js, dir: dest, packages: closure.size }
 }
 
+/** The project this was run in, when there is one to offer: a git work tree with at least one
+ *  commit, whose top is not the home folder (a home kept in git is a dotfiles repo, not a project;
+ *  this machine's is one). Returns the repo's top folder, or null. Any git failure is null: setup
+ *  must never fail because git is missing. */
+export function projectRepo(cwd = process.cwd(), home = os.homedir()) {
+  const git = (...args) => {
+    try {
+      const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 10000, windowsHide: true })
+      return r.status === 0 ? String(r.stdout || '').trim() : ''
+    } catch { return '' }
+  }
+  const top = git('rev-parse', '--show-toplevel')
+  if (!top || !git('rev-parse', '--verify', '-q', 'HEAD^{commit}')) return null
+  const norm = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
+  return norm(top) === norm(home) ? null : path.resolve(top)
+}
+
 function defaultName() {
   let base = 'agent'
   try { base = os.userInfo().username || base } catch {}
@@ -386,7 +404,13 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
 
   let failed = 0
   const ready = []
+  // A second config file of an app is not an app of its own. A READY one folds into its app's line
+  // ("Antigravity (2nd) READY" under "Antigravity READY" made a stranger ask which one was real);
+  // a FAILED one is never folded -- it keeps a line of its own.
+  const isReady = (r) => (r.status === 'written' || r.status === 'unchanged') && r.verify && r.verify.ok
+  const folded = new Set(results.filter((r) => r.t.secondaryOf && isReady(r) && results.some((p) => p.t.id === r.t.secondaryOf && isReady(p))))
   for (const r of results) {
+    if (folded.has(r)) continue
     const where = r.t.file
     if (r.status === 'absent') { log(`  ${pad(r.t.label, 15)} not installed`); continue }
     if (r.status === 'refused' || r.status === 'error') {
@@ -399,9 +423,58 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
       log(`  ${pad(r.t.label, 15)} FAILED  ${where}\n  ${' '.repeat(15)}         written, but it does not start: ${r.verify.error}`)
       continue
     }
+    const extra = results.filter((x) => folded.has(x) && x.t.secondaryOf === r.t.id)
+    r.changed = r.status === 'written' || extra.some((x) => x.status === 'written')
     ready.push(r)
     const how = r.verify.skipped ? 'dry run, nothing written' : `starts in ${(r.verify.ms / 1000).toFixed(1)}s`
-    log(`  ${pad(r.t.label, 15)} READY   ${r.status === 'unchanged' ? 'already set up' : r.detail}  (${how})`)
+    const what = r.status === 'written' ? r.detail : r.changed ? 'updated its second config file' : 'already set up'
+    log(`  ${pad(r.t.label, 15)} READY   ${what}  (${how}${extra.length ? `, ${extra.length + 1} config files` : ''})`)
+  }
+
+  // THE STOP GATE, FOR CLAUDE CODE (4 Oct 2026). An agent in a room went deaf the moment it ended a
+  // turn with no listener running, and the gate that stops that (hive-stop-hook.js) was a separate
+  // command nobody ran. Setup configures the agent apps, so it arms the gate too: in
+  // ~/.claude/settings.json beside any Stop hook already there, merged, never replaced. Only once
+  // the hook has been seen to run, and only for a Claude Code setup made READY -- a hook that cannot
+  // start fails on every turn of every session on the machine.
+  const cc = ready.find((r) => r.t.claudeCode)
+  if (cc) {
+    const node = stableNodePath().replace(/\\/g, '/')
+    const hookJs = path.join(path.dirname(runtime.js), 'hive-stop-hook.js').replace(/\\/g, '/')
+    const settings = path.join(home, '.claude', 'settings.json')
+    // stop_hook_active: the hook loads everything it imports, then lets the stop through untouched.
+    const ran = o.dryRun ? { status: 0 } : spawnSync(node, [hookJs], { input: JSON.stringify({ stop_hook_active: true }), encoding: 'utf8', timeout: 15000, windowsHide: true })
+    if (ran.status !== 0) {
+      log(`  ${pad('stop gate', 15)} NOT added: the hook did not run (${(ran.error && ran.error.message) || (ran.stderr || '').trim().split('\n')[0] || 'exit ' + ran.status}).`)
+    } else {
+      const h = installStopHook(settings, `"${node}" "${hookJs}"`, { dryRun: o.dryRun })
+      if (h.status === 'refused') log(`  ${pad('stop gate', 15)} NOT added: ${h.detail}. Fix that file, then run setup again.`)
+      else if (h.status === 'unchanged') log(`  ${pad('stop gate', 15)} already in ${settings}`)
+      else {
+        cc.changed = true // a hook loads only when Claude Code starts, so it is on the restart list
+        log(`  ${pad('stop gate', 15)} ${o.dryRun ? 'would be added to' : 'added to'} ${settings}: in a room, Claude Code is not let end a turn with no listener running${h.others ? ` (${h.others} other Stop hook${h.others > 1 ? 's' : ''} left as they were)` : ''}`)
+      }
+    }
+  }
+
+  const agy = ready.find((r) => r.t.id === 'antigravity')
+  if (agy) {
+    const node = stableNodePath().replace(/\\/g, '/')
+    const hookJs = path.join(path.dirname(runtime.js), 'hive-stop-hook.js').replace(/\\/g, '/')
+    const hooksPath = path.join(home, '.gemini', 'config', 'hooks.json')
+    const cmd = `"${node}" "${hookJs}" --app=antigravity`
+    const ran = o.dryRun ? { status: 0 } : spawnSync(node, [hookJs, '--app=antigravity'], { input: JSON.stringify({ stop_hook_active: true }), encoding: 'utf8', timeout: 15000, windowsHide: true })
+    if (ran.status !== 0) {
+      log(`  ${pad('stop gate', 15)} NOT added for Antigravity: the hook did not run (${(ran.error && ran.error.message) || (ran.stderr || '').trim().split('\n')[0] || 'exit ' + ran.status}).`)
+    } else {
+      const h = installAntigravityStopHook(hooksPath, cmd, { dryRun: o.dryRun })
+      if (h.status === 'refused') log(`  ${pad('stop gate', 15)} NOT added for Antigravity: ${h.detail}. Fix that file, then run setup again.`)
+      else if (h.status === 'unchanged') log(`  ${pad('stop gate', 15)} already in ${hooksPath}`)
+      else {
+        agy.changed = true
+        log(`  ${pad('stop gate', 15)} ${o.dryRun ? 'would be added to' : 'added to'} ${hooksPath}: in a room, Antigravity is not let end a turn with no listener running${h.others ? ` (${h.others} other hook group${h.others > 1 ? 's' : ''} left as they were)` : ''}`)
+      }
+    }
   }
 
   const manual = { mcpServers: { [SERVER_KEY]: serverEntry(runtime.js) } }
@@ -429,17 +502,47 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
 
   if (ready.length) {
     log(`\nNEXT\n`)
-    ready.forEach((r, i) => log(`  ${i + 1}. ${r.t.label}: ${r.t.restart}.`))
+    // Numbered steps only where this run wrote something. An entry that was already right says
+    // nothing about whether the RUNNING app has loaded it -- "run setup again, then reload the agent"
+    // is the README's first fix for a missing hive_join -- so those apps get one line, never silence.
+    const toRestart = ready.filter((r) => r.changed)
+    const already = ready.filter((r) => !r.changed)
+    toRestart.forEach((r, i) => log(`  ${i + 1}. ${r.t.label}: ${r.t.restart}.`))
+    if (already.length) log(`  Already set up: ${already.map((r) => r.t.label).join(', ')}. Restart ${already.length === 1 ? 'it' : 'them'} only if the hivecode tools are missing there.`)
     if (link) {
       log(`\n  Then paste this to your agent:\n`)
       log(`    Use your hive_join tool to join the Hivecode room ${link} as ${name}. Then follow the rules it gives you.`)
     } else {
-      log(`\n  Then paste ONE of these to your agent:\n`)
-      log(`    Use your hive_join tool to join the Hivecode room <the link you were sent> as ${name}. Then follow the rules it gives you.`)
-      log(`    Use your hive_join tool to host a new Hivecode room as ${name}, then give me the join link.`)
+      // THE EMPTY-ROOM TRAP (onboarding audit, 2 Oct 2026). A team runs setup in its project and
+      // is told to host a room, which is new and empty: its code is not in it, and nothing said how
+      // to bring it in. `branch` does, so inside a repo it comes first -- with the privacy line
+      // BEFORE the command, because running it publishes the repo's committed files. The name is
+      // a real one: `<name>` pasted into PowerShell is a parse error, not a placeholder.
+      const repo = projectRepo(process.cwd(), home)
+      if (repo) {
+        const relay = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY
+        log(`\n  You're in a git repo (${repo}). To give your agents its code, run this here first:\n`)
+        log(`    npx -y hivecode-mcp@latest branch hive-work\n`)
+        log(`  It cuts a new branch, hive-work, without switching your checkout, puts its committed files in a room,`)
+        log(`  and prints the line for your agents and for teammates.${currentRelayFor(relay).relay === PUBLIC_DEFAULT_RELAY ? ' This uses the public relay: anyone with the room\'s link can read those files.' : ''}`)
+      }
+      // Inside a repo the empty-room line is the trap itself: Antigravity1's scripted stranger walk
+      // (3 Oct) found a stranger skips the command above and pastes "host a new, empty room". Only
+      // the line for someone who was SENT a link stays; the README still documents an empty room.
+      if (repo) {
+        log(`\n  If you were sent a link instead, paste this to your agent:\n`)
+        log(`    Use your hive_join tool to join the Hivecode room <the link you were sent> as ${name}. Then follow the rules it gives you.`)
+      } else {
+        log(`\n  Then paste ONE of these to your agent:\n`)
+        log(`    Use your hive_join tool to join the Hivecode room <the link you were sent> as ${name}. Then follow the rules it gives you.`)
+        log(`    Use your hive_join tool to host a new, empty Hivecode room as ${name}, then give me the join link.`)
+      }
     }
     log(`\n  Its files go in ${path.join(home, 'hivecode', '<room>', name)} unless you name a folder.`)
-    log(`  People join from a browser, no install: ${PUBLIC_DEFAULT_RELAY.replace(/^wss:/, 'https:')}/control\n`)
+    // With a link, the room itself: its relay's Control Room with the link in the hash, so a person
+    // never pastes wss:// into an address bar. Without one, the panel they paste a link into.
+    const panel = (link && controlUrl(link)) || `${(process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY).replace(/^ws/, 'http').replace(/\/+$/, '')}/control`
+    log(`  People join from a browser, no install: ${panel}\n`)
   }
   return failed ? 1 : 0
 }

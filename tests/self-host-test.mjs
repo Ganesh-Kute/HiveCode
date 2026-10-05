@@ -85,13 +85,18 @@ process.on('exit', cleanup)
 // ------------------------------------------------------- A: a relay of our own comes up
 sec('A  a relay of our own comes up and answers for itself')
 {
-  relayProc = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
+  // hive-relay.js, the command the guide tells people to run, not server.js with an env built here:
+  // until 3 Oct this started server.js directly, so it measured the env this file chose and never
+  // what `npx hivecode-relay` sets. HIVE_ENFORCE_CLAIMS and HIVE_JWT_SECRET are blanked so an
+  // operator's defaults are what get measured, not whatever the shell running the suite exports.
+  relayProc = spawn(process.execPath, [path.join(ROOT, 'hive-relay.js')], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: DATA, HIVE_SEATS: '25', HIVE_RELAY_PIN: '', HIVE_PRIVATE: '' },
+    env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: DATA, HIVE_SEATS: '25', HIVE_RELAY_PIN: '', HIVE_PRIVATE: '', HIVE_ENFORCE_CLAIMS: '', HIVE_JWT_SECRET: '', HIVE_AUTH_MODE: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let relayErr = ''
   relayProc.stderr.on('data', (d) => { relayErr += d.toString() })
+  relayProc.stdout.resume() // the banner; unread, a full pipe would stall the relay
 
   let health = null
   for (let i = 0; i < 60 && !health; i++) { health = await getJSON(HEALTH); if (!health) await sleep(250) }
@@ -104,6 +109,11 @@ sec('A  a relay of our own comes up and answers for itself')
     typeof health.uptimeSec === 'number' && health.uptimeSec < 60, `uptime=${health.uptimeSec}`)
   T('A4 persistence is on (a room must survive the team going home)',
     health.persistence === true, JSON.stringify(health.persistence))
+  // 3 Oct 2026: server.js defaults HIVE_ENFORCE_CLAIMS to 'off', and this command left it there,
+  // so a team's own relay let anyone write over a file someone else had claimed, while the README
+  // and the site promise the write is held. The public relay runs 'queue' (render.yaml).
+  T('A4b claims hold: a write to a file someone else claimed is held, as on the public relay',
+    health.enforceClaims === 'queue', JSON.stringify(health.enforceClaims))
   T('A5 it starts with no rooms, so section C measures OUR traffic',
     health.rooms === 0 && health.connections === 0, `rooms=${health.rooms} conns=${health.connections}`)
 }
