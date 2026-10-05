@@ -320,7 +320,14 @@ export function projectRepo(cwd = process.cwd(), home = os.homedir()) {
   }
   const top = git('rev-parse', '--show-toplevel')
   if (!top || !git('rev-parse', '--verify', '-q', 'HEAD^{commit}')) return null
-  const norm = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p))
+  // THROUGH LINKS (6 Oct 2026, the first macOS run). git names the top folder with links resolved,
+  // and the home folder comes as written. macOS temp folders sit behind one (/var is a link to
+  // /private/var), so a home kept in git was offered as a project there (F7). Both sides are resolved.
+  const norm = (p) => {
+    let r = path.resolve(p)
+    try { r = fs.realpathSync.native(r) } catch { /* a path that cannot be resolved is compared as written */ }
+    return process.platform === 'win32' ? r.toLowerCase() : r
+  }
   return norm(top) === norm(home) ? null : path.resolve(top)
 }
 

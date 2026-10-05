@@ -155,6 +155,24 @@ try {
     T('N3 the newer one is woken by the mention', !r2.running && !!r2.parsed && r2.parsed.reason === 'mention' && /ping two/.test(r2.parsed.messages.join(' ')), JSON.stringify(r2.parsed || {}).slice(0, 200))
   }
 
+  // macOS, 6 Oct 2026: N1 and N3 failed because the older listener read the file just before the
+  // newer one wrote it, then put its own claim back on top. This leaves the file exactly that way.
+  console.log("# an older listener's claim written over a newer one's does not push the newer one out")
+  {
+    const fast = { ...env3, HIVE_AWAIT_BEAT_MS: '300' }
+    const L1 = listen('Wren', 1, 15000, { lnk: link3, env: fast })
+    await L1.ready
+    const olderClaim = JSON.parse(fs.readFileSync(armedFile('Wren', room3, env3), 'utf8'))
+    const L2 = listen('Wren', 1, 15000, { lnk: link3, env: fast })
+    await L2.ready
+    fs.writeFileSync(armedFile('Wren', room3, env3), JSON.stringify({ ...olderClaim, beat: Date.now() }))
+    const r1 = await L1.result()
+    T('R1 the older listener still leaves, saying why', !r1.running && !!r1.parsed && r1.parsed.reason === 'superseded', JSON.stringify(r1.parsed || {}).slice(0, 200))
+    P3.say('@Wren ping three')
+    const r2 = await L2.result()
+    T('R2 the newer one stays, and is the one the mention wakes', !r2.running && !!r2.parsed && r2.parsed.reason === 'mention' && /ping three/.test(r2.parsed.messages.join(' ')), JSON.stringify(r2.parsed || {}).slice(0, 200))
+  }
+
   console.log('# with TEMP and TMPDIR unset (most Linux), nothing lands in the folder it was started in')
   {
     T('L1 its folder is under the system temp folder', path.resolve(awaitDir('Wren', {})).startsWith(path.resolve(os.tmpdir())), awaitDir('Wren', {}))

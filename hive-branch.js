@@ -74,8 +74,14 @@ export function repoRoot(dir) {
   return r.code === 0 && r.out ? path.resolve(r.out) : null
 }
 
+// Links are resolved on both sides: git names a repository's top with them resolved, while the home
+// directory comes as written, and on macOS the temp folders sit behind one (6 Oct 2026).
 const sameDir = (a, b) => {
-  const n = (p) => path.resolve(p).replace(/[\\/]+$/, '')
+  const n = (p) => {
+    let r = path.resolve(p)
+    try { r = fs.realpathSync.native(r) } catch { /* a path that cannot be resolved is compared as written */ }
+    return r.replace(/[\\/]+$/, '')
+  }
   return process.platform === 'win32' ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b)
 }
 

@@ -58,17 +58,37 @@ const SESSION = process.env.CLAUDE_CODE_SESSION_ID || process.env.ANTIGRAVITY_CO
 const AGAIN = `"${process.execPath.replace(/\\/g, '/')}" "${path.resolve(process.argv[1]).replace(/\\/g, '/')}" "${LINK}" "${NAME}" ${IDLE_MIN}`
 const startedAt = Date.now()
 let synced = false
-const ownerPid = () => { try { return Number(JSON.parse(fs.readFileSync(ARMED, 'utf8')).pid) || 0 } catch { return 0 } }
+const readArmed = () => { try { return JSON.parse(fs.readFileSync(ARMED, 'utf8')) } catch { return null } }
+const ownerPid = () => Number((readArmed() || {}).pid) || 0
+const alive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+// THE NEWEST BY START TIME WINS, NOT THE LAST ONE TO WRITE (6 Oct 2026, the first macOS run). Every
+// listener reads the file and then rewrites it on each beat. An older listener that read it just
+// before a newer one wrote it put its own claim back on top, and the NEWER one then left as
+// "superseded" while the older stayed: N1 and N3 failed on macOS, never on Windows. So a claim is
+// judged by when its listener started. A listener yields only to one that started after it and is
+// still running; a newer one that finds an older claim on top takes the file back on its next beat.
+// The file is also written whole (a temp file renamed over it), so a reader never sees half of one.
+const newerThanMe = (rec) => {
+  const pid = Number(rec && rec.pid) || 0
+  if (!pid || pid === process.pid || !alive(pid)) return false
+  const at = Number(rec.at) || 0
+  return at > startedAt || (at === startedAt && pid > process.pid)
+}
 function beat() {
   try {
     fs.mkdirSync(path.dirname(ARMED), { recursive: true })
-    fs.writeFileSync(ARMED, JSON.stringify({ pid: process.pid, name: NAME, room, link: LINK, session: SESSION, at: startedAt, beat: Date.now(), synced }))
+    const body = JSON.stringify({ pid: process.pid, name: NAME, room, link: LINK, session: SESSION, at: startedAt, beat: Date.now(), synced })
+    const part = `${ARMED}.${process.pid}.tmp`
+    try { fs.writeFileSync(part, body); fs.renameSync(part, ARMED) } catch {
+      try { fs.rmSync(part, { force: true }) } catch {}
+      fs.writeFileSync(ARMED, body)
+    }
   } catch { /* unarmed is the safe reading: the hook asks for a fresh listener, and it replaces this one */ }
 }
 const superseded = () => {
-  const o = ownerPid()
-  if (!o || o === process.pid) return false
-  finish('superseded', { note: `a newer listener for ${NAME} in ${room} took over (pid ${o}). Do not start this one again.` })
+  const rec = readArmed()
+  if (!newerThanMe(rec)) return false
+  finish('superseded', { note: `a newer listener for ${NAME} in ${room} took over (pid ${rec.pid}). Do not start this one again.` })
   return true
 }
 beat()

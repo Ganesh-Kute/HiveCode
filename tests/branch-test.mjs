@@ -115,6 +115,14 @@ try {
   const a8b = await cli(inside, 'branch', 'homebound', '--relay', RELAY)
   for (const [k, v] of Object.entries(homeWas)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   T('A8b a folder inside a home-directory repo is refused (Q560), and nothing is created', a8b.code === 1 && /home directory/.test(a8b.out) && g(project2, 'rev-parse', '--verify', '--quiet', 'refs/heads/homebound').code !== 0 && g(project2, 'config', '--get', 'hivecode.homebound.room').code !== 0, a8b.out.slice(0, 100))
+  // ...and when the home directory is reached through a link (macOS, 6 Oct 2026: git names the
+  // repository's top with links resolved, the home directory comes as written).
+  const linkedHome = path.join(tmp, 'home-link')
+  fs.symlinkSync(project2, linkedHome, 'junction')
+  process.env.USERPROFILE = linkedHome; process.env.HOME = linkedHome
+  const a8c = await cli(path.join(linkedHome, 'not-a-repo'), 'branch', 'homebound2', '--relay', RELAY)
+  for (const [k, v] of Object.entries(homeWas)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  T('A8c ...also when the home directory is reached through a link', a8c.code === 1 && /home directory/.test(a8c.out) && g(project2, 'rev-parse', '--verify', '--quiet', 'refs/heads/homebound2').code !== 0 && g(project2, 'config', '--get', 'hivecode.homebound2.room').code !== 0, a8c.out.slice(0, 100))
   const seedDir = g(project, 'config', '--get', 'hivecode.feat.seed').out
   const seedGit = g(seedDir, 'status')
   T('A9 the seed folder is marked: git refuses to run in it', !!seedDir && seedGit.code !== 0 && /not a git repository/.test(seedGit.err), seedGit.err.slice(0, 90))

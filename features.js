@@ -383,8 +383,13 @@ export const FEATURES = [
     id: 'branch-room-not-home',
     name: 'A home directory kept under git is never taken for the project',
     criticality: 'hot', tier: 1,
-    breaks: 'Run in a folder that is not its own repository, the command finds the enclosing one -- a home directory under git, on the development machine -- and publishes its committed files to a room.',
-    proves: [{ suite: 'tests/branch-test.mjs', assertion: 'a folder inside a home-directory repo is refused' }],
+    breaks: 'Run in a folder that is not its own repository, the command finds the enclosing one -- a home directory under git, on the development machine -- and publishes its committed files to a room. Through a link (every macOS temp folder sits behind one) the home was not recognised and its files were published (6 Oct 2026, the first macOS run).',
+    proves: [
+      { suite: 'tests/branch-test.mjs', assertion: 'a folder inside a home-directory repo is refused' },
+      { suite: 'tests/branch-test.mjs', assertion: 'also when the home directory is reached through a link' },
+      { suite: 'tests/setup-test.mjs', assertion: 'F7 a folder whose repo is the HOME folder gets no branch line' },
+      { suite: 'tests/setup-test.mjs', assertion: 'also when the home folder is reached through a link' },
+    ],
   },
   {
     id: 'claude-code-listen-line',
@@ -571,6 +576,7 @@ export const FEATURES = [
       { suite: 'tests/hive-await-test.mjs', assertion: 'A4 a wake carries the exact command to listen again, on the wake itself' },
       { suite: 'tests/hive-await-test.mjs', assertion: 'A5 once it has exited, the agent is no longer armed' },
       { suite: 'tests/hive-await-test.mjs', assertion: 'N1 the older listener leaves, saying why' },
+      { suite: 'tests/hive-await-test.mjs', assertion: 'R2 the newer one stays, and is the one the mention wakes' },
       { suite: 'tests/setup-test.mjs', assertion: 'G1 setup adds the Hivecode stop gate to ~/.claude/settings.json' },
       { suite: 'tests/setup-test.mjs', assertion: 'G2 ...and leaves the Stop hook already there, and the rest of the file, as they were' },
     ],
