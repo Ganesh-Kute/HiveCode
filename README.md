@@ -40,6 +40,13 @@ Read this before you join from a real project.
   it like a password. If it leaks, start a new room. Let your agent host the room, so its name is
   random: a name you type yourself, like `myteam`, can be guessed, and on our relay your agent is
   warned when it joins one.
+- **Or make it a personal room, where the link alone lets nobody in.** Ask your agent to "host a
+  private Hivecode room" (`hive_join` with `private: true`). Each person then needs an invite of
+  their own: in the room's folder, run `npx -y hivecode-mcp@latest invite <name>` (add `--reader`,
+  or `--paths src,docs` to limit what they see) and send them the link it prints. Take one back
+  with `npx -y hivecode-mcp@latest revoke <name>`: the relay refuses them from then on and closes
+  their connection. The relay checks every invite itself, ours included. The room's key stays in
+  `~/.hivecode/keys` on the machine that hosted it, and only that machine can invite.
 - **These never leave your machine:** anything your `.gitignore` files ignore, `.git/`,
   `node_modules/`, `.env` and `.env.*`, keys and certificates (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
   `*.p8`, `*.ppk`, `*.jks`, `*.keystore`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), and login

@@ -37,6 +37,8 @@ if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
 import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
+import { newPersonalRoom, saveRoomKey, loadRoomKey, hostToken, main as roomKeyMain } from './hive-room-key.js'
+import { isSecuredRoom } from './token.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
 import { INSTRUCTIONS, JOIN_RULES } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
@@ -166,7 +168,7 @@ function defaultJoinTarget(link, name) {
   return { dir: path.join(HIVE_HOME, safeSegment(room), safeSegment(name)), link, hostedHere: false }
 }
 
-async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false, branch = '', repo = '' }) {
+async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false, branch = '', repo = '', private: personal = false }) {
   // REFUSED BEFORE THE OLD SESSION IS TORN DOWN. joinRoom's first act is to stop whatever session
   // exists, so validating after that point would leave an agent with a bad name holding nothing at
   // all -- it would lose a working room to a refusal it could have been given for free.
@@ -177,6 +179,14 @@ async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomByte
 Nothing was joined and your current session is untouched. Re-run hive_join with name: "${nameCheck.suggested}".
 
 This is refused rather than fixed for you because renaming silently is worse: if another member is already called "${nameCheck.suggested}", you would be merged into them -- one awareness entry, one read cursor, one mailbox -- and neither of you would be told. Your own prompt would also still say your name is "${name}", so you would stop recognising messages about yourself.`
+  }
+  // A PERSONAL ROOM IS ALWAYS A NEW ONE (8 Oct 2026, hive-room-key.js). Refused here, before the old
+  // session is torn down, for the same reason as the name check above.
+  if (personal && (link || branch)) {
+    return `private: true hosts a NEW personal room, so it cannot be combined with a ${link ? 'link' : 'branch'}.\n\nNothing was joined and your current session is untouched.`
+  }
+  if (personal && dir && roomIn(dir)) {
+    return `${path.resolve(dir)} already belongs to room ${roomIn(dir)}, and a folder holds one room. Pass a new dir, or leave out private to rejoin that room.\n\nNothing was joined and your current session is untouched.`
   }
   // A BRANCH ROOM (hive-branch.js): the link comes from the repo's git config, and the folder is
   // this participant's own, marked so git refuses to run in it. Resolved and refused BEFORE the old
@@ -195,11 +205,20 @@ This is refused rather than fixed for you because renaming silently is worse: if
   }
   if (session) { try { session.hive.stop() } catch {} ; session = null }
   let hostedHere = false
+  // The new personal room exists only in memory until the privacy gate below has passed: a refused
+  // join must leave nothing behind, and that includes a key for a room nobody ever entered.
+  let fresh = null
+  if (personal) {
+    fresh = newPersonalRoom()
+    link = `${DEFAULT_RELAY}|${fresh.room}`
+    if (!dir) dir = path.join(HIVE_HOME, fresh.room, safeSegment(name))
+    hostedHere = true
+  }
   if (!dir) ({ dir, link, hostedHere } = defaultJoinTarget(link, name))
   const ROOT = path.resolve(dir)
   fs.mkdirSync(ROOT, { recursive: true })
   const { relay, room, token: linkToken, mode: resolvedMode, migratedFrom } = resolveRoom(link, dir)
-  const mode = hostedHere ? 'HOSTED (new room)' : resolvedMode
+  const mode = hostedHere ? (fresh ? 'HOSTED (new personal room)' : 'HOSTED (new room)') : resolvedMode
   // THE PRIVACY GATE, and note where it sits: after the relay is resolved, BEFORE the
   // .hive.json write below and before startSync opens a socket. A refused join must leave
   // nothing behind -- no config pointing at the wrong relay for the next process to find,
@@ -218,8 +237,13 @@ folder: ${ROOT}
 NOTHING WAS JOINED. No socket was opened, no file was published, and ${path.join(ROOT, '.hive.json')}
 was not written. Fix the relay and call hive_join again.`
   }
+  if (fresh) saveRoomKey(fresh, { relay, host: name })
   // token precedence: explicit arg > token baked into the join link > $HIVE_TOKEN.
-  const useToken = token || linkToken || process.env.HIVE_TOKEN || ''
+  let useToken = token || linkToken || process.env.HIVE_TOKEN || ''
+  // A personal room this machine hosts: the host's own token is minted from the key, and renewed
+  // before it runs out, so the host can never be locked out of its own room. Anyone else joining
+  // here keeps the token it came with.
+  if (!token && isSecuredRoom(room)) useToken = hostToken(room, name, useToken, { kind: kind || 'ai', owner })
   // persist the token too, so a re-join from .hive.json keeps the grant (the
   // invitee pastes the link once; subsequent joins just read the folder config).
   // pinnedRelay SURVIVES the rewrite. This line used to write only relay/room/token, so a pin
@@ -444,10 +468,17 @@ was not written. Fix the relay and call hive_join again.`
   // What a person without an agent clicks. Pasting wss:// into a browser's address bar searches for it.
   const browserUrl = controlUrl(inviteLink)
   const ownControl = useToken ? controlUrl(`${relay}|${room}|${useToken}`) : ''
-  const tokenNote = useToken
-    ? `\nthis room checks tokens: each person joins with a token of their own. Mint one per person with npx -y -p hivecode-relay hivecode-token --name <them> --room "${room}" --role agent (add --paths to limit them) and send it to them directly. Never pass on yours: whoever holds it joins as you.` +
-      (ownControl ? `\nyour Control Room (carries YOUR token: open it yourself, never share it): ${ownControl}` : '')
-    : ''
+  // A PERSONAL ROOM (hs_ id) is let into by an invite from its host, and nothing else: the plain
+  // link below gets a stranger nothing, so it is not offered as the way in.
+  const personalRoom = isSecuredRoom(room)
+  const ownControlLine = ownControl ? `\nyour Control Room (carries YOUR token: open it yourself, never share it): ${ownControl}` : ''
+  const tokenNote = personalRoom
+    ? (loadRoomKey(room)
+      ? `\nPERSONAL ROOM: the relay lets in only people you invite, even on the public relay. It still carries the files, so for code that must never leave your machines, run your own relay. Invite one person at a time (each link works only for them): npx -y hivecode-mcp@latest invite <name> --dir "${ROOT}"  (add --reader, or --paths src,docs). Take one back: npx -y hivecode-mcp@latest revoke <name> --dir "${ROOT}"`
+      : `\nPERSONAL ROOM: only people its host invites can join. To bring someone in, ask the host for an invite of their own; never pass on yours.`) + ownControlLine
+    : useToken
+      ? `\nthis room checks tokens: each person joins with a token of their own. Mint one per person with npx -y -p hivecode-relay hivecode-token --name <them> --room "${room}" --role agent (add --paths to limit them) and send it to them directly. Never pass on yours: whoever holds it joins as you.` + ownControlLine
+      : ''
   // THE VERDICT, NOT JUST THE URL. `relay: wss://...` on its own is unreadable to anybody
   // who has not run a relay -- the public one and a company's own look identical. The
   // bracketed verdict is what makes "did my source just leave the building?" answerable
@@ -478,12 +509,13 @@ was not written. Fix the relay and call hive_join again.`
   // One line per thing a person acts on (the stranger walk, 3 Oct: as one line it pasted into chat
   // apps as a wall of links).
   const people = browserUrl ? `\n  No AI agent? Open ${browserUrl}` : ''
-  const invite = /^HOSTED/.test(mode)
-    ? `\nto invite someone, forward this as is:\n  Join my Hivecode room. In a terminal, run this once (needs Node.js 18+), then do what it prints:\n    npx -y hivecode-mcp@latest setup "${inviteLink}"${people}`
-    : (browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : '')
+  const invite = personalRoom ? ''
+    : /^HOSTED/.test(mode)
+      ? `\nto invite someone, forward this as is:\n  Join my Hivecode room. In a terminal, run this once (needs Node.js 18+), then do what it prints:\n    npx -y hivecode-mcp@latest setup "${inviteLink}"${people}`
+      : (browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : '')
   // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
   // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.
-  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\ninvite link: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 // A MIXED BUILD, TOLD TO THE ONE WHO CAN ACT ON IT (2 Oct 2026). The room's own warning names
@@ -705,7 +737,7 @@ function withheldNotice(s) {
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join a Hivecode room, or host a new one, for a folder. Uses the join link if given, else <dir>/.hive.json, else hosts. Returns the room details and the rules you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch (npx -y hivecode-mcp@latest branch <name>)' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch (npx -y hivecode-mcp@latest branch <name>)' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' }, private: { type: 'boolean', description: 'host a NEW room only people you invite can join' } } } },
   { name: 'hive_assign', description: 'Give a task to a participant by name. A task for an AI with an owner stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name' }, text: { type: 'string', description: 'the task' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Tasks aimed at you (act only on accepted ones) and all pending tasks awaiting approval.',
@@ -1674,6 +1706,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(BUILD ? { build: BUILD } : {}), ...(updateNotice() ? { update: updateNotice() } : {}),
           ...(clientName() ? { app: clientName() } : {}), // which agent app this is: support needs it, and so does waitPolicy
           privacy: pv.headline,
+          access: isSecuredRoom(s.room) ? (loadRoomKey(s.room) ? 'personal: invite only, and you host it (npx -y hivecode-mcp@latest invite <name>)' : 'personal: invite only') : 'open: anyone with the link can join',
           ...(pv.warn ? { privacyWarning: pv.warn } : {}),
           ...(pv.pin && pv.pin.pinned ? { relayPin: pv.pin.origins.join(', ') } : {}),
           unread: mailbox().peek(chatArray()).unreadCount,
@@ -1863,6 +1896,10 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // `npx -y hivecode-mcp@latest branch <name>` binds a room to a git branch; `pr <name>` lands its work on it.
   // A CLI run like setup: nobody is speaking JSON-RPC to it, so it never opens stdio.
   process.exit(await HB.main(process.argv.slice(2)))
+} else if (isEntryPoint && (process.argv[2] === 'invite' || process.argv[2] === 'revoke')) {
+  // `invite <name>` makes one person's link into a personal room this machine hosts; `revoke <name>`
+  // takes it back. Commands rather than tools: see hive-room-key.js for why.
+  process.exit(await roomKeyMain(process.argv.slice(2)))
 } else if (isEntryPoint) {
   const transport = new StdioServerTransport()
   // STDIN CLOSING IS THE AGENT APP SAYING GOODBYE -- the MCP spec's stdio shutdown. Leave the

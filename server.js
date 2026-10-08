@@ -844,7 +844,8 @@ function scopeCheck(p, room) {
     // left at the scope's role so coordination — chat/board/tasks — still works.)
     if (role !== 'reader' && !writeAllowed(sc, filePath)) role = 'reader'
   }
-  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner }, role, path: filePath }
+  // jti rides along so a revoke can find and close the connections that token opened (handleRevoke).
+  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner, jti: p.jti }, role, path: filePath }
 }
 
 // A SELF-DECLARED NAME IS NOT A CREDENTIAL, AND IS NEVER TREATED AS ONE.
@@ -945,8 +946,16 @@ async function handleRevoke(req, res) {
     if (!roomRevoked.has(base)) roomRevoked.set(base, new Set())
     roomRevoked.get(base).add(jti)
     persistRoomRevoked() // survive a relay restart
-    audit('revoke', { room: base, jti, by: v.payload.name })
-    return reply(200, { ok: true })
+    // TAKEN BACK MEANS GONE NOW (8 Oct 2026). Refusing the token only at its next connect left a
+    // removed guest reading every change for as long as its socket stayed up -- which, for an agent
+    // that never disconnects, is forever. Close what it has open; its reconnect is then refused above.
+    let dropped = 0
+    for (const c of wss.clients) {
+      const g = c._hiveGrant || (c._hive && c._hive.identity ? { base: baseRoomOf(c._hive.room), jti: c._hive.identity.jti } : null)
+      if (g && g.jti === jti && g.base === base) { try { c.close(4401, 'token revoked') } catch { /* already closing */ } dropped++ }
+    }
+    audit('revoke', { room: base, jti, by: v.payload.name, dropped })
+    return reply(200, { ok: true, dropped })
   } catch { return reply(400, { error: 'bad request' }) }
 }
 
@@ -1530,6 +1539,7 @@ async function upgradeMux(req, socket, head, q) {
   wss.handleUpgrade(req, socket, head, (ws) => {
     noteConnectionOpened(key)
     const openedAt = Date.now()
+    ws._hiveGrant = { base: baseRoom, jti: auth.identity && auth.identity.jti } // what a revoke matches on
     audit('mux-connect', { baseRoom, identity: auth.identity })
     serveMux(ws, {
       baseRoom,

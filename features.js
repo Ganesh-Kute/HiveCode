@@ -324,6 +324,22 @@ export const FEATURES = [
 
   // ── branch rooms (hive-branch.js): a room bound to a git branch ──────────────────────────
   {
+    id: 'personal-room',
+    name: 'An agent can host a room only the people it invites can enter',
+    criticality: 'critical', tier: 2,
+    breaks: 'Every room an agent hosts is open: on the public relay its name is the only key, so whoever learns or guesses it reads every file and chat line in it. That happened to our own room "night" on 8 Oct 2026.',
+    proves: [
+      { suite: 'tests/personal-room-test.mjs', assertion: 'private:true hosts a personal room: an hs_ id whose fingerprint is the host\'s own key' },
+      { suite: 'tests/personal-room-test.mjs', assertion: 'the room\'s key sits outside the room folder, and no file in the room folder holds it' },
+      { suite: 'tests/personal-room-test.mjs', assertion: 'a stranger with the room\'s link alone is refused, and receives none of its files' },
+      { suite: 'tests/personal-room-test.mjs', assertion: 'invite makes a link for one person: their name, signed by the room\'s key, never the host\'s token' },
+      { suite: 'tests/personal-room-test.mjs', assertion: 'a reader invite sees the files, and its edit does not reach the host' },
+      { suite: 'tests/personal-room-test.mjs', assertion: 'a --paths invite sees only those folders' },
+      { suite: 'tests/personal-room-test.mjs', assertion: 'revoke closes the guest\'s live connection, refuses it from then on, and its edits stop arriving' },
+      { suite: 'tests/personal-room-test.mjs', assertion: 'a host whose own token has run out rejoins: renewed from the key, not refused' },
+    ],
+  },
+  {
     id: 'branch-room-random-id',
     name: 'A branch room\'s id is random, never the branch name',
     criticality: 'critical', tier: 2,
