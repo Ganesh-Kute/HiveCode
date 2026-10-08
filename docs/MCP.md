@@ -6,7 +6,8 @@ to set it up.
 
 ## Register it
 
-Add Hivecode to your MCP client config. The command runs this repo's server.
+`npx -y hivecode-mcp@latest setup` (below) writes this entry for you. Written by hand, it points at
+the runtime copy that `setup` installs:
 
 **Claude Code** (`.mcp.json` in your project, or user settings):
 ```json
@@ -14,7 +15,7 @@ Add Hivecode to your MCP client config. The command runs this repo's server.
   "mcpServers": {
     "hivecode": {
       "command": "node",
-      "args": ["C:/Users/G1/Desktop/N/hive-mcp.js"],
+      "args": ["<your home>/.hivecode/runtime/<version>/node_modules/hivecode-mcp/hive-mcp.js"],
       "env": { "HIVE_RELAY": "wss://hivecode-relay.onrender.com" }
     }
   }

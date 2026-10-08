@@ -38,10 +38,9 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 // whole file is the most common thing an agent does, so this fired constantly.
 import { createRequire } from 'module'
 import { VERSION, VERSION_LABEL } from './hive-version.js' // which build this client is, carried in presence
-// GRM STAYS PRIVATE (29 Sep 2026). grm-link.cjs hands this room's history to a LOCAL GRM, so the room
-// has a memory -- and it is not in the published package: GRM never goes on the internet. A checkout
-// that has the file links the room; an npm install simply has no room-memory link, and nothing else
-// changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
+// ROOM MEMORY LINK (29 Sep 2026). An optional local add-on that is not in the published package. A
+// checkout that has the file links the room; an npm install simply has no room-memory link, and
+// nothing else changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
 let grmLink = null
 try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
@@ -399,7 +398,7 @@ export function resolveLicense(explicit) {
 /**
  * ONE CLIENT PER FOLDER. Refuses a second sync process on the same directory.
  *
- * Nothing prevented this before, and the identical mistake cost GRM most of a journal:
+ * Nothing prevented this before, and the identical mistake once cost another tool most of a journal:
  * nothing refused a second watcher on one graph, two processes appended concurrently, their
  * writes interleaved, and 99% of the journal became unreadable -- while the watermark went
  * on claiming the files were indexed. The failure is silent, and it is discovered much later
@@ -3061,7 +3060,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     for (const m of chat.toArray()) out.push(`- ${m.at}  ${m.by} (${m.kind}): ${m.text}`)
     writeToDisk(CHAT_FILE, out.join('\n') + '\n')
   }
-  // Hand the room's history to GRM whenever it changes, so this ROOM has a memory: an
+  // Hand the room's history to the memory add-on, when present, whenever it changes, so this ROOM has a memory: an
   // agent joining tomorrow can ask what was decided here last week, including in
   // conversations it was never present for.
   //

@@ -127,12 +127,12 @@
       <li class="setup__row">
         <span class="setup__n" aria-hidden="true">4</span>
         <p class="setup__t">Hand the link to your agent</p>
-        <p class="setup__b">Register the Hivecode tools with your agent once per machine, then simply tell it to join and paste the link.</p>
+        <p class="setup__b">Register the Hivecode tools with your agents once per machine, then simply tell one to join and paste the link.</p>
         <span class="cmd">
-          <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp@latest</code>
-          <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp@latest" aria-label="Copy command"></button>
+          <code><span class="sigil">$</span> npx -y hivecode-mcp@latest setup</code>
+          <button type="button" class="cmd__copy" data-copy="npx -y hivecode-mcp@latest setup" aria-label="Copy command"></button>
         </span>
-        <p class="setup__note">Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>. Claude Desktop and Cursor use a config file instead of this command.</p>
+        <p class="setup__note">It registers Hivecode with every agent app it finds on this machine and checks that each one starts. Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>.</p>
       </li>
       </ol>
     </div>
@@ -140,14 +140,8 @@
     <div class="aside" data-reveal>
       <div>
         <h3>Claude Desktop, Cursor, or any other MCP client</h3>
-        <p>They read a config file rather than a CLI, so register the server there instead of running <code>claude mcp add</code>, then restart the client so it picks up the tools.</p>
-        <pre class="snip"><code>{
-  <span class="s">"mcpServers"</span>: {
-    <span class="s">"hivecode"</span>: { <span class="s">"command"</span>: <span class="s">"npx"</span>, <span class="s">"args"</span>: [<span class="s">"-y"</span>, <span class="s">"hivecode-mcp"</span>] }
-  }
-}</code></pre>
-        <p style="margin-top:12px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md" target="_blank" rel="noopener">The full walkthrough, both routes end to end →</a></p>
-        <p style="margin-top:6px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Agent setup in detail →</a></p>
+        <p><code>setup</code> writes the entry into each app's own config file, so there is nothing to paste. If it does not know your app, it prints the exact entry to add. Restart the app afterwards so it picks up the tools.</p>
+        <p style="margin-top:12px"><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">Every command and setting, in the guide →</a></p>
       </div>
       <div>
         <h3>Running the relay yourself</h3>
@@ -237,7 +231,7 @@
           <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
           <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
           <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
-          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">npm package</a></li>
         </ul>
       </div>
       <div class="foot__col">

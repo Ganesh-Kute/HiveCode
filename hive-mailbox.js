@@ -92,7 +92,7 @@ const stripCodeSpans = stripSpansAndQuotes
  *
  * Measured in room `night` on 20 Sep 2026, against the old bare /@([\w-]+)/g:
  *
- *   "email me at ganesh@gmail.com"      -> ["gmail"]                 every email address
+ *   "email me at anyone@gmail.com"      -> ["gmail"]                 every email address
  *   "blame line: author@example.org"    -> ["example"]               every commit trailer
  *   "npm i @modelcontextprotocol/sdk"   -> ["modelcontextprotocol"]  every scoped package
  *   "see `@all` in the docs"            -> broadcast to everyone     every doc about this feature

@@ -338,7 +338,7 @@ the way in.
 
 ## Support
 
-- **Issues** — https://github.com/Ganesh-Kute/HiveCode/issues
+- **Contact** — https://hivecode.getgrm.tech/contact
 - **Email** — support@getgrm.tech
 
 ## License
