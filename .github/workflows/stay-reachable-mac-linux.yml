@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -28,6 +28,19 @@ jobs:
           echo "TEMP=${TEMP:-unset} TMPDIR=${TMPDIR:-unset} os.tmpdir()=$(node -p 'require("os").tmpdir()')"
           fail=0
           for t in hive-await-test.mjs stop-hook-test.mjs mcp-wait-test.mjs setup-test.mjs session-resume-test.mjs task-authority-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
+      # What a founder on a Mac touches first, none of it run on macOS before 8 Oct 2026: a personal room
+      # and its invites (RSA keys, a key file written 0600), branch rooms (git, and the home folder behind
+      # macOS's /var link), case-only renames on a disk that ignores case, secured and self-hosted relays.
+      - name: personal rooms, invites, branch rooms, case-only renames, secured and self-hosted relays, unit
+        if: always()
+        run: |
+          fail=0
+          for t in test.js personal-room-test.mjs branch-test.mjs case-rename-test.mjs case-collision-test.mjs secured-invite-test.mjs self-host-test.mjs relay-pin-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"

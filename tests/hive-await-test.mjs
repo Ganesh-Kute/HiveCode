@@ -15,9 +15,13 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
+import net from 'net'
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
-const PORT = Number(process.env.HIVE_TEST_PORT) || (24200 + (process.pid % 17000))
+// A PORT THE SYSTEM SAYS IS FREE (8 Oct 2026). It was 24200 + pid % 17000: Windows reuses pids, so now
+// and then the port was still held, the relay could not bind, and this suite waited forever for a relay
+// that never said "listening" -- killed at the feature check's 240 s with half its assertions unprinted.
+const PORT = Number(process.env.HIVE_TEST_PORT) || await new Promise((res) => { const s = net.createServer(); s.listen(0, () => { const p = s.address().port; s.close(() => res(p)) }) })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
@@ -33,9 +37,13 @@ console.log('# it ships')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-await-'))
 const room = 'aw-' + crypto.randomBytes(5).toString('hex')
 const link = `ws://localhost:${PORT}|${room}`
+// A relay that never comes up is a FAILURE with a reason, not a hang: nothing after this line can run without it.
 const relay = await new Promise((res) => {
   const p = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off' } })
-  p.stdout.on('data', (d) => { if (/listening on/.test(d)) res(p) })
+  let said = ''
+  const giveUp = setTimeout(() => { console.log(`  FAIL the test relay did not start on port ${PORT} within 20 s: ${said.trim().slice(-300)}`); try { p.kill() } catch { } ; process.exit(1) }, 20000)
+  p.stdout.on('data', (d) => { said += d; if (/listening on/.test(d)) { clearTimeout(giveUp); res(p) } })
+  p.stderr.on('data', (d) => { said += d })
 })
 
 // One listener process. Resolves with { code, out, running } -- `running` true if it had not exited by `ms`.
@@ -45,7 +53,9 @@ function listen(name, idleMin, ms, { lnk = link, env = { TEMP: tmp, TMPDIR: tmp 
   let out = '', err = ''
   child.stdout.on('data', (d) => { out += d })
   child.stderr.on('data', (d) => { err += d })
-  const ready = new Promise((r) => { const t = setInterval(() => { if (/listening in/.test(err)) { clearInterval(t); r() } }, 100) })
+  // Gives up after 20 s instead of waiting forever: a listener that never got that far then fails the
+  // assertions that follow, each with its own reason, rather than freezing the suite.
+  const ready = new Promise((r) => { const t0 = Date.now(); const t = setInterval(() => { if (/listening in/.test(err) || Date.now() - t0 > 20000) { clearInterval(t); r() } }, 100) })
   const done = new Promise((r) => child.on('exit', (code) => r(code)))
   return {
     ready,
