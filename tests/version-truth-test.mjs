@@ -265,5 +265,23 @@ console.log('\n# F. NON-VACUOUS SINGLE-READER SCANNER')
     hasVersionReader("const pkg = JSON.parse(fs.readFileSync('./package.json')); const f = pkg.files;") === false)
 }
 
+// ── G. THE HOMEPAGE STATES THE SHIPPED VERSION AND TOOL COUNT ───────────────
+// 8 Oct 2026, before the first founder outreach: the homepage said "0.11.5 on npm" and "25 tools over
+// MCP" (in the strip and in the link-preview description) while package.json was 0.13.0 and
+// hive-mcp.js listed 29 tools. It is the page a founder checks first, and a stale number there reads
+// as an abandoned project.
+console.log('\n# G. THE HOMEPAGE STATES THE SHIPPED VERSION AND TOOL COUNT')
+{
+  const home = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8')
+  const shownVersion = (home.match(/<b>(\d+\.\d+\.\d+)<\/b><span>on npm/) || [])[1]
+  T('G1 the homepage shows the package.json version', shownVersion === TRUTH,
+    `page says ${shownVersion || 'nothing'}, package.json says ${TRUTH}`)
+  const tools = new Set(fs.readFileSync(path.join(ROOT, 'hive-mcp.js'), 'utf8').match(/name: 'hive_[a-z_]+'/g) || [])
+  const shownCounts = [...home.matchAll(/(\d+)(?:<\/b><span>|\s)tools over MCP/g)].map((m) => Number(m[1]))
+  T('G2 every tool count on the homepage matches hive-mcp.js',
+    tools.size > 20 && shownCounts.length >= 2 && shownCounts.every((n) => n === tools.size),
+    `page says ${shownCounts.join(', ') || 'nothing'}, hive-mcp.js lists ${tools.size}`)
+}
+
 console.log(`\n=== HIV-P7/P7b VERSION TRUTH: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
