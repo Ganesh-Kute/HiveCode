@@ -9,7 +9,7 @@ to set it up.
 `npx -y hivecode-mcp@latest setup` (below) writes this entry for you. Written by hand, it points at
 the runtime copy that `setup` installs:
 
-**Claude Code** (`.mcp.json` in your project, or user settings):
+**Claude Code** (your user settings, so every project on this machine gets it):
 ```json
 {
   "mcpServers": {
@@ -23,6 +23,11 @@ the runtime copy that `setup` installs:
 ```
 
 `HIVE_RELAY` is optional (defaults to the hosted relay).
+
+Do not put this entry in a project's `.mcp.json`. That file is shared through git, but the path in
+it exists only on the machine that wrote it. Inside that project, Claude Code ranks it above the
+entry in a user's settings, so on everyone else's machine Hivecode fails to start ("Connection
+closed").
 
 ### Setting it up: one command
 

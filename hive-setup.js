@@ -407,7 +407,8 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
   // A project's own .mcp.json outranks everything written above, inside that project. It is a
   // shared, committed file, so it is reported rather than rewritten with this machine's paths.
   const projectMcp = path.join(process.cwd(), '.mcp.json')
-  if (readEntry(projectMcp)) log(`  WARNING   ${projectMcp} defines its own hivecode server, which overrides this setup inside this folder. Remove that entry.\n`)
+  // Removing the entry only here did not last on 9 Oct 2026: the file was committed, and a checkout put it back.
+  if (readEntry(projectMcp)) log(`  WARNING   ${projectMcp} defines its own hivecode server, which overrides this setup inside this folder. Remove that entry. If the file is committed, remove it in the repository: a copy changed only here comes back with the next checkout or pull.\n`)
 
   let failed = 0
   const ready = []
