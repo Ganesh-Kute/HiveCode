@@ -340,6 +340,22 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'shared-launch-folder',
+    name: 'Two agents started from one folder each stay themselves',
+    criticality: 'critical', tier: 2,
+    breaks: 'Two Claude Code sessions in one repo, the natural way to run a branch room, shared one session record: the Stop hook steered one agent as the other (its mail, a listener under its name), a restart brought it back as the other, one leaving took both off the record, and the record sat in the developer\'s git status. Found walking the founder flow end to end on 9 Oct 2026.',
+    proves: [
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'both agents are on record, each with its own folder' },
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'by conversation id: Bob\'s hook holds Bob\'s mail, not Alice\'s' },
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'by transcript: Alice\'s hook holds Alice\'s mail, not Bob\'s' },
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'a hook that cannot tell which agent it guards speaks for neither' },
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'the restarted server comes back as Bob, not as Alice' },
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'Alice leaving keeps Bob on record, and only Bob' },
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'neither of our files shows in the developer\'s git status' },
+      { suite: 'tests/shared-launch-folder-test.mjs', assertion: 'the Stop hook\'s own file never syncs into a room' },
+    ],
+  },
+  {
     id: 'branch-room-random-id',
     name: 'A branch room\'s id is random, never the branch name',
     criticality: 'critical', tier: 2,

@@ -50,6 +50,7 @@ import { findSecrets, describeSecret } from './hive-secrets.js' // a key never g
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 import * as HB from './hive-branch.js' // a room bound to a git branch: hive_join { branch }, and the branch/pr CLI
 import { isArmed, armedFile, listenCommand, listenHow, listenOrder, LISTEN_IDLE_MIN, AWAIT_JS } from './hive-listen.js'
+import { SESSION_FILE_NAME, readAgents, writeAgents, ownRecord, excludeFromGit } from './hive-session.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 let session = null // { hive, room, relay, dir, name, mailbox }
@@ -88,24 +89,44 @@ function resolveRoomRaw(link, dir) {
   return { relay: DEFAULT_RELAY, room: 'room-' + crypto.randomBytes(13).toString('base64url'), token: '', mode: 'HOSTED (new room)' }
 }
 
-// Session persistence: keyed to this process's cwd, so each agent runtime (which starts
-// its own MCP process from its own directory) resumes only its own identity. Lets the
-// session survive MCP host restarts, which otherwise silently drop the agent from the room.
-const SESSION_FILE = path.join(process.cwd(), '.hive-mcp-session.json')
+// Session persistence: in the folder this server was started in, so a restart of the MCP host
+// rejoins as the same agent instead of silently dropping it from the room. That folder is often
+// shared: two Claude Code sessions in one repo is the obvious way to run a branch room. So the file
+// keeps one record per agent, each with this server's pid, and every read takes only this
+// process's own record (hive-session.js says why it once held one agent, and what that broke).
+const SESSION_FILE = path.join(process.cwd(), SESSION_FILE_NAME)
+const CONV = process.env.CLAUDE_CODE_SESSION_ID || process.env.ANTIGRAVITY_CONVERSATION_ID || ''
+let keptOutOfGit = false
 function persistSession({ dir, name, owner, cursor, authed = false, kind = 'ai', passive = false }) {
   try {
-    const prev = readSessionFile() || {}
-    const chatCursor = cursor === undefined ? prev.chatCursor : cursor
+    const agents = readAgents(SESSION_FILE)
+    const prev = ownRecord(agents, { conv: CONV })
+    const chatCursor = cursor === undefined ? (prev && prev.name === name ? prev.chatCursor : undefined) : cursor
     // `authed`: the Stop hook reads this file, and must not order a listener into a room that checks
     // tokens -- the agent's shell does not hold this server's token, so that listener could not join.
     // `kind` and `passive`: a resume rejoins from this file, and without them a human came back as an
     // AI and a passive participant as one the room waits on; the Stop hook reads `passive` too.
-    fs.writeFileSync(SESSION_FILE, JSON.stringify({ dir, name, owner, chatCursor, ...(authed ? { authed: true } : {}),
-      ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}) }))
+    const rec = { dir, name, owner, chatCursor, ...(authed ? { authed: true } : {}),
+      ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}),
+      pid: process.pid, ...(CONV ? { conv: CONV } : {}), at: Date.now() }
+    for (const [n, s] of Object.entries(agents)) if (n !== name && s.pid === process.pid) delete agents[n] // this server's earlier identity
+    agents[name] = rec
+    writeAgents(SESSION_FILE, agents, rec)
+    // The launch folder is often the developer's own checkout: keep our files out of their `git status`.
+    if (!keptOutOfGit) { keptOutOfGit = true; excludeFromGit(path.dirname(SESSION_FILE)) }
   } catch { /* best-effort */ }
 }
 function readSessionFile() {
-  try { return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8')) } catch { return null }
+  try { return ownRecord(readAgents(SESSION_FILE), { conv: CONV }) } catch { return null }
+}
+/** Take this agent off the record (it left, or was refused), and only this agent. */
+function forgetSession() {
+  try {
+    const agents = readAgents(SESSION_FILE)
+    const mine = ownRecord(agents, { conv: CONV })
+    for (const [n, s] of Object.entries(agents)) if (s.pid === process.pid || s === mine) delete agents[n]
+    writeAgents(SESSION_FILE, agents)
+  } catch { /* best-effort */ }
 }
 /** Save the read cursor so a host restart does not reopen the blind window it just closed. */
 function persistCursor() {
@@ -121,7 +142,7 @@ function persistCursor() {
 async function tryResumeSession() {
   try {
     if (!fs.existsSync(SESSION_FILE)) return
-    const s = readSessionFile()
+    const s = readSessionFile() // only this process's own record: never an agent still running beside it
     if (s && s.dir && s.name && fs.existsSync(path.join(path.resolve(s.dir), '.hive.json'))) await joinRoom(s)
   } catch { /* resume is best-effort; the agent can always hive_join explicitly */ }
 }
@@ -357,7 +378,7 @@ was not written. Fix the relay and call hive_join again.`
     const who = [d.kind, d.owner ? `owner ${d.owner}` : '', d.app].filter(Boolean).join(', ')
     try { hive.stop() } catch { }
     session = null
-    try { fs.rmSync(SESSION_FILE) } catch { }
+    forgetSession()
     return [
       `NOT JOINED -- Q581: ${d.name} is already in this room (${who}), and two participants cannot share a name.`,
       'Everything here is keyed by name: you would each be told you hold the other\'s claims, read the',
@@ -1722,7 +1743,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
       // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity
       // row is dropped rather than left to read as GONE. GONE means "stopped without saying so",
       // and diluting it with agents that signed off correctly is how a signal stops being read.
-      case 'hive_leave': { try { ACT.forget(activityMap(), requireSession().name) } catch { }; requireSession().hive.stop(); session = null; try { fs.rmSync(SESSION_FILE) } catch {}; return text('left the room') }
+      case 'hive_leave': { try { ACT.forget(activityMap(), requireSession().name) } catch { }; requireSession().hive.stop(); session = null; forgetSession(); return text('left the room') }
       default: return err(`unknown tool: ${name}`)
     }
   } catch (e) { return err(`error: ${e.message}`) }

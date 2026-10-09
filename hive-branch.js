@@ -192,7 +192,7 @@ export function roomCarries(files) {
 // folder look held by some other process, and a foreign shadow is somebody else's ancestry.
 // By exact name: a project's own `.hiverc` is its business. All of these are already never carried
 // (always-ignored, or rendered locally), so the seed and a fresh joiner agree on what the room holds.
-const OWN_FILES = new Set(['.hive.json', '.hive-shadow.json', '.hive-shadow.json.tmp', '.hive-lock.json', '.hive-id.json', '.hive-mcp-session.json'])
+const OWN_FILES = new Set(['.hive.json', '.hive-shadow.json', '.hive-shadow.json.tmp', '.hive-lock.json', '.hive-id.json', '.hive-mcp-session.json', '.hive-stop-hook.json'])
 const isOwnFile = (rel) => OWN_FILES.has(path.posix.basename(rel))
 
 function writeFiles(dir, files) {

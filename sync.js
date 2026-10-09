@@ -81,6 +81,8 @@ export const ALWAYS_IGNORE = [
   // and read position into every other agent's folder, and a shared cursor means one agent
   // consuming another's unread mail.
   '.hive-mcp-session.json',
+  // The Stop hook's record of what it already held this agent's turn open for: per agent, like the session.
+  '.hive-stop-hook.json',
   // This client's record of what IT last wrote to each file — the common ancestor it uses
   // to tell an authored edit from its own write after a restart (see SHADOW_FILE). It is
   // per-client by definition: syncing it would hand every peer a false ancestor.
@@ -220,7 +222,7 @@ export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_
 // Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
 // here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
 // told the whole team about .hive-shadow.json, a file none of them had made.
-const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-mcp-session.json', '.hive-id.json'])
+const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-mcp-session.json', '.hive-stop-hook.json', '.hive-id.json'])
 
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the

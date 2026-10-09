@@ -57,6 +57,7 @@ import fs from 'fs'
 import path from 'path'
 import { mentionsName, unansweredFor } from './hive-mailbox.js'
 import { isArmed, listenCommand, listenHow, listenOrder } from './hive-listen.js'
+import { readAgents, agentForHook } from './hive-session.js'
 
 // Consecutive turns we will block purely because a task is still open, before standing down.
 // Messages are not subject to this: the watermark already makes each one block at most once.
@@ -205,12 +206,14 @@ function obligations({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
 }
 
 /** Walk up from `start` looking for the session file; the hook's cwd is usually but not always
- *  the folder the MCP server was launched in. */
-function findSession(start) {
+ *  the folder the MCP server was launched in. That folder can have started several agents (two
+ *  Claude Code sessions in one repo), so the record is the one for THIS hook's conversation, and
+ *  none at all when that cannot be told (hive-session.js). */
+function findSession(start, hook = {}) {
   let dir = path.resolve(start)
   for (let i = 0; i < 4; i++) {
     const p = path.join(dir, SESSION_FILE)
-    if (fs.existsSync(p)) return { root: dir, session: readJson(p) }
+    if (fs.existsSync(p)) return { root: dir, session: agentForHook(readAgents(p), hook) }
     const up = path.dirname(dir)
     if (up === dir) break
     dir = up
@@ -230,7 +233,7 @@ async function main() {
     // GUARD 1: this stop is already the product of a block. Never stack another on it.
     if (hook.stop_hook_active || Number(hook.executionNum) > 0) return allow()
 
-    const found = findSession(hook.cwd || (Array.isArray(hook.workspacePaths) && hook.workspacePaths[0]) || process.cwd())
+    const found = findSession(hook.cwd || (Array.isArray(hook.workspacePaths) && hook.workspacePaths[0]) || process.cwd(), hook)
     if (!found || !found.session || !found.session.dir || !found.session.name) return allow() // not in a room
 
     const { root, session } = found
