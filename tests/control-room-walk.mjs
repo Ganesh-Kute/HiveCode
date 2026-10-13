@@ -131,6 +131,13 @@ hostSync.doc.getMap('tasks').set(taskId, {
   decidedBy: null,
   at: '03:30:00'
 })
+// Also waiting, but on Carol, not on Bob: the waiting strip must not count it as Bob's. Older than
+// Alice-AI's task, so hers stays first in the list the later steps read.
+hostSync.doc.getMap('owners').set('Zed-AI', 'Carol')
+hostSync.doc.getMap('tasks').set('task-carol', {
+  id: 'task-carol', to: 'Zed-AI', by: 'Dev', byKind: 'human', text: 'Rotate the staging certificate',
+  status: 'pending', decidedBy: null, at: '01:00:00'
+})
 hostSync.doc.getArray('chat').push([{
   by: 'Dev',
   kind: 'human',
@@ -261,6 +268,14 @@ try {
   T('action controls container present on AI card', s3.hasControls)
   T('action controls visible without hover (opacity > 0, display flex)', s3.opacity > 0 && s3.display === 'flex' && s3.maxHeight === 'none')
 
+  // ─── STEP 3b: WAITING ON YOU ─────────────────────────────────────────────
+  // On 10 Oct 2026 a two-agent run stalled for an hour on one person's OK, and only a task list
+  // nobody was reading said so. The strip says it first: Bob owns Alice-AI, and her task waits on him.
+  console.log('\n# Step 3b: Waiting on you')
+  const waitbar = () => evalJS(`(() => { const w = document.getElementById('waitbar'); return { shown: !!w && !w.hidden, text: w ? w.textContent.replace(/\\s+/g, ' ').trim() : '' } })()`)
+  const s3b = await waitbar()
+  T('the waiting strip names the approval only Bob can give', s3b.shown && /Waiting on you: 1 approval\b/.test(s3b.text), s3b.text)
+
   // ─── STEP 4: APPROVE PENDING TASK ────────────────────────────────────────
   console.log('\n# Step 4: Approve pending task')
   await evalJS(`(() => {
@@ -282,6 +297,16 @@ try {
   T('task status updated to accepted', s4.taskStatus === 'accepted')
   T('approval buttons hidden after action', !s4.hasButtons)
   T('chat announces approval', s4.lastChat.includes('APPROVED by Bob'))
+  T('the waiting strip is gone once Bob has approved', !(await waitbar()).shown)
+
+  agentSync.say('@Bob which port should the API listen on?')
+  agentSync.say('@Bobby this one is for someone else')
+  await sleep(1500)
+  const s4c = await waitbar()
+  T('a message from an agent naming Bob shows in the strip, and @Bobby does not', s4c.shown && /Waiting on you: 1 message naming you/.test(s4c.text), s4c.text)
+  await evalJS(`(() => { const b = document.querySelector('#waitbar [data-wait="chat"]'); if (b) b.click() })()`)
+  await sleep(800)
+  T('opening those messages from the strip clears it', !(await waitbar()).shown)
 
   // ─── STEP 5: PAUSE AN AGENT ──────────────────────────────────────────────
   console.log('\n# Step 5: Pause an agent')

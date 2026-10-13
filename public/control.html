@@ -217,6 +217,12 @@
   .sup{font-size:12px;color:var(--mut);margin-top:14px}
   .sup a{color:var(--mut);text-decoration:underline;text-underline-offset:2px}
   .sup a:hover{color:var(--text)}
+  /* WAITING ON YOU (13 Oct 2026): what only this person can unblock, said first and in counts.
+     Not ".waiting": the crew map already gives its SVG nodes that class. */
+  .waitbar{display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap;margin:10px 18px 0;padding:9px 14px;border-radius:12px;background:color-mix(in srgb,var(--amber) 16%,transparent);border:1px solid color-mix(in srgb,var(--amber) 40%,transparent);color:#f4d27a;font-size:13px}
+  .waitbar[hidden]{display:none}
+  .waitbar button{background:none;border:0;padding:0;color:inherit;font:inherit;font-weight:600;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+  body.light .waitbar{color:#8a5a00}
 </style>
 </head>
 <body>
@@ -248,6 +254,7 @@
     <button class="iconbtn" id="theme" title="Light / dark">🌙</button>
     <button class="ghost" id="leave">Leave</button>
   </header>
+  <div class="waitbar" id="waitbar" role="status" aria-live="polite" hidden></div>
   <section class="mc">
     <div class="panel-c">
       <div class="mchead">◆ Live Metrics</div>
@@ -528,6 +535,34 @@ async function connect(raw){
 function members(){const ctrls=doc.getMap('controls').toJSON(),byName=new Map();for(const s of provider.awareness.getStates().values()){const u=s&&s.user;if(!u||!u.name)continue;byName.set(u.name,{...(byName.get(u.name)||{}),...u,paused:(ctrls[u.name]||{}).state==='paused'})}return[...byName.values()]}
 
 let _rsig=''
+// WAITING ON YOU (13 Oct 2026). On 10 Oct a two-agent run stalled for an hour on one person's OK,
+// and the only place that said so was a task list nobody was reading. This counts what only the
+// viewer can unblock: tasks waiting for their approval, and messages from agents naming them since
+// they last spoke here. Counts, never message text: a glance must be enough.
+const seenKey=()=>`hc-seen:${(window._conn||{}).room||''}:${String(me||'').toLowerCase()}`
+const mentionRe=(name)=>new RegExp('(^|[^\\w@])@('+name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'|all)(?![\\w-])','i')
+function waitingOnMe(chatArr,tasksObj){
+  if(!me)return{approvals:0,mentions:0,upTo:-1}
+  const lc=String(me).toLowerCase(),owners=doc.getMap('owners').toJSON()||{}
+  const approvals=Object.values(tasksObj).filter(t=>String(t.status||'pending').toLowerCase()==='pending'&&String(owners[t.to]||'').toLowerCase()===lc).length
+  // From the viewer's own last message: answering is how a question stops waiting. Opening the
+  // messages from the strip moves that line on, on this device only.
+  let from=0
+  for(let i=chatArr.length-1;i>=0;i--)if(String(chatArr[i].by||'').toLowerCase()===lc){from=i+1;break}
+  let seen=-1;try{seen=Number(localStorage.getItem(seenKey())??-1)}catch{}
+  if(!(seen<chatArr.length))seen=-1 // the relay lost the room's history: an old mark means nothing now
+  from=Math.max(from,seen+1)
+  const re=mentionRe(String(me))
+  const mentions=chatArr.slice(from).filter(m=>m&&m.kind==='ai'&&re.test(String(m.text||''))).length
+  return{approvals,mentions,upTo:chatArr.length-1}
+}
+function paintWaiting(chatArr,tasksObj){
+  const w=waitingOnMe(chatArr,tasksObj),el=$('waitbar'),parts=[]
+  if(w.approvals)parts.push(`<button data-wait="tasks">${w.approvals} approval${w.approvals===1?'':'s'}</button>`)
+  if(w.mentions)parts.push(`<button data-wait="chat" data-upto="${w.upTo}">${w.mentions} message${w.mentions===1?'':'s'} naming you</button>`)
+  el.hidden=!parts.length
+  el.innerHTML=parts.length?`<b>Waiting on you:</b> ${parts.join(' · ')}`:''
+}
 function render(){
   if(!provider||!window._h)return
   const mem=members()
@@ -555,6 +590,7 @@ function render(){
 
   const tasks=Object.values(window._h.tasks.toJSON()).sort((a,b)=>String(b.at||'').localeCompare(String(a.at||'')))
   $('tc').textContent=tasks.length
+  try{paintWaiting(chatArr,tasksObj)}catch(_){}
   $('tasks').innerHTML=tasks.length?tasks.map(t=>{const s=(t.status||'pending').toLowerCase()
     // Only the target agent's OWNER decides (same rule as sync.js decide()). Everyone else is told who will.
     const own=((doc.getMap('owners').toJSON()||{})[t.to])||''
@@ -609,6 +645,10 @@ function drawHive(mem){
 }
 
 document.addEventListener('click',(e)=>{
+  const wv=e.target.closest('[data-wait]')
+  if(wv){const t=$(wv.dataset.wait);if(t)t.scrollIntoView({behavior:'smooth',block:'center'})
+    if(wv.dataset.wait==='chat'){try{localStorage.setItem(seenKey(),String(wv.dataset.upto))}catch{};_rsig='';render()}
+    return}
   const b=e.target.closest('button');if(!b||!window._h)return
   if(b.classList.contains('hrestore')){restoreSnap(b.dataset.id,b.dataset.file);return}
   if(b.dataset.act==='revert'){revertAgent(b.dataset.name);return}
