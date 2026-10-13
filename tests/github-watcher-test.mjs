@@ -370,6 +370,44 @@ try {
   T('O2 the next run fixed it; then it was pushed and opened', !!prO && originFile(prO.head.ref, 'gate.txt') === 'ok')
   T('O3 the pull request says Hivecode ran the tests and they passed', !!prO && /Run by Hivecode:\*\* `.*` passed/.test(prO.body))
   T('O4 the run that fixed it saw the failing output', /Hivecode ran the tests on your work/.test(lastPrompt()))
+
+  // ─── P. --tester: a second agent checks the work before anything is pushed ────────────────
+  console.log('\n# P. --tester: a second agent checks the work before anything is pushed')
+  w.shutdown()
+  w = makeW({ tester: AGENT, testerName: 'Tester', maxTesterFails: 2 })
+  const pI = GH.addIssue({ title: 'Add numbers', body: 'add() must add.\nFAKE:write calc.js export const add = (a, b) => a - b\\n\nTESTER:write test/calc.test.js // checks add\\n\nTESTER:touch src/helper.js export const h = 1\\n\nTESTER:fail-until calc.js export const add = (a, b) => a + b\\n' })
+  await tick() // the builder
+  const brP = it(pI).branch
+  T('P1 the builder\'s work is not pushed before the check', !originSha(brP) && it(pI).next === 'test' && it(pI).status === 'waiting')
+  await tick() // the tester: FAIL
+  const pP = lastPrompt()
+  T('P2 the tester is shown the builder\'s diff', /<<<DIFF\n/.test(pP) && /a - b/.test(pP) && /You are Tester, checking another agent's work/.test(pP))
+  T('P3 FAIL: still nothing pushed, and the builder fixes it next', !originSha(brP) && it(pI).check && it(pI).check.verdict === 'FAIL' && it(pI).next === 'build')
+  await tick() // the builder again
+  T('P4 the builder\'s next task is the tester\'s report', /Tester checked your change independently and found a problem/.test(lastPrompt()) && !originSha(brP))
+  await tick() // the tester: PASS, then push and the pull request
+  const prP = GH.pr(pI)
+  T('P5 PASS: pushed and opened, with the fix', !!prP && originFile(brP, 'calc.js') === 'export const add = (a, b) => a + b\n', `${it(pI).status} ${it(pI).reason || ''}`)
+  const authorsP = spawnSync('git', ['--git-dir', originDir, 'log', '--format=%an', `refs/heads/${brP}`], { encoding: 'utf8' }).stdout
+  T('P6 the pull request has commits by both agents, and the tester\'s test', /^Builder$/m.test(authorsP) && /^Tester$/m.test(authorsP) && originFile(brP, 'test/calc.test.js') !== null)
+  T('P7 its body says who checked it and the verdict', !!prP && /## Checked by Tester/.test(prP.body) && /\*\*PASS\.\*\*/.test(prP.body))
+  T('P8 a file the tester changed that is not a test is named in the body', !!prP && /Tester also changed files that are not tests: `src\/helper\.js`/.test(prP.body))
+  T('P9 four runs: build, check, fix, check', it(pI).runs === 4, String(it(pI).runs))
+  const q = GH.addIssue({ title: 'No verdict', body: 'FAKE:write v.js 1\nTESTER:noverdict' })
+  await tick() // the builder
+  await tick() // the tester, without a verdict
+  T('P10 a tester with no VERDICT is a failed run, never a pass', it(q).status === 'waiting' && it(q).failures === 1 && !originSha(it(q).branch))
+  skew += 16 * 60000
+  await tick()
+  T('P11 twice without a verdict goes to a person, and nothing was pushed', it(q).status === 'needs-human' && /without a VERDICT/.test(it(q).reason) && !originSha(it(q).branch), it(q).reason)
+  const r = GH.addIssue({ title: 'Never right', body: 'FAKE:write r.js 1\nTESTER:fail-always' })
+  for (let i = 0; i < 4; i++) await tick() // build, FAIL, fix, FAIL
+  T('P12 FAIL after FAIL goes to a person, with the report waiting for the builder', it(r).status === 'needs-human' && /failed Builder's work 2 times in a row/.test(it(r).reason) && it(r).next === 'build' && it(r).queue[0] && it(r).queue[0].kind === 'tester' && !originSha(it(r).branch), `${it(r).status} next=${it(r).next} ${it(r).reason || ''}`)
+  GH.comment(r, '/hivecode retry', 'dev')
+  await tick()
+  T('P13 on retry the builder fixes what the tester found, and the count starts again', /^You are Builder, working on/.test(lastPrompt()) && /Tester checked your change independently/.test(lastPrompt()) && it(r).testerFails === 0 && it(r).next === 'test', `${it(r).status} next=${it(r).next} fails=${it(r).testerFails}`)
+  GH.unlabel(r)
+  await tick()
 } catch (err) {
   T(`no exception (${err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err})`, false)
 } finally {

@@ -30,6 +30,10 @@ const MUTANTS = [
   { t: 'github', id: 'adopt', expect: 'N3', find: '          if (found) {', to: '          if (false) {' },
   { t: 'github', id: 'never-joined', expect: 'G1', find: "if (run.dir && !fs.existsSync(path.join(run.dir, '.hive.json'))) {", to: 'if (false) {' },
   { t: 'github', id: 'ask', expect: 'E4', find: "return key === 'ic' && it.question ? body : ''", to: 'return body' },
+  { t: 'github', id: 'check-first', expect: 'P1', find: "if (role === 'builder' && tester) {", to: 'if (false) {' },
+  { t: 'github', id: 'fail-holds', expect: 'P3', find: "if (out.verdict === 'FAIL') {", to: 'if (false) {' },
+  { t: 'github', id: 'no-verdict', expect: 'P10', find: "const noVerdict = role === 'tester' && !out.blocked && !out.verdict", to: 'const noVerdict = false' },
+  { t: 'github', id: 'report-first', expect: 'P12', find: "        it.next = 'build'\n        if (it.testerFails >= maxTesterFails)", to: '        if (it.testerFails >= maxTesterFails)' },
   // hive-notify.js
   { t: 'notify', id: 'owner-here', expect: 'NT6', find: 'if (sent.tasks[task.id] || here(owner)) continue', to: 'if (sent.tasks[task.id]) continue' },
   { t: 'notify', id: 'sent-once', expect: 'NT8', find: 'if (sent.tasks[task.id] || here(owner)) continue', to: 'if (here(owner)) continue' },

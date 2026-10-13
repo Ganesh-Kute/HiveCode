@@ -191,6 +191,10 @@ Label an issue `hivecode`, and a pull request comes back. Run this once, in your
 npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"
 ```
 
+That is the command for Claude Code. Codex and Gemini CLI also take a task on stdin; their commands
+are in [GitHub workflow](docs/GITHUB_WORKFLOW.md#which-agents), and they have not yet been run
+end to end.
+
 It keeps running and checks GitHub every minute, through your own [`gh`](https://cli.github.com)
 login. It acts only on issues labelled `hivecode` by someone who can push. For each one, it:
 
@@ -212,6 +216,10 @@ Limits, all of which you can change:
 - comments from people without write access never reach the agent.
 
 Options:
+- `--tester "<agent command>"` adds a second agent that checks the first one's work before
+  anything is pushed. It can be another vendor's agent. It sees the change, may add tests, and
+  must say PASS or FAIL. On FAIL, the builder fixes it and the tester checks again. The pull
+  request shows commits from both agents and the tester's verdict.
 - `--test "npm test"` runs your tests itself before every push.
 - `--notify <webhook url>` posts updates to Slack or Discord.
 - `github status` shows what it is doing.

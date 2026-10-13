@@ -429,6 +429,18 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'github-tester',
+    name: 'With --tester, a second agent checks the builder\'s work before anything is pushed',
+    criticality: 'critical', tier: 4,
+    breaks: 'The "second AI team" is one agent marking its own homework: a broken change goes out because nothing independent looked at it, or a tester that said nothing is read as a pass.',
+    proves: [
+      { suite: 'tests/github-watcher-test.mjs', assertion: 'the builder\'s work is not pushed before the check' },
+      { suite: 'tests/github-watcher-test.mjs', assertion: 'FAIL: still nothing pushed, and the builder fixes it next' },
+      { suite: 'tests/github-watcher-test.mjs', assertion: 'the pull request has commits by both agents, and the tester\'s test' },
+      { suite: 'tests/github-watcher-test.mjs', assertion: 'a tester with no VERDICT is a failed run, never a pass' },
+    ],
+  },
+  {
     id: 'github-trust',
     name: 'Only people who can push hand work to the agent',
     criticality: 'critical', tier: 4,

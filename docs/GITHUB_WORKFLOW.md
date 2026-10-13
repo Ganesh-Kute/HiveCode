@@ -51,6 +51,38 @@ For each labelled issue:
 | loop | Each new CI failure, or batch of review comments, becomes the next run's task. The agent gets the failing job's log, not just "failed". A review becomes one run once nothing new has arrived for 90 s, not one run per comment. |
 | finish | When the PR is merged or closed, it stops, removes the room folders and sends a notification. |
 
+### Which agents
+
+The agent command gets its task on stdin, from its working folder, and must end with the lines the
+task asks for.
+
+| agent | command | status |
+|---|---|---|
+| Claude Code | `claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode` | the default this was built for |
+| Codex | `codex exec --skip-git-repo-check -s workspace-write -` | flags checked against its `--help`; not yet run end to end |
+| Gemini CLI | `gemini -p "Do the task above." --approval-mode auto_edit` | flags checked against its `--help`; not yet run end to end |
+
+Codex refuses to run outside a git repository unless given `--skip-git-repo-check`. A room's
+folder is deliberately not a checkout, so the flag is required, not optional.
+
+### A second agent checks the first (`--tester`)
+
+`--tester "<command>"` adds a tester. It can be a different vendor's agent, so the check is
+independent.
+
+1. The builder runs, and its work lands on the local branch. Nothing is pushed yet.
+2. The tester runs in a fresh room seeded from that branch, so it holds the change.
+   - It gets the issue and the builder's diff. The room's folder is not a git checkout, so it could
+     not see the diff otherwise.
+   - It may add or change tests only.
+   - It ends with `VERDICT: PASS` or `VERDICT: FAIL`, plus a report.
+3. On PASS, its tests land, and the branch is pushed. The PR shows commits from both agents, and a
+   "Checked by Tester" section with the verdict and report.
+4. On FAIL, nothing is pushed. Its report, and any failing test it wrote, become the builder's next
+   task. Then the tester checks again.
+
+Every run counts against the caps, so a tester doubles what an issue costs.
+
 Every run gets a new room, seeded from the branch as it is right now. So the room always includes
 commits a person pushed to the branch, and a relay that loses its rooms costs at most the run in
 progress. The watcher keeps its own state in the repo's `.git` folder, never on the relay.
@@ -120,12 +152,17 @@ Each row below says what the user sees.
 |---|---|
 | The agent CLI isn't installed | `start` refuses. |
 | Logged out, usage limit, bad API key | The run fails fast. We retry once, after 15 minutes. A second failure in a row sends the issue to needs-human, with the agent's last lines in the comment and the notification. We never retry in a tight loop. |
+| Codex refuses to start outside a git repository | A room's folder is deliberately not a git checkout. Its command needs `--skip-git-repo-check` (see "Which agents"). |
 | The agent never joins its room (Hivecode isn't set up for that agent CLI) | Said as exactly that, with the setup command. Never reported as "no changes". |
 | It runs forever: stuck, or waiting for a permission prompt in headless mode | A time limit per run (`--max-minutes`, default 40). We kill the whole process tree, push nothing, keep its folder for inspection, and mark the issue needs-human. |
 | It finishes without changing anything | On a first run: no PR. We comment with its own last words and mark the issue needs-human. On a review run, a question answered needs no change: its answer is posted on the PR. |
 | It has a question | Nobody answers during a run, and the task says so. It writes `BLOCKED: <question>` and stops. We post the question on the issue and notify. A reply from someone with write access starts the next run. |
 | Its last edit didn't reach the room before it exited | Before landing, we reconnect its folder, under its own identity, to send anything still pending. Landing refuses to land part of a room (Q507). |
 | It says the tests pass and they don't | With `--test`, we run them ourselves. A failure becomes the next run's task. Without `--test`, the PR body says the result is the agent's report, not ours. |
+| The tester says nothing usable: no VERDICT, or "mostly passes" | Only `VERDICT: PASS` or `VERDICT: FAIL` counts. Anything else is a failed run, never a pass. It is retried once after 15 minutes, then goes to a person. |
+| The tester fails the builder's work again and again | After three FAILs in a row it goes to a person, with the tester's last report. The run caps apply as well. |
+| The tester edits the implementation, not just tests | It is told not to. If it does, the PR names those files under "Checked by", so a reviewer reads them with care. |
+| The tester passes broken code | A PASS is the tester's word. The --test gate, then CI, still run after it, and a person reviews the PR. |
 | It edits `.github/workflows/` | Refused unless `--allow-workflow-changes` is set. An agent misled by an issue could write a workflow that leaks the repo's secrets when CI runs. |
 | It writes a key or token into a file | The room never carries a file with a key in it (hive-secrets.js), so the landing doesn't either. We also scan everything we post on GitHub. |
 | A CI fix loop that never converges (a flaky test) | `--max-runs` per issue (default 6) and per day (default 20). If the same checks fail twice in a row, it goes to needs-human. |
@@ -208,7 +245,8 @@ All built on 13 Oct 2026:
 
 ## Not in this version
 
-- A second, independent tester agent per issue. Next.
+- More than one builder working the same issue at once. The tester runs after the builder, not
+  beside it.
 - The GitHub App: bot identity, webhooks, Marketplace. It needs Ganesh's account.
 - Agents resolving merge conflicts.
 - One watcher for several repos.
