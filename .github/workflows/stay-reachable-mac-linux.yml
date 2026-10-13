@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,6 +41,19 @@ jobs:
         run: |
           fail=0
           for t in test.js personal-room-test.mjs branch-test.mjs case-rename-test.mjs case-collision-test.mjs secured-invite-test.mjs self-host-test.mjs relay-pin-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
+      # The GitHub watcher and the room notifier, first written on Windows (13 Oct 2026). What differs
+      # here: agent CLIs start through sh, a run's processes are killed as a process group rather than
+      # with taskkill, and the agent's folder sits behind macOS's /var link.
+      - name: GitHub watcher, room notifier
+        if: always()
+        run: |
+          fail=0
+          for t in github-cli-test.mjs notify-test.mjs github-watcher-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"

@@ -183,6 +183,59 @@ read the room.
 
 ---
 
+## Hand a GitHub issue to your agents
+
+Label an issue `hivecode`, and a pull request comes back. Run this once, in your clone of the repo:
+
+```bash
+npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"
+```
+
+It keeps running and checks GitHub every minute, through your own [`gh`](https://cli.github.com)
+login. It acts only on issues labelled `hivecode` by someone who can push. For each one, it:
+
+- comments that it is on it, and creates the branch `hivecode/<number>-<title>`;
+- runs your agent on the issue, in a fresh room filled from that branch;
+- lands the work as one commit per agent and opens the pull request, with `Closes #<number>`,
+  what changed, and the tests that ran;
+- sends a CI failure (with its log) or your review back to the agent, which pushes the fix to the
+  same pull request. "Thanks" and "LGTM" start nothing;
+- cleans up when you merge.
+
+To stop it, remove the label or comment `/hivecode stop`. When it needs you, it labels the issue
+`hivecode:needs-human` and says why. That happens when the agent has a question, a cap is reached,
+or there is a change it won't push. Comment `/hivecode retry` to start it again.
+
+Limits, all of which you can change:
+- runs are capped at 6 per issue and 20 per day;
+- an agent's changes to `.github/workflows/` are not pushed unless you allow it;
+- comments from people without write access never reach the agent.
+
+Options:
+- `--test "npm test"` runs your tests itself before every push.
+- `--notify <webhook url>` posts updates to Slack or Discord.
+- `github status` shows what it is doing.
+
+Your agent runs on this machine with your permissions. For isolation, run the watcher in a
+container or VM. Every way this can go wrong, and what it does about each:
+[GitHub workflow](docs/GITHUB_WORKFLOW.md).
+
+## Hear when an agent is waiting on you
+
+```bash
+npx -y hivecode-mcp@latest notify "<room link>" --webhook <Slack or Discord webhook URL> --for <your name>
+```
+
+It sits in the room without taking part and posts to that webhook in two cases:
+- **A task is waiting for your approval.** It posts at once.
+- **Agents name you while you are not in the room.** It batches these, at most one post every
+  5 minutes.
+
+It posts once when it starts, so you know the webhook works. It tells you when it loses the room
+and when it is back. It never posts the room's link.
+
+---
+
 ## Give an outside agent one folder
 
 When you bring in an outside agent or contractor, you may not want them seeing or editing your
@@ -320,6 +373,7 @@ you prompt it: tell it to check the room.
 - **[AI Agent Manual](docs/AI_AGENT_MANUAL.md)** — written for agents: joining, claiming, working in the room.
 - **[Operating Hivecode with a team](docs/OPERATIONS.md)** — what surprises a real team, and how to check each thing.
 - **[Hivecode explained, end to end](docs/HIVECODE_EXPLAINED.md)** — how it works underneath.
+- **[GitHub workflow](docs/GITHUB_WORKFLOW.md)** — label an issue, get back a pull request; every way it can go wrong.
 - **[Architecture](docs/ARCHITECTURE.md)** · **[Run your own relay](docs/SELF_HOSTING.md)** · **[MCP server](docs/MCP.md)**
 
 ---

@@ -1061,7 +1061,10 @@ const server = http.createServer((req, res) => {
   // names, no document contents: it is unauthenticated on purpose, so it must leak nothing.
   if (req.url === '/health' || req.url === '/healthz') {
     const s = limitStats()
-    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    // Any page may read it: it leaks nothing by design (above), and the status page on the website
+    // (public/status.html) reads it from another origin. Without this, a browser hides the answer
+    // and that page can say only "reachable", never which build is up.
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' })
     return res.end(JSON.stringify({
       ok: true,
       // WHICH BUILD is answering. On 29 Sep 2026 a night of relay fixes had been pushed and the hosted

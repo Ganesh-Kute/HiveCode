@@ -39,7 +39,7 @@
         What we hold, why, and for how long. The short version: an email address and a licence
         record, and nothing else we could avoid.
       </p>
-      <p class="prose__updated">Last updated 28 July 2026</p>
+      <p class="prose__updated">Last updated 13 October 2026</p>
     </div>
 
     <div class="prose">
@@ -48,6 +48,8 @@
         <li><code>icr-merge</code> and <code>git-clash</code> run entirely on your machine. They make no network requests and send us nothing — including no telemetry, no usage counts and no error reports.</li>
         <li>Your signing identity for provenance is a keypair generated on your machine. The private key never leaves it, and there is no account database it could be registered against — author identity is the public key's own fingerprint.</li>
         <li>Files your <code>.gitignore</code> excludes are never synced, and neither are <code>.env</code> files, private keys, certificates or your local identity file, regardless of what your ignore rules say.</li>
+        <li>The GitHub watcher (<code>hivecode-mcp github</code>) runs on your machine and reaches GitHub through your own <code>gh</code> login. Your GitHub credentials never reach us. The issues, comments and CI logs it reads go to your agent on your machine, and into the room that agent works in.</li>
+        <li>Notifications go from your machine straight to the Slack or Discord webhook you give them. We never see that webhook, and a room's link is never put in a notification.</li>
       </ul>
 
       <h2>What we store</h2>
@@ -70,8 +72,10 @@
         to that participant at all.
       </p>
       <p>
-        The hosted relay writes a room's current state to disk so that a restart does not lose
-        work in progress. That state is deleted when you end the room. Server logs record
+        The hosted relay keeps a room's current state only while it runs. It runs today on a plan
+        whose disk does not survive a restart or a redeploy, so either one erases every room: files
+        come back from participants' own folders when they rejoin, and the room's chat and tasks
+        do not. Server logs record
         connection events: the room id, when a participant joined and left, how long they stayed, how many participants were in the room, and — if you chose to share it — the display name you set. Never file contents, never your IP address.
       </p>
       <p>

@@ -42,7 +42,9 @@
     "hive-instructions.js",
     "hive-activity.js",
     "hive-relay-health.js",
-    "hive-privacy.js", "hive-secrets.js", "hive-room-key.js",
+    "hive-privacy.js",
+    "hive-secrets.js",
+    "hive-room-key.js",
     "hive-setup.js",
     "hive-stdio.js",
     "hive-update.js",
@@ -70,7 +72,12 @@
     "HIVE_RULES.md",
     "docs/MCP.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "hive-github.js",
+    "hive-notify.js",
+    "hive-webhook.js",
+    "docs/GITHUB_WORKFLOW.md",
+    "docs/ALWAYS_ON.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -139,7 +146,8 @@
     "test:map": "node tests/hive-map-test.mjs",
     "test:gate": "node tests/hive-gate-test.mjs",
     "bench:ab": "node bench/coordination-ab.mjs",
-    "test:branch": "node tests/branch-test.mjs"
+    "test:branch": "node tests/branch-test.mjs",
+    "test:github": "node tests/github-cli-test.mjs && node tests/notify-test.mjs && node tests/github-watcher-test.mjs"
   },
   "engines": {
     "node": ">=18"

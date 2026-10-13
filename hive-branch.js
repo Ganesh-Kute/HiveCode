@@ -356,7 +356,7 @@ function defaultBase(root, name) {
  * line, and naming this room in its .hive.json. The path comes from git config, and config is
  * editable text -- a path that fails any of these is refused, never removed.
  */
-function removeRoomFolder(dir, room) {
+export function removeRoomFolder(dir, room) {
   const abs = path.resolve(dir)
   const home = path.resolve(hiveHome()) + path.sep
   let ours = false
