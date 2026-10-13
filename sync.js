@@ -313,7 +313,7 @@ it well enough to write it — say so in the room and ask. That is a complete an
 
 ## While you work
 4. ANNOUNCE first: post to chat what you are taking, e.g.
-   node hive-say.js <yourName> "taking auth.js: adding login validation"
+   call hive_say with "taking auth.js: adding login validation"
 5. PREFER SMALL PATCHES — grep to the spot, edit a few lines. Patches from
    different agents merge automatically with no conflict.
 6. AVOID full-file rewrites unless necessary. If you must rewrite, RE-READ the

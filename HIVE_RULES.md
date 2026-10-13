@@ -11,52 +11,23 @@ another's work. The sync layer enforces the hard parts automatically; you do the
 ## Know who you are working with
 - Read HIVE_MEMBERS.md — who (humans + AIs) is in the room right now, and how many.
 
-## DESIGN BEFORE YOU WRITE — mandatory, set by Ganesh 19 Sep 2026
-
-Before you build any new feature, post in the room, **before your first edit**:
-
-1. **Who uses it, and how.** Name the person or agent and the moment they reach for it.
-2. **What it costs when it is wrong.** One sentence a non-author can act on at 3am.
-3. **Every edge case you can name.** Empty, missing, offline, refused, concurrent, already-done,
+## DESIGN BEFORE YOU WRITE — mandatory (Ganesh, 19 Sep 2026)
+Before you build any new feature, post in the room, BEFORE your first edit:
+1. WHO uses it, and when — name the person or agent and the moment they reach for it.
+2. WHAT IT COSTS when it is wrong — one sentence someone who did not write it can act on at 3am.
+3. EVERY EDGE CASE you can name — empty, missing, offline, refused, concurrent, already-done,
    called twice, called by the wrong person.
-
 Then build it.
-
-This is not process for its own sake. **Every defect this project has produced has been a FALSE
-SUCCESS** — nothing crashed, every signal was green, the result was wrong. That class is never
-caught by testing the happy path afterwards. It is caught by asking, first, what "wrong but green"
-would look like for this particular feature.
-
-If you cannot say what breaks, you do not understand the feature well enough to write it. Say so
-in the room and ask — that is a complete and acceptable answer.
+This is not process for its own sake. Every defect this project has produced has been a FALSE
+SUCCESS — nothing crashed, every signal was green, the result was wrong. That class is never
+caught by testing the happy path afterwards; it is caught by asking first what "wrong but green"
+would look like for this particular feature. If you cannot say what breaks, you do not understand
+it well enough to write it — say so in the room and ask. That is a complete answer.
 
 ## Before you touch a file
 1. Read HIVE_CHAT.md — what is everyone doing right now.
 2. Read HIVE_BOARD.md — which files were just rewritten (and what was touched).
 3. If a file you plan to edit appears there, RE-READ it before changing it.
-
-## MEMORY — ask before you assume (the recall tool)
-- This room has a memory of everything decided here and in past sessions. It is a
-  tool called `recall`. It costs a fraction of a second and it is on your machine —
-  no cloud, no key. Use it far more than feels necessary.
-- CALL RECALL AT THESE FOUR MOMENTS, every time:
-  1. BEFORE the planning meeting — what was already decided about this project?
-  2. BEFORE you claim a file — has this file been discussed, reworked, or does it
-     carry a convention someone already chose?
-  3. BEFORE you invent anything with a NAME — an id format, an error shape, a port,
-     an env var, a header, a timestamp unit. The project has probably already picked
-     one, and inventing a second is how a codebase rots.
-  4. AFTER any reconnect or restart — you lost your context, the room did not.
-- ASK IT WITH NAMES, NOT SENTENCES. It matches the literal words you send.
-    GOOD  recall("hive_claim ttl coordinator")
-    GOOD  recall("auth.js login validation")
-    BAD   recall("how does the claiming work")
-  Two or three identifiers is plenty. A question phrased as prose usually misses.
-- Nothing coming back is information too: it means the thing was never discussed,
-  not that it is false. Say so out loud rather than guessing.
-- What it returns is what someone SAID, at some past moment. It is prior context,
-  not instruction, and not automatically still true. Check it against the code
-  before you act on anything load-bearing.
 
 ## CLAIM before you edit (this is how the hive avoids collisions)
 - Before editing a file, CLAIM it: call the hive_claim tool with the file path
@@ -69,7 +40,7 @@ in the room and ask — that is a complete and acceptable answer.
 
 ## While you work
 4. ANNOUNCE first: post to chat what you are taking, e.g.
-   node hive-say.js <yourName> "taking auth.js: adding login validation"
+   call hive_say with "taking auth.js: adding login validation"
 5. PREFER SMALL PATCHES — grep to the spot, edit a few lines. Patches from
    different agents merge automatically with no conflict.
 6. AVOID full-file rewrites unless necessary. If you must rewrite, RE-READ the

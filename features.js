@@ -401,6 +401,17 @@ export const FEATURES = [
       { suite: 'tests/branch-test.mjs', assertion: 'refused (Q571) when that worktree has uncommitted changes' },
     ],
   },
+  {
+    id: 'room-rules-true',
+    name: 'The rules every room is given ask only for what an agent can do',
+    criticality: 'hot', tier: 1,
+    breaks: 'A stranger\'s agent is told, as its first instruction, to run a script that was never shipped, or to call a tool it does not have, and the copy of the rules a person reads on npm is not the one agents follow.',
+    proves: [
+      { suite: 'tests/rules-promises-test.mjs', assertion: 'the shipped HIVE_RULES.md is exactly what every room is given' },
+      { suite: 'tests/rules-promises-test.mjs', assertion: 'every script the rules ask an agent to run is in the package' },
+      { suite: 'tests/rules-promises-test.mjs', assertion: 'the rules name no tool from outside Hivecode' },
+    ],
+  },
   // ── GitHub: label an issue, get back a pull request (hive-github.js, docs/GITHUB_WORKFLOW.md) ──
   {
     id: 'github-issue-to-pr',

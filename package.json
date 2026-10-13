@@ -93,7 +93,7 @@
     "test:features": "node tests/features-test.mjs",
     "test:features:shape": "node tests/features-test.mjs --shape",
     "test:learnings": "node tests/learnings-test.mjs",
-    "test:docs": "node tests/readme-promises-test.mjs",
+    "test:docs": "node tests/readme-promises-test.mjs && node tests/rules-promises-test.mjs",
     "test:setup": "node tests/setup-test.mjs --package",
     "test:mcp": "node tests/mcp-conformance-test.mjs",
     "test:recreate": "node tests/blind-recreate-test.mjs",
