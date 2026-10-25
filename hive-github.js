@@ -1253,6 +1253,7 @@ export function makeWatcher(o) {
         it.status = 'waiting'
         it.since = now()
         say(n, `\`${test}\` failed on the agent's work; queued a fix`)
+        toSlack(n, `\`${oneLine(test, 80)}\` failed on ${who}'s work, so nothing was pushed. ${who} fixes it next.`)
         return
       }
     }
@@ -1271,6 +1272,8 @@ export function makeWatcher(o) {
       const count = commitsBetween(root, before, newTip).length
       const checked = role === 'tester' && it.check ? `\n\nChecked by ${it.check.name}: **${it.check.verdict}.** ${it.check.report || ''}` : ''
       comment(it.pr, `Pushed ${count} commit${count === 1 ? '' : 's'}${what ? ` for ${what}` : ''}.\n\n${it.summary || ''}${it.tests ? `\n\nTests:${block(it.tests).join('\n')}` : ''}${checked}\n\n${MARK('run', { kind: 'fix' })}`)
+      // The push above succeeded (a refused one returned before here): the thread hears the fix landed.
+      toSlack(n, `Pushed ${count} commit${count === 1 ? '' : 's'} to the pull request${what ? ` for ${what}` : ''}: ${it.prUrl}`)
     }
     it.current = []
     it.status = it.queue.length ? 'waiting' : 'review'
@@ -1437,7 +1440,43 @@ export function makeWatcher(o) {
     } finally {
       ticking = false
       try { save() } catch (e) { log(`could not save ${file}: ${e.message}`) }
+      // A command from Slack that arrived mid-pass is acted on now, not at the next poll.
+      if (wantTick) { wantTick = false; setTimeout(() => { tick().catch(() => {}) }, 0) }
     }
+  }
+
+  let wantTick = false
+  const slackIssue = (threadTs) => {
+    const key = Object.keys(state.slack).find((k) => state.slack[k] === threadTs) || ''
+    const m = key.match(/^issue-(\d+)$/)
+    return m && state.issues[m[1]] ? Number(m[1]) : 0
+  }
+
+  /** `stop` or `retry`, replied in one of this watcher's Slack threads. It becomes the same
+   *  `/hivecode` comment a person could post on the issue, so ONE command path acts on it and
+   *  GitHub keeps who asked; then a pass runs at once instead of at the next poll. Slack hears
+   *  "stopping" only after GitHub took the comment. Who may ask is decided by the caller. */
+  async function fromSlack({ threadTs, action, handle }) {
+    const n = slackIssue(threadTs)
+    if (!n || dry) return { ok: false, reason: 'not-ours' }
+    if (action !== 'stop' && action !== 'retry') return { ok: false, reason: 'unknown' }
+    const who = String(handle || 'someone').replace(/[^\w.-]/g, '').slice(0, 40) || 'someone'
+    try { gh.comment(n, scrub(`/hivecode ${action}\n\n(from Slack, by @${who})`)) } catch (e) {
+      toSlack(n, `Could not ${action}: GitHub refused the comment (${oneLine(e.message, 160)}). Nothing changed.`)
+      await slackChain
+      return { ok: false, reason: 'github', error: e.message }
+    }
+    toSlack(n, action === 'stop' ? `Stopping, as @${who} asked.` : `Starting again, as @${who} asked.`)
+    if (ticking) wantTick = true
+    else await tick()
+    return { ok: true, n }
+  }
+
+  /** A line in an issue's thread that is not about the issue's state: a refusal, say. */
+  function slackNote({ threadTs, text }) {
+    const n = slackIssue(threadTs)
+    if (n) toSlack(n, text)
+    return !!n
   }
 
   /** After a restart: a run this file says is going, with no process of ours behind it, failed. */
@@ -1469,7 +1508,29 @@ export function makeWatcher(o) {
   }
 
   const idle = async () => { while (inflight.size) await Promise.all([...inflight.values()].map((f) => f.promise)); await slackChain }
-  return { tick, idle, recover, shutdown, state, save, inflight, id: me }
+  return { tick, idle, recover, shutdown, state, save, inflight, id: me, fromSlack, slackNote }
+}
+
+/** What a Slack event does to the watcher (Socket Mode). Apart from main() so it is tested without a
+ *  socket. Only a person's reply, in our channel, inside a thread the watcher owns, saying `stop` or
+ *  `retry`, does anything. Who may is `check` (hive-slack.js's rules, shared with the room bridge). */
+export function makeSlackReplyHandler({ w, check, allow = [], channel }) {
+  return async (ev) => {
+    if (!ev || ev.type !== 'message' || ev.subtype || ev.bot_id || ev.channel !== channel || !ev.thread_ts) return { ignored: true }
+    const m = String(ev.text || '').trim().match(/^(stop|retry)\b/i)
+    if (!m) return { ignored: true }
+    const action = m[1].toLowerCase()
+    const actor = await check.resolve(ev.user)
+    const may = check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)
+    if (!may || !may.ok) {
+      if (!(may && may.ignored)) w.slackNote({ threadTs: ev.thread_ts, text: (may && may.reply) || `Not done: you may not ${action} this.` })
+      return { refused: true }
+    }
+    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle: (actor && actor.handle) || ev.user })
+    // Said only once the stop went through: "stopped" before GitHub took it would be a false success.
+    if (r && r.ok && may.unverified) w.slackNote({ threadTs: ev.thread_ts, text: 'I could not confirm who you are with Slack, and stopped it anyway: stopping is the safe direction.' })
+    return r
+  }
 }
 
 // ---- status --------------------------------------------------------------------------------------
@@ -1525,6 +1586,8 @@ options (saved for the next start):
   --test "<command>"          run the tests ourselves before every push
   --notify <webhook url>      a Slack or Discord incoming webhook
   --slack-channel <id>        one Slack thread per issue (the bot token comes from SLACK_BOT_TOKEN)
+  --slack-allow <ids>         Slack user ids (U…, comma-separated) who may reply "retry" in an issue's thread;
+                              with SLACK_APP_TOKEN set, any full member may reply "stop" there
   --every <seconds>           how often to ask GitHub (default 60)
   --max-parallel <n>          runs at once (default 1)
   --max-minutes <n>           per run (default 40)
@@ -1593,6 +1656,7 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   // work starts, so a typo'd channel or a revoked token is said now, not discovered at the first PR.
   const slackChannel = opt('slack-channel') || ''
   let slack = null
+  let slackIn = null
   if (slackChannel) {
     const token = process.env.SLACK_BOT_TOKEN || ''
     if (!token) { logErr('Q633 --slack-channel needs the bot token in the environment: set SLACK_BOT_TOKEN to the xoxb-... token of your Slack app (docs/SLACK_SETUP.md).'); return 1 }
@@ -1604,6 +1668,23 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     if (!pf || !pf.ok) { logErr((pf && pf.error) || `Q633 Slack refused ${slackChannel}`); return 1 }
     slack = (threads) => mod.makeSlackThreader({ token, channel: slackChannel, threads, room: '', link: '' })
     log(`Slack: each issue's progress goes to its own thread in #${pf.channelName}, posted by @${pf.botUser}.`)
+    // REPLIES FROM SLACK, with SLACK_APP_TOKEN (Socket Mode: no public URL). `stop` or `retry` in an
+    // issue's thread acts as the same command on GitHub. Who may is hive-slack.js's call, with the
+    // room bridge's own rules: stop for full members of the workspace, retry only for --slack-allow.
+    const appToken = process.env.SLACK_APP_TOKEN || ''
+    if (appToken) {
+      if (typeof mod.makeSlackActorCheck !== 'function' || typeof mod.connectSocketMode !== 'function') {
+        logErr('Q634 this Hivecode cannot take replies from Slack yet (hive-slack.js has no makeSlackActorCheck). Unset SLACK_APP_TOKEN to post progress only.')
+        return 1
+      }
+      const sm = await mod.preflightSocketMode({ appToken })
+      if (!sm || !sm.ok) { logErr((sm && sm.error) || 'Q634 Slack refused SLACK_APP_TOKEN'); return 1 }
+      // Without the workspace id, users from OTHER workspaces (Slack Connect) cannot be told apart.
+      if (!pf.teamId) { logErr('Q634 Slack did not say which workspace the bot is in, so replies from outside it could not be refused. Replies stay off: unset SLACK_APP_TOKEN, or reinstall the app.'); return 1 }
+      const allow = String(opt('slack-allow') || '').split(',').map((s) => s.trim()).filter(Boolean)
+      slackIn = { appToken, allow, connect: mod.connectSocketMode, check: mod.makeSlackActorCheck({ token, teamId: pf.teamId || '', allowFlag: '--slack-allow' }) }
+      log(`Slack: \`stop\` in an issue's thread stops it; \`retry\` ${allow.length ? `works for ${allow.join(', ')}` : 'is off until --slack-allow names who may'}.`)
+    }
   }
 
   // A DRY RUN WRITES NOTHING: not a label, not the lock, not its settings, not a branch or a comment.
@@ -1668,11 +1749,19 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const w = makeWatcher({ ...watcherOpts, notify, slack })
   w.recover()
   log(`Hivecode is watching ${id.owner}/${id.repo} for issues labelled "${label}". Ctrl+C stops it.`)
+  let inbound = null
+  if (slackIn) {
+    inbound = await slackIn.connect({
+      appToken: slackIn.appToken,
+      onError: (e) => say(`Slack replies: ${oneLine(String((e && e.message) || e), 200)}`),
+      onEvent: makeSlackReplyHandler({ w, check: slackIn.check, allow: slackIn.allow, channel: slackChannel }),
+    })
+  }
   let stopping = false
-  const quit = () => { if (stopping) return; stopping = true; say('stopping: ending the runs in progress'); w.shutdown(); releaseLock(); process.exit(0) }
+  const quit = () => { if (stopping) return; stopping = true; say('stopping: ending the runs in progress'); try { if (inbound) inbound.stop() } catch { } w.shutdown(); releaseLock(); process.exit(0) }
   process.on('SIGINT', quit)
   process.on('SIGTERM', quit)
-  if (f.once) { await w.tick(); await w.idle(); releaseLock(); return 0 }
+  if (f.once) { await w.tick(); await w.idle(); try { if (inbound) inbound.stop() } catch { } releaseLock(); return 0 }
   for (;;) {
     await w.tick()
     await sleep(opt('every') * 1000)

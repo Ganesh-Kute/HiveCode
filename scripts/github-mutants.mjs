@@ -49,8 +49,15 @@ const MUTANTS = [
   // scrubSlack() in hive-slack.js strips every room id and link on the way out (measured 25 Oct:
   // that mutant stayed green). The guard is there, and tests/hive-slack-test.mjs covers it.
   { t: 'github', id: 'slack-after-pr', expect: 'T1', find: 'if (!open) { it.needPr = true;', to: "if (!open) { toSlack(n, 'Pull request ready for review'); it.needPr = true;" },
+  // hive-github.js: replies from an issue's Slack thread (group T)
+  { t: 'github', id: 'slack-reply-after-github', expect: 'T9', find: "    try { gh.comment(n, scrub(`/hivecode ${action}", to: "    toSlack(n, 'Stopping, as asked.')\n    try { gh.comment(n, scrub(`/hivecode ${action}" },
+  { t: 'github', id: 'slack-thread-owned', expect: 'T7', find: "return m && state.issues[m[1]] ? Number(m[1]) : 0", to: "return m && state.issues[m[1]] ? Number(m[1]) : Number(Object.keys(state.issues)[0] || 0)" },
+  { t: 'github', id: 'slack-fix-pushed', expect: 'T4b', find: "toSlack(n, `Pushed ${count} commit", to: "void (n, `Pushed ${count} commit" },
+  { t: 'github', id: 'slack-gate-said', expect: 'T10', find: "toSlack(n, `\\`${oneLine(test, 80)}\\` failed on", to: "void (n, `\\`${oneLine(test, 80)}\\` failed on" },
   // hive-github.js, under the CLI test
   { t: 'cli', id: 'slack-token', expect: 'CK1', find: "if (!token) { logErr('Q633", to: "if (false) { logErr('Q633" },
+  { t: 'cli', id: 'reply-retry-as-stop', expect: 'CK8', find: "check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)", to: "check.mayAct(actor, 'stop', allow)" },
+  { t: 'cli', id: 'reply-note-first', expect: 'CK10', find: '    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:', to: "    if (may.unverified) w.slackNote({ threadTs: ev.thread_ts, text: 'stopped; I could not confirm who you are' })\n    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:" },
   { t: 'cli', id: 'dry-saves', expect: 'CD4', find: 'const save = () => { if (!dry) saveState(file, state) }', to: 'const save = () => { saveState(file, state) }' },
   { t: 'cli', id: 'dry-runs', expect: 'CD3', find: '    if (dry) {\n      // Said in the order they would start', to: '    if (false) {\n      // Said in the order they would start' },
   // The dry run as first written: a fresh state, so "would start now" whatever the file knew.

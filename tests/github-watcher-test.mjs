@@ -537,6 +537,7 @@ try {
   await tick()
   await tick()
   T('T4 after a restart the next run goes on in the same thread, not a second one', tops().length === 1 && posts.some((p) => p.thread_ts === 't1' && /started run 2 of/.test(p.text)), texts())
+  T('T4b the fix pushed to the open pull request is said in the thread, not left at "fixing"', posts.some((p) => p.thread_ts === 't1' && /Pushed \d+ commits? to the pull request/.test(p.text)), texts().slice(-240))
   slackDown = 'token_revoked'
   const postsBefore = posts.length
   const xI = GH.addIssue({ title: 'Slack is down', body: 'FAKE:write down.js export const d = 1\\n' })
@@ -544,6 +545,37 @@ try {
   const refusals = logs.filter((l) => /Slack refused a post/.test(l))
   T('T5 Slack refusing never stops the work: the pull request opens, and the refusal is said, once per reason', !!GH.pr(xI) && posts.length === postsBefore && refusals.length >= 1 && new Set(refusals).size === refusals.length && refusals.some((l) => /token_revoked/.test(l)), refusals.join(' | ') || 'no refusal logged')
   slackDown = ''
+
+  // Replies in an issue's thread (Socket Mode). Who may is hive-slack.js's call and is tested there;
+  // here: what a permitted reply does, and that it goes through GitHub, where it leaves a trail.
+  w = withSlack() // a fresh threader: the one above halted for good on token_revoked
+  const threadV = w.state.slack[`issue-${vI}`]
+  const issueComments = (n) => GH.S.comments.filter((c) => c.issue === n).map((c) => c.body)
+  const r6 = await w.fromSlack({ threadTs: threadV, action: 'stop', handle: 'ganesh' })
+  await w.idle()
+  T('T6 "stop" in the issue\'s Slack thread stops it through GitHub: the command and who sent it are on the issue, and Slack says stopped',
+    r6.ok && it(vI).status === 'stopped' && issueComments(vI).some((b) => /^\/hivecode stop\n\n\(from Slack, by @ganesh\)/.test(b)) &&
+    posts.some((p) => p.thread_ts === threadV && /Stopping, as @ganesh asked/.test(p.text)) && posts.some((p) => p.thread_ts === threadV && /Stopped/.test(p.text)), `${it(vI).status} ${texts().slice(-200)}`)
+  const before7 = GH.S.comments.length
+  const r7 = await w.fromSlack({ threadTs: 'not-a-thread-of-ours', action: 'stop', handle: 'ganesh' })
+  T('T7 a reply in a thread the watcher does not own changes nothing', !r7.ok && r7.reason === 'not-ours' && GH.S.comments.length === before7)
+  const r8 = await w.fromSlack({ threadTs: threadV, action: 'retry', handle: 'ganesh' })
+  await w.idle()
+  T('T8 "retry" from the thread starts it again, the same way /hivecode retry on GitHub does', r8.ok && it(vI).status !== 'stopped' && issueComments(vI).some((b) => /^\/hivecode retry/.test(b)), it(vI).status)
+  GH.S.faults.push({ re: /^POST repos\/acme\/app\/issues\/\d+\/comments$/, status: 500, message: 'Server Error' })
+  const statusBefore9 = it(vI).status
+  const said9 = posts.length
+  const r9 = await w.fromSlack({ threadTs: threadV, action: 'stop', handle: 'ganesh' })
+  await w.idle()
+  T('T9 GitHub refusing the command: Slack is told it was NOT done, never "stopping"', !r9.ok && it(vI).status === statusBefore9 &&
+    posts.slice(said9).some((p) => /Could not stop: GitHub refused/.test(p.text)) && !posts.slice(said9).some((p) => /Stopping, as/.test(p.text)), texts().slice(-200))
+  w.shutdown()
+  w = makeW({ test: gate, slack: (threads) => HS.makeSlackThreader({ token: 'xoxb-test', channel: 'C1', threads, post, minGapMs: 0, maxRetries: 0 }) })
+  const said10 = posts.length
+  const gsI = GH.addIssue({ title: 'Gate with Slack', body: 'FAKE:write gate.txt bad' })
+  await tick()
+  T('T10 our own --test failing is said in the thread: nothing pushed, and the fix comes next', !originSha(it(gsI).branch || 'none') &&
+    posts.slice(said10).some((p) => /failed on Builder's work, so nothing was pushed/.test(p.text)), texts().slice(-240))
 } catch (err) {
   T(`no exception (${err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err})`, false)
 } finally {

@@ -76,6 +76,20 @@ Setting up the Slack app is in [SLACK_SETUP.md](SLACK_SETUP.md).
 | The token ends up somewhere it shouldn't | It is read from the environment only. It is never a flag, so it is never saved with the flags or left in shell history. |
 | A secret in an agent's summary | Scrubbed before posting, the same as on GitHub. |
 
+**Replies from Slack.** With `SLACK_APP_TOKEN` set as well (Socket Mode, so no public URL is
+needed), a reply of `stop` in an issue's thread stops that issue. A reply of `retry` starts it
+again, but only from the Slack user ids in `--slack-allow`. The watcher turns the reply into the
+same `/hivecode stop` or `/hivecode retry` comment on the issue, "(from Slack, by @handle)". So one
+command path acts on it, and GitHub keeps who asked.
+
+| what goes wrong | what we do |
+|---|---|
+| A guest, or someone from another workspace (Slack Connect), replies `stop` | Refused, and told so in the thread. Who may is decided by the same rules as `slack start`, in one place in `hive-slack.js`. |
+| A full member who is not in `--slack-allow` replies `retry` | Refused, and told so. Stopping is the safe direction, so any full member may stop, but only named people may start agents again. |
+| Slack cannot confirm who replied `stop` (rate limit, outage) | It stops anyway, and says it could not confirm who asked. `retry` stays refused. |
+| GitHub refuses the comment | Slack is told "Could not stop: GitHub refused". It never says "stopping" for a stop that did not happen. |
+| A reply in a thread the watcher does not own | Ignored. |
+
 ## How it works
 
 The watcher is one process on a machine that has the clone, `gh` logged in, and an agent CLI:

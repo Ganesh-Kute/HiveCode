@@ -246,6 +246,50 @@ try {
     srv.close()
   }
 
+  console.log('\n# a reply in an issue\'s Slack thread: who may do what')
+  {
+    // The real rules from hive-slack.js (shared with the room bridge); only users.info is faked.
+    const HS = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-slack.js`)
+    const users = {
+      UMEM: { id: 'UMEM', name: 'member', team_id: 'T1' },
+      UOWN: { id: 'UOWN', name: 'ganesh', team_id: 'T1' },
+      UGST: { id: 'UGST', name: 'guest', team_id: 'T1', is_restricted: true },
+      UEXT: { id: 'UEXT', name: 'outsider', team_id: 'T2' },
+    }
+    let lookupDown = false
+    const check = HS.makeSlackActorCheck({ token: 'xoxb-test-not-real', teamId: 'T1', lookupUser: async (id) => { if (lookupDown) throw new Error('ratelimited'); return { ok: true, user: users[id] } } })
+    const calls = []
+    const notes = []
+    const order = [] // which came first: the stop, or what Slack was told
+    const w = { fromSlack: async (a) => { calls.push(a); order.push('stop'); return { ok: true, n: 7 } }, slackNote: (a) => { notes.push(a.text); order.push('note'); return true } }
+    const h = HG.makeSlackReplyHandler({ w, check, allow: ['UOWN'], channel: 'C1' })
+    const ev = (user, text, more = {}) => ({ type: 'message', channel: 'C1', thread_ts: '111.1', user, text, ...more })
+    await h(ev('UMEM', 'stop'))
+    T('CK6 a full member\'s "stop" in our thread stops that issue', calls.length === 1 && calls[0].action === 'stop' && calls[0].handle === 'member' && calls[0].threadTs === '111.1', JSON.stringify(calls))
+    calls.length = 0
+    notes.length = 0
+    await h(ev('UGST', 'stop'))
+    await h(ev('UEXT', 'stop'))
+    T('CK7 a guest, or a user from another workspace, is refused and told why', calls.length === 0 && notes.length === 2 && notes.every((t) => /Refused/.test(t)), notes.join(' | '))
+    notes.length = 0
+    await h(ev('UMEM', 'retry'))
+    const memberRefused = calls.length === 0 && notes.length === 1
+    await h(ev('UOWN', 'retry'))
+    T('CK8 "retry" only from --slack-allow: a member is refused, the owner is not', memberRefused && calls.length === 1 && calls[0].action === 'retry', notes.join(' | '))
+    calls.length = 0
+    notes.length = 0
+    for (const e of [ev('UMEM', 'stop', { bot_id: 'B1' }), ev('UMEM', 'stop', { channel: 'C2' }), { type: 'message', channel: 'C1', user: 'UMEM', text: 'stop' }, ev('UMEM', 'please have a look'), ev('UMEM', 'stop', { subtype: 'message_changed' })]) await h(e)
+    T('CK9 a bot, another channel, a message outside a thread, other words and edits do nothing', calls.length === 0 && notes.length === 0, notes.join(' | '))
+    lookupDown = true
+    order.length = 0
+    await h(ev('UNEW', 'stop'))
+    const stoppedUnverified = calls.length === 1 && notes.length === 1 && /could not confirm who you are/.test(notes[0]) && order.join(',') === 'stop,note'
+    calls.length = 0
+    notes.length = 0
+    await h(ev('UNEW2', 'retry'))
+    T('CK10 when Slack cannot say who replied, "stop" still stops (and says so after), "retry" is refused', stoppedUnverified && calls.length === 0 && notes.length === 1, notes.join(' | '))
+  }
+
   console.log('\n# one watcher per clone')
   const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
   fs.writeFileSync(path.join(app, '.git', 'hivecode', 'watcher.lock'), JSON.stringify({ pid: sleeper.pid, at: 'earlier' }))
