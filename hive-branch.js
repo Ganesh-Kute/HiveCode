@@ -58,6 +58,19 @@ export function roomFolder(link, name) {
 
 // ---- git ----------------------------------------------------------------------------------
 
+// OUR SCRATCH WORKTREES RUN WITHOUT THE DEVELOPER'S GIT HOOKS. A post-checkout hook that exits 1
+// made `pr` fail with Q563 although git had made the worktree (measured 25 Oct 2026, a vexp hook);
+// others run npm install or rewrite files in what is a scratch folder about to be deleted. Only
+// commands inside our own temporary worktrees: the developer's checkout and every push keep their
+// hooks. A hooks path that is never created means "no hooks" on every platform git runs on.
+export const NO_HOOKS_DIR = path.join(os.tmpdir(), 'hivecode-no-hooks-never-created')
+export const noHooks = (args) => ['-c', `core.hooksPath=${NO_HOOKS_DIR}`, ...args]
+/** The same for a child process that runs git itself. Appends to any GIT_CONFIG_* already set. */
+export function noHooksEnv(env = process.env) {
+  const n = Number(env.GIT_CONFIG_COUNT) > 0 ? Number(env.GIT_CONFIG_COUNT) : 0
+  return { ...env, GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: 'core.hooksPath', [`GIT_CONFIG_VALUE_${n}`]: NO_HOOKS_DIR }
+}
+
 function git(cwd, args, { input, raw = false, trim = true } = {}) {
   const r = spawnSync('git', args, { cwd, input, encoding: raw ? undefined : 'utf8', maxBuffer: 1024 * 1024 * 1024, windowsHide: true })
   if (r.error) return { code: -1, out: raw ? Buffer.alloc(0) : '', err: r.error.message }
@@ -523,7 +536,7 @@ export async function landBranch({ cwd, branch, dry = false, push = false, pr = 
     git(root, ['worktree', 'prune'])
     if (revParse(root, `refs/heads/${temp}`)) git(root, ['branch', '-D', temp])
   }
-  const wt = git(root, ['worktree', 'add', '--detach', tmp, tip])
+  const wt = git(root, noHooks(['worktree', 'add', '--detach', tmp, tip]))
   if (wt.code !== 0) { cleanup(); throw coded('Q563', `could not make a temporary worktree: ${wt.err}`) }
 
   try {
@@ -534,7 +547,7 @@ export async function landBranch({ cwd, branch, dry = false, push = false, pr = 
     if (dry) args.push('--dry-run')
     if (force) args.push('--force', force)
     if (only) args.push('--only', only)
-    const r = spawnSync(process.execPath, args, { cwd: tmp, encoding: 'utf8', env: { ...process.env, HIVE_PROVENANCE: 'on' }, maxBuffer: 64 * 1024 * 1024, windowsHide: true })
+    const r = spawnSync(process.execPath, args, { cwd: tmp, encoding: 'utf8', env: noHooksEnv({ ...process.env, HIVE_PROVENANCE: 'on' }), maxBuffer: 64 * 1024 * 1024, windowsHide: true })
     if (r.stdout) log(r.stdout.replace(/\s+$/, ''))
     // Q501 is hive-pr saying no file in the room carries an agent's receipt: nothing was changed or
     // added. For a branch room that is an answer, not a failure -- and deletions may still land.
@@ -549,11 +562,11 @@ export async function landBranch({ cwd, branch, dry = false, push = false, pr = 
     if (deletions.length) {
       // hive-pr left the temporary worktree on its branch when it committed; when it had nothing to
       // commit it never made one, so make it here, at the same tip.
-      if (!revParse(root, `refs/heads/${temp}`)) git(tmp, ['checkout', '-q', '-b', temp])
+      if (!revParse(root, `refs/heads/${temp}`)) git(tmp, noHooks(['checkout', '-q', '-b', temp]))
       const rm = git(tmp, ['rm', '-q', '--', ...deletions])
       if (rm.code !== 0) throw coded('Q563', `could not stage the room's deletions: ${rm.err}`)
       const msg = [`Room: delete ${deletions.length === 1 ? deletions[0] : `${deletions.length} files`}`, '', ...deletions.map((d) => `  - ${d}`), '', `Room: ${parseLink(b.link).room}`].join('\n')
-      const c = git(tmp, ['commit', '-q', '-m', msg, '--author', 'hivecode-room <room@agents.hivecode.local>'])
+      const c = git(tmp, noHooks(['commit', '-q', '-m', msg, '--author', 'hivecode-room <room@agents.hivecode.local>']))
       if (c.code !== 0) throw coded('Q563', `could not commit the room's deletions: ${c.err || c.out}`)
     }
     if (nothingChanged && !deletions.length) { log(`nothing to land yet: no agent has changed a file in the room for ${name}.`); return { ok: true, landed: 0 } }

@@ -803,13 +803,13 @@ export function makeWatcher(o) {
     if (!rev(root, `refs/heads/${it.branch}`)) git(root, ['branch', '--no-track', it.branch, sha])
     const tip = rev(root, `refs/heads/${it.branch}`)
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-catchup-'))
-    const wt = git(root, ['worktree', 'add', '--quiet', tmp, it.branch])
+    const wt = git(root, HB.noHooks(['worktree', 'add', '--quiet', tmp, it.branch]))
     if (wt.code !== 0) { try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { } return needsHuman(n, it, `could not check out ${it.branch} to merge ${base} into it: ${oneLine(wt.err, 300)}`) }
     try {
-      const m = git(tmp, ['merge', '--no-edit', '-m', `Merge ${base} into ${it.branch}\n\n${base} had moved on since this pull request was opened.`, `refs/remotes/origin/${base}`])
+      const m = git(tmp, HB.noHooks(['merge', '--no-edit', '-m', `Merge ${base} into ${it.branch}\n\n${base} had moved on since this pull request was opened.`, `refs/remotes/origin/${base}`]))
       if (m.code !== 0) {
         const conflicted = git(tmp, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean)
-        git(tmp, ['merge', '--abort'])
+        git(tmp, HB.noHooks(['merge', '--abort']))
         // A failure that is not a conflict (no git identity, a hook) is said as itself, never as one.
         return needsHuman(n, it, conflicted.length
           ? `this pull request conflicts with ${base} in ${conflicted.join(', ')}. Merge ${base} into ${it.branch} by hand, then comment /hivecode retry.`
@@ -1096,7 +1096,7 @@ export function makeWatcher(o) {
 
   async function runGate(sha) {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-gate-'))
-    const wt = git(root, ['worktree', 'add', '--detach', tmp, sha])
+    const wt = git(root, HB.noHooks(['worktree', 'add', '--detach', tmp, sha]))
     if (wt.code !== 0) return { ok: false, code: -1, log: wt.err }
     try {
       const child = spawnShell(test, { cwd: tmp, env: process.env })

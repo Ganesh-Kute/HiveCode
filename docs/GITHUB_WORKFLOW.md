@@ -234,6 +234,7 @@ Each row below says what the user sees.
 | Windows | Agent CLIs are `.cmd` shims, so we start them through the shell. The prompt goes on stdin, never on the command line, so no quoting can break it. Process trees are killed with `taskkill /T`. |
 | git asks for a password, or a credential manager opens a login window, and nobody is there to answer | Git is never allowed to prompt (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`), so it fails at once instead of hanging. The error says to run `gh auth setup-git`, and the issue goes to a person rather than retrying every two minutes. |
 | The home folder is itself a git repository, and `start` is run outside the project | `start` says exactly that, instead of a puzzling "origin (none)". |
+| The repo has its own git hooks (husky, lefthook, a tool's post-checkout hook) | Hivecode's own scratch worktrees run without them: landing, the catch-up merge and the test gate. A hook that failed there made landing fail although git had done its job, and others run installs in a folder about to be deleted. The developer's checkout and every push keep their hooks. |
 | The disk fills with room folders | Finished issues' folders are removed. Only the last failed run's folder is kept. |
 
 ### People

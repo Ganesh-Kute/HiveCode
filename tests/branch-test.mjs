@@ -209,6 +209,14 @@ try {
   fs.writeFileSync(path.join(dirB, '.gitignore'), 'dist/\ncoverage/\n') // a dotfile edit must land too
   await waitUntil(() => read(dirB, 'app.js') === 'export const answer = 42\n' && read(dirA, 'tests/answer.test.js') && read(dirA, '.gitignore') === 'dist/\ncoverage/\n', 10000)
   await sleep(1500)
+  // THE DEVELOPER'S OWN GIT HOOKS, all failing. Measured 25 Oct 2026: a post-checkout hook that
+  // exits 1 (vexp's) made `pr` fail with Q563 although git had made the worktree. Landing works in
+  // our scratch worktree, where their hooks have no business; in their checkout the hooks stay.
+  const hooksDir = g(project, 'rev-parse', '--git-path', 'hooks').out
+  const hookDir = path.isAbsolute(hooksDir) ? hooksDir : path.join(project, hooksDir)
+  const HOOKS = ['post-checkout', 'pre-commit', 'commit-msg']
+  fs.mkdirSync(hookDir, { recursive: true })
+  for (const h of HOOKS) { fs.writeFileSync(path.join(hookDir, h), '#!/bin/sh\necho "the developer hook ran" >&2\nexit 1\n'); fs.chmodSync(path.join(hookDir, h), 0o755) }
   const featBefore = g(project, 'rev-parse', 'feat').out
   const e1 = await cli(project, 'pr', 'feat', '--dry-run')
   T('E1 --dry-run plans, names the deletion, and changes nothing', e1.code === 0 && g(project, 'rev-parse', 'feat').out === featBefore && /would delete 1 file\(s\) the room deleted: README\.md/.test(e1.out), e1.out.split('\n').slice(-1)[0])
@@ -223,6 +231,10 @@ try {
     g(project, 'show', 'feat:.gitignore').out === 'dist/\ncoverage/' && g(project, 'cat-file', '-e', 'feat:README.md').code !== 0)
   T('E4 the developer\'s checkout was never touched', g(project, 'symbolic-ref', '--short', 'HEAD').out === 'main' && g(project, 'status', '--porcelain').out === '' && g(project, 'rev-parse', 'main').out === mainTip)
   T('E5 no temporary worktree or branch is left behind', g(project, 'worktree', 'list', '--porcelain').out.split('\n').filter((l) => l.startsWith('worktree ')).length === 1 && !g(project, 'branch', '--list', 'hivecode-land/*').out)
+  const own = g(project, 'commit', '--allow-empty', '-m', 'the developer commits')
+  T('E5b the developer\'s failing git hooks did not stop the landing, and still run on their own commits', e2.code === 0 &&
+    HOOKS.every((h) => fs.existsSync(path.join(hookDir, h))) && own.code !== 0 && /the developer hook ran/.test(own.err) && g(project, 'config', '--get', 'core.hooksPath').code !== 0, own.err.slice(0, 120))
+  for (const h of HOOKS) fs.rmSync(path.join(hookDir, h))
 
   const wtFeat = path.join(tmp, 'feat-wt')
   g(project, 'worktree', 'add', '-q', wtFeat, 'feat')
