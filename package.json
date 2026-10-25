@@ -76,7 +76,10 @@
     "hive-github.js",
     "hive-notify.js",
     "hive-webhook.js",
+    "hive-slack.js",
+    "slack-app-manifest.json",
     "docs/GITHUB_WORKFLOW.md",
+    "docs/SLACK_SETUP.md",
     "docs/ALWAYS_ON.md"
   ],
   "publishConfig": {
@@ -93,7 +96,7 @@
     "test:features": "node tests/features-test.mjs",
     "test:features:shape": "node tests/features-test.mjs --shape",
     "test:learnings": "node tests/learnings-test.mjs",
-    "test:docs": "node tests/readme-promises-test.mjs && node tests/rules-promises-test.mjs",
+    "test:docs": "node tests/readme-promises-test.mjs && node tests/rules-promises-test.mjs && node tests/site-cli-usage-test.mjs",
     "test:setup": "node tests/setup-test.mjs --package",
     "test:mcp": "node tests/mcp-conformance-test.mjs",
     "test:recreate": "node tests/blind-recreate-test.mjs",

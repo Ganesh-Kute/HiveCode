@@ -1921,11 +1921,12 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // `invite <name>` makes one person's link into a personal room this machine hosts; `revoke <name>`
   // takes it back. Commands rather than tools: see hive-room-key.js for why.
   process.exit(await roomKeyMain(process.argv.slice(2)))
-} else if (isEntryPoint && (process.argv[2] === 'github' || process.argv[2] === 'notify')) {
+} else if (isEntryPoint && (process.argv[2] === 'github' || process.argv[2] === 'notify' || process.argv[2] === 'slack')) {
   // `github start|status`: issues labelled hivecode come back as pull requests (hive-github.js).
   // `notify "<link>"`: a person hears on Slack or Discord when an agent is waiting on them
-  // (hive-notify.js). Long-running commands, never stdio servers; loaded only when asked for.
-  const mod = await import(process.argv[2] === 'github' ? './hive-github.js' : './hive-notify.js')
+  // (hive-notify.js). `slack start "<link>" --channel <id>`: threads per task in Slack (hive-slack.js).
+  const modPath = process.argv[2] === 'github' ? './hive-github.js' : process.argv[2] === 'slack' ? './hive-slack.js' : './hive-notify.js'
+  const mod = await import(modPath)
   process.exit(await mod.main(process.argv.slice(3)))
 } else if (isEntryPoint) {
   const transport = new StdioServerTransport()
