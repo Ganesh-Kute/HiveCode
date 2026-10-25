@@ -23,6 +23,7 @@ const {
   TO_CHANNEL,
   scrubSlack,
   makeSlackThreader,
+  makeSlackActorCheck,
   preflightSlack,
   preflightSocketMode,
   connectSocketMode,
@@ -201,7 +202,81 @@ console.log('\n# makeSlackThreader: open, reply, broadcast, 429 retry, permanent
     const rBad1 = await badThreader.open('gh-bad', 'first try')
     const rBad2 = await badThreader.reply('gh-bad', 'second try after halt')
     T('token_revoked is never retried and halts further posting', !rBad1.ok && !rBad2.ok && authAttempts === 1 && errors.length === 1, `attempts=${authAttempts}, errors=${errors.length}`)
+
+    // slackPost timeout: default 15s AbortSignal + real hanging TCP server test
+    let capturedSignal = null
+    await slackPost(
+      'chat.postMessage',
+      { channel: 'C-TEST', text: 'probe' },
+      'xoxb-test',
+      async (_url, opts) => {
+        capturedSignal = opts && opts.signal
+        return { status: 200, headers: new Map(), json: async () => ({ ok: true, ts: '1' }) }
+      },
+    )
+    T('slackPost attaches an AbortSignal timeout (15s default)',
+      HS.SLACK_TIMEOUT_MS === 15000 && Boolean(capturedSignal && typeof capturedSignal.aborted === 'boolean'))
+
+    const hangSockets = new Set()
+    const hangSrv = http.createServer((_req, _res) => {
+      // Accept connection and never answer
+    })
+    hangSrv.on('connection', (s) => { hangSockets.add(s); s.on('close', () => hangSockets.delete(s)) })
+    await new Promise((r) => hangSrv.listen(0, '127.0.0.1', r))
+    const hangPort = hangSrv.address().port
+    const t0 = Date.now()
+    let hangErr = null
+    try {
+      await slackPost('chat.postMessage', { channel: 'C-TEST', text: 'hang' }, 'xoxb-test', fetch, `http://127.0.0.1:${hangPort}/api`, 250)
+    } catch (e) {
+      hangErr = e
+    } finally {
+      for (const s of hangSockets) s.destroy()
+      await new Promise((r) => hangSrv.close(r))
+    }
+    const elapsed = Date.now() - t0
+    T('slackPost aborts when Slack accepts the TCP connection and never answers',
+      Boolean(hangErr) && elapsed < 3000, `${hangErr ? hangErr.name : 'no error'} in ${elapsed}ms`)
   }
+}
+
+// ---- makeSlackActorCheck (shared access rules for Slack + GitHub) --------------------------
+console.log('\n# makeSlackActorCheck (shared access rules)')
+{
+  let fakeNow = 1000
+  const ac = makeSlackActorCheck({
+    token: 'xoxb-test',
+    teamId: 'T_OUR_TEAM',
+    api: process.env.HIVE_SLACK_API,
+    now: () => fakeNow,
+  })
+  const coworker = await ac.resolve('U_COWORKER')
+  const owner = await ac.resolve('U_OWNER')
+  const guest = await ac.resolve('U_GUEST')
+  const external = await ac.resolve('U_EXTERNAL')
+  T('makeSlackActorCheck allows any full member to stop, but requires allow for retry/resume',
+    ac.mayAct(coworker, 'stop', ['U_OWNER']).ok === true &&
+    ac.mayAct(coworker, 'retry', ['U_OWNER']).ok === false &&
+    ac.mayAct(owner, 'retry', ['U_OWNER']).ok === true)
+  T('makeSlackActorCheck refuses guests and external Slack Connect users even for stop',
+    ac.mayAct(guest, 'stop', ['U_GUEST']).ok === false &&
+    ac.mayAct(external, 'stop', ['U_EXTERNAL']).ok === false)
+  nextResponses.push({ status: 500, body: { ok: false, error: 'internal_error' } })
+  const failedLookup = await ac.resolve('U_OUTAGE')
+  const stopOnOutage = ac.mayAct(failedLookup, 'stop', ['U_OWNER'])
+  const retryOnOutage = ac.mayAct(failedLookup, 'retry', ['U_OUTAGE'])
+  T('makeSlackActorCheck fails open on stop during users.info outage with unverified: true, refuses retry',
+    stopOnOutage.ok === true && stopOnOutage.unverified === true && /stopped; I could not confirm who you are/.test(stopOnOutage.reply) && retryOnOutage.ok === false)
+
+  const ghAc = makeSlackActorCheck({
+    token: 'xoxb-test',
+    teamId: 'T_OUR_TEAM',
+    api: process.env.HIVE_SLACK_API,
+    allowFlag: '--slack-allow',
+  })
+  const ghRefusal = ghAc.mayAct(coworker, 'retry', ['U_OWNER'])
+  T('makeSlackActorCheck names custom allowFlag (--slack-allow) in refusal message',
+    !ghRefusal.ok && /--slack-allow/.test(ghRefusal.reply) && !/--allow\b/.test(ghRefusal.reply))
 }
 
 // ---- preflight Q630-Q632 -------------------------------------------------------------------

@@ -62,6 +62,8 @@ Always run `--dry-run` first. It calls Slack's `auth.test` and `conversations.in
 
 ### Option A — Bridge a Live Hivecode Room (`slack start`)
 
+> **Where do I get the `"wss://…|room-…"` link?** Running `npx -y hivecode-mcp@latest branch <name>` or `npx -y hivecode-mcp@latest setup` prints your room's `wss://…|room-…` link.
+
 **macOS / Linux (bash, zsh):**
 ```bash
 # 1. Verify token and channel membership first
@@ -89,7 +91,9 @@ npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-a
 
 ### Option B — One Slack Thread per GitHub Issue (`github start --slack-channel`)
 
-When running the GitHub issue watcher (`docs/GITHUB_WORKFLOW.md`), pass `--slack-channel <id>` with `SLACK_BOT_TOKEN` set in your environment. Each labelled issue opens one Slack thread; PR ready for review, waiting on a person, and merged/closed are posted in the thread and broadcast to the channel (`reply_broadcast`), while run start, CI failures, the tester's verdict, resumed, and stopped stay inside the thread only.
+When running the GitHub issue watcher (`docs/GITHUB_WORKFLOW.md`), pass `--slack-channel <id>` with `SLACK_BOT_TOKEN` set in your environment. Each labelled issue opens one Slack thread; PR ready for review, waiting on a person, and merged/closed are posted in the thread and broadcast to the channel (`reply_broadcast`), while run start, CI failures, the tester's verdict, fixes pushed to the PR, resumed, and stopped stay inside the thread only.
+
+If you also set `SLACK_APP_TOKEN=xapp-…` (see Section 5), replying `stop` in an issue's Slack thread stops that issue's run (and posts `/hivecode stop` on GitHub), and replying `retry` re-runs it for Slack user IDs listed in `--slack-allow <U123,U456>`.
 
 **macOS / Linux (bash, zsh):**
 ```bash
@@ -103,8 +107,8 @@ SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest github start --agent "claude
 **Windows (PowerShell):**
 ```powershell
 $env:SLACK_BOT_TOKEN="xoxb-…"
-npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C0123456789 --dry-run
-npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C0123456789
+npx -y hivecode-mcp@latest github start --agent 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode' --slack-channel C0123456789 --dry-run
+npx -y hivecode-mcp@latest github start --agent 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode' --slack-channel C0123456789
 ```
 
 **Windows (Command Prompt / `cmd.exe`):**
@@ -180,14 +184,20 @@ Inbound Socket Mode requires adding `channels:history`, `groups:history`, and `u
 ```
 </details>
 
-### Who May Act (`--allow U123,U456`) & No Impersonation
-- **STOP is fail-safe**: Any full member of your Slack workspace may type `stop`, `stop all`, or `stop <AgentName>` in a thread to pause agents immediately.
-- **RESUME and thread replies require `--allow`**: Only Slack user IDs explicitly listed in `--allow U123,U456` (find yours in Slack under **Profile → `⋯` → Copy member ID**) may resume agents (`resume`, `resume all`, `resume <AgentName>`) or send replies into the room. If `--allow` is omitted, inbound is **stop-only**.
+### Generating the App-Level Token (`SLACK_APP_TOKEN`)
+1. In your Slack app settings, go to **Basic Information** and scroll down to **App-Level Tokens**.
+2. Click **Generate Token and Scopes**.
+3. Enter `socket-mode` as the **Token Name** (required by Slack), click **Add Scope**, select `connections:write`, and click **Generate**.
+4. Copy the resulting `xapp-…` token and set it as `SLACK_APP_TOKEN`.
+
+### Who May Act (`--allow` / `--slack-allow`) & No Impersonation
+- **STOP is fail-safe**: Any full member of your Slack workspace may type `stop`, `stop all`, or `stop <AgentName>` in a thread to pause agents (or stop an active GitHub issue run) immediately. If Slack's `users.info` endpoint fails during an outage, `stop` still succeeds and notes `(stopped; I could not confirm who you are)`.
+- **RESUME, RETRY, and thread replies require the allowlist (`--allow U123,U456` on `slack start`, or `--slack-allow U123,U456` on `github start`)**: Only Slack user IDs explicitly listed in the allowlist (find yours in Slack under **Profile → `⋯` → Copy member ID**) may resume agents (`resume`, `resume all`, `resume <AgentName>`), retry a GitHub issue run (`retry`), or send replies into the room. If the allowlist is omitted, inbound is **stop-only**.
 - **Guests & Slack Connect users are refused**: Single-channel/multi-channel guests (`is_restricted` / `is_ultra_restricted`) and external Slack Connect users from other workspaces (`team_id` mismatch via `users.info`) are refused for all actions (including `stop`) and receive a refusal reply in the thread.
 - **No impersonation (`slack:<handle>`)**: Every message delivered from Slack into the room is attributed as `slack:<handle>` (for example, `slack:ganesh`), never as a bare room member name (`Ganesh`), so a Slack display name cannot impersonate the room owner.
 
 ### Free vs Paid Slack Plans
-- **Typed `stop` works on every Slack plan (including Free)**: Replying `stop`, `stop all`, `stop <AgentName>`, or `resume <AgentName>` in a channel thread via `slack start` requires only standard channel events and works on **all Slack plans**.
+- **Typed `stop` works on every Slack plan (including Free)**: Replying `stop`, `stop all`, `stop <AgentName>`, `resume <AgentName>`, or `retry` in a channel thread requires only standard channel events and works on **all Slack plans**.
 - **Native AI stop button requires a paid Slack plan**: Slack's native stop button (`agent_session_stopped` in `hive-slack-agent.js`) belongs to Slack's AI agent surface (`assistant:write`), which requires a paid Slack plan.
 
 **macOS / Linux (bash, zsh):**
@@ -216,31 +226,37 @@ npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-a
 
 ## 6. How to Show It (Live Demo Walkthrough)
 
-Use these 5 steps to demonstrate GitHub-to-Slack issue threads and live Slack stop/resume control end to end:
+> **Running from a local checkout before npm publish:** Until the latest release is published to npm (`npx -y hivecode-mcp@latest` on npm is `0.12.4` prior to release), replace `npx -y hivecode-mcp@latest` in the commands below with `node C:/Users/G1/Desktop/N-team/hive-mcp.js` (or `node ./hive-mcp.js` from your repo root).
+
+Use these 5 steps to demonstrate either **GitHub-to-Slack issue threads** (`github start --slack-channel --slack-allow`) or a **live room bridge** (`slack start --channel --allow`) end to end:
 
 1. **Install the App & Copy Tokens**:
    - Create the Slack app from the **Optional Inbound Manifest** in Section 5 above and install it to your workspace.
-   - Copy `SLACK_BOT_TOKEN` (`xoxb-…`) from **OAuth & Permissions**, and generate `SLACK_APP_TOKEN` (`xapp-…` with `connections:write`) under **Basic Information → App-Level Tokens**.
+   - Copy `SLACK_BOT_TOKEN` (`xoxb-…`) from **OAuth & Permissions**, and generate `SLACK_APP_TOKEN` (`xapp-…`, named `socket-mode` with `connections:write`) under **Basic Information → App-Level Tokens**.
 2. **Invite `@Hivecode` & Copy IDs**:
    - In your Slack channel, run `/invite @Hivecode` and copy the **Channel ID** (`C…`) from channel details.
    - Copy your own **Slack Member ID** (`U…`) from your Slack profile (**Profile → `⋯` → Copy member ID**).
-3. **Start with `--allow <your-user-id>`**:
-   - Run the `--dry-run` check first, then start the bridge with `--allow <your-user-id>`:
+3. **Start the Watcher or Room Bridge**:
+   - **Flow A — GitHub Issue Threads + Slack `stop` / `retry` (PowerShell):**
      ```powershell
      $env:SLACK_BOT_TOKEN="xoxb-…"
      $env:SLACK_APP_TOKEN="xapp-…"
-     npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
+     npx -y hivecode-mcp@latest github start --agent 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode' --slack-channel C0123456789 --slack-allow U012ABCDEF --dry-run
+     npx -y hivecode-mcp@latest github start --agent 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode' --slack-channel C0123456789 --slack-allow U012ABCDEF
      ```
-   - Or for the GitHub issue watcher:
+   - **Flow B — Live Room Bridge + Slack `stop` / `resume` / Thread Replies (PowerShell):**
      ```powershell
      $env:SLACK_BOT_TOKEN="xoxb-…"
-     npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C0123456789
+     $env:SLACK_APP_TOKEN="xapp-…"
+     npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
+     npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
      ```
-4. **Label an Issue `hivecode`**:
-   - Add the `hivecode` label to a GitHub issue (or assign a task in the room). Watch Slack open a single thread for that issue/task and post progress inside it.
-5. **Type `stop all` in the Thread**:
-   - Reply `stop all` (or `stop <AgentName>`) inside the Slack thread from your phone or desktop. Every AI agent in the room is immediately paused on its own client (`controls` map -> `paused`), and the bot confirms in the thread.
-   - Reply `resume all` (permitted because your ID is in `--allow`) or reply with instructions (`@AgentName …`, delivered into the room as `slack:<your-handle>`).
+4. **Trigger a Thread**:
+   - **In Flow A**: Add the `hivecode` label to a GitHub issue. Watch Slack open a single thread (`#12 — Title`) for that issue and post run progress inside it.
+   - **In Flow B**: Assign a task in the room. Watch Slack open a thread for that task and post gate checks and task chat inside it.
+5. **Control from the Slack Thread**:
+   - **In Flow A (`github start`)**: Reply `stop` inside the issue's Slack thread to stop the active run (posts `/hivecode stop` on GitHub and ends the room). Reply `retry` (permitted because your ID is in `--slack-allow`) to post `/hivecode retry` and start a fresh run.
+   - **In Flow B (`slack start`)**: Reply `stop all` (or `stop <AgentName>`) inside the thread to pause agents on their own clients (`controls` map -> `paused`). Reply `resume all` or reply with instructions (`@AgentName …`, delivered into the room as `slack:<your-handle>`).
 
 ---
 

@@ -152,13 +152,24 @@ export function makeQueue({
   }
 }
 
+export const SLACK_TIMEOUT_MS = 15000
+
 /** POST to Slack's Web API. Kept tiny and injectable so the bridge can be tested without a
- *  workspace -- the thing worth testing is our routing, not Slack's HTTP. */
-export async function slackPost(method, body, token, fetchImpl = fetch, apiBase = process.env.HIVE_SLACK_API || DEFAULT_API) {
+ *  workspace -- the thing worth testing is our routing, not Slack's HTTP.
+ *  Applies a 15s AbortSignal timeout by default so a hung TCP socket never stalls the queue. */
+export async function slackPost(
+  method,
+  body,
+  token,
+  fetchImpl = fetch,
+  apiBase = process.env.HIVE_SLACK_API || DEFAULT_API,
+  timeoutMs = Number(process.env.HIVE_SLACK_TIMEOUT_MS) || SLACK_TIMEOUT_MS,
+) {
   const r = await fetchImpl(`${apiBase}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   })
   const retryHeader = r.headers && typeof r.headers.get === 'function' ? Number(r.headers.get('retry-after') || 0) : 0
   const j = await r.json().catch(() => ({ ok: false, error: r.status === 429 ? 'ratelimited' : 'bad_json' }))
@@ -510,6 +521,105 @@ export const TO_CHANNEL = new Set(['task-open', 'task-done'])
 
 export const USER_CACHE_TTL_MS = 10 * 60 * 1000
 
+/** Shared Slack actor verification and asymmetric authorization (used by both hive-slack.js
+ *  and hive-github.js):
+ *  - caches verified users.info results for ttlMs (default 10 minutes); lookup failures are not cached
+ *  - refuses bots, deleted users, guests (is_restricted / is_ultra_restricted / is_stranger),
+ *    and external Slack Connect users (team_id !== teamId)
+ *  - allows 'stop' / 'stop-all' for any full workspace member, AND fails open with unverified: true
+ *    ("stopped; I could not confirm who you are") if users.info failed during an outage
+ *  - allows 'resume' / 'retry' / 'reply' only when actor.ok === true AND userId is in allow */
+export function makeSlackActorCheck({
+  token,
+  teamId = '',
+  api = process.env.HIVE_SLACK_API || DEFAULT_API,
+  fetchImpl = fetch,
+  lookupUser = null,
+  ttlMs = USER_CACHE_TTL_MS,
+  now = () => Date.now(),
+  allowFlag = '--allow',
+} = {}) {
+  const userCache = new Map() // userId -> { value, expiresAt }
+
+  function put(userId, value) {
+    userCache.set(userId, { value, expiresAt: now() + ttlMs })
+    return value
+  }
+
+  async function resolve(userId) {
+    if (!userId) return { ok: false, userId: '', reason: 'missing_user' }
+    const cached = userCache.get(userId)
+    if (cached) {
+      if (now() < cached.expiresAt) return cached.value
+      userCache.delete(userId)
+    }
+    let res
+    try {
+      res = lookupUser
+        ? await lookupUser(userId)
+        : await slackPost('users.info', { user: userId }, token, fetchImpl, api)
+    } catch (e) {
+      return { ok: false, userId, handle: userId, reason: 'lookup_failed', error: e.message }
+    }
+    const u = res && res.user
+    if (!u || u.deleted || u.is_bot) {
+      return put(userId, { ok: false, userId, isBot: Boolean(u && u.is_bot), reason: 'bot_or_deleted' })
+    }
+    const handle = u.name || (u.profile && u.profile.display_name) || userId
+    if (u.is_restricted || u.is_ultra_restricted || u.is_stranger) {
+      return put(userId, { ok: false, userId, handle, reason: 'guest' })
+    }
+    if (teamId && u.team_id && u.team_id !== teamId) {
+      return put(userId, { ok: false, userId, handle, reason: 'external_team' })
+    }
+    return put(userId, { ok: true, userId, handle, teamId: u.team_id || '' })
+  }
+
+  function mayAct(actor, action, allow = []) {
+    if (!actor || actor.isBot) {
+      return { ok: false, ignored: true, unverified: false, reason: 'bot_or_empty', by: '', reply: '' }
+    }
+    const uid = actor.userId || ''
+    const allowSet = allow instanceof Set
+      ? allow
+      : new Set(
+          (Array.isArray(allow) ? allow : String(allow || '').split(','))
+            .map((s) => String(s || '').trim())
+            .filter(Boolean),
+        )
+    const isStop = action === 'stop' || action === 'stop-all'
+    const by = formatSlackSender(actor.handle || uid || 'user')
+
+    if (!actor.ok) {
+      if (actor.reason === 'lookup_failed' && isStop) {
+        return { ok: true, unverified: true, by, reply: 'stopped; I could not confirm who you are' }
+      }
+      const reply = actor.reason === 'lookup_failed'
+        ? `:no_entry: Refused: could not verify your Slack user (${uid || 'unknown'}) via users.info.`
+        : `:no_entry: Refused: guests and external Slack Connect users cannot control or message this room.`
+      return { ok: false, unverified: false, refused: actor.reason, by, reply }
+    }
+
+    if (isStop) {
+      return { ok: true, unverified: false, by, reply: '' }
+    }
+
+    if (!allowSet.has(uid)) {
+      return {
+        ok: false,
+        unverified: false,
+        refused: 'not_in_allow',
+        by,
+        reply: `:no_entry: Refused: only Slack user IDs listed in ${allowFlag} may resume/retry agents or send replies into the room (your ID: \`${uid}\`). Any full workspace member may still type \`stop\`.`,
+      }
+    }
+
+    return { ok: true, unverified: false, by, reply: '' }
+  }
+
+  return { resolve, mayAct }
+}
+
 export function makeBridge({
   hive,
   channel,
@@ -536,7 +646,15 @@ export function makeBridge({
       .map((s) => String(s || '').trim())
       .filter(Boolean),
   )
-  const userCache = new Map() // userId -> { value, expiresAt }
+  const actorCheck = makeSlackActorCheck({
+    token,
+    teamId,
+    api,
+    fetchImpl,
+    lookupUser,
+    ttlMs: userCacheTtlMs,
+    now,
+  })
   let reportedFatal = false
 
   const handleFatal = (e) => {
@@ -609,40 +727,6 @@ export function makeBridge({
     return { ok: true, task, by }
   }
 
-  function putCachedUser(userId, value) {
-    userCache.set(userId, { value, expiresAt: now() + userCacheTtlMs })
-    return value
-  }
-
-  async function resolveSlackActor(userId) {
-    if (!userId) return { ok: false, reason: 'missing_user' }
-    const cached = userCache.get(userId)
-    if (cached) {
-      if (now() < cached.expiresAt) return cached.value
-      userCache.delete(userId)
-    }
-    let res
-    try {
-      res = lookupUser
-        ? await lookupUser(userId)
-        : await slackPost('users.info', { user: userId }, token, fetchImpl, api)
-    } catch (e) {
-      return { ok: false, reason: 'lookup_failed', error: e.message }
-    }
-    const u = res && res.user
-    if (!u || u.deleted || u.is_bot) {
-      return putCachedUser(userId, { ok: false, isBot: Boolean(u && u.is_bot), reason: 'bot_or_deleted' })
-    }
-    const handle = u.name || (u.profile && u.profile.display_name) || userId
-    if (u.is_restricted || u.is_ultra_restricted || u.is_stranger) {
-      return putCachedUser(userId, { ok: false, handle, reason: 'guest' })
-    }
-    if (teamId && u.team_id && u.team_id !== teamId) {
-      return putCachedUser(userId, { ok: false, handle, reason: 'external_team' })
-    }
-    return putCachedUser(userId, { ok: true, handle, teamId: u.team_id || '' })
-  }
-
   async function replyInThread(thread_ts, text) {
     const clean = scrubSlack(text, { room: room || (hive && hive.room) || '', link })
     try {
@@ -654,7 +738,7 @@ export function makeBridge({
   }
 
   /** Handle an inbound Socket Mode event (`message` or `agent_session_stopped`).
-   *  Asymmetric authorization:
+   *  Asymmetric authorization via makeSlackActorCheck:
    *  - Guests (`is_restricted` / `is_ultra_restricted`) and Slack Connect users from other workspaces
    *    (`team_id !== teamId`) are refused for everything.
    *  - STOP (`stop`, `stop all`, `stop <Agent>`, or `agent_session_stopped`) is fail-safe: any full
@@ -675,44 +759,29 @@ export function makeBridge({
       ev.type === 'agent_session_stopped' ||
       Boolean(r && (r.intent === 'stop-all' || r.intent === 'stop'))
 
-    const actor = await resolveSlackActor(ev.user)
+    const actor = await actorCheck.resolve(ev.user)
     if (actor.isBot) return { ok: false, ignored: 'bot_user' }
-    const unverifiedStop = !actor.ok && actor.reason === 'lookup_failed' && isStopAction
-    if (!actor.ok && !unverifiedStop) {
-      const msg = actor.reason === 'lookup_failed'
-        ? `:no_entry: Refused: could not verify your Slack user (${ev.user}) via users.info.`
-        : `:no_entry: Refused: guests and external Slack Connect users cannot control or message this room.`
-      await replyInThread(replyTs, msg)
-      return { ok: false, refused: actor.reason }
-    }
-    const sender = formatSlackSender(actor.handle || ev.user)
-    const unverifiedNote = unverifiedStop ? ' (stopped; I could not confirm who you are)' : ''
 
-    if (ev.type === 'agent_session_stopped') {
-      const who = stopAll(hive, sender, botName)
-      await replyInThread(
-        replyTs,
-        who.length
-          ? `:octagonal_sign: *${sender}* paused *${who.join('*, *')}*. Nothing new will be picked up.${unverifiedNote}`
-          : `No agents to pause.${unverifiedNote}`,
-      )
-      return { ok: true, action: 'stop-all', stopped: who, by: sender, unverified: unverifiedStop }
-    }
+    if (isStopAction) {
+      const check = actorCheck.mayAct(actor, 'stop', allowSet)
+      if (!check.ok) {
+        if (check.reply) await replyInThread(replyTs, check.reply)
+        return { ok: false, refused: check.refused || actor.reason }
+      }
+      const sender = check.by
+      const unverifiedStop = Boolean(check.unverified)
+      const unverifiedNote = unverifiedStop ? ` (${check.reply})` : ''
 
-    if (ev.type !== 'message' || !ev.text || !r) return { ok: false, ignored: 'unsupported_event' }
-
-    // Fail-safe STOP: any full member of the workspace (or unverified user during users.info outage) may stop agents.
-    if (r.intent === 'stop-all') {
-      const who = stopAll(hive, sender, botName)
-      await replyInThread(
-        replyTs,
-        who.length
-          ? `:octagonal_sign: *${sender}* paused *${who.join('*, *')}*. Nothing new will be picked up.${unverifiedNote}`
-          : `No agents to pause.${unverifiedNote}`,
-      )
-      return { ok: true, action: 'stop-all', stopped: who, by: sender, unverified: unverifiedStop }
-    }
-    if (r.intent === 'stop') {
+      if (ev.type === 'agent_session_stopped' || (r && r.intent === 'stop-all')) {
+        const who = stopAll(hive, sender, botName)
+        await replyInThread(
+          replyTs,
+          who.length
+            ? `:octagonal_sign: *${sender}* paused *${who.join('*, *')}*. Nothing new will be picked up.${unverifiedNote}`
+            : 'No agents to pause.',
+        )
+        return { ok: true, action: 'stop-all', stopped: who, by: sender, unverified: unverifiedStop && who.length > 0 }
+      }
       const real = resolveName(hive, r.who)
       if (!real || real === botName) {
         const here = (hive.members ? hive.members() : []).filter((p) => p.name !== botName).map((p) => p.name).join(', ') || 'nobody'
@@ -724,15 +793,22 @@ export function makeBridge({
       return { ok: true, action: 'stop', who: real, by: sender, unverified: unverifiedStop }
     }
 
+    if (!actor.ok) {
+      const check = actorCheck.mayAct(actor, 'reply', allowSet)
+      if (check.reply) await replyInThread(replyTs, check.reply)
+      return { ok: false, refused: check.refused || actor.reason }
+    }
+
+    if (ev.type !== 'message' || !ev.text || !r) return { ok: false, ignored: 'unsupported_event' }
+
     // RESUME requires --allow <U123,U456>.
     if (r.intent === 'resume-all' || r.intent === 'resume') {
-      if (!allowSet.has(ev.user)) {
-        await replyInThread(
-          replyTs,
-          `:no_entry: Refused: only Slack user IDs listed in --allow may resume agents or send replies into the room (your ID: \`${ev.user}\`). Any full workspace member may still type \`stop\`.`,
-        )
-        return { ok: false, refused: 'not_in_allow' }
+      const check = actorCheck.mayAct(actor, 'resume', allowSet)
+      if (!check.ok) {
+        if (check.reply) await replyInThread(replyTs, check.reply)
+        return { ok: false, refused: check.refused || 'not_in_allow' }
       }
+      const sender = check.by
       if (r.intent === 'resume-all') {
         const who = resumeAll(hive, sender, botName)
         await replyInThread(
@@ -761,14 +837,12 @@ export function makeBridge({
       }
     }
     if (!knownThread) return { ok: false, ignored: 'untracked_thread' }
-    if (!allowSet.has(ev.user)) {
-      await replyInThread(
-        ev.thread_ts,
-        `:no_entry: Refused: only Slack user IDs listed in --allow may resume agents or send replies into the room (your ID: \`${ev.user}\`). Any full workspace member may still type \`stop\`.`,
-      )
-      return { ok: false, refused: 'not_in_allow' }
+    const check = actorCheck.mayAct(actor, 'reply', allowSet)
+    if (!check.ok) {
+      if (check.reply) await replyInThread(ev.thread_ts, check.reply)
+      return { ok: false, refused: check.refused || 'not_in_allow' }
     }
-    const d = deliver({ thread_ts: ev.thread_ts, text: ev.text, user: sender })
+    const d = deliver({ thread_ts: ev.thread_ts, text: ev.text, user: check.by })
     return { ok: true, action: 'reply', task: d.task, by: d.by }
   }
 
