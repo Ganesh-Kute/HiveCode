@@ -206,6 +206,46 @@ try {
     T('CS9 a real start moves an unreadable state file aside, and says where', r.code === 0 && fs.readdirSync(path.dirname(badFile)).some((x) => /^github\.json\.unreadable-/.test(x)) && /Q606 .*It was moved to/.test(r.out), r.out)
   }
 
+  console.log('\n# --slack-channel: checked against Slack before any work starts')
+  {
+    // Slack, faked over real HTTP: the bridge's own preflight (auth.test, conversations.info) runs.
+    const http = await import('http')
+    let mode = 'ok'
+    const srv = http.createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        const m = req.url.replace(/^\/api\//, '')
+        const out = m === 'auth.test' ? (mode === 'badtoken' ? { ok: false, error: 'invalid_auth' } : { ok: true, user: 'hivecode', user_id: 'U1', team: 'Acme' })
+          : m === 'conversations.info' ? { ok: true, channel: { id: 'C1', name: 'eng', is_member: mode !== 'notmember' } }
+            : { ok: false, error: 'unknown_method' }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(out))
+      })
+    })
+    await new Promise((res) => srv.listen(0, '127.0.0.1', res))
+    process.env.HIVE_SLACK_API = `http://127.0.0.1:${srv.address().port}/api`
+    const sl = repo(path.join(tmp, 'slack'), 'https://github.com/acme/app.git')
+    const slArgs = ['start', '--once', '--agent', NODE, '--slack-channel', 'C1']
+    const nothingHere = () => !fs.existsSync(path.join(sl, '.git', 'hivecode'))
+    delete process.env.SLACK_BOT_TOKEN
+    r = await run(sl, slArgs, fakeCall(github()).call)
+    T('CK1 --slack-channel without SLACK_BOT_TOKEN is refused with the fix, and nothing is written', r.code === 1 && /Q633 .*SLACK_BOT_TOKEN/.test(r.out) && nothingHere(), r.out)
+    process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-real'
+    mode = 'badtoken'
+    r = await run(sl, slArgs, fakeCall(github()).call)
+    T('CK2 a token Slack refuses is said before any work starts', r.code === 1 && /Q630 .*\(invalid_auth\)/.test(r.out) && nothingHere(), r.out)
+    mode = 'notmember'
+    r = await run(sl, slArgs, fakeCall(github()).call)
+    T('CK3 a bot that is not in the channel: the /invite that fixes it', r.code === 1 && /Q631 .*\/invite @hivecode/.test(r.out) && nothingHere(), r.out)
+    mode = 'ok'
+    r = await run(sl, slArgs, fakeCall(github()).call)
+    T('CK4 a good token and channel: it says where each issue goes, and starts', r.code === 0 && /its own thread in #eng, posted by @hivecode/.test(r.out) && /watching acme\/app/.test(r.out), r.out)
+    T('CK5 the token is never saved with the flags', !/xoxb-/.test(fs.readFileSync(path.join(sl, '.git', 'hivecode', 'github.json'), 'utf8')))
+    delete process.env.SLACK_BOT_TOKEN
+    delete process.env.HIVE_SLACK_API
+    srv.close()
+  }
+
   console.log('\n# one watcher per clone')
   const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
   fs.writeFileSync(path.join(app, '.git', 'hivecode', 'watcher.lock'), JSON.stringify({ pid: sleeper.pid, at: 'earlier' }))

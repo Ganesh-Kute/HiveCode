@@ -527,6 +527,8 @@ export function makeWatcher(o) {
     // not the state file. The state file is read as it is (what it knows is why a start would not
     // run an issue), but what it tracks is reported, never reconciled: that path writes.
     dry = false,
+    // SLACK: (threads) => { open(key, text), reply(key, text, { broadcast }) } -- one thread per issue.
+    slack = null,
   } = o
   const file = statePath(gitDir)
   const state = loadState(file, log, { peek: dry })
@@ -539,6 +541,33 @@ export function makeWatcher(o) {
   let ticking = false
   const url = (n) => `https://github.com/${gh.owner}/${gh.repo}/issues/${n}`
   const say = (n, text) => log(`#${n}: ${text}`)
+
+  // ONE SLACK THREAD PER ISSUE. Each post follows the GitHub write it reports, never precedes it, so
+  // Slack cannot say "pull request ready" for a push that failed. The thread is kept in the state
+  // file, not in this process: a restarted watcher goes on in the same thread instead of opening a
+  // second one. Slack down, slow or refusing never stops the work on GitHub: it is said once.
+  if (!state.slack) state.slack = {}
+  const slackThreads = { get: (k) => state.slack[k], set: (k, v) => { state.slack[k] = v; save() } }
+  const sl = slack && !dry ? slack(slackThreads) : null
+  let slackChain = Promise.resolve()
+  const slackSaid = new Set()
+  function toSlack(n, text, { broadcast = false } = {}) {
+    if (!sl) return
+    const key = `issue-${n}`
+    // The threader answers { ok: false, error } rather than throwing: a refusal is turned into a
+    // throw here, so it is said once below instead of being mistaken for a post that went out.
+    const must = (r) => { if (r && r.ok === false) throw new Error(r.error || 'refused') ; return r }
+    slackChain = slackChain.then(async () => {
+      if (!slackThreads.get(key)) {
+        const title = oneLine(((state.issues[n] || {}).issue || {}).title || '', 120)
+        must(await sl.open(key, scrub(`:inbox_tray: *#${n} ${title}*: Hivecode is on it. ${url(n)}`)))
+      }
+      must(await sl.reply(key, scrub(text), { broadcast }))
+    }).catch((e) => {
+      const m = oneLine(String((e && e.message) || e), 200)
+      if (!slackSaid.has(m)) { slackSaid.add(m); log(`Slack refused a post (${m}). The work on GitHub goes on.`) }
+    })
+  }
 
   function canPush(login) {
     if (!login) return false
@@ -654,6 +683,7 @@ export function makeWatcher(o) {
     comment(n, `${text}\n\n${MARK('needs-human')}`)
     notify(`Needs you: ${url(n)}: ${question ? `the agent asks: ${oneLine(question, 300)}` : oneLine(reason, 400)}`)
     say(n, `needs a person: ${oneLine(question || reason, 200)}`)
+    toSlack(n, `:raised_hand: Needs a person: ${question ? `the agent asks: ${oneLine(question, 400)}` : oneLine(reason, 400)} ${url(n)}`, { broadcast: true })
   }
 
   function resume(n, it, answers = []) {
@@ -672,6 +702,7 @@ export function makeWatcher(o) {
     it.status = it.pr && !it.queue.length ? 'review' : 'waiting'
     it.since = now()
     say(n, 'resumed')
+    toSlack(n, 'Resumed.')
   }
 
   function killRun(n) {
@@ -689,6 +720,7 @@ export function makeWatcher(o) {
     if (!inflight.has(n) && it.branch) { try { dropRoom(it.branch) } catch { } }
     if (ack) comment(n, `Stopped, as asked. Nothing more is pushed. To start again, comment \`/hivecode retry\`.\n\n${MARK('stopped')}`)
     say(n, `stopped: ${why}`)
+    toSlack(n, `:octagonal_sign: Stopped: ${why}. Nothing more is pushed.`)
   }
 
   function dropRoom(branch) {
@@ -715,6 +747,7 @@ export function makeWatcher(o) {
     if (outcome === 'done') notify(`Merged: ${it.prUrl} (#${n})`)
     else notify(`Closed without merging: ${it.prUrl} (#${n})`)
     say(n, outcome === 'done' ? 'merged' : 'pull request closed')
+    toSlack(n, outcome === 'done' ? `:white_check_mark: Merged: ${it.prUrl}` : `Closed without merging: ${it.prUrl}`, { broadcast: true })
   }
 
   function pollPull(n, it) {
@@ -743,6 +776,7 @@ export function makeWatcher(o) {
       queue(it, { kind: 'ci', sha, failed })
       notify(`CI failed on ${it.prUrl}: ${names}. The agent is fixing it (run ${it.runs + 1} of ${it.allowedRuns}).`)
       say(n, `CI failed (${names}); queued a fix`)
+      toSlack(n, `:x: CI failed (${names}). The agent is fixing it (run ${it.runs + 1} of ${it.allowedRuns}).`)
     } else if (v.state === 'success') {
       it.ciSeen = sha
       it.sameFailure = 0
@@ -793,6 +827,7 @@ export function makeWatcher(o) {
       it.ciSeen = ''
       comment(it.pr, `${base} had moved on since this pull request was opened. Hivecode merged it in, with no conflicts.\n\n${MARK('run', { kind: 'catch-up' })}`)
       say(n, `merged ${base} into ${it.branch}, no conflicts, and pushed`)
+      toSlack(n, `${base} had moved on; merged it into the pull request, no conflicts.`)
     } finally {
       git(root, ['worktree', 'remove', '--force', tmp])
       try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { }
@@ -1010,6 +1045,8 @@ export function makeWatcher(o) {
         .finally(() => { inflight.delete(n); try { save() } catch { } })
       inflight.set(n, { child, promise })
       say(n, `run ${it.runs} of ${it.allowedRuns} started (${it.run.kind}) in room ${parseLink(bound.link).room}`)
+      // Never the room: anyone who learns its id can read the code in it, and Slack is outside.
+      toSlack(n, `${who} started run ${it.runs} of ${it.allowedRuns} (${it.run.kind === 'check' ? 'checking the work' : it.run.kind === 'fix' ? 'fixing the pull request' : 'building'}).`)
       return true
     } catch (e) {
       // The relay, the network or git said no before the agent started: nothing ran, so this run
@@ -1095,6 +1132,7 @@ export function makeWatcher(o) {
     it.prUrl = pr.html_url || `https://github.com/${gh.owner}/${gh.repo}/pull/${pr.number}`
     notify(`PR ready for review: ${it.prUrl} (${title})`)
     say(n, `pull request #${pr.number} opened`)
+    toSlack(n, `:arrow_up: Pull request ready for review: ${it.prUrl}`, { broadcast: true })
     return true
   }
 
@@ -1124,6 +1162,7 @@ export function makeWatcher(o) {
       it.status = 'waiting'
       it.notBefore = now() + 15 * 60000
       say(n, `${who} failed (exit ${res.code}); trying again in 15 minutes: ${oneLine(why, 160)}`)
+      toSlack(n, `${who} failed; trying again in 15 minutes.`)
       return
     }
     it.failures = 0
@@ -1178,6 +1217,7 @@ export function makeWatcher(o) {
       it.status = 'waiting'
       it.since = 0
       say(n, `${who}'s work is in; ${testerName} checks it next`)
+      toSlack(n, `${who}'s work is in. ${testerName} checks it before anything is pushed.`)
       return
     }
     if (role === 'tester') {
@@ -1193,6 +1233,7 @@ export function makeWatcher(o) {
         it.status = 'waiting'
         it.since = now()
         say(n, `${testerName}: FAIL; ${name} fixes it next`)
+        toSlack(n, `${testerName} failed the work: ${oneLine(out.report, 300) || 'no report'}. ${name} fixes it next; nothing was pushed.`)
         return
       }
       it.testerFails = 0
@@ -1427,7 +1468,7 @@ export function makeWatcher(o) {
     try { save() } catch { }
   }
 
-  const idle = async () => { while (inflight.size) await Promise.all([...inflight.values()].map((f) => f.promise)) }
+  const idle = async () => { while (inflight.size) await Promise.all([...inflight.values()].map((f) => f.promise)); await slackChain }
   return { tick, idle, recover, shutdown, state, save, inflight, id: me }
 }
 
@@ -1483,6 +1524,7 @@ options (saved for the next start):
   --relay <url>               the relay rooms run on (default: the public one; run your own for private code)
   --test "<command>"          run the tests ourselves before every push
   --notify <webhook url>      a Slack or Discord incoming webhook
+  --slack-channel <id>        one Slack thread per issue (the bot token comes from SLACK_BOT_TOKEN)
   --every <seconds>           how often to ask GitHub (default 60)
   --max-parallel <n>          runs at once (default 1)
   --max-minutes <n>           per run (default 40)
@@ -1546,6 +1588,24 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   if (testerCmd && !commandExists(testerCmd)) { logErr(`Q602 "${String(testerCmd).split(/\s+/)[0]}" (the --tester) is not installed here (not on PATH).`); return 1 }
   const label = opt('label') || LABEL
 
+  // SLACK: one thread per issue. The token is read from the environment only: as a flag it would land
+  // in shell history and in the flags saved to .git/hivecode/github.json. Checked here, before any
+  // work starts, so a typo'd channel or a revoked token is said now, not discovered at the first PR.
+  const slackChannel = opt('slack-channel') || ''
+  let slack = null
+  if (slackChannel) {
+    const token = process.env.SLACK_BOT_TOKEN || ''
+    if (!token) { logErr('Q633 --slack-channel needs the bot token in the environment: set SLACK_BOT_TOKEN to the xoxb-... token of your Slack app (docs/SLACK_SETUP.md).'); return 1 }
+    let mod
+    try { mod = await import('./hive-slack.js') } catch (e) { logErr(`Q633 could not load the Slack bridge (hive-slack.js): ${e.message}`); return 1 }
+    if (typeof mod.makeSlackThreader !== 'function') { logErr('Q633 this Hivecode cannot post Slack threads yet (hive-slack.js has no makeSlackThreader).'); return 1 }
+    // Token and channel checked against Slack itself (auth.test, conversations.info): both are reads.
+    const pf = await mod.preflightSlack({ token, channel: slackChannel })
+    if (!pf || !pf.ok) { logErr((pf && pf.error) || `Q633 Slack refused ${slackChannel}`); return 1 }
+    slack = (threads) => mod.makeSlackThreader({ token, channel: slackChannel, threads, room: '', link: '' })
+    log(`Slack: each issue's progress goes to its own thread in #${pf.channelName}, posted by @${pf.botUser}.`)
+  }
+
   // A DRY RUN WRITES NOTHING: not a label, not the lock, not its settings, not a branch or a comment.
   // It reads GitHub once and says what a real start would do, which is the safe first step on a repo
   // that matters -- and the first answer to "why isn't it picking up my issue?".
@@ -1605,7 +1665,7 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   saveState(file, state)
 
   const notify = makeNotifier(opt('notify'), { log: say })
-  const w = makeWatcher({ ...watcherOpts, notify })
+  const w = makeWatcher({ ...watcherOpts, notify, slack })
   w.recover()
   log(`Hivecode is watching ${id.owner}/${id.repo} for issues labelled "${label}". Ctrl+C stops it.`)
   let stopping = false

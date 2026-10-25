@@ -42,7 +42,15 @@ const MUTANTS = [
   { t: 'github', id: 'login-once', expect: 'R4', find: "if (e.code === 'Q600' && !loginLost) {", to: "if (e.code === 'Q600') {" },
   { t: 'github', id: 'catch-up', expect: 'Q1', find: 'if (pr.mergeable === false && sha && it.conflictTried !== sha) {', to: 'if (false) {' },
   { t: 'github', id: 'report-first', expect: 'P12', find: "        it.next = 'build'\n        if (it.testerFails >= maxTesterFails)", to: '        if (it.testerFails >= maxTesterFails)' },
+  // hive-github.js: one Slack thread per issue (group T)
+  { t: 'github', id: 'slack-thread-kept', expect: 'T2', find: 'set: (k, v) => { state.slack[k] = v; save() } }', to: 'set: () => {} }' },
+  { t: 'github', id: 'slack-refusal-said', expect: 'T5', find: "const must = (r) => { if (r && r.ok === false) throw new Error(r.error || 'refused') ; return r }", to: 'const must = (r) => r' },
+  // No mutant for "the room id is posted": adding it to our text changes nothing, because
+  // scrubSlack() in hive-slack.js strips every room id and link on the way out (measured 25 Oct:
+  // that mutant stayed green). The guard is there, and tests/hive-slack-test.mjs covers it.
+  { t: 'github', id: 'slack-after-pr', expect: 'T1', find: 'if (!open) { it.needPr = true;', to: "if (!open) { toSlack(n, 'Pull request ready for review'); it.needPr = true;" },
   // hive-github.js, under the CLI test
+  { t: 'cli', id: 'slack-token', expect: 'CK1', find: "if (!token) { logErr('Q633", to: "if (false) { logErr('Q633" },
   { t: 'cli', id: 'dry-saves', expect: 'CD4', find: 'const save = () => { if (!dry) saveState(file, state) }', to: 'const save = () => { saveState(file, state) }' },
   { t: 'cli', id: 'dry-runs', expect: 'CD3', find: '    if (dry) {\n      // Said in the order they would start', to: '    if (false) {\n      // Said in the order they would start' },
   // The dry run as first written: a fresh state, so "would start now" whatever the file knew.

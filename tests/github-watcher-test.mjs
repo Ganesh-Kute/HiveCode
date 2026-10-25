@@ -504,6 +504,46 @@ try {
   await w.tick()
   await Promise.race([w.idle(), sleep(20000)]) // a run that nothing stopped would hang here for ever
   T('S2 merged mid-run: the run is stopped, nothing more is pushed, and it is done', it(uI).status === 'done' && GH.head(prU.number) === headU && !w.inflight.size, `${it(uI).status} inflight=${w.inflight.size}`)
+
+  // ─── T. one Slack thread per issue (--slack-channel) ─────────────────────────────────────
+  // The real threader from hive-slack.js, with only its HTTP post faked: what is tested is our
+  // routing and ordering, through the same queue and scrubbing a real start uses.
+  console.log('\n# T. one Slack thread per issue')
+  const HS = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-slack.js`)
+  const posts = []
+  let slackDown = ''
+  const post = async (m) => {
+    if (slackDown) throw new Error(`slack chat.postMessage: ${slackDown}`)
+    posts.push(m)
+    return { ok: true, ts: m.thread_ts ? `r${posts.length}` : `t${posts.length}` }
+  }
+  const withSlack = () => makeW({ slack: (threads) => HS.makeSlackThreader({ token: 'xoxb-test', channel: 'C1', threads, post, minGapMs: 0, maxRetries: 0 }) })
+  w = withSlack()
+  w.state.day.runs = 0
+  const tops = () => posts.filter((p) => !p.thread_ts)
+  const texts = () => posts.map((p) => p.text).join(' | ')
+  const vI = GH.addIssue({ title: 'Slack thread', body: 'FAKE:write sl.js export const s = 1\\n' })
+  GH.S.faults.push({ re: /^POST repos\/acme\/app\/pulls$/, status: 502, message: 'Bad Gateway' })
+  await tick()
+  T('T1 GitHub refused the pull request: Slack has the run, never "ready for review"', !GH.pr(vI) && posts.some((p) => /started run 1 of/.test(p.text)) && !posts.some((p) => /ready for review/.test(p.text)), texts())
+  await tick()
+  const prV = GH.pr(vI)
+  const opened = tops()[0] || {}
+  T('T2 one thread: opened once with the issue number and title; the pull request inside it and shown in the channel', !!prV && tops().length === 1 && new RegExp(`#${vI} Slack thread`).test(opened.text) &&
+    posts.some((p) => p.thread_ts === 't1' && p.reply_broadcast === true && p.text.includes(`Pull request ready for review: ${it(vI).prUrl}`)) && posts.slice(1).every((p) => p.thread_ts === 't1'), texts())
+  T('T3 the room is never posted: Slack is outside, and a room id lets anyone read the code', !posts.some((p) => /room-|wss:\/\/|\|room/.test(p.text)), texts())
+  w = withSlack() // a restarted watcher, same state file
+  GH.reviewComment(prV.number, { path: 'sl.js', body: 'Name it better.\nFAKE:write sl.js export const better = 1\\n' })
+  await tick()
+  await tick()
+  T('T4 after a restart the next run goes on in the same thread, not a second one', tops().length === 1 && posts.some((p) => p.thread_ts === 't1' && /started run 2 of/.test(p.text)), texts())
+  slackDown = 'token_revoked'
+  const postsBefore = posts.length
+  const xI = GH.addIssue({ title: 'Slack is down', body: 'FAKE:write down.js export const d = 1\\n' })
+  await tick()
+  const refusals = logs.filter((l) => /Slack refused a post/.test(l))
+  T('T5 Slack refusing never stops the work: the pull request opens, and the refusal is said, once per reason', !!GH.pr(xI) && posts.length === postsBefore && refusals.length >= 1 && new Set(refusals).size === refusals.length && refusals.some((l) => /token_revoked/.test(l)), refusals.join(' | ') || 'no refusal logged')
+  slackDown = ''
 } catch (err) {
   T(`no exception (${err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err})`, false)
 } finally {

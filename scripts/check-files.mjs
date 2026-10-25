@@ -40,8 +40,15 @@ for (const f of listed) {
 }
 
 // 2. Transitive closure of relative imports from every shipped code file.
-const IMPORT = /(?:\bfrom\s*|\bimport\s*|\brequire\s*\(\s*)['"](\.\/[^'"]+|\.\.\/[^'"]+)['"]/g
+const IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"](\.\/[^'"]+|\.\.\/[^'"]+)['"]/g
+// A module chosen at run time -- import(sub === 'slack' ? './hive-slack.js' : './hive-notify.js')
+// -- is named only as a plain string, so a './x.js' string in shipped code that names a file on
+// disk counts as an import too. Missed until 25 Oct 2026: hive-slack.js, loaded that way by
+// hive-mcp.js and hive-github.js, was not in files[], and `slack start` and --slack-channel would
+// both have died on npm with ERR_MODULE_NOT_FOUND while this said PACKAGE OK.
+const LOOSE = /['"](\.\/[\w.-]+\.(?:m?js|cjs))['"]/g
 const seen = new Set()
+const said = new Set()
 const queue = [...listed].filter((f) => CODE.test(f))
 
 while (queue.length) {
@@ -57,7 +64,9 @@ while (queue.length) {
   // a `//` before it on its own line is skipped.
   src = src.replace(/\/\*[\s\S]*?\*\//g, (b) => b.replace(/[^\n]/g, ' '))
 
-  for (const m of src.matchAll(IMPORT)) {
+  const found = [...src.matchAll(IMPORT)].map((m) => ({ m, loose: false }))
+    .concat([...src.matchAll(LOOSE)].map((m) => ({ m, loose: true })))
+  for (const { m, loose } of found) {
     const lineStart = src.lastIndexOf('\n', m.index) + 1
     const before = src.slice(lineStart, m.index)
     if (before.includes('//')) continue
@@ -65,6 +74,10 @@ while (queue.length) {
     // Resolve relative to the importing file, then back to a package-root-relative path,
     // because that is the shape files[] speaks in.
     const target = path.normalize(path.join(path.dirname(rel), spec)).split(path.sep).join('/')
+    if (said.has(`${rel}|${target}`)) continue
+    said.add(`${rel}|${target}`)
+    // A plain string that names no file on disk is not an import: only a real file counts.
+    if (loose && !fs.existsSync(path.join(ROOT, target))) continue
 
     if (target.startsWith('..')) {
       problems.push(`${rel} imports "${spec}", which resolves OUTSIDE the package root — it can never ship`)

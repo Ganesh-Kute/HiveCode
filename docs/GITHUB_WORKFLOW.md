@@ -51,6 +51,31 @@ answer to "why isn't it picking up my issue?".
 | The state file cannot be read | It leaves the file where it is, and says that a start would move it aside and rebuild from GitHub. `status` leaves it alone too. |
 | GitHub fails to list the issues | It says so and exits 1. It never reports "no labelled issues". |
 
+### Progress in Slack: `--slack-channel`
+
+`github start --slack-channel C0123456789`, with the Slack app's bot token in `SLACK_BOT_TOKEN`,
+gives each issue **one Slack thread**. The thread opens with the issue's number, title and link.
+Inside it:
+- each run starting;
+- the pull request, which is also shown in the channel;
+- CI failures;
+- the tester's verdict;
+- waiting for a person, which is also shown in the channel;
+- merged or closed, also shown in the channel.
+
+Setting up the Slack app is in [SLACK_SETUP.md](SLACK_SETUP.md).
+
+| what goes wrong | what we do |
+|---|---|
+| No `SLACK_BOT_TOKEN` | `start` refuses with Q633 and the fix, before anything is written. |
+| A token Slack refuses, or a bot that is not in the channel | Checked against Slack before any work starts (Q630, Q631), naming the `/invite` that fixes it. |
+| Slack says "ready for review" for a PR that GitHub refused | Every post goes out only after the GitHub write it reports has succeeded. |
+| A restart opens a second thread for the same issue | The thread id is kept in the watcher's state file, so a restart continues the same thread. |
+| The room's id reaches Slack | It is never posted. Anyone with the id can read the code in the room, and Slack is outside it. |
+| Slack is down, or the token is revoked mid-run | The work on GitHub goes on. The refusal is said once per reason, not once per post. |
+| The token ends up somewhere it shouldn't | It is read from the environment only. It is never a flag, so it is never saved with the flags or left in shell history. |
+| A secret in an agent's summary | Scrubbed before posting, the same as on GitHub. |
+
 ## How it works
 
 The watcher is one process on a machine that has the clone, `gh` logged in, and an agent CLI:
@@ -246,6 +271,7 @@ Each row below says what the user sees.
 | `--test` | off; the PR says the test result is the agent's report |
 | `--repo` | the folder it is started in |
 | `--dry-run` | off |
+| `--slack-channel` | off; the token comes from `SLACK_BOT_TOKEN` |
 
 ## Build order
 
