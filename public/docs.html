@@ -105,8 +105,13 @@
 
       <h2 id="slack-integration" style="margin-top:40px">Slack integration</h2>
       <p>
-        The watcher can mirror each issue's progress directly into a Slack channel, opening one thread per issue.
-        Set your bot token before starting:
+        Hivecode connects to Slack to give your team live visibility and control over running agents,
+        organizing work into one Slack thread per issue.
+      </p>
+
+      <h3>1. GitHub watcher with Slack threads</h3>
+      <p>
+        Pass <code>--slack-channel</code> to the GitHub watcher so every issue run opens a dedicated thread in your channel:
       </p>
       <p><strong>Bash / Zsh (macOS / Linux):</strong></p>
       <pre><code>export SLACK_BOT_TOKEN="xoxb-your-token"
@@ -114,9 +119,23 @@ npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json 
       <p><strong>PowerShell (Windows):</strong></p>
       <pre><code>$env:SLACK_BOT_TOKEN="xoxb-your-token"
 npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678</code></pre>
+
+      <h3>2. Dedicated room bridge</h3>
       <p>
-        Posts only appear after writes succeed on GitHub, keeping channel updates completely honest.
+        To stream an existing Hivecode room into a Slack channel independently:
       </p>
+      <p><strong>Preview with a dry run:</strong></p>
+      <pre><code>npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-example" --channel C12345678 --dry-run</code></pre>
+      <p><strong>Start the bridge:</strong></p>
+      <pre><code>npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-example" --channel C12345678 --allow U12345678</code></pre>
+
+      <h3>Inbound controls and stopping from Slack</h3>
+      <ul>
+        <li><strong>Stopping is fail-safe:</strong> Any full workspace member can type <code>stop all</code>, <code>stop</code>, or <code>stop &lt;Agent&gt;</code> in an issue thread to halt agents immediately. Works on every Slack plan (including Free).</li>
+        <li><strong>Owner permissions (<code>--allow</code>):</strong> Only user IDs specified in <code>--allow</code> can resume agents or send messages into the room. Refused actions are reported back in the thread.</li>
+        <li><strong>Attribution:</strong> Messages sent from Slack arrive in the room attributed as <code>slack:&lt;handle&gt;</code>, preventing impersonation.</li>
+        <li><strong>Honest updates:</strong> Channel posts and thread status updates are sent only after writes succeed on GitHub, avoiding false success signals.</li>
+      </ul>
     </div>
 
     <div class="prose">
