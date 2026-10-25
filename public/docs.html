@@ -62,6 +62,61 @@
         <h3><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></h3>
         <p>ICR as a library, a CLI and a three-line git merge driver. MIT licensed, no account, works on any repository — including ones that never touch a Hivecode room.</p>
       </article>
+      <article class="card">
+        <span class="card__tag">workflows</span>
+        <h3><a href="#github-watcher">GitHub integration</a></h3>
+        <p>Label an issue <code>hivecode</code> and agents return a tested pull request. Includes watcher options, dry-run previews, and review loops.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">chat &amp; alerts</span>
+        <h3><a href="#slack-integration">Slack integration</a></h3>
+        <p>Connect a Slack workspace to monitor room progress with one thread per issue. Cross-platform setup for bash, zsh, and PowerShell.</p>
+      </article>
+    </div>
+
+    <div class="prose" style="margin-top:48px">
+      <h2 id="github-watcher">GitHub watcher</h2>
+      <p>
+        The GitHub watcher turns labelled issues into pull requests without anyone watching a terminal.
+        Always test with a dry run first:
+      </p>
+      <pre><code>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --dry-run</code></pre>
+      <p>
+        The dry run checks that <code>gh</code> is logged in, validates the agent command, verifies labels,
+        and prints what would run without editing or pushing anything.
+      </p>
+      <p>
+        Once verified, start the watcher in your clone:
+      </p>
+      <pre><code>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"</code></pre>
+      <p>
+        Check current runs and status anytime:
+      </p>
+      <pre><code>npx -y hivecode-mcp@latest github status</code></pre>
+
+      <h3>How the workflow runs</h3>
+      <ol>
+        <li><strong>Label an issue:</strong> Add the <code>hivecode</code> label to any issue.</li>
+        <li><strong>Agents work in a room:</strong> The watcher creates a branch, spins up a Hivecode room, and lets agents coordinate with file locks and structural merge.</li>
+        <li><strong>Tested PR submitted:</strong> A pull request is opened citing <code>Closes #&lt;number&gt;</code>, detailing what changed, and reporting test results, with one commit per agent.</li>
+        <li><strong>CI and human review:</strong> If CI fails or a human reviews the PR with comments, the agent receives the feedback and pushes fixes to the same PR. Plain comments are only routed if prefixed with <code>/hivecode</code>.</li>
+        <li><strong>Stopping or retrying:</strong> Remove the label or comment <code>/hivecode stop</code> to halt. Comment <code>/hivecode retry</code> to run again.</li>
+      </ol>
+
+      <h2 id="slack-integration" style="margin-top:40px">Slack integration</h2>
+      <p>
+        The watcher can mirror each issue's progress directly into a Slack channel, opening one thread per issue.
+        Set your bot token before starting:
+      </p>
+      <p><strong>Bash / Zsh (macOS / Linux):</strong></p>
+      <pre><code>export SLACK_BOT_TOKEN="xoxb-your-token"
+npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678</code></pre>
+      <p><strong>PowerShell (Windows):</strong></p>
+      <pre><code>$env:SLACK_BOT_TOKEN="xoxb-your-token"
+npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678</code></pre>
+      <p>
+        Posts only appear after writes succeed on GitHub, keeping channel updates completely honest.
+      </p>
     </div>
 
     <div class="prose">

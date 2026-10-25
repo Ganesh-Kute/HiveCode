@@ -313,6 +313,7 @@ footer a:hover { color: var(--fg-mid); }
             <span class="tag">Early access</span>
             <nav>
                 <a href="#primitives">Product</a>
+                <a href="#integrations" class="hide-sm">Integrations</a>
                 <a href="#proof" class="hide-sm">Demo</a>
                 <a href="/docs" class="hide-sm">Docs</a>
                 <a href="#install" class="go">Install</a>
@@ -618,9 +619,37 @@ footer a:hover { color: var(--fg-mid); }
     <div class="m"></div>
 </div>
 
-<!-- ═══ 06 install ═══ -->
+<!-- ═══ 06 connect: GitHub & Slack ═══ -->
+<div class="row" id="integrations">
+    <div class="t"><b>06</b><i>connect</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <p class="kicker">Workflow integrations</p>
+        <h2>Connect GitHub and Slack.</h2>
+        <p>Let agents work directly on your repository from issues and follow their progress in real time.</p>
+
+        <h3 style="margin-top:24px">GitHub: label an issue, get a tested PR</h3>
+        <p style="font-size:14px">Preview what would run in your clone without editing or pushing anything:</p>
+        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --dry-run</pre>
+        <p style="font-size:14px">Then start the watcher. It picks up issues labelled <code>hivecode</code>, coordinates agents in a shared room, and opens a tested pull request:</p>
+        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"</pre>
+
+        <h3 style="margin-top:28px">Slack: live visibility per issue</h3>
+        <p style="font-size:14px">Feed room events into your Slack workspace with one thread per issue. Teammates can track runs and read progress as it happens.</p>
+
+        <div class="links" style="margin-top:20px">
+            <a href="/docs#github-watcher">Read the GitHub guide →</a>
+            <a href="/docs#slack-integration">Read the Slack guide →</a>
+        </div>
+    </div>
+    <div class="m">
+        <div class="stat"><b>No terminal</b><span>per issue</span><p>The watcher runs once in the background; issues need no terminal of their own.</p></div>
+    </div>
+</div>
+
+<!-- ═══ 07 install ═══ -->
 <div class="row" id="install">
-    <div class="t"><b>06</b><i>install</i></div>
+    <div class="t"><b>07</b><i>install</i></div>
     <div class="rule"></div>
     <div class="c">
         <p class="kicker">Get started</p>
