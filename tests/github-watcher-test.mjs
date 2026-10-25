@@ -408,6 +408,102 @@ try {
   T('P13 on retry the builder fixes what the tester found, and the count starts again', /^You are Builder, working on/.test(lastPrompt()) && /Tester checked your change independently/.test(lastPrompt()) && it(r).testerFails === 0 && it(r).next === 'test', `${it(r).status} next=${it(r).next} fails=${it(r).testerFails}`)
   GH.unlabel(r)
   await tick()
+
+  // ─── Q. the pull request falls behind main ────────────────────────────────────────────────
+  console.log('\n# Q. the pull request falls behind main')
+  w.shutdown()
+  w = makeW()
+  const qI = GH.addIssue({ title: 'Behind main', body: 'FAKE:write behind.js export const v = 1\\n' })
+  await tick()
+  const prQ = GH.pr(qI)
+  T('Q0 its pull request opened', !!prQ)
+  fs.writeFileSync(path.join(project, 'moved.txt'), 'main moved\n')
+  g(project, 'add', 'moved.txt'); g(project, 'commit', '-qm', 'main moves on'); g(project, 'push', '-q', 'origin', 'main')
+  const headQ0 = GH.head(prQ.number)
+  GH.S.pulls.get(prQ.number).mergeable = false // GitHub: this branch cannot be merged as it is
+  await tick()
+  GH.S.pulls.get(prQ.number).mergeable = true
+  const brQ = it(qI).branch
+  const parentsQ = spawnSync('git', ['--git-dir', originDir, 'rev-list', '--parents', '-n', '1', `refs/heads/${brQ}`], { encoding: 'utf8' }).stdout.trim().split(' ')
+  T('Q1 main is merged into the branch and pushed, as a merge commit', GH.head(prQ.number) !== headQ0 && originFile(brQ, 'moved.txt') === 'main moved\n' && parentsQ.length === 3)
+  T('Q2 the pull request says what happened', GH.on(prQ.number).some((c) => /had moved on since this pull request was opened/.test(c.body)))
+  T('Q3 the developer\'s own checkout was not touched', g(project, 'rev-parse', '--abbrev-ref', 'HEAD').out === 'main' && !g(project, 'status', '--porcelain').out)
+  fs.writeFileSync(path.join(project, 'behind.js'), 'export const v = 2\n')
+  g(project, 'add', 'behind.js'); g(project, 'commit', '-qm', 'main writes the same file'); g(project, 'push', '-q', 'origin', 'main')
+  const headQ1 = GH.head(prQ.number)
+  GH.S.pulls.get(prQ.number).mergeable = false
+  await tick()
+  T('Q4 a conflict goes to a person, naming the file, and nothing is pushed', it(qI).status === 'needs-human' && /conflicts with main in behind\.js/.test(it(qI).reason) && GH.head(prQ.number) === headQ1, it(qI).reason)
+  T('Q5 nothing is left half-merged', g(project, 'worktree', 'list').out.split('\n').length === 1 && g(project, 'rev-parse', `refs/heads/${brQ}`).out === headQ1)
+
+  // ─── R. a pull request closed without merging; a login that stops working ──────────────────
+  console.log('\n# R. closed without merging is a no; a lost login is said once')
+  const rI = GH.addIssue({ title: 'Closed unmerged', body: 'FAKE:write closed.js export const c = 1\\n' })
+  await tick()
+  const prR = GH.pr(rI)
+  const closePR = () => { GH.S.pulls.get(prR.number).state = 'closed'; GH.S.issues.get(prR.number).state = 'closed' }
+  closePR()
+  await tick()
+  const runsR = it(rI).runs
+  await tick()
+  await tick()
+  T('R1 a pull request closed without merging, label still on: nothing starts again', it(rI).status === 'closed' && it(rI).runs === runsR && GH.on(rI).filter((c) => /hivecode:claim/.test(c.body)).length === 1, it(rI).status)
+  GH.S.pulls.get(prR.number).state = 'open'; GH.S.issues.get(prR.number).state = 'open'
+  await tick()
+  T('R2 reopened: watched again', it(rI).status === 'review')
+  closePR()
+  await tick()
+  GH.comment(rI, '/hivecode retry', 'dev')
+  await tick()
+  T('R3 /hivecode retry starts it again', it(rI).status !== 'closed' && it(rI).runs >= 1, `${it(rI).status} runs=${it(rI).runs}`)
+  GH.unlabel(rI)
+  await tick()
+  const loginNotes = () => notes.filter((t) => /GitHub refused the login gh has/.test(t)).length
+  for (let i = 0; i < 2; i++) {
+    GH.S.faults.push({ re: /^GET repos\/acme\/app\/issues\?/, status: 401, message: 'Bad credentials' })
+    skew += 61000
+    await tick()
+  }
+  T('R4 a login that stops working is notified once, not every minute', loginNotes() === 1, String(loginNotes()))
+  skew += 61000
+  await tick()
+  const openPR = (n) => [...GH.S.pulls.values()].find((p) => p.body && p.body.includes(`Closes #${n}`) && p.state === 'open')
+  const sI = GH.addIssue({ title: 'Reopened after merge', body: 'FAKE:write reopen.js export const r = 1\\n' })
+  await tick()
+  const brS = it(sI).branch
+  GH.merge(GH.pr(sI).number, sI) // merged into the default branch: GitHub closes the issue
+  await tick()
+  GH.S.issues.get(sI).state = 'open' // reopened, label still on: what was merged did not fix it
+  await tick()
+  T('R5 reopened after its merge: a new attempt on a new branch, not filed straight back as done', it(sI).branch === `${brS}-2` && !!openPR(sI), `${it(sI).status} ${it(sI).branch || ''}`)
+  const tI = GH.addIssue({ title: 'Merged elsewhere', body: 'FAKE:write elsewhere.js export const e = 1\\n' })
+  await tick()
+  GH.merge(GH.pr(tI).number) // merged into another branch: the issue stays open, label and all
+  await tick()
+  const runsT = it(tI).runs
+  await tick()
+  await tick()
+  T('R6 merged but left open (not the default branch): done, and no new PR after every merge', it(tI).status === 'done' && it(tI).runs === runsT && !openPR(tI), `${it(tI).status} runs=${it(tI).runs}`)
+
+  // ─── S. merged while a fix run is going ───────────────────────────────────────────────────
+  console.log('\n# S. merged while a fix run is going')
+  // The groups before this one used up today's runs (the state file keeps the count from watcher to
+  // watcher), and a limit already notified today waits quietly: S would wait for tomorrow.
+  console.log(`  (runs today before S: ${w.state.day.runs})`)
+  w.state.day.runs = 0
+  const uI = GH.addIssue({ title: 'Merged mid-run', body: 'FAKE:write mid.js export const m = 1\\n' })
+  await tick()
+  const prU = GH.pr(uI)
+  T('S0 it has its pull request', !!prU, `${it(uI).status} runs=${it(uI).runs}`)
+  GH.reviewComment(prU.number, { path: 'mid.js', body: 'One more thing.\nFAKE:hang' })
+  await w.tick() // the review settles
+  await w.tick() // the fix run starts, and hangs
+  T('S1 the fix run is going', it(uI).status === 'running', it(uI).status)
+  const headU = GH.head(prU.number)
+  GH.merge(prU.number, uI)
+  await w.tick()
+  await Promise.race([w.idle(), sleep(20000)]) // a run that nothing stopped would hang here for ever
+  T('S2 merged mid-run: the run is stopped, nothing more is pushed, and it is done', it(uI).status === 'done' && GH.head(prU.number) === headU && !w.inflight.size, `${it(uI).status} inflight=${w.inflight.size}`)
 } catch (err) {
   T(`no exception (${err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err})`, false)
 } finally {

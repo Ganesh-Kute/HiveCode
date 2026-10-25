@@ -195,6 +195,10 @@ That is the command for Claude Code. Codex and Gemini CLI also take a task on st
 are in [GitHub workflow](docs/GITHUB_WORKFLOW.md#which-agents), and they have not yet been run
 end to end.
 
+To see first what it would do, add `--dry-run`. It reads GitHub once and says, for each labelled
+issue, what it would do and what is in the way. It writes nothing. To run it on a clone from
+another folder, add `--repo <folder>`.
+
 It keeps running and checks GitHub every minute, through your own [`gh`](https://cli.github.com)
 login. It acts only on issues labelled `hivecode` by someone who can push. For each one, it:
 

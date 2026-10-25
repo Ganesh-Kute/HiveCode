@@ -504,6 +504,20 @@ export const FEATURES = [
     ],
   },
   {
+    id: 'github-dry-run',
+    name: 'github start --dry-run says what a start would do, and writes nothing',
+    criticality: 'hot', tier: 1,
+    breaks: 'Run only to look, it writes to the repo it was pointed at. Or it says "would start now" for an issue a start would not run (today\'s runs used up, another watcher\'s claim, a pull request already open), which sends them looking in the wrong place. As first written (14 Oct 2026) it ignored the state file and did exactly that.',
+    proves: [
+      { suite: 'tests/github-cli-test.mjs', assertion: 'nothing is written to GitHub, and no run is even attempted' },
+      { suite: 'tests/github-cli-test.mjs', assertion: 'nothing is written here: no state, no lock, no watcher id, no branch' },
+      { suite: 'tests/github-cli-test.mjs', assertion: 'what the state file knows is said as it is, never as "would start now"' },
+      { suite: 'tests/github-cli-test.mjs', assertion: 'with today\'s runs used up, the rest would wait' },
+      { suite: 'tests/github-cli-test.mjs', assertion: 'a state file that cannot be read is left where it is, and that is said' },
+      { suite: 'tests/github-cli-test.mjs', assertion: 'GitHub failing to list the issues is said, never as "no labelled issues"' },
+    ],
+  },
+  {
     id: 'git-file-never-synced',
     name: 'A .git FILE is never published to a room',
     criticality: 'critical', tier: 3,

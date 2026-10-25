@@ -364,10 +364,12 @@ export function prBody({ n, summary, tests, gate = null, commits = [], check = n
 export const statePath = (gitDir) => path.join(gitDir, 'hivecode', 'github.json')
 const freshState = () => ({ version: 1, issues: {}, day: { date: '', runs: 0, capNoticed: '' }, config: {} })
 
-export function loadState(file, log = () => {}) {
+export function loadState(file, log = () => {}, { peek = false } = {}) {
   let raw
   try { raw = fs.readFileSync(file, 'utf8') } catch { return freshState() }
   try { const j = JSON.parse(raw); if (j && j.version === 1 && j.issues) return j } catch { /* below */ }
+  // Only looking (`status`, a dry run): said, and left exactly where it is.
+  if (peek) { log(`Q606 ${file} could not be read. Nothing was changed; a start moves it aside and rebuilds from GitHub.`); return freshState() }
   // SET ASIDE, NOT DROPPED. The watcher rebuilds what matters from GitHub (each claim comment names
   // its branch), and a person can still read what this file said.
   const aside = `${file}.unreadable-${Date.now()}`
@@ -408,6 +410,11 @@ export function takeLock(file) {
     }
   }
   throw coded('Q605', `could not take ${file}`)
+}
+
+/** The watcher holding this clone's lock, if its process is still alive; otherwise null. */
+export function liveWatcher(gitDir) {
+  try { const h = JSON.parse(fs.readFileSync(path.join(gitDir, 'hivecode', 'watcher.lock'), 'utf8')); return h && h.pid && alive(h.pid) ? h : null } catch { return null }
 }
 
 // ---- processes -----------------------------------------------------------------------------------
@@ -516,11 +523,15 @@ export function makeWatcher(o) {
     maxParallel = 1, maxMinutes = 40, maxRuns = 6, maxRunsPerDay = 20, test = '', allowWorkflows = false,
     notify = async () => false, log = (s) => console.log(s), now = () => Date.now(), spawnAgent = spawnShell,
     every = 60, quietMs = 90000, ciGraceMs = 10 * 60000, pendingAlertMs = 2 * 3600000,
+    // DRY: read GitHub, decide, and say what would happen -- and write NOTHING: not GitHub, not git,
+    // not the state file. The state file is read as it is (what it knows is why a start would not
+    // run an issue), but what it tracks is reported, never reconciled: that path writes.
+    dry = false,
   } = o
   const file = statePath(gitDir)
-  const state = loadState(file, log)
-  const me = watcherId(root)
-  const save = () => saveState(file, state)
+  const state = loadState(file, log, { peek: dry })
+  const me = dry ? (git(root, ['config', '--local', '--get', 'hivecode.github.watcher']).out || 'dry-run') : watcherId(root)
+  const save = () => { if (!dry) saveState(file, state) }
   const inflight = new Map() // issue number -> { child, promise }
   const perms = new Map() // login -> { perm, at }
   let lastTick = 0
@@ -567,7 +578,7 @@ export function makeWatcher(o) {
       return
     }
     state.issues[n] = { status: 'waiting', since: now(), updatedAt: issue.updated_at || '', labeledBy: lab.login, issue: snapshot(issue), runs: 0, allowedRuns: maxRuns, failures: 0, queue: [], seen: { ic: 0, pc: 0, rc: 0, rv: 0 }, cmdSeen: [] }
-    say(n, `queued (labelled by ${lab.login})`)
+    say(n, dry ? `labelled by ${lab.login}, who can push` : `queued (labelled by ${lab.login})`)
   }
 
   /** What a comment asks of the agent, or null when it asks nothing.
@@ -696,6 +707,9 @@ export function makeWatcher(o) {
     killRun(n)
     it.status = outcome
     it.endedAt = now()
+    // Was the issue closed by the merge? Only then does seeing it open again mean "reopened". When
+    // that cannot be read, assume not: a missed restart costs a /hivecode retry, a wrong one a PR loop.
+    if (outcome === 'done') { try { it.closedAtDone = gh.issue(n).state === 'closed' } catch { it.closedAtDone = false } }
     if (it.branch) dropRoom(it.branch)
     try { gh.removeLabel(n, HUMAN_LABEL) } catch { }
     if (outcome === 'done') notify(`Merged: ${it.prUrl} (#${n})`)
@@ -709,6 +723,12 @@ export function makeWatcher(o) {
     if (pr.state === 'closed') return finalize(n, it, 'closed')
     if (it.status !== 'review') return
     const sha = pr.head && pr.head.sha
+    // BEHIND THE DEFAULT BRANCH. `false` is GitHub saying it cannot merge; `null` is it still working
+    // that out, which is not an answer. One try per head commit, so a refusal never becomes a loop.
+    if (pr.mergeable === false && sha && it.conflictTried !== sha) {
+      it.conflictTried = sha
+      return catchUp(n, it, sha)
+    }
     if (!sha || it.ciSeen === sha) return
     const v = ciVerdict(gh.checkRuns(sha), gh.statuses(sha))
     if (v.state === 'failure') {
@@ -735,10 +755,74 @@ export function makeWatcher(o) {
     }
   }
 
+  /** The pull request's branch fell behind the default branch (other work merged first). Merge it in,
+   *  in a worktree of its own -- never the user's checkout -- and push; on a conflict, abort and hand
+   *  it to a person with the files named. Only ever called while the issue is idle in review. */
+  function catchUp(n, it, sha) {
+    const local = rev(root, `refs/heads/${it.branch}`)
+    if (local && local !== sha) {
+      if (isAncestor(root, local, sha)) git(root, ['update-ref', `refs/heads/${it.branch}`, sha, local]) // someone pushed: start from theirs
+      else return say(n, `behind ${base}, but ${it.branch} has work here that is not on GitHub; leaving it`)
+    }
+    const f = git(root, ['fetch', '--quiet', 'origin', `+refs/heads/${base}:refs/remotes/origin/${base}`, `+refs/heads/${it.branch}:refs/remotes/origin/${it.branch}`])
+    if (f.code !== 0) { it.conflictTried = ''; return log(`#${n}: could not fetch to catch up with ${base}: ${f.err}`) } // tried again next tick
+    if (!rev(root, `refs/heads/${it.branch}`)) git(root, ['branch', '--no-track', it.branch, sha])
+    const tip = rev(root, `refs/heads/${it.branch}`)
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-catchup-'))
+    const wt = git(root, ['worktree', 'add', '--quiet', tmp, it.branch])
+    if (wt.code !== 0) { try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { } return needsHuman(n, it, `could not check out ${it.branch} to merge ${base} into it: ${oneLine(wt.err, 300)}`) }
+    try {
+      const m = git(tmp, ['merge', '--no-edit', '-m', `Merge ${base} into ${it.branch}\n\n${base} had moved on since this pull request was opened.`, `refs/remotes/origin/${base}`])
+      if (m.code !== 0) {
+        const conflicted = git(tmp, ['diff', '--name-only', '--diff-filter=U']).out.split('\n').filter(Boolean)
+        git(tmp, ['merge', '--abort'])
+        // A failure that is not a conflict (no git identity, a hook) is said as itself, never as one.
+        return needsHuman(n, it, conflicted.length
+          ? `this pull request conflicts with ${base} in ${conflicted.join(', ')}. Merge ${base} into ${it.branch} by hand, then comment /hivecode retry.`
+          : `merging ${base} into ${it.branch} failed: ${oneLine(m.err || m.out, 300)}`)
+      }
+      const merged = rev(root, `refs/heads/${it.branch}`)
+      if (merged === tip) return say(n, `${base} is already in ${it.branch}; GitHub had not caught up`) // nothing to push, nothing to say
+      const p = git(root, ['push', '--quiet', 'origin', `refs/heads/${it.branch}:refs/heads/${it.branch}`])
+      if (p.code !== 0) {
+        git(root, ['update-ref', `refs/heads/${it.branch}`, tip, merged]) // the merge never left: take it back
+        return needsHuman(n, it, `${base} merged cleanly into ${it.branch}, but the push was refused: ${oneLine(p.err, 300)}${loginHint(p.err)}`)
+      }
+      it.pushedSha = merged
+      it.pushedAt = now()
+      it.ciSeen = ''
+      comment(it.pr, `${base} had moved on since this pull request was opened. Hivecode merged it in, with no conflicts.\n\n${MARK('run', { kind: 'catch-up' })}`)
+      say(n, `merged ${base} into ${it.branch}, no conflicts, and pushed`)
+    } finally {
+      git(root, ['worktree', 'remove', '--force', tmp])
+      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { }
+      git(root, ['worktree', 'prune'])
+    }
+  }
+
   async function reconcile(n, it, labeled, readAt) {
-    if (it.status === 'done' || it.status === 'closed') {
-      // Reopened with the label still on: what was merged did not fix it. A new branch, from the top.
-      if (labeled) { delete state.issues[n]; consider(labeled) }
+    if (it.status === 'done') {
+      // STARTING OVER AFTER A MERGE TAKES A SIGNAL. Reopened (it was closed when the PR merged, and is
+      // open again): what was merged did not fix it. Or a person's /hivecode retry. NOT merely "still
+      // open and labelled": a PR merged into a branch other than the default does not close its issue,
+      // and reading that as "start over" would open a new PR after every merge, for ever.
+      if (!labeled) return
+      if (it.closedAtDone || readComments(n, it).retry) {
+        delete state.issues[n]
+        consider(labeled)
+        // `restart`: the claim must not "recover" the old one and file it straight back as done.
+        if (state.issues[n]) state.issues[n].restart = true
+      }
+      return
+    }
+    if (it.status === 'closed') {
+      // CLOSED WITHOUT MERGING IS A "NO". The label left on the issue is not a request to start over,
+      // and starting over a minute later would read as the watcher arguing with the person who
+      // closed it. A reopened pull request is watched again; anything new takes /hivecode retry.
+      if (!labeled || !it.pr) return
+      const pr = gh.pull(it.pr)
+      if (pr.state === 'open') { it.status = 'review'; it.ciSeen = ''; say(n, `pull request #${it.pr} reopened; watching it again`); return }
+      if (readComments(n, it).retry) { delete state.issues[n]; consider(labeled) }
       return
     }
     if (it.status === 'skipped') {
@@ -785,11 +869,15 @@ export function makeWatcher(o) {
     if (it.pr) pollPull(n, it)
   }
 
-  function claim(n, it) {
+  /** The claim comments on #n, oldest first: the first one holds. Reads only. */
+  function claimsOn(n) {
     const marker = /<!-- hivecode:claim watcher=([0-9a-f]+) branch=(\S+) -->/
-    const claims = () => gh.comments(n).map((c) => { const m = String(c.body || '').match(marker); return m && !isBot(c.user) ? { id: c.id, watcher: m[1], branch: m[2] } : null }).filter(Boolean).sort((a, b) => a.id - b.id)
-    const before = claims()
-    if (before.length) {
+    return gh.comments(n).map((c) => { const m = String(c.body || '').match(marker); return m && !isBot(c.user) ? { id: c.id, watcher: m[1], branch: m[2] } : null }).filter(Boolean).sort((a, b) => a.id - b.id)
+  }
+
+  function claim(n, it) {
+    const before = claimsOn(n)
+    if (before.length && !(it.restart && before[0].watcher === me)) {
       // RECOVER BEFORE CLAIMING. Our own claim from before (the state file was lost, or this is a
       // new clone): adopt its branch. Another watcher's: it is theirs.
       if (before[0].watcher !== me) { it.status = 'skipped'; it.reason = `another Hivecode watcher (${before[0].watcher}) is on it`; return false }
@@ -801,7 +889,7 @@ export function makeWatcher(o) {
     it.branch = freeBranch(n, it.issue.title)
     const posted = gh.comment(n, scrub(`Hivecode is working on this. The pull request will be linked here when it is ready.\n\nTo stop, remove the \`${label}\` label or comment \`/hivecode stop\`.\n\n${MARK('claim', { watcher: me, branch: it.branch })}`))
     // TWO WATCHERS AT THE SAME MOMENT: the earliest claim wins, and the other takes its comment back.
-    const after = claims()
+    const after = claimsOn(n)
     if (after.length && after[0].watcher !== me) {
       try { gh.deleteComment(posted.id) } catch { }
       it.status = 'skipped'
@@ -1163,6 +1251,37 @@ export function makeWatcher(o) {
     const ready = Object.entries(state.issues)
       .filter(([, it]) => it.status === 'waiting' && (it.notBefore || 0) <= now())
       .sort((a, b) => (a[1].since || 0) - (b[1].since || 0))
+    if (dry) {
+      // Said in the order they would start, with what is in the way of each: the plan, not the run.
+      // The claim comments are read the way a start reads them, so another watcher's issue, or our
+      // own from before a lost state file, is never a "would start now".
+      let slots = maxParallel - running
+      let left = maxRunsPerDay - runsToday()
+      for (const [k, it] of ready) {
+        const n = Number(k)
+        if (it.runs >= it.allowedRuns) { say(n, `would go to a person: it used all ${it.allowedRuns} runs it is allowed`); continue }
+        let on = ''
+        if (!it.claimed) {
+          try {
+            const first = claimsOn(n)[0]
+            if (first && first.watcher !== me) { say(n, `would skip: another Hivecode watcher (${first.watcher}) is on it`); continue }
+            if (first) {
+              const prs = gh.pullsFor(first.branch)
+              const found = prs.find((p) => p.state === 'open') || prs.find((p) => p.merged_at)
+              if (found) { say(n, found.merged_at ? `would file it as done: its pull request #${found.number} is merged` : `would pick up its pull request #${found.number} again, without a run`); continue }
+              if (hasLabel(gh.issue(n), HUMAN_LABEL)) { say(n, `would go on waiting for a person: it has the ${HUMAN_LABEL} label`); continue }
+              on = `, on its earlier branch ${first.branch}`
+            }
+          } catch (e) { say(n, `could not tell what a start would do: ${e.message}`); continue }
+        }
+        if (slots <= 0) { say(n, `would wait: ${maxParallel} run(s) at a time`); continue }
+        if (left <= 0) { say(n, `would wait: today's limit of ${maxRunsPerDay} runs is reached`); continue }
+        slots--
+        left--
+        say(n, `would start now${on}`)
+      }
+      return
+    }
     for (const [k, it] of ready) {
       if (running >= maxParallel) break
       const n = Number(k)
@@ -1179,9 +1298,60 @@ export function makeWatcher(o) {
     }
   }
 
+  /** A DRY RUN: what a start would do, from GitHub and the state file as they are now. What the file
+   *  tracks is said, not reconciled, because reconciling is what writes (a label, a comment, a
+   *  catch-up merge, a room removed). New issues go through the same choices a start makes. */
+  async function dryPlan(labeled, byNum) {
+    const live = liveWatcher(gitDir)
+    for (const [k, it] of Object.entries(state.issues)) {
+      const n = Number(k)
+      if (it.status === 'running' && !live && byNum.has(n)) {
+        // What a start's recover() does with it: a run with no watcher behind it failed, and runs again.
+        it.status = 'waiting'
+        it.since = now()
+        say(n, 'cut off when the watcher stopped; a start runs it again')
+        continue
+      }
+      const line = standing(it, byNum.has(n), live)
+      if (line) say(n, line)
+    }
+    for (const issue of labeled) {
+      if (state.issues[issue.number]) continue
+      try { consider(issue) } catch (e) { say(issue.number, `could not tell who labelled it: ${e.message}`) }
+    }
+    await startRuns()
+    return { ok: true, labelled: labeled.length }
+  }
+
+  /** Where an issue the state file tracks stands, and what moves it on. '' when the plan says it. */
+  function standing(it, labelled, live) {
+    const pr = it.pr ? ` (pull request #${it.pr})` : ''
+    const why = oneLine(it.reason || '', 300).replace(/[.\s]+$/, '')
+    if (!labelled && ['waiting', 'running', 'review', 'needs-human'].includes(it.status)) {
+      return `${it.status}${pr}, but no longer open and labelled "${label}": a start finishes it if its pull request was merged or closed, and stops it otherwise`
+    }
+    switch (it.status) {
+      case 'waiting': return (it.notBefore || 0) > now() ? `waiting: tried again after ${new Date(it.notBefore).toLocaleTimeString()}` : ''
+      case 'running': return live ? `running now, in the watcher on this clone (process ${live.pid})` : 'running'
+      case 'review': return `in review${pr}: a start goes on watching it for CI and reviews`
+      case 'needs-human': return `needs a person${pr}: ${why || 'no reason was saved'}; to go on, remove the ${HUMAN_LABEL} label or comment /hivecode retry`
+      case 'stopped':
+        if (it.stopKind === 'command') return `stopped by /hivecode stop; ${labelled ? '' : `label it "${label}" again and `}comment /hivecode retry to start it again`
+        return labelled ? `stopped (${why}), and open and labelled again: a start goes on with it` : `stopped (${why})`
+      case 'done': return `done${pr}: merged${!labelled ? '' : it.closedAtDone ? '; the issue is open again, so a start begins a new attempt on a new branch' : '; comment /hivecode retry to start over'}`
+      case 'closed': return `closed without merging${pr}; reopen the pull request, or comment /hivecode retry to start over`
+      case 'skipped': return `skipped: ${why}`
+      default: return String(it.status)
+    }
+  }
+
+  let loginLost = false
   function holdOff(e) {
     holdUntil = e.retryAt || now() + 60000
     log(`waiting: ${e.message}`)
+    // A login that stopped working will not come back by itself, and the terminal that shows the log
+    // may be on a machine nobody is looking at: said once where the owner will see it.
+    if (e.code === 'Q600' && !loginLost) { loginLost = true; notify(`Needs you: GitHub refused the login gh has on the machine running the watcher for ${gh.owner}/${gh.repo}. Nothing is being picked up. Run there: gh auth login`) }
     return { waiting: e.message }
   }
 
@@ -1204,8 +1374,10 @@ export function makeWatcher(o) {
       if (t < holdUntil) return { waiting: true }
       let labeled
       const readAt = now()
-      try { labeled = gh.labeledIssues(label).filter((i) => !i.pull_request) } catch (e) { return holdOff(e) }
+      try { labeled = gh.labeledIssues(label).filter((i) => !i.pull_request) } catch (e) { return dry ? { failed: e.message } : holdOff(e) }
+      loginLost = false
       const byNum = new Map(labeled.map((i) => [i.number, i]))
+      if (dry) return await dryPlan(labeled, byNum)
       for (const [k, it] of Object.entries(state.issues)) {
         try { await reconcile(Number(k), it, byNum.get(Number(k)) || null, readAt) } catch (e) {
           if (e.code === 'Q604' || e.code === 'Q600' || e.status === 0 || e.status >= 500) return holdOff(e)
@@ -1279,7 +1451,7 @@ export function describe(state, { owner = '', repo = '' } = {}) {
 // ---- CLI -----------------------------------------------------------------------------------------
 
 const NUM = { every: 60, 'max-parallel': 1, 'max-minutes': 40, 'max-runs': 6, 'max-runs-per-day': 20 }
-const SWITCHES = new Set(['allow-workflow-changes', 'allow-large', 'once', 'yes'])
+const SWITCHES = new Set(['allow-workflow-changes', 'allow-large', 'once', 'yes', 'dry-run'])
 const LARGE = 5000
 
 function flags(argv) {
@@ -1306,6 +1478,7 @@ options (saved for the next start):
   --name <agent>              the agent's name in the room (default Builder)
   --tester "<command>"        a second agent that checks the first one's work before anything is pushed
   --tester-name <agent>       its name in the room (default Tester)
+  --repo <path>               the clone to watch (default: the folder this is run in)
   --base <branch>             the branch pull requests go into (default: the repo's default branch)
   --relay <url>               the relay rooms run on (default: the public one; run your own for private code)
   --test "<command>"          run the tests ourselves before every push
@@ -1317,10 +1490,16 @@ options (saved for the next start):
   --max-runs-per-day <n>      across the repo (default 20)
   --allow-workflow-changes    let agents' edits to .github/workflows/ be pushed
   --allow-large               a repo of more than ${LARGE} files on the public relay
-  --once                      one pass, then exit`
+  --once                      one pass, then exit
+  --dry-run                   read GitHub once and say what a start would do; write nothing anywhere`
 
-export async function main(argv, { cwd = process.cwd(), log = console.log, logErr = console.error, call = ghCall() } = {}) {
+export async function main(argv, { cwd: here = process.cwd(), log = console.log, logErr = console.error, call = ghCall() } = {}) {
   const [sub, ...rest] = argv
+  // --repo <path>: the clone to watch, when it is not the folder this was started from (a service,
+  // or a terminal that opens somewhere else). Read before anything, because everything is relative to it.
+  const ri = rest.indexOf('--repo')
+  const cwd = ri !== -1 && rest[ri + 1] ? path.resolve(rest[ri + 1]) : here
+  if (ri !== -1) rest.splice(ri, 2)
   if (sub !== 'start' && sub !== 'status') { logErr(USAGE); return 2 }
   const top = git(cwd, ['rev-parse', '--show-toplevel'])
   if (top.code !== 0) { logErr(`Q601 ${cwd} is not inside a git repository. Run this in your clone of the repo.`); return 1 }
@@ -1335,12 +1514,14 @@ export async function main(argv, { cwd = process.cwd(), log = console.log, logEr
   const file = statePath(gitDir)
 
   if (sub === 'status') {
-    const s = loadState(file)
+    const s = loadState(file, log, { peek: true })
     log(describe(s, s.config || {}))
     return 0
   }
 
-  const saved = loadState(file).config || {}
+  // Only read here: a dry run must not move an unreadable file, and a real start moves it below,
+  // where it says so.
+  const saved = loadState(file, () => {}, { peek: true }).config || {}
   const f = { ...saved.flags, ...flags(rest) }
   const opt = (k) => (k in NUM ? Number(f[k] || NUM[k]) : f[k])
   for (const k of Object.keys(NUM)) if (!(Number(opt(k)) > 0)) { logErr(`Q602 --${k} must be a positive number`); return 2 }
@@ -1365,11 +1546,21 @@ export async function main(argv, { cwd = process.cwd(), log = console.log, logEr
   if (testerCmd && !commandExists(testerCmd)) { logErr(`Q602 "${String(testerCmd).split(/\s+/)[0]}" (the --tester) is not installed here (not on PATH).`); return 1 }
   const label = opt('label') || LABEL
 
+  // A DRY RUN WRITES NOTHING: not a label, not the lock, not its settings, not a branch or a comment.
+  // It reads GitHub once and says what a real start would do, which is the safe first step on a repo
+  // that matters -- and the first answer to "why isn't it picking up my issue?".
+  const dry = !!f['dry-run']
+  if (dry) log('Dry run: reading GitHub once. Nothing is written anywhere.')
+
   // The labels a person uses: made once, so the very first label works.
   try {
     const have = new Set(gh.labels().map((l) => String(l.name).toLowerCase()))
-    if (!have.has(label.toLowerCase())) { gh.createLabel(label, '7057ff', 'Hivecode: agents build this and open a pull request'); log(`created the label "${label}"`) }
-    if (!have.has(HUMAN_LABEL)) { gh.createLabel(HUMAN_LABEL, 'd93f0b', 'Hivecode is waiting for a person'); log(`created the label "${HUMAN_LABEL}"`) }
+    for (const [name, color, about] of [[label, '7057ff', 'Hivecode: agents build this and open a pull request'], [HUMAN_LABEL, 'd93f0b', 'Hivecode is waiting for a person']]) {
+      if (have.has(name.toLowerCase())) continue
+      if (dry) { log(`would create the label "${name}"`); continue }
+      gh.createLabel(name, color, about)
+      log(`created the label "${name}"`)
+    }
   } catch (e) { logErr(`could not check or create the labels: ${e.message}`) }
 
   const relay = opt('relay') || process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY
@@ -1383,24 +1574,38 @@ export async function main(argv, { cwd = process.cwd(), log = console.log, logEr
   if (info.private && relay === PUBLIC_DEFAULT_RELAY) {
     log(`\nNOTE: ${id.owner}/${id.repo} is private, and rooms will run on the public Hivecode relay. Room ids are random and never posted on GitHub, but anyone who learns one can read that room's files. For private code, run your own relay (npx hivecode-relay) and pass --relay.\n`)
   }
-  const releaseLock = (() => { try { return takeLock(path.join(gitDir, 'hivecode', 'watcher.lock')) } catch (e) { logErr(e.message); return null } })()
-  if (!releaseLock) return 1
-
-  const state = loadState(file)
-  state.config = { owner: id.owner, repo: id.repo, flags: { ...f, once: undefined } }
-  saveState(file, state)
-
   const stamp = () => new Date().toTimeString().slice(0, 8)
   const say = (s) => log(`${stamp()} ${s}`)
-  const notify = makeNotifier(opt('notify'), { log: say })
-  const w = makeWatcher({
-    gh, root, gitDir, agent, relay, label, notify, log: say,
+  const watcherOpts = {
+    gh, root, gitDir, agent, relay, label, log: say, dry,
     name: opt('name') || 'Builder', base: opt('base') || info.default_branch || 'main',
     tester: testerCmd, testerName: opt('tester-name') || 'Tester',
     every: opt('every'), maxParallel: opt('max-parallel'), maxMinutes: opt('max-minutes'),
     maxRuns: opt('max-runs'), maxRunsPerDay: opt('max-runs-per-day'), test: opt('test') || '',
     allowWorkflows: !!f['allow-workflow-changes'],
-  })
+  }
+  if (dry) {
+    // No lock (a real watcher may be running), no notifications, no recovery (that kills processes).
+    const live = liveWatcher(gitDir)
+    if (live) log(`A watcher is running on this clone now (process ${live.pid}, since ${live.at}). What it does next can differ from this plan.`)
+    const w = makeWatcher({ ...watcherOpts, notify: async () => false })
+    const res = await w.tick()
+    // A list that could not be read is not an empty list: "no labelled issues" would send them
+    // looking in the wrong place.
+    if (!res || !res.ok) { logErr(`Dry run stopped: could not read the labelled issues from GitHub${res && res.failed ? ` (${res.failed})` : ''}. Nothing was written.`); return 1 }
+    log(res.labelled ? `Dry run done: ${res.labelled} open issue(s) labelled "${label}". Nothing was written.` : `Dry run done: no open issue is labelled "${label}". Nothing was written.`)
+    return 0
+  }
+
+  const releaseLock = (() => { try { return takeLock(path.join(gitDir, 'hivecode', 'watcher.lock')) } catch (e) { logErr(e.message); return null } })()
+  if (!releaseLock) return 1
+
+  const state = loadState(file, log)
+  state.config = { owner: id.owner, repo: id.repo, flags: { ...f, once: undefined } }
+  saveState(file, state)
+
+  const notify = makeNotifier(opt('notify'), { log: say })
+  const w = makeWatcher({ ...watcherOpts, notify })
   w.recover()
   log(`Hivecode is watching ${id.owner}/${id.repo} for issues labelled "${label}". Ctrl+C stops it.`)
   let stopping = false

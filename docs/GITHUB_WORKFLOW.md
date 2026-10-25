@@ -31,6 +31,26 @@ The tables below describe what the code does.
 
 They never open a terminal for an issue and never watch a chat.
 
+### See it first: `--dry-run`
+
+`github start --dry-run` reads GitHub once. For each labelled issue it says what a start would do
+and what is in the way. It writes nothing anywhere: no label, comment, branch, lock, watcher id or
+state file, and it starts no agent. Use it first on a repo that matters. It is also the first
+answer to "why isn't it picking up my issue?".
+
+`--repo <folder>` points `start` or `status` at that clone, from any folder.
+
+| what goes wrong | what the dry run does |
+|---|---|
+| A watcher has run on this clone before | It reads the state file as it is, and never moves or rewrites it. An issue that is in review, stopped, closed, or waiting for a person is reported as that, with what moves it on. It is never "would start now". |
+| Today's runs are used up | It says "would wait: today's limit of 20 runs is reached". |
+| Another watcher claimed the issue | It says "would skip". It reads the claim comment, as a start would. |
+| This clone lost its state file, and the issue has our claim and an open PR | It says it would pick that PR up again, without a run. A start does exactly that. |
+| A watcher is running on this clone right now | It says so first. A dry run takes no lock, so it neither stops nor blocks that watcher. |
+| The state file says a run is going, and no watcher is alive | It says the run was cut off, and that a start runs it again. |
+| The state file cannot be read | It leaves the file where it is, and says that a start would move it aside and rebuild from GitHub. `status` leaves it alone too. |
+| GitHub fails to list the issues | It says so and exits 1. It never reports "no labelled issues". |
+
 ## How it works
 
 The watcher is one process on a machine that has the clone, `gh` logged in, and an agent CLI:
@@ -127,7 +147,7 @@ Each row below says what the user sees.
 
 | what goes wrong | what we do |
 |---|---|
-| `gh` is missing, logged out, or its token can't do something | `start` refuses and prints the exact fix, e.g. `gh auth login`. A token that expires later stops the watcher with the same message, never silently. |
+| `gh` is missing, logged out, or its token can't do something | `start` refuses and prints the exact fix, e.g. `gh auth login`. If the login stops working later, the watcher holds off and logs it every minute. It also sends one notification, since nobody may be watching that terminal. |
 | The `hivecode` label doesn't exist | `start` creates `hivecode` and `hivecode:needs-human`. |
 | A read from GitHub fails (network, outage, 5xx) | **A failed read is never treated as "no issues" or "PR closed".** Nothing changes state on a failed read. We back off and retry, and status says so. |
 | Rate limit, primary or secondary | We wait for `Retry-After` or the reset time and do nothing twice. Status shows it. |
@@ -137,12 +157,13 @@ Each row below says what the user sees.
 | Two watchers on one repo (two terminals, two machines) | A lock file covers one machine. Across machines, the claim comment's marker does: whoever commented first owns the issue. |
 | The branch name is already taken | We add `-2`, `-3`, … We never reuse a branch we didn't create. |
 | Someone pushes to the PR branch | The next run's room is seeded from the branch, so it includes their commits. If they push during a run, our push is refused, nothing of theirs is overwritten, and the issue goes to needs-human. |
-| The default branch moves and the PR conflicts | We try a clean merge of the default branch. If it conflicts, the issue goes to needs-human. Agents resolving conflicts comes later. |
+| The default branch moves on, and GitHub says the PR can't be merged | While the issue is idle in review, the watcher merges the default branch into the PR's branch in a worktree of its own, never your checkout, and pushes the merge commit. CI runs again on it. On a conflict it aborts, pushes nothing, and the issue goes to needs-human with the files named. One try per head commit. Repos that require linear history won't take a merge commit: there the push is refused, and that also goes to a person. Agents resolving conflicts comes later. |
 | The issue is edited after it was picked up | Runs use the text as it was when claimed. `/hivecode retry` reads it again, so a person can clarify the issue and retry. |
 | The issue or the PR is closed, or the label is removed | We stop. A run in progress is killed, and we don't push. |
+| The PR is closed without merging, with the label left on | Nothing starts again: closing it is a "no". `/hivecode retry` starts a new attempt. |
 | The PR is reopened | We watch it again. |
 | A huge issue body, or images only | The text is cut to 20 KB, and the task tells the agent so. The task also says how many images the issue has, and that the agent cannot see them. |
-| The state file is lost or unreadable | It is set aside, never deleted. Each claim comment names its branch, so the watcher picks up its pull requests, and anything waiting for a person, without running anything again. |
+| The state file is lost or unreadable | An unreadable file is set aside, never deleted, and the start says where it went (Q606). Each claim comment names its branch, so the watcher picks up its pull requests, and anything waiting for a person, without running anything again. |
 | CI never finishes (a stuck job) | After 2 hours pending we notify once, and keep watching. |
 | The repo has no CI | The PR waits for review. Nothing is assumed passed. |
 
@@ -223,6 +244,8 @@ Each row below says what the user sees.
 | `--max-runs` | 6 per issue, 20 per day |
 | `--relay` | the public relay; self-hosted recommended for private code |
 | `--test` | off; the PR says the test result is the agent's report |
+| `--repo` | the folder it is started in |
+| `--dry-run` | off |
 
 ## Build order
 
@@ -239,7 +262,8 @@ All built on 13 Oct 2026:
 - `tests/github-watcher-test.mjs` runs everything for real except GitHub and the agent: a local
   relay, a real git repo with a local `origin`, a fake GitHub inside the test, and a fake agent that
   joins its room through the real MCP server code. It spends no tokens and touches no real repo.
-- `tests/github-cli-test.mjs` checks what a stranger meets first: each refusal, and its fix.
+- `tests/github-cli-test.mjs` checks what a stranger meets first: each refusal and its fix, and the
+  dry run, both on a fresh clone and on one a watcher has worked in.
 - `scripts/github-mutants.mjs` removes each important defence in turn, and its check has to go red.
   A defence whose check stays green is not covered, whatever the test claims.
 

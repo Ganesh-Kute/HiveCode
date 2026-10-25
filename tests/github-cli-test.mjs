@@ -10,7 +10,8 @@ import os from 'os'
 import path from 'path'
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
-const HG = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-github.js`)
+// A mutant run points this at a changed copy beside the real one (scripts/github-mutants.mjs).
+const HG = await import(`file:///${ROOT.replace(/\\/g, '/')}/${process.env.HIVE_GITHUB_MODULE || 'hive-github.js'}`)
 let pass = 0
 let fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
@@ -114,6 +115,96 @@ try {
   T('CS6 the next start remembers the agent, and makes no labels twice', r.code === 0 && !f2.calls.some((c) => c.method === 'POST'))
   r = await run(app, ['start', '--once', '--relay', 'wss://relay.example.com'], fakeCall(github()).call)
   T('CS7 on your own relay there is no public-relay warning', r.code === 0 && !/public Hivecode relay/.test(r.out))
+  r = await run(notRepo, ['start', '--once', '--repo', app], fakeCall(github()).call)
+  T('CS8 --repo watches that clone from anywhere', r.code === 0 && /watching acme\/app/.test(r.out), r.out.split('\n').slice(-1)[0])
+
+  console.log('\n# --dry-run: what a start would do, and nothing written')
+  {
+    const dryRepo = repo(path.join(tmp, 'dry'), 'https://github.com/acme/app.git')
+    const user = (login) => ({ login, type: 'User' })
+    const fd = fakeCall(github({
+      'GET repos/acme/app/issues': ok([
+        { number: 5, title: 'Fix the login', labels: [{ name: 'hivecode' }], updated_at: 'a' },
+        { number: 6, title: 'From a reader', labels: [{ name: 'hivecode' }], updated_at: 'b' },
+      ]),
+      'GET repos/acme/app/issues/5/events': ok([{ event: 'labeled', label: { name: 'hivecode' }, actor: user('dev') }]),
+      'GET repos/acme/app/issues/6/events': ok([{ event: 'labeled', label: { name: 'hivecode' }, actor: user('reader') }]),
+      'GET repos/acme/app/collaborators/dev/permission': ok({ permission: 'write' }),
+      'GET repos/acme/app/collaborators/reader/permission': ok({ permission: 'read' }),
+      'GET repos/acme/app/issues/5/comments': ok([]),
+    }))
+    r = await run(dryRepo, ['start', '--dry-run', '--agent', NODE], fd.call)
+    T('CD1 it says which issue would start, and which is skipped and why', r.code === 0 && /#5: would start now/.test(r.out) && /#6: skipped: labelled by reader, who cannot push/.test(r.out), r.out)
+    T('CD2 missing labels are named, not made', /would create the label "hivecode"/.test(r.out) && !fd.calls.some((c) => c.method !== 'GET'))
+    const writes = fd.calls.filter((c) => c.method !== 'GET').map((c) => `${c.method} ${c.path}`)
+    // No write, and no run even attempted: an attempt that happens to die on a read before its first
+    // write is still a dry run that is not dry.
+    const attempted = r.out.match(/[^\n]*\b(run \d+ of \d+ started|not started|needs a person)\b[^\n]*/)
+    T('CD3 nothing is written to GitHub, and no run is even attempted', writes.length === 0 && !attempted, writes.join(' | ') || (attempted && attempted[0]) || '')
+    T('CD4 nothing is written here: no state, no lock, no watcher id, no branch', !fs.existsSync(path.join(dryRepo, '.git', 'hivecode')) &&
+      g(dryRepo, 'config', '--local', '--get', 'hivecode.github.watcher').status !== 0 && g(dryRepo, 'branch', '--list', 'hivecode/*').stdout.trim() === '')
+  }
+
+  console.log('\n# --dry-run on a clone a watcher has worked in: "why is it not picking up my issue?"')
+  {
+    // A file that is gone must turn its row red, not throw: a crash skips every row after it.
+    const readOr = (p) => { try { return fs.readFileSync(p, 'utf8') } catch { return null } }
+    const used = repo(path.join(tmp, 'dry-used'), 'https://github.com/acme/app.git')
+    g(used, 'config', 'hivecode.github.watcher', 'abc123abc123')
+    const user = (login) => ({ login, type: 'User' })
+    const claimBy = (watcher, branch) => `Hivecode is working on this.\n\n<!-- hivecode:claim watcher=${watcher} branch=${branch} -->`
+    const known = (status, more = {}) => ({ status, claimed: true, runs: 1, allowedRuns: 6, failures: 0, queue: [], seen: { ic: 0, pc: 0, rc: 0, rv: 0 }, cmdSeen: [], ...more })
+    const stateFile = path.join(used, '.git', 'hivecode', 'github.json')
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
+    const before = JSON.stringify({
+      version: 1, config: {},
+      day: { date: new Date().toISOString().slice(0, 10), runs: 20, capNoticed: '' },
+      issues: {
+        5: known('review', { pr: 12, branch: 'hivecode/5-review' }),
+        6: known('needs-human', { pr: 13, branch: 'hivecode/6-asked', reason: 'it asked which database to use' }),
+        10: known('running', { branch: 'hivecode/10-cut', run: { pid: 0, startedAt: 0, deadline: 0 } }),
+      },
+    }, null, 2)
+    fs.writeFileSync(stateFile, before)
+    const fu = () => fakeCall(github({
+      'GET repos/acme/app/labels': ok([{ name: 'hivecode' }, { name: 'hivecode:needs-human' }]),
+      'GET repos/acme/app/issues': ok([5, 6, 7, 8, 9, 10].map((number) => ({ number, title: `Issue ${number}`, labels: [{ name: 'hivecode' }], updated_at: 'u' }))),
+      ...Object.fromEntries([7, 8, 9].map((n) => [`GET repos/acme/app/issues/${n}/events`, ok([{ event: 'labeled', label: { name: 'hivecode' }, actor: user('dev') }])])),
+      'GET repos/acme/app/collaborators/dev/permission': ok({ permission: 'write' }),
+      'GET repos/acme/app/issues/7/comments': ok([{ id: 70, user: user('owner'), body: claimBy('def456def456', 'hivecode/7-theirs') }]),
+      'GET repos/acme/app/issues/8/comments': ok([{ id: 80, user: user('owner'), body: claimBy('abc123abc123', 'hivecode/8-ours') }]),
+      'GET repos/acme/app/issues/9/comments': ok([]),
+      'GET repos/acme/app/pulls': ok([{ number: 21, state: 'open', html_url: 'https://github.com/acme/app/pull/21' }]),
+    }))
+    const f1 = fu()
+    r = await run(used, ['start', '--dry-run', '--agent', NODE], f1.call)
+    T('CD5 what the state file knows is said as it is, never as "would start now"', r.code === 0 && /#5: in review \(pull request #12\)/.test(r.out) && /#6: needs a person \(pull request #13\): it asked which database to use/.test(r.out) && !/#[56]: would start/.test(r.out), r.out)
+    T('CD6 another watcher\'s issue is a skip; our own earlier claim with an open pull request is picked up, without a run', /#7: would skip: another Hivecode watcher \(def456def456\) is on it/.test(r.out) && /#8: would pick up its pull request #21 again, without a run/.test(r.out), r.out)
+    T('CD7 with today\'s runs used up, the rest would wait', /#9: would wait: today's limit of 20 runs is reached/.test(r.out), r.out)
+    T('CD8 a run the file says is going, with no watcher alive, is said as cut off', /#10: cut off when the watcher stopped; a start runs it again/.test(r.out), r.out)
+    T('CD9 the state file is read, never rewritten, and nothing is written to GitHub', readOr(stateFile) === before && fs.readdirSync(path.dirname(stateFile)).length === 1 && !f1.calls.some((c) => c.method !== 'GET'))
+    const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
+    const lock = path.join(used, '.git', 'hivecode', 'watcher.lock')
+    fs.writeFileSync(lock, JSON.stringify({ pid: sleeper.pid, at: 'earlier' }))
+    r = await run(used, ['start', '--dry-run', '--agent', NODE], fu().call)
+    T('CD10 a watcher running here now is said first, the run is its own, and its lock is left alone', new RegExp(`A watcher is running on this clone now \\(process ${sleeper.pid}`).test(r.out) && /#10: running now, in the watcher on this clone/.test(r.out) && (readOr(lock) || '').includes(String(sleeper.pid)), r.out)
+    sleeper.kill()
+    await new Promise((res) => sleeper.on('exit', res))
+    fs.unlinkSync(lock)
+
+    const bad = repo(path.join(tmp, 'dry-bad'), 'https://github.com/acme/app.git')
+    const badFile = path.join(bad, '.git', 'hivecode', 'github.json')
+    fs.mkdirSync(path.dirname(badFile), { recursive: true })
+    fs.writeFileSync(badFile, '{ not json')
+    r = await run(bad, ['start', '--dry-run', '--agent', NODE], fakeCall(github()).call)
+    T('CD11 a state file that cannot be read is left where it is, and that is said', r.code === 0 && readOr(badFile) === '{ not json' && fs.readdirSync(path.dirname(badFile)).length === 1 && /Q606 .*could not be read\. Nothing was changed/.test(r.out), r.out)
+    r = await run(bad, ['status'], fakeCall({}).call)
+    T('CT3 status leaves it where it is too', r.code === 0 && readOr(badFile) === '{ not json' && fs.readdirSync(path.dirname(badFile)).length === 1 && /Q606 .*Nothing was changed/.test(r.out), r.out)
+    r = await run(bad, ['start', '--dry-run', '--agent', NODE], fakeCall(github({ 'GET repos/acme/app/issues': { status: 502, headers: {}, body: { message: 'Bad Gateway' }, text: '' } })).call)
+    T('CD12 GitHub failing to list the issues is said, never as "no labelled issues"', r.code === 1 && /could not read the labelled issues/.test(r.out) && !/no open issue is labelled/.test(r.out), r.out)
+    r = await run(bad, ['start', '--once', '--agent', NODE], fakeCall(github()).call)
+    T('CS9 a real start moves an unreadable state file aside, and says where', r.code === 0 && fs.readdirSync(path.dirname(badFile)).some((x) => /^github\.json\.unreadable-/.test(x)) && /Q606 .*It was moved to/.test(r.out), r.out)
+  }
 
   console.log('\n# one watcher per clone')
   const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
