@@ -25,7 +25,18 @@
 // it safe to walk away.
 
 import { startSync, parseLink } from './sync.js'
-import { makeQueue, slackPost } from './hive-slack.js'
+import {
+  makeQueue,
+  slackPost,
+  stopAll,
+  resumeAll,
+  resolveName,
+  route,
+  preflightSocketMode,
+  connectSocketMode,
+} from './hive-slack.js'
+
+export { stopAll, resumeAll, resolveName, route }
 
 // Slack's plan block knows four states. The room knows four task statuses. They are not the
 // same four, and the join is the only interesting decision in this file.
@@ -87,61 +98,9 @@ export function planChunks(snap) {
   return chunks
 }
 
-/** Pause every AI in the room. This is what the Slack stop button is wired to.
- *  Humans are not paused: pausing a person is meaningless, and the control map is read by
- *  hive_wait, which only agents call. */
-export function stopAll(hive, by = 'slack') {
-  const done = []
-  for (const p of (hive.members ? hive.members() : [])) {
-    if (p.kind !== 'ai') continue
-    hive.control(p.name, 'paused', by)
-    done.push(p.name)
-  }
-  return done
-}
-
-export function resumeAll(hive, by = 'slack') {
-  const done = []
-  for (const p of (hive.members ? hive.members() : [])) {
-    if (p.kind !== 'ai') continue
-    hive.control(p.name, 'running', by)
-    done.push(p.name)
-  }
-  return done
-}
-
-/** Find the room's real spelling of a participant name.
- *
- *  Necessary because the router lowercases in order to match, and the control map is keyed by
- *  the participant's exact name -- so routing "stop AgentA" straight through wrote a control
- *  entry for "agenta", which nothing reads. The agent kept running and the panel said it had
- *  stopped. A control surface that reports a stop it did not perform is worse than one that
- *  refuses, so an unresolved name returns null here and the caller must refuse. */
-export function resolveName(hive, who) {
-  const want = String(who || '').toLowerCase()
-  for (const p of (hive.members ? hive.members() : [])) {
-    if (String(p.name).toLowerCase() === want) return p.name
-  }
-  return null
-}
-
-/** Turn a typed prompt into an intent. Deliberately deterministic rather than model-driven:
- *  a control panel that needs an LLM round trip to understand "stop" is not a control panel.
- *  An agent wrapper is free to fall back to a model for anything this returns as 'ask'. */
-export function route(text) {
-  const s = String(text || '').trim().toLowerCase()
-  let m
-  if ((m = s.match(/^(?:resume|unpause|start|continue)\s+(?:agent\s+)?([a-z0-9_.-]+)$/))) {
-    return m[1] === 'all' || m[1] === 'everything' ? { intent: 'resume-all' } : { intent: 'resume', who: m[1] }
-  }
-  if ((m = s.match(/^(?:stop|pause|halt|kill)\s+(?:agent\s+)?([a-z0-9_.-]+)$/))) {
-    return m[1] === 'all' || m[1] === 'everything' ? { intent: 'stop-all' } : { intent: 'stop', who: m[1] }
-  }
-  if (/^(stop|pause|halt|stop it|stop them|shut it down)\b/.test(s)) return { intent: 'stop-all' }
-  if (/^(resume|unpause|carry on|keep going)\b/.test(s)) return { intent: 'resume-all' }
-  if (/status|what.*(running|happening|going on)|who.*(here|working)|overnight/.test(s)) return { intent: 'status' }
-  return { intent: 'ask', text: String(text || '') }
-}
+// stopAll, resumeAll, resolveName, and route live in hive-slack.js so both the channel thread
+// bridge and this Slack agent surface share the exact same deterministic router and case-insensitive
+// participant lookup without duplicating control logic.
 
 export function makeAgent({ hive, channel, token, post, botName = 'Hivecode', setStatus }) {
   const queue = makeQueue({ send: (m) => post(m) })
@@ -223,9 +182,15 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const LINK = argv.find((a) => !a.startsWith('--')) || ''
   const CHANNEL = flag('channel')
   const TOKEN = process.env.SLACK_BOT_TOKEN || ''
-  if (!LINK || !CHANNEL || !TOKEN) {
-    console.error('usage: SLACK_BOT_TOKEN=xoxb-… node hive-slack-agent.js "<relay|room>" --channel <id>')
+  const APP_TOKEN = process.env.SLACK_APP_TOKEN || ''
+  if (!LINK || !CHANNEL || !TOKEN || !APP_TOKEN) {
+    console.error('usage: SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node hive-slack-agent.js "<relay|room>" --channel <id>')
     process.exit(2)
+  }
+  const sockPre = await preflightSocketMode({ appToken: APP_TOKEN })
+  if (!sockPre.ok) {
+    console.error(sockPre.error)
+    process.exit(1)
   }
   const { relay, room } = parseLink(LINK)
   const hive = startSync({
@@ -233,8 +198,17 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
     name: flag('name', 'Hivecode'), kind: 'human', token: process.env.HIVE_TOKEN || '', syncFiles: false, log: () => {},
   })
   const agent = makeAgent({ hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN) })
-  console.log(`[hive-slack-agent] ${room} -> ${CHANNEL}`)
-  // The Bolt/Socket-Mode wrapper calls agent.onPrompt() on message.im and
-  // agent.onSessionStopped() on agent_session_stopped.
-  globalThis.__hiveAgent = agent
+  await connectSocketMode({
+    appToken: APP_TOKEN,
+    initialUrl: sockPre.url,
+    onEvent: async (ev) => {
+      if (!ev || ev.bot_id || ev.subtype) return
+      if (ev.type === 'agent_session_stopped') {
+        await agent.onSessionStopped({ thread_ts: ev.thread_ts || ev.ts, user: ev.user })
+      } else if (ev.type === 'message' && ev.text) {
+        await agent.onPrompt({ text: ev.text, thread_ts: ev.thread_ts || ev.ts, user: ev.user })
+      }
+    },
+  })
+  console.log(`READY: [hive-slack-agent] ${room} -> ${CHANNEL} (Socket Mode connected)`)
 }

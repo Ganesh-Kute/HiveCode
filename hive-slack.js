@@ -17,20 +17,23 @@
 // not in this process. A bridge that restarts must land its next update in the same Slack
 // thread, or a task's history splits in half and the thread stops being worth reading.
 //
-// Error codes Q630-Q632 are this module's:
+// Error codes Q630-Q634 are this module's:
 //   Q630  SLACK_BOT_TOKEN missing, invalid, or revoked at preflight
 //   Q631  --channel missing, not found, or the bot has not been invited (/invite @Hivecode)
 //   Q632  a Slack bridge with this name is already running in the room
+//   Q634  SLACK_APP_TOKEN (xapp-…) invalid or missing connections:write for Socket Mode
 
+import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
 import { scrub } from './hive-webhook.js'
 
 const DEFAULT_API = 'https://slack.com/api'
 const ROOM_THREAD_KEY = '__room__'
 const CURSOR_KEY = '__cursor__'
+const MAX_SEEN_EVENTS = 500
 
 export const USAGE = `usage:
-  SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--dry-run]
+  SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--dry-run]
 `
 
 export const NON_RETRYABLE = new Set([
@@ -290,8 +293,190 @@ export async function preflightSlack({
     botUser,
     botUserId: auth.user_id || '',
     team: auth.team || '',
+    teamId: auth.team_id || '',
     channelName: (info && info.channel && info.channel.name) || channel,
   }
+}
+
+/** Verify SLACK_APP_TOKEN (xapp-…) with apps.connections.open before READY when Socket Mode is enabled (Q634). */
+export async function preflightSocketMode({
+  appToken,
+  api = process.env.HIVE_SLACK_API || DEFAULT_API,
+  fetchImpl = fetch,
+} = {}) {
+  if (!appToken || !String(appToken).trim()) {
+    return {
+      ok: false,
+      code: 'Q634',
+      error: 'Q634 SLACK_APP_TOKEN is missing. Set SLACK_APP_TOKEN=xapp-… (with connections:write scope) to enable inbound Socket Mode.',
+    }
+  }
+  try {
+    const res = await slackPost('apps.connections.open', {}, appToken, fetchImpl, api)
+    if (!res || !res.url) {
+      return { ok: false, code: 'Q634', error: 'Q634 Slack apps.connections.open did not return a WebSocket URL.' }
+    }
+    return { ok: true, url: res.url }
+  } catch (e) {
+    const why = extractSlackError(e) || e.message
+    return {
+      ok: false,
+      code: 'Q634',
+      error: `Q634 SLACK_APP_TOKEN was rejected by Slack (${why}). Enable Socket Mode and generate an App-Level Token (xapp-…) with connections:write.`,
+    }
+  }
+}
+
+/** Connect to Slack Socket Mode over ws. Immediately acknowledges every envelope_id (<3s),
+ *  deduplicates event_id across reconnects, reconnects on Slack's periodic disconnect frame,
+ *  and halts on permanent token errors. */
+export async function connectSocketMode({
+  appToken,
+  initialUrl = '',
+  api = process.env.HIVE_SLACK_API || DEFAULT_API,
+  fetchImpl = fetch,
+  WebSocketImpl = WebSocket,
+  onEvent,
+  onError = null,
+  reconnectDelayMs = 1000,
+  timer = setTimeout,
+} = {}) {
+  let ws = null
+  let stopped = false
+  let halted = false
+  let reconnectTimer = null
+  const seenEvents = new Set()
+
+  function rememberEvent(id) {
+    if (!id) return false
+    if (seenEvents.has(id)) return true
+    seenEvents.add(id)
+    if (seenEvents.size > MAX_SEEN_EVENTS) {
+      const oldest = seenEvents.values().next().value
+      seenEvents.delete(oldest)
+    }
+    return false
+  }
+
+  async function openSocket(firstUrl = '') {
+    if (stopped || halted) return
+    let url = firstUrl
+    if (!url) {
+      try {
+        const res = await slackPost('apps.connections.open', {}, appToken, fetchImpl, api)
+        url = res && res.url
+      } catch (e) {
+        if (isPermanentSlackError(e)) {
+          halted = true
+          if (typeof onError === 'function') { try { onError(e) } catch { } }
+          return
+        }
+        if (typeof onError === 'function') { try { onError(e) } catch { } }
+        if (!stopped) reconnectTimer = timer(() => openSocket(''), reconnectDelayMs)
+        return
+      }
+    }
+    if (!url || stopped || halted) return
+    const sock = new WebSocketImpl(url)
+    ws = sock
+
+    sock.on('message', (raw) => {
+      let frame
+      try { frame = JSON.parse(String(raw)) } catch { return }
+      // Acknowledge every envelope immediately (<3s) so Slack never retries and duplicates a stop/reply.
+      if (frame && frame.envelope_id) {
+        try { sock.send(JSON.stringify({ envelope_id: frame.envelope_id })) } catch { }
+      }
+      if (!frame) return
+      if (frame.type === 'disconnect') {
+        try { sock.close() } catch { }
+        return
+      }
+      const evId = (frame.payload && frame.payload.event_id) || frame.envelope_id || ''
+      if (evId && rememberEvent(evId)) return
+      const ev = frame.payload && frame.payload.event
+      if (ev && typeof onEvent === 'function') {
+        Promise.resolve(onEvent(ev, frame.payload)).catch((e) => {
+          if (typeof onError === 'function') { try { onError(e) } catch { } }
+        })
+      }
+    })
+
+    sock.on('error', (e) => {
+      if (typeof onError === 'function') { try { onError(e) } catch { } }
+    })
+
+    sock.on('close', () => {
+      if (ws === sock) ws = null
+      if (!stopped && !halted) {
+        reconnectTimer = timer(() => openSocket(''), reconnectDelayMs)
+      }
+    })
+  }
+
+  await openSocket(initialUrl)
+
+  return {
+    stop: () => {
+      stopped = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (ws) { try { ws.close() } catch { } ws = null }
+    },
+    isHalted: () => halted,
+  }
+}
+
+/** Pause every AI in the room (excluding the bridge itself when skipName is given). */
+export function stopAll(hive, by = 'slack', skipName = '') {
+  const done = []
+  for (const p of (hive.members ? hive.members() : [])) {
+    if (p.kind !== 'ai' || (skipName && p.name === skipName)) continue
+    hive.control(p.name, 'paused', by)
+    done.push(p.name)
+  }
+  return done
+}
+
+export function resumeAll(hive, by = 'slack', skipName = '') {
+  const done = []
+  for (const p of (hive.members ? hive.members() : [])) {
+    if (p.kind !== 'ai' || (skipName && p.name === skipName)) continue
+    hive.control(p.name, 'running', by)
+    done.push(p.name)
+  }
+  return done
+}
+
+/** Find the room's real spelling of a participant name (case-insensitive). */
+export function resolveName(hive, who) {
+  const want = String(who || '').toLowerCase()
+  for (const p of (hive.members ? hive.members() : [])) {
+    if (String(p.name).toLowerCase() === want) return p.name
+  }
+  return null
+}
+
+/** Turn a typed prompt into a deterministic control/status intent. */
+export function route(text) {
+  const s = String(text || '').trim().toLowerCase()
+  let m
+  if ((m = s.match(/^(?:resume|unpause|start|continue)\s+(?:agent\s+)?([a-z0-9_.-]+)$/))) {
+    return m[1] === 'all' || m[1] === 'everything' ? { intent: 'resume-all' } : { intent: 'resume', who: m[1] }
+  }
+  if ((m = s.match(/^(?:stop|pause|halt|kill)\s+(?:agent\s+)?([a-z0-9_.-]+)$/))) {
+    return m[1] === 'all' || m[1] === 'everything' ? { intent: 'stop-all' } : { intent: 'stop', who: m[1] }
+  }
+  if (/^(stop|pause|halt|stop it|stop them|shut it down)\b/.test(s)) return { intent: 'stop-all' }
+  if (/^(resume|unpause|carry on|keep going)\b/.test(s)) return { intent: 'resume-all' }
+  if (/status|what.*(running|happening|going on)|who.*(here|working)|overnight/.test(s)) return { intent: 'status' }
+  return { intent: 'ask', text: String(text || '') }
+}
+
+/** Never let a Slack display name impersonate a room member: always attribute as slack:<handle>. */
+export function formatSlackSender(handleOrUser) {
+  const raw = String(handleOrUser || 'user').trim().replace(/^slack:/i, '')
+  const clean = raw.replace(/[^A-Za-z0-9_.-]/g, '') || 'user'
+  return `slack:${clean}`
 }
 
 /** Refuse to run a second bridge under the same name in the same room (Q632). */
@@ -323,6 +508,8 @@ export function render(ev) {
  *  Getting this wrong is the difference between a useful feed and a muted one. */
 export const TO_CHANNEL = new Set(['task-open', 'task-done'])
 
+export const USER_CACHE_TTL_MS = 10 * 60 * 1000
+
 export function makeBridge({
   hive,
   channel,
@@ -332,9 +519,24 @@ export function makeBridge({
   onError = null,
   room = '',
   link = '',
+  allow = [],
+  teamId = '',
+  botUserId = '',
+  lookupUser = null,
+  minGapMs = 1000,
+  now = () => Date.now(),
+  userCacheTtlMs = USER_CACHE_TTL_MS,
+  api = process.env.HIVE_SLACK_API || DEFAULT_API,
+  fetchImpl = fetch,
 }) {
   const threads = hive.doc.getMap('slack_threads')   // task id -> thread_ts, shared + durable
   const seen = new Set()
+  const allowSet = new Set(
+    (Array.isArray(allow) ? allow : String(allow || '').split(','))
+      .map((s) => String(s || '').trim())
+      .filter(Boolean),
+  )
+  const userCache = new Map() // userId -> { value, expiresAt }
   let reportedFatal = false
 
   const handleFatal = (e) => {
@@ -350,6 +552,7 @@ export function makeBridge({
     channel,
     threads,
     post,
+    minGapMs,
     onError: handleFatal,
     room: room || (hive && hive.room) || '',
     link,
@@ -389,8 +592,9 @@ export function makeBridge({
     }
   }
 
-  /** A human replied in a Slack thread. Put it into the room, addressed, and marked so the
-   *  echo guard above will not send it straight back to Slack. */
+  /** A human replied in a Slack thread. Put it into the room, addressed, attributed as
+   *  `slack:<handle>` (never bare member name, preventing impersonation), and marked `viaSlack`
+   *  so the echo guard above will not send it straight back to Slack. */
   function deliver({ thread_ts, text, user }) {
     let task = null
     for (const [id, ts] of threads.entries()) {
@@ -398,18 +602,183 @@ export function makeBridge({
       if (ts === thread_ts) { task = id; break }
     }
     const addressed = /^@/.test(text.trim()) ? text.trim() : text.trim()
+    const by = formatSlackSender(user || 'user')
     hive.doc.getArray('chat').push([{
-      by: user || 'slack', kind: 'say', at: Date.now() * 1000, text: addressed, task, viaSlack: true,
+      by, kind: 'say', at: Date.now() * 1000, text: addressed, task, viaSlack: true,
     }])
-    return { ok: true, task }
+    return { ok: true, task, by }
   }
 
-  return { emit, onChat, deliver, threads, queue, threader }
+  function putCachedUser(userId, value) {
+    userCache.set(userId, { value, expiresAt: now() + userCacheTtlMs })
+    return value
+  }
+
+  async function resolveSlackActor(userId) {
+    if (!userId) return { ok: false, reason: 'missing_user' }
+    const cached = userCache.get(userId)
+    if (cached) {
+      if (now() < cached.expiresAt) return cached.value
+      userCache.delete(userId)
+    }
+    let res
+    try {
+      res = lookupUser
+        ? await lookupUser(userId)
+        : await slackPost('users.info', { user: userId }, token, fetchImpl, api)
+    } catch (e) {
+      return { ok: false, reason: 'lookup_failed', error: e.message }
+    }
+    const u = res && res.user
+    if (!u || u.deleted || u.is_bot) {
+      return putCachedUser(userId, { ok: false, isBot: Boolean(u && u.is_bot), reason: 'bot_or_deleted' })
+    }
+    const handle = u.name || (u.profile && u.profile.display_name) || userId
+    if (u.is_restricted || u.is_ultra_restricted || u.is_stranger) {
+      return putCachedUser(userId, { ok: false, handle, reason: 'guest' })
+    }
+    if (teamId && u.team_id && u.team_id !== teamId) {
+      return putCachedUser(userId, { ok: false, handle, reason: 'external_team' })
+    }
+    return putCachedUser(userId, { ok: true, handle, teamId: u.team_id || '' })
+  }
+
+  async function replyInThread(thread_ts, text) {
+    const clean = scrubSlack(text, { room: room || (hive && hive.room) || '', link })
+    try {
+      const payload = thread_ts ? { channel, text: clean, thread_ts } : { channel, text: clean }
+      await queue.push(payload)
+    } catch (e) {
+      handleFatal(e)
+    }
+  }
+
+  /** Handle an inbound Socket Mode event (`message` or `agent_session_stopped`).
+   *  Asymmetric authorization:
+   *  - Guests (`is_restricted` / `is_ultra_restricted`) and Slack Connect users from other workspaces
+   *    (`team_id !== teamId`) are refused for everything.
+   *  - STOP (`stop`, `stop all`, `stop <Agent>`, or `agent_session_stopped`) is fail-safe: any full
+   *    workspace member may stop agents, and if `users.info` fails during an outage/rate-limit,
+   *    `stop` still goes through ("stopped; I could not confirm who you are").
+   *  - RESUME and thread replies into the room require `ev.user` to be in `--allow U123,U456`. */
+  async function onInboundEvent(ev) {
+    if (!ev) return { ok: false, ignored: 'empty' }
+    if (ev.bot_id || ev.subtype || (botUserId && ev.user === botUserId)) {
+      return { ok: false, ignored: 'bot_or_subtype' }
+    }
+    if (ev.channel && channel && ev.channel !== channel) {
+      return { ok: false, ignored: 'wrong_channel' }
+    }
+    const replyTs = ev.thread_ts || ev.ts || threads.get(ROOM_THREAD_KEY) || undefined
+    const r = ev.type === 'message' && ev.text ? route(ev.text) : null
+    const isStopAction =
+      ev.type === 'agent_session_stopped' ||
+      Boolean(r && (r.intent === 'stop-all' || r.intent === 'stop'))
+
+    const actor = await resolveSlackActor(ev.user)
+    if (actor.isBot) return { ok: false, ignored: 'bot_user' }
+    const unverifiedStop = !actor.ok && actor.reason === 'lookup_failed' && isStopAction
+    if (!actor.ok && !unverifiedStop) {
+      const msg = actor.reason === 'lookup_failed'
+        ? `:no_entry: Refused: could not verify your Slack user (${ev.user}) via users.info.`
+        : `:no_entry: Refused: guests and external Slack Connect users cannot control or message this room.`
+      await replyInThread(replyTs, msg)
+      return { ok: false, refused: actor.reason }
+    }
+    const sender = formatSlackSender(actor.handle || ev.user)
+    const unverifiedNote = unverifiedStop ? ' (stopped; I could not confirm who you are)' : ''
+
+    if (ev.type === 'agent_session_stopped') {
+      const who = stopAll(hive, sender, botName)
+      await replyInThread(
+        replyTs,
+        who.length
+          ? `:octagonal_sign: *${sender}* paused *${who.join('*, *')}*. Nothing new will be picked up.${unverifiedNote}`
+          : `No agents to pause.${unverifiedNote}`,
+      )
+      return { ok: true, action: 'stop-all', stopped: who, by: sender, unverified: unverifiedStop }
+    }
+
+    if (ev.type !== 'message' || !ev.text || !r) return { ok: false, ignored: 'unsupported_event' }
+
+    // Fail-safe STOP: any full member of the workspace (or unverified user during users.info outage) may stop agents.
+    if (r.intent === 'stop-all') {
+      const who = stopAll(hive, sender, botName)
+      await replyInThread(
+        replyTs,
+        who.length
+          ? `:octagonal_sign: *${sender}* paused *${who.join('*, *')}*. Nothing new will be picked up.${unverifiedNote}`
+          : `No agents to pause.${unverifiedNote}`,
+      )
+      return { ok: true, action: 'stop-all', stopped: who, by: sender, unverified: unverifiedStop }
+    }
+    if (r.intent === 'stop') {
+      const real = resolveName(hive, r.who)
+      if (!real || real === botName) {
+        const here = (hive.members ? hive.members() : []).filter((p) => p.name !== botName).map((p) => p.name).join(', ') || 'nobody'
+        await replyInThread(replyTs, `:no_entry: I do not see *${r.who}* in this room. Here right now: ${here}.`)
+        return { ok: false, refused: 'unknown_agent' }
+      }
+      hive.control(real, 'paused', sender)
+      await replyInThread(replyTs, `:octagonal_sign: *${sender}* paused *${real}*.${unverifiedNote}`)
+      return { ok: true, action: 'stop', who: real, by: sender, unverified: unverifiedStop }
+    }
+
+    // RESUME requires --allow <U123,U456>.
+    if (r.intent === 'resume-all' || r.intent === 'resume') {
+      if (!allowSet.has(ev.user)) {
+        await replyInThread(
+          replyTs,
+          `:no_entry: Refused: only Slack user IDs listed in --allow may resume agents or send replies into the room (your ID: \`${ev.user}\`). Any full workspace member may still type \`stop\`.`,
+        )
+        return { ok: false, refused: 'not_in_allow' }
+      }
+      if (r.intent === 'resume-all') {
+        const who = resumeAll(hive, sender, botName)
+        await replyInThread(
+          replyTs,
+          who.length ? `:arrow_forward: *${sender}* resumed *${who.join('*, *')}*.` : 'No agents to resume.',
+        )
+        return { ok: true, action: 'resume-all', resumed: who, by: sender }
+      }
+      const real = resolveName(hive, r.who)
+      if (!real || real === botName) {
+        const here = (hive.members ? hive.members() : []).filter((p) => p.name !== botName).map((p) => p.name).join(', ') || 'nobody'
+        await replyInThread(replyTs, `:no_entry: I do not see *${r.who}* in this room. Here right now: ${here}.`)
+        return { ok: false, refused: 'unknown_agent' }
+      }
+      hive.control(real, 'running', sender)
+      await replyInThread(replyTs, `:arrow_forward: *${sender}* resumed *${real}*.`)
+      return { ok: true, action: 'resume', who: real, by: sender }
+    }
+
+    // Thread replies into the room require a tracked thread_ts AND --allow <U123,U456>.
+    if (!ev.thread_ts) return { ok: false, ignored: 'not_in_thread' }
+    let knownThread = ev.thread_ts === threads.get(ROOM_THREAD_KEY)
+    if (!knownThread) {
+      for (const [id, ts] of threads.entries()) {
+        if (id !== CURSOR_KEY && ts === ev.thread_ts) { knownThread = true; break }
+      }
+    }
+    if (!knownThread) return { ok: false, ignored: 'untracked_thread' }
+    if (!allowSet.has(ev.user)) {
+      await replyInThread(
+        ev.thread_ts,
+        `:no_entry: Refused: only Slack user IDs listed in --allow may resume agents or send replies into the room (your ID: \`${ev.user}\`). Any full workspace member may still type \`stop\`.`,
+      )
+      return { ok: false, refused: 'not_in_allow' }
+    }
+    const d = deliver({ thread_ts: ev.thread_ts, text: ev.text, user: sender })
+    return { ok: true, action: 'reply', task: d.task, by: d.by }
+  }
+
+  return { emit, onChat, deliver, onInboundEvent, threads, queue, threader }
 }
 
-export async function main(argv = process.argv.slice(2), { log = console.log, logErr = console.error, fetchImpl = fetch, env = process.env } = {}) {
+export async function main(argv = process.argv.slice(2), { log = console.log, logErr = console.error, fetchImpl = fetch, env = process.env, WebSocketImpl = WebSocket } = {}) {
   let CHANNEL = env.SLACK_CHANNEL || ''
   let NAME = 'SlackBridge'
+  let ALLOW = env.SLACK_ALLOW || ''
   let LINK = ''
   let dryRun = false
   for (let i = 0; i < argv.length; i++) {
@@ -419,10 +788,12 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     if (a === '--dry-run') { dryRun = true; continue }
     if (a === '--channel') { CHANNEL = argv[++i] || ''; continue }
     if (a === '--name') { NAME = argv[++i] || 'SlackBridge'; continue }
+    if (a === '--allow') { ALLOW = argv[++i] || ''; continue }
     if (a.startsWith('--')) { logErr(USAGE.trim()); return 2 }
     if (!LINK) LINK = a
   }
   const TOKEN = env.SLACK_BOT_TOKEN || ''
+  const APP_TOKEN = env.SLACK_APP_TOKEN || ''
   if (!LINK) {
     logErr(USAGE.trim())
     return 2
@@ -432,13 +803,22 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     logErr(pre.error)
     return 1
   }
+  let sockPre = null
+  if (APP_TOKEN) {
+    sockPre = await preflightSocketMode({ appToken: APP_TOKEN, fetchImpl })
+    if (!sockPre.ok) {
+      logErr(sockPre.error)
+      return 1
+    }
+  }
   const { relay, room, token: linkToken } = parseLink(LINK)
   if (!relay || !room) {
     logErr(`Q630 "${LINK}" is not a valid room link (expected wss://relay|room-…).`)
     return 2
   }
   if (dryRun) {
-    log(`DRY RUN OK: @${pre.botUser} is in #${pre.channelName} (${CHANNEL}) and ready to bridge ${room}.`)
+    const mode = sockPre ? 'outbound + inbound Socket Mode' : 'outbound'
+    log(`DRY RUN OK: @${pre.botUser} is in #${pre.channelName} (${CHANNEL}) [${mode}] and ready to bridge ${room}.`)
     return 0
   }
   const dir = (env.TEMP || process.env.TEMP || '.') + '/hive-slack-' + room + '-' + process.pid
@@ -462,8 +842,21 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     botName: NAME,
     room,
     link: LINK,
+    allow: ALLOW,
+    teamId: pre.teamId || '',
+    botUserId: pre.botUserId || '',
+    fetchImpl,
     post: (m) => slackPost('chat.postMessage', m, TOKEN, fetchImpl),
   })
+  if (sockPre) {
+    await connectSocketMode({
+      appToken: APP_TOKEN,
+      initialUrl: sockPre.url,
+      fetchImpl,
+      WebSocketImpl,
+      onEvent: (ev) => bridge.onInboundEvent(ev),
+    })
+  }
   const chat = hive.doc.getArray('chat')
   const savedCursor = Number(bridge.threads.get(CURSOR_KEY)) || 0
   let at = savedCursor > 0 && savedCursor <= chat.length ? savedCursor : chat.length

@@ -78,12 +78,15 @@ const post = async (m) => {
 }
 
 try {
-  relay = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off' } })
-  relay.stderr.on('data', () => {})
-  await new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error('relay did not start')), 15000)
-    relay.stdout.on('data', (d) => { if (/listening on/.test(String(d))) { clearTimeout(t); res() } })
+  const { WebSocketServer } = await import('ws')
+  const { setupWSConnection } = await import('../vendor/y-websocket/utils.cjs')
+  relay = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}') })
+  const wss = new WebSocketServer({ server: relay })
+  wss.on('connection', (ws, req) => {
+    const docName = (req.url || '/').slice(1).split('?')[0]
+    setupWSConnection(ws, req, { docName })
   })
+  await new Promise((r) => relay.listen(PORT, '127.0.0.1', r))
 
   const mk = (name, kind) => startSync({
     relay: `ws://127.0.0.1:${PORT}`, room: ROOM, dir: fs.mkdtempSync(path.join(tmp, name)),
@@ -144,7 +147,7 @@ try {
   T('end to end ran', false, e.message)
 } finally {
   for (const c of clients) { try { c.stop() } catch { /* going away */ } }
-  try { relay && relay.kill() } catch { /* already gone */ }
+  if (relay) await new Promise((r) => relay.close(r))
   await new Promise((r) => slack.close(r))
   try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* best effort */ }
 }
