@@ -392,6 +392,10 @@ export async function preflightMcpSlack({ token = '', teamId = '', api = undefin
   try {
     auth = await slackPost('auth.test', {}, token, fetchImpl, api)
   } catch (e) {
+    if (!e || !e.slackError) {
+      const why = (e && e.message) || 'network error'
+      return { ok: false, transient: true, code: 'Q636', error: `Q636 could not reach Slack (${why}). The token was not checked; check this machine's network and try again.` }
+    }
     const why = (e && (e.slackError || e.code || e.message)) || 'auth_failed'
     return {
       ok: false,

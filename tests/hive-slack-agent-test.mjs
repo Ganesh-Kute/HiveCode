@@ -318,6 +318,16 @@ try {
       !noTeam.ok && noTeam.code === 'Q634' && /team_id/.test(noTeam.error || ''),
       noTeam.error || 'succeeded unexpectedly')
 
+    const deadRes = await preflightSlackAgent({
+      token: 'xoxb-agent-ok',
+      appToken: 'xapp-ok',
+      channel: 'D-TEST',
+      fetchImpl: () => Promise.reject(new TypeError('fetch failed')),
+    })
+    T('preflightSlackAgent returns Q636 and transient: true when Slack is unreachable',
+      !deadRes.ok && deadRes.transient === true && deadRes.code === 'Q636' && /Q636 could not reach Slack/.test(deadRes.error || ''),
+      deadRes.error || '')
+
     // ---- CLI main spawned checks (Q630 / Q634 missing tokens) ----------------
     console.log('\n# CLI main missing token checks')
     const agentScript = path.join(ROOT, 'hive-slack-agent.js')

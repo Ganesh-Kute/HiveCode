@@ -291,6 +291,14 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
     const pAuth = await preflightSlack({ token: 'xoxb-bad', channel: 'C-TEST', api: process.env.HIVE_SLACK_API })
     T('Q630: invalid_auth is caught before READY', !pAuth.ok && /Q630/.test(pAuth.error) && /invalid_auth/.test(pAuth.error))
 
+    const pDead = await preflightSlack({ token: 'xoxb-ok', channel: 'C-TEST', fetchImpl: () => Promise.reject(new TypeError('fetch failed')) })
+    T('preflightSlack returns Q636 and transient: true when Slack is unreachable',
+      pDead.ok === false && pDead.transient === true && pDead.code === 'Q636' && /Q636 could not reach Slack/.test(pDead.error))
+
+    const smDead = await preflightSocketMode({ appToken: 'xapp-ok', fetchImpl: () => Promise.reject(new TypeError('fetch failed')) })
+    T('preflightSocketMode returns Q636 and transient: true when Slack is unreachable',
+      smDead.ok === false && smDead.transient === true && smDead.code === 'Q636' && /Q636 could not reach Slack/.test(smDead.error))
+
     nextResponses.push(
       { status: 200, body: { ok: true, user: 'hivecode', user_id: 'U1' } },
       { status: 200, body: { ok: true, channel: { id: 'C-TEST', name: 'general', is_member: false } } },
@@ -1047,6 +1055,27 @@ try {
     T('slack check (token bad): exits 1 with Q630 and never prints OK/✓ for unverified steps',
       !r.hung && r.code === 1 && r.elapsed < 5200 &&
       /Q630/.test(allErr) &&
+      !/workspace|channel|scopes|Socket Mode|replies reach Hivecode/i.test(allOut),
+      `code=${r.code} out=${allOut} err=${allErr}`)
+  }
+
+  // (c2) Slack API unreachable (exit 1): exits 1 with Q636 and never prints OK/✓
+  {
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'C-TEST', '--timeout', '200'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-ok', SLACK_APP_TOKEN: 'xapp-ok' },
+        fetchImpl: () => Promise.reject(new TypeError('fetch failed')),
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      200 + 5000,
+    )
+    const allOut = logs.join('\n')
+    const allErr = errs.join('\n')
+    T('slack check (unreachable Slack): exits 1 with Q636 and never prints OK/✓ for unverified steps',
+      !r.hung && r.code === 1 && r.elapsed < 5200 &&
+      /Q636/.test(allErr) && /could not reach Slack/.test(allErr) &&
       !/workspace|channel|scopes|Socket Mode|replies reach Hivecode/i.test(allOut),
       `code=${r.code} out=${allOut} err=${allErr}`)
   }

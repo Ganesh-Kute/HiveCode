@@ -17,12 +17,13 @@
 // not in this process. A bridge that restarts must land its next update in the same Slack
 // thread, or a task's history splits in half and the thread stops being worth reading.
 //
-// Error codes Q630-Q635 are this module's:
+// Error codes Q630-Q636 are this module's:
 //   Q630  SLACK_BOT_TOKEN missing, invalid, or revoked at preflight
 //   Q631  --channel missing, not found, or the bot has not been invited (/invite @Hivecode)
 //   Q632  a Slack bridge with this name is already running in the room
 //   Q634  SLACK_APP_TOKEN (xapp-…) invalid or missing connections:write for Socket Mode
 //   Q635  multiple concurrent Socket Mode processes on same app token
+//   Q636  Slack API unreachable (network, DNS, timeout; token not rejected)
 
 import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
@@ -307,6 +308,10 @@ export async function preflightSlack({
   try {
     auth = await slackPost('auth.test', {}, token, fetchImpl, api)
   } catch (e) {
+    if (!e || !e.slackError) {
+      const why = formatSlackWhy(e)
+      return { ok: false, transient: true, code: 'Q636', error: `Q636 could not reach Slack (${why}). The token was not checked; check this machine's network and try again.` }
+    }
     const why = formatSlackWhy(e)
     return { ok: false, code: 'Q630', error: `Q630 SLACK_BOT_TOKEN was rejected by Slack (${why}). Check the token or reinstall the Slack app.` }
   }
@@ -315,6 +320,10 @@ export async function preflightSlack({
   try {
     info = await slackPost('conversations.info', { channel }, token, fetchImpl, api)
   } catch (e) {
+    if (!e || !e.slackError) {
+      const why = formatSlackWhy(e)
+      return { ok: false, transient: true, code: 'Q636', error: `Q636 could not reach Slack (${why}). The token was not checked; check this machine's network and try again.` }
+    }
     const why = formatSlackWhy(e)
     return { ok: false, code: 'Q631', error: `Q631 Slack channel ${channel} could not be accessed (${why}). Check the channel ID and run /invite @${botUser} in the channel.` }
   }
@@ -450,6 +459,10 @@ export async function preflightSocketMode({
     }
     return { ok: true, url: res.url }
   } catch (e) {
+    if (!e || !e.slackError) {
+      const why = formatSlackWhy(e)
+      return { ok: false, transient: true, code: 'Q636', error: `Q636 could not reach Slack (${why}). The token was not checked; check this machine's network and try again.` }
+    }
     const why = extractSlackError(e) || e.message
     return {
       ok: false,
@@ -1340,6 +1353,10 @@ export async function runSlackCheck({
   try {
     auth = await slackPost('auth.test', {}, token, fetchImpl, api)
   } catch (e) {
+    if (!e || !e.slackError) {
+      logErr(`Q636 could not reach Slack (${formatSlackWhy(e)}). The token was not checked; check this machine's network and try again.`)
+      return 1
+    }
     logErr(`Q630 SLACK_BOT_TOKEN was rejected by Slack (${formatSlackWhy(e)}). Check the token or reinstall the Slack app.`)
     return 1
   }
@@ -1359,6 +1376,10 @@ export async function runSlackCheck({
   try {
     info = await slackPost('conversations.info', { channel }, token, fetchImpl, api)
   } catch (e) {
+    if (!e || !e.slackError) {
+      logErr(`Q636 could not reach Slack (${formatSlackWhy(e)}). The token was not checked; check this machine's network and try again.`)
+      return 1
+    }
     logErr(`Q631 Slack channel ${channel} could not be accessed (${formatSlackWhy(e)}). Check the channel ID and run /invite @${botUser} in the channel.`)
     return 1
   }
@@ -1458,6 +1479,10 @@ export async function runSlackCheck({
         currentUrl = res && res.url
       } catch (e) {
         closeSock()
+        if (!e || !e.slackError) {
+          logErr(`Q636 could not reach Slack (${formatSlackWhy(e)}). The token was not checked; check this machine's network and try again.`)
+          return 1
+        }
         logErr(`Q634 Slack apps.connections.open failed (${formatSlackWhy(e)}).`)
         return 1
       }

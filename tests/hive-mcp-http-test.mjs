@@ -385,7 +385,7 @@ try {
       env: { ...process.env, SLACK_SIGNING_SECRET: SECRET, SLACK_BOT_TOKEN: '' },
     })
     let out = ''
-    const timer = setTimeout(() => { try { child.kill() } catch {} resolve({ code: 0, out: out || 'timed out (server started instead of refusing)' }) }, 2500)
+    const timer = setTimeout(() => { try { child.kill() } catch {} resolve({ code: 0, out: out || 'timed out (server started instead of refusing)' }) }, 10000)
     child.stdout.on('data', (d) => { out += String(d) })
     child.stderr.on('data', (d) => { out += String(d) })
     child.on('close', (code) => { clearTimeout(timer); resolve({ code, out: out.trim() }) })

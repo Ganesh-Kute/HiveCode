@@ -265,6 +265,10 @@ export async function preflightSlackAgent({
   try {
     auth = await slackPost('auth.test', {}, token, fetchImpl, api)
   } catch (e) {
+    if (!e || !e.slackError) {
+      const why = e.message || 'network error'
+      return { ok: false, transient: true, code: 'Q636', error: `Q636 could not reach Slack (${why}). The token was not checked; check this machine's network and try again.` }
+    }
     return {
       ok: false,
       code: 'Q630',
