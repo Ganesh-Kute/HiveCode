@@ -104,6 +104,12 @@ try {
   const agent = makeAgent({
     hive: panel, channel: 'D-TEST', token: 'xoxb-test', post,
     setStatus: (b) => post({ method: 'agents.sessions.setStatus', ...b }),
+    // Who may act is decided by hive-slack.js's makeSlackActorCheck, the same rules as `slack start`.
+    teamId: 'T1', allow: ['ganesh'], botUserId: 'U_BOT',
+    lookupUser: async (id) => {
+      if (id === 'outage') throw new Error('users.info is down')
+      return { user: { id, name: id, team_id: id === 'ext' ? 'T_OTHER' : 'T1', is_restricted: id === 'guest', is_ultra_restricted: false } }
+    },
   })
 
   // A real task, assigned by a real client, so the plan is built from the CRDT and not a fixture.
@@ -144,6 +150,101 @@ try {
   // A human is never paused: the control map is read by hive_wait, which only agents call.
   const ctl = panel.doc.getMap('controls')
   T('the human was not paused', !ctl.get('Hivecode') || ctl.get('Hivecode').state !== 'paused')
+
+  // ---- where events may come from, and who may act on them -----------------------------------
+  // The app's manifest subscribes message.channels and message.groups, so the agent hears every
+  // channel the bot is in. And it used to act for anybody: no guest refusal, no --allow.
+  console.log('\n# which channel, and who: the same rules as `slack start`')
+  if (typeof agent.onEvent !== 'function') {
+    T('the agent has one event entry point (agent.onEvent) that checks channel and actor', false, 'missing: main() dispatched raw events with no channel or actor check')
+  } else {
+    const until = async (fn, ms = 5000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await sleep(100) } return !!fn() }
+    const msg = (user, text, extra = {}) => ({ type: 'message', channel: 'D-TEST', channel_type: 'im', ts: String(Math.random()), user, text, ...extra })
+    const posted = (re) => calls.filter((c) => c.method === 'chat.postMessage' && re.test(c.text || ''))
+    await agent.onEvent(msg('ganesh', 'resume all'))
+    await until(() => !A.isPaused() && !B.isPaused())
+    T('baseline: an allowed user resumed everyone', !A.isPaused() && !B.isPaused())
+
+    // 1. another channel the bot happens to be in
+    const nCalls = calls.length
+    await agent.onEvent(msg('alice', 'stop all', { channel: 'C-OTHER', channel_type: 'channel' }))
+    await sleep(1200)
+    T('"stop all" typed in ANOTHER channel stops nothing and posts nothing there',
+      !A.isPaused() && !B.isPaused() && !calls.slice(nCalls).some((c) => c.channel === 'C-OTHER'),
+      JSON.stringify(calls.slice(nCalls).map((c) => c.method + '@' + c.channel)))
+
+    // 2. a guest and an outside workspace are refused, for everything, even stop
+    await agent.onEvent(msg('guest', 'stop all'))
+    await agent.onEvent(msg('ext', 'stop all'))
+    await sleep(1200)
+    T('a guest and a Slack Connect user from another workspace cannot stop agents', !A.isPaused() && !B.isPaused())
+    T('and they are told why, in the thread', posted(/guests and external Slack Connect users cannot/).length >= 2, `${posted(/guests and external/).length} refusal(s)`)
+    T('a refused user is not shown the room\'s tasks (no plan frame was streamed for them)',
+      !calls.slice(nCalls).some((c) => c.method === 'chat.startStream'))
+
+    // 3. any full member may stop; it is attributed as slack:<handle>
+    await agent.onEvent(msg('alice', 'stop all'))
+    await until(() => A.isPaused() && B.isPaused())
+    T('any full workspace member may stop every agent (paused ON THEIR OWN CLIENTS)', A.isPaused() && B.isPaused())
+    const by = (panel.doc.getMap('controls').get('AgentA') || {}).by
+    T('and the pause is attributed as slack:alice, not a bare name', by === 'slack:alice', String(by))
+
+    // 4. resume needs --allow
+    await agent.onEvent(msg('alice', 'resume all'))
+    await sleep(1200)
+    T('a full member who is not in --allow cannot resume (agents stay paused) and is told so',
+      A.isPaused() && B.isPaused() && posted(/only Slack user IDs listed in --allow/).length >= 1)
+    await agent.onEvent(msg('ganesh', 'resume all'))
+    await until(() => !A.isPaused() && !B.isPaused())
+    T('a user in --allow can resume', !A.isPaused() && !B.isPaused())
+
+    // 5. each user has their own assistant DM: a DM that is not the configured one is a valid place
+    const n2 = calls.length
+    await agent.onEvent(msg('alice', 'status', { channel: 'D-ALICE' }))
+    const fr = calls.slice(n2).find((c) => c.method === 'chat.startStream')
+    T('a member\'s own assistant DM (any D… channel, channel_type im) is answered IN that DM',
+      Boolean(fr) && fr.channel === 'D-ALICE', fr ? fr.channel : 'no frame')
+
+    // 5b. DM robustness: channel starting with D is recognized as a DM even if channel_type is omitted
+    const nDm = calls.length
+    await agent.onEvent({ type: 'message', channel: 'D-BOB', ts: '10.1', user: 'alice', text: 'status' })
+    const frBob = calls.slice(nDm).find((c) => c.method === 'chat.startStream')
+    T('a DM event without channel_type: im (channel D…) is recognized as a DM',
+      Boolean(frBob) && frBob.channel === 'D-BOB', frBob ? frBob.channel : 'no frame')
+
+    // 6. Slack cannot say who it is (outage): stop goes through with the note, resume stays refused
+    await agent.onEvent(msg('outage', 'stop all'))
+    await until(() => A.isPaused() && B.isPaused())
+    // The note rides in the frame's closing line (chat.stopStream), not in a separate message.
+    const closings = () => calls.filter((c) => c.method === 'chat.stopStream').map((c) => (c.chunks && c.chunks[0] && c.chunks[0].markdown_text) || '')
+    T('when users.info is down, stop still works ("I could not confirm who you are")',
+      A.isPaused() && B.isPaused() && closings().some((t) => /could not confirm who you are/.test(t)),
+      JSON.stringify(closings().slice(-2)))
+    await agent.onEvent(msg('outage', 'resume all'))
+    await sleep(1200)
+    T('and resume stays refused', A.isPaused() && B.isPaused())
+    await agent.onEvent(msg('ganesh', 'resume all'))
+    await until(() => !A.isPaused() && !B.isPaused())
+
+    // 7. the native stop button goes through the same check (and channel filter)
+    const rForeign = await agent.onEvent({ type: 'agent_session_stopped', channel: 'C-OTHER', thread_ts: '9.0', user: 'alice' })
+    await sleep(600)
+    T('agent_session_stopped in ANOTHER channel is ignored and stops nothing',
+      rForeign && rForeign.ignored === 'wrong_channel' && !A.isPaused() && !B.isPaused())
+    await agent.onEvent({ type: 'agent_session_stopped', channel: 'D-TEST', thread_ts: '9.1', user: 'guest' })
+    await sleep(1200)
+    T('a guest pressing the native stop button stops nothing', !A.isPaused() && !B.isPaused())
+    await agent.onEvent({ type: 'agent_session_stopped', channel: 'D-TEST', thread_ts: '9.2', user: 'alice' })
+    await until(() => A.isPaused() && B.isPaused())
+    T('a full member pressing the native stop button stops every agent', A.isPaused() && B.isPaused())
+    await agent.onEvent(msg('ganesh', 'resume all'))
+    await until(() => !A.isPaused() && !B.isPaused())
+
+    // 8. the bot's own messages never act
+    await agent.onEvent({ type: 'message', channel: 'D-TEST', channel_type: 'im', ts: '9.9', user: 'U_BOT', text: 'stop all' })
+    await sleep(600)
+    T('the bot\'s own message never acts', !A.isPaused() && !B.isPaused())
+  }
 
   // ---- preflightSlackAgent scope check (Q634 + slack-app-manifest-agent.json) ----------------
   console.log('\n# preflightSlackAgent scope check')
@@ -188,6 +289,22 @@ try {
     T('preflightSlackAgent succeeds when token has assistant:write, im:history, users:read, chat:write',
       okRes.ok === true && okRes.url === 'ws://127.0.0.1:9999',
       okRes.error || '')
+
+    const noTeam = await preflightSlackAgent({
+      token: 'xoxb-agent-ok',
+      appToken: 'xapp-ok',
+      channel: 'D-TEST',
+      fetchImpl: async (url) => ({
+        status: 200,
+        headers: new Map([['x-oauth-scopes', 'chat:write,assistant:write,im:history,im:read,im:write,users:read']]),
+        json: async () => String(url).endsWith('/auth.test')
+          ? { ok: true, user: 'hivecode', user_id: 'U_BOT' }
+          : { ok: true, url: 'ws://127.0.0.1:9999' },
+      }),
+    })
+    T('preflightSlackAgent refuses (Q634) when auth.test gives no team_id: outsiders could not be told apart',
+      !noTeam.ok && noTeam.code === 'Q634' && /team_id/.test(noTeam.error || ''),
+      noTeam.error || 'succeeded unexpectedly')
   }
 } catch (e) {
   T('end to end ran', false, e.message)

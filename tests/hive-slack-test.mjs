@@ -399,6 +399,13 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
       jsonBlocks.length >= 2 &&
       JSON.stringify(inboundManifest) === JSON.stringify(jsonBlocks[1]))
 
+    const baseManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'slack-app-manifest.json'), 'utf8'))
+    T('slack-app-manifest.json is in package.json files[] and matches docs/SLACK_SETUP.md Section 1',
+      Array.isArray(pkg.files) &&
+      pkg.files.includes('slack-app-manifest.json') &&
+      jsonBlocks.length >= 1 &&
+      JSON.stringify(baseManifest) === JSON.stringify(jsonBlocks[0]))
+
     const agentManifestPath = path.join(ROOT, 'slack-app-manifest-agent.json')
     const agentManifestExists = fs.existsSync(agentManifestPath)
     const agentManifest = agentManifestExists ? JSON.parse(fs.readFileSync(agentManifestPath, 'utf8')) : null
@@ -534,6 +541,11 @@ try {
     chatCalls.length === 3 && !chatCalls[2].text.includes(chatSecret) && !chatCalls[2].text.includes(ROOM))
 
   // 4. Socket Mode inbound: Guest & external Slack Connect users are refused even for STOP
+  // TIMING NOTE: the fixed sleep()s in this block are waits for real network + CRDT round trips.
+  // On a heavily loaded machine three checks below ("the Slack reply arrived in the room",
+  // "it was attributed to the task", "NO IMPERSONATION") failed once and passed on every rerun.
+  // If they fail again, replace the 600 ms sleeps with a poll-until-condition (up to N seconds)
+  // rather than a longer sleep.
   T('AgentA is running before inbound events', agent.isPaused() === false)
   activeSock.send(JSON.stringify({
     envelope_id: 'env-guest',
@@ -634,6 +646,75 @@ try {
   await sleep(450)
   T('userCache expires after 10 minutes: a member demoted to guest is re-checked and refused',
     agent.isPaused() === false)
+
+  // 10b. THE ROOM'S OWN EVENTS REACH SLACK. docs/SLACK_SETUP.md Section 4 says `slack start` shows
+  // task-open and task-done in the channel and gate pass/fail inside a thread. Until now only the
+  // test ever called emit() with those: `slack start` itself watched the chat and nothing else, so
+  // a real task was never announced -- a doc row that was true of the renderer and false of the product.
+  console.log('\n# room tasks and gates reach Slack (docs/SLACK_SETUP.md Section 4)')
+  {
+    const R2 = ROOM + '-tasks'
+    const mk2 = (name) => startSync({
+      relay: `ws://127.0.0.1:${PORT}`, room: R2, dir: fs.mkdtempSync(path.join(tmp, name)),
+      name, kind: 'ai', syncFiles: false, log: () => {},
+    })
+    const watcherHive = mk2('SlackBridgeW'); clients.push(watcherHive)
+    const worker = mk2('AgentW'); clients.push(worker)
+    const boss = mk2('AgentBoss'); clients.push(boss)
+    await sleep(1500)
+    const sent = []
+    let wTs = 7000
+    const mkBridge = () => makeBridge({
+      hive: watcherHive, channel: 'C-W', token: 'xoxb-test', botName: 'SlackBridgeW', minGapMs: 5,
+      post: async (m) => { sent.push(m); return { ok: true, ts: String(wTs++) } },
+    })
+    boss.assign('AgentW', 'old task from before the bridge started')
+    await sleep(800)
+    const b1 = mkBridge()
+    if (typeof b1.watchRoom !== 'function') {
+      T('the bridge watches the room\'s tasks and gates (bridge.watchRoom)', false, 'missing: nothing in `slack start` emits task-open / task-done / gate-pass / gate-fail')
+    } else {
+      await b1.watchRoom()
+      await sleep(300)
+      T('a task that existed before the bridge first attached is not announced (no flood on first start)', sent.length === 0, `${sent.length} post(s)`)
+
+      const id = boss.assign('AgentW', 'refactor the parser')
+      await sleep(1500)
+      const opened = sent.find((m) => /refactor the parser/.test(m.text || ''))
+      T('task-open reaches the CHANNEL as a root post that names the task and its assignee',
+        Boolean(opened) && opened.channel === 'C-W' && !opened.thread_ts && /AgentW/.test(opened.text),
+        opened ? JSON.stringify(opened) : 'no post')
+      const openTs = b1.threads.get(id)
+      T('the task thread id is stored in room state', Boolean(openTs), `ts=${openTs}`)
+
+      worker.complete(id, 'done')
+      await sleep(1500)
+      const done = sent.find((m) => /done by/i.test(m.text || '') && /AgentW/.test(m.text || ''))
+      T('task-done lands in the task\'s thread AND is broadcast to the channel (reply_broadcast)',
+        Boolean(done) && done.thread_ts === openTs && done.reply_broadcast === true,
+        done ? JSON.stringify(done) : 'no post')
+
+      const gates = boss.doc.getMap('gate_results')
+      gates.set('alpha.js|AgentW', { region: 'alpha.js', by: 'AgentW', pass: false, exit: 1, forced: false, at: Date.now() * 1000 })
+      await sleep(1200)
+      const gf = sent.find((m) => /gate failed for \*AgentW\* on `alpha\.js`/.test(m.text || ''))
+      T('a failed gate is announced, and is NOT broadcast to the channel', Boolean(gf) && !gf.reply_broadcast, gf ? JSON.stringify(gf) : 'no post')
+      gates.set('beta.js|AgentW', { region: 'beta.js', by: 'AgentW', pass: true, exit: 0, forced: false, at: Date.now() * 1000 + 1 })
+      await sleep(1200)
+      const gp = sent.find((m) => /gate passed for \*AgentW\* on `beta\.js`/.test(m.text || ''))
+      T('a passed gate is announced inside the shared room thread, not the channel root',
+        Boolean(gp) && Boolean(b1.threads.get('__room__')) && gp.thread_ts === b1.threads.get('__room__') && !gp.reply_broadcast,
+        gp ? JSON.stringify(gp) : 'no post')
+
+      const before = sent.length
+      const b2 = mkBridge()
+      await b2.watchRoom()
+      await sleep(1200)
+      T('a restarted bridge does not announce the same tasks and gates again',
+        sent.length === before && !sent.some((m) => /old task from before/.test(m.text || '')),
+        `${sent.length - before} extra post(s)`)
+    }
+  }
 
   // 11. slack check end-to-end: events arrive (0), never arrive (1), token bad (1), no hello (1), missing_scope needed (1)
   console.log('\n# slack check end-to-end')

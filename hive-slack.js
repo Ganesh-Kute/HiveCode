@@ -625,8 +625,8 @@ export function checkDuplicateBridge(hive, botName = 'SlackBridge') {
 /** What a room event looks like in Slack. Plain text on purpose: blocks render badly in
  *  notifications and thread previews, which is where most of these are actually read. */
 export function render(ev) {
-  if (ev.kind === 'task-open') return `:inbox_tray: *${ev.task}*  —  assigned to *${ev.to}*`
-  if (ev.kind === 'task-done') return `:white_check_mark: *${ev.task}* — done by *${ev.by}*`
+  if (ev.kind === 'task-open') return `:inbox_tray: *${ev.text || ev.task}*  —  assigned to *${ev.to}*`
+  if (ev.kind === 'task-done') return `:white_check_mark: *${ev.text || ev.task}* — done by *${ev.by}*`
   if (ev.kind === 'gate-fail') return `:no_entry: gate failed for *${ev.by}* on \`${ev.file}\` — the file stays with them, nobody downstream gets it`
   if (ev.kind === 'gate-pass') return `:heavy_check_mark: gate passed for *${ev.by}* on \`${ev.file}\``
   if (ev.kind === 'chat') return `*${ev.by}*: ${ev.text}`
@@ -799,8 +799,9 @@ export function makeBridge({
     if (queue.isHalted()) return { ok: false, halted: true }
     const text = scrubSlack(render(ev), { room: room || (hive && hive.room) || '', link })
     if (ev.task) {
-      // A task's first event opens the thread; everything after lands inside it.
-      return threader.reply(ev.task, text)
+      // A task's first event opens the thread; everything after lands inside it. The outcome
+      // (TO_CHANNEL) is also broadcast, so the channel sees "done" without anyone opening the thread.
+      return threader.reply(ev.task, text, { broadcast: TO_CHANNEL.has(ev.kind) })
     }
     // Untasked events (general room chat): open one shared __room__ thread on the first message,
     // and route every subsequent untasked chat inside it so chatter never floods the channel.
@@ -964,7 +965,49 @@ export function makeBridge({
     return { ok: true, action: 'reply', task: d.task, by: d.by }
   }
 
-  return { emit, onChat, deliver, onInboundEvent, threads, queue, threader }
+  // ---- the room's own events: tasks and gates ------------------------------------------------
+  // `slack start` used to watch the chat and nothing else, so task-open / task-done / gate-pass /
+  // gate-fail were rendered by render() and never sent by anything. What was announced is kept in
+  // ROOM STATE (slack_seen), so a restarted bridge does not say it all again. The first time a
+  // bridge ever attaches to a room it only records what is already there: announcing a room's
+  // whole history on first start would flood the channel.
+  const announced = hive.doc.getMap('slack_seen')
+  function unannounced() {
+    const baseline = !announced.has('__init__')
+    const out = []
+    const note = (key, ev) => { if (announced.has(key)) return; announced.set(key, 1); if (!baseline && ev) out.push(ev) }
+    for (const t of hive.doc.getMap('tasks').values()) {
+      if (!t || !t.id) continue
+      note(`task-open|${t.id}`, { kind: 'task-open', task: t.id, to: t.to, by: t.by, text: t.text })
+      if (t.status === 'done') note(`task-done|${t.id}`, { kind: 'task-done', task: t.id, by: t.to, text: t.text })
+    }
+    hive.doc.getMap('gate_results').forEach((v, k) => {
+      if (!v) return
+      // A forced release already says so in room chat, which the bridge carries over.
+      note(`gate|${k}|${v.at}`, v.forced ? null : { kind: v.pass ? 'gate-pass' : 'gate-fail', by: v.by, file: v.region })
+    })
+    if (baseline) announced.set('__init__', 1)
+    return out
+  }
+
+  /** Announce task and gate changes from now on. Resolves once the current state has been handled. */
+  async function watchRoom() {
+    const pass = async () => {
+      for (const ev of unannounced()) {
+        try { await emit(ev) } catch (e) { handleFatal(e) }
+      }
+    }
+    let chain = pass()
+    const kick = () => { chain = chain.then(pass) }
+    const tasks = hive.doc.getMap('tasks')
+    const gates = hive.doc.getMap('gate_results')
+    tasks.observe(kick)
+    gates.observe(kick)
+    await chain
+    return { stop: () => { try { tasks.unobserve(kick); gates.unobserve(kick) } catch { } } }
+  }
+
+  return { emit, onChat, deliver, onInboundEvent, watchRoom, threads, queue, threader }
 }
 
 export async function runSlackCheck({
@@ -1368,6 +1411,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   const savedCursor = Number(bridge.threads.get(CURSOR_KEY)) || 0
   let at = savedCursor > 0 && savedCursor <= chat.length ? savedCursor : chat.length
   chat.observe(() => { const all = chat.toArray(); bridge.onChat(all.slice(at), at); at = all.length })
+  await bridge.watchRoom()
   log(`READY: [hive-slack] @${pre.botUser} bridging ${room} -> #${pre.channelName} (${CHANNEL})`)
   return 0
 }

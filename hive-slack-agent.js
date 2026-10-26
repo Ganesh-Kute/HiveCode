@@ -4,8 +4,8 @@
 // client an AI runs to enter a room at all. This file is a Slack bridge and has nothing to do
 // with that one.
 //
-//   node hive-slack-agent.js "<relay|room>" --channel D123 [--name Hivecode]
-//   env: SLACK_BOT_TOKEN (xoxb-…), optional HIVE_SLACK_API
+//   node hive-slack-agent.js "<relay|room>" --channel D123 [--name Hivecode] [--allow <U123,U456>]
+//   env: SLACK_BOT_TOKEN (xoxb-…), SLACK_APP_TOKEN (xapp-…), optional SLACK_ALLOW, HIVE_SLACK_API
 //
 // WHY THIS AND NOT THE FEED. hive-slack.js posts what HAPPENED into a channel thread: the
 // team's record of the night, read in the morning. This is the other half -- the panel one
@@ -32,6 +32,8 @@ import {
   resumeAll,
   resolveName,
   route,
+  makeSlackActorCheck,
+  formatSlackSender,
   checkAgentScopes,
   preflightSocketMode,
   connectSocketMode,
@@ -103,22 +105,38 @@ export function planChunks(snap) {
 // bridge and this Slack agent surface share the exact same deterministic router and case-insensitive
 // participant lookup without duplicating control logic.
 
-export function makeAgent({ hive, channel, token, post, botName = 'Hivecode', setStatus }) {
+/** WHO MAY ACT, AND FROM WHERE. This surface used to act for anybody who could type at it: no guest
+ *  refusal, no --allow, and main() handed it every `message` event the app hears -- which, with
+ *  message.channels and message.groups in the manifest, is every channel the bot is in. Now it is
+ *  the same rules as `slack start` (makeSlackActorCheck, one place in hive-slack.js):
+ *   - stop / stop all / the native stop button: any full workspace member; if Slack cannot say who
+ *     they are, it stops anyway and says so (stopping is the safe direction);
+ *   - resume: only user ids in `allow`;
+ *   - guests and users from other workspaces: refused for everything, status included, so they are
+ *     never shown the room's tasks.
+ *  A typed message counts only in the configured channel or in a DM (each user has their own
+ *  assistant DM, so any `im` channel is a valid place, and the answer goes to THAT DM). */
+export function makeAgent({
+  hive, channel, token, post, botName = 'Hivecode', setStatus,
+  teamId = '', allow = [], botUserId = '', lookupUser = null, actorCheck = null, api, fetchImpl,
+}) {
   const queue = makeQueue({ send: (m) => post(m) })
   const status = setStatus || ((body) => slackPost('agents.sessions.setStatus', body, token))
+  const allowSet = new Set((Array.isArray(allow) ? allow : String(allow || '').split(',')).map((s) => String(s || '').trim()).filter(Boolean))
+  const actors = actorCheck || makeSlackActorCheck({ token, teamId, lookupUser, ...(api ? { api } : {}), ...(fetchImpl ? { fetchImpl } : {}) })
 
   /** Push the current room onto the surface as one streamed message. */
-  async function frame(thread_ts, closing = 'Ask me to stop anything.') {
+  async function frame(thread_ts, closing = 'Ask me to stop anything.', ch = channel) {
     const chunks = planChunks(snapshot(hive))
     const started = await queue.push({
-      method: 'chat.startStream', channel, thread_ts, task_display_mode: 'plan', chunks: chunks.slice(0, 1),
+      method: 'chat.startStream', channel: ch, thread_ts, task_display_mode: 'plan', chunks: chunks.slice(0, 1),
     })
     const message_ts = started && started.ts
     if (chunks.length > 1) {
-      await queue.push({ method: 'chat.appendStream', channel, message_ts, thread_ts, chunks: chunks.slice(1) })
+      await queue.push({ method: 'chat.appendStream', channel: ch, message_ts, thread_ts, chunks: chunks.slice(1) })
     }
     await queue.push({
-      method: 'chat.stopStream', channel, message_ts, thread_ts,
+      method: 'chat.stopStream', channel: ch, message_ts, thread_ts,
       chunks: [{ type: 'markdown_text', markdown_text: closing }],
     })
     return message_ts
@@ -127,54 +145,96 @@ export function makeAgent({ hive, channel, token, post, botName = 'Hivecode', se
   // The loading state does NOT clear itself when a message is posted -- Slack leaves the
   // session in `processing` for a full hour if nobody says otherwise. So every path that
   // sets it must clear it, which is why this lives in a finally.
-  async function busy(thread_ts, on) {
-    try { await status({ status: on ? 'processing' : 'active', channel_id: channel, thread_ts }) } catch { /* the panel still works */ }
+  async function busy(thread_ts, on, ch = channel) {
+    try { await status({ status: on ? 'processing' : 'active', channel_id: ch, thread_ts }) } catch { /* the panel still works */ }
+  }
+
+  /** A plain reply in the thread. Used for refusals, which must not stream the room's tasks. */
+  async function say(thread_ts, text, ch = channel) {
+    try { await queue.push({ method: 'chat.postMessage', channel: ch, thread_ts, text }) } catch { /* nothing more to do */ }
+  }
+
+  /** May this user do this? -> { ok, by, unverified, reply } */
+  async function authorize(user, intent) {
+    const actor = await actors.resolve(user)
+    if (intent === 'stop' || intent === 'stop-all') return actors.mayAct(actor, 'stop', allowSet)
+    if (intent === 'resume' || intent === 'resume-all') return actors.mayAct(actor, 'resume', allowSet)
+    // status and everything else: any verified full member. mayAct(..., 'reply') would demand
+    // --allow, which is for acting on agents, not for reading what is running.
+    if (actor && actor.ok) return { ok: true, by: formatSlackSender(actor.handle || actor.userId), unverified: false, reply: '' }
+    return actors.mayAct(actor, 'reply', allowSet)
   }
 
   /** A human typed something at the agent. */
-  async function onPrompt({ text, thread_ts, user }) {
-    await busy(thread_ts, true)
+  async function onPrompt({ text, thread_ts, user, channel: ch = channel }) {
+    const r = route(text)
+    const check = await authorize(user, r.intent)
+    if (!check.ok) {
+      if (check.reply) await say(thread_ts, check.reply, ch)
+      return { r, refused: check.refused || 'refused' }
+    }
+    const by = check.by || formatSlackSender(user)
+    const note = check.unverified ? ` (${check.reply})` : ''
+    await busy(thread_ts, true, ch)
     try {
-      const r = route(text)
       if (r.intent === 'stop-all') {
-        const who = stopAll(hive, user || 'slack')
-        return { r, ts: await frame(thread_ts, who.length ? `:octagonal_sign: paused *${who.join('*, *')}*. Nothing new will be picked up.` : 'No agents to pause.') }
+        const who = stopAll(hive, by)
+        return { r, ts: await frame(thread_ts, who.length ? `:octagonal_sign: paused *${who.join('*, *')}*. Nothing new will be picked up.${note}` : 'No agents to pause.', ch) }
       }
       if (r.intent === 'resume-all') {
-        const who = resumeAll(hive, user || 'slack')
-        return { r, ts: await frame(thread_ts, who.length ? `:arrow_forward: resumed *${who.join('*, *')}*.` : 'No agents to resume.') }
+        const who = resumeAll(hive, by)
+        return { r, ts: await frame(thread_ts, who.length ? `:arrow_forward: resumed *${who.join('*, *')}*.` : 'No agents to resume.', ch) }
       }
       if (r.intent === 'stop' || r.intent === 'resume') {
         const real = resolveName(hive, r.who)
         if (!real) {
           const here = (hive.members ? hive.members() : []).map((p) => p.name).join(', ') || 'nobody'
-          return { r, ok: false, ts: await frame(thread_ts, `I do not see *${r.who}* in this room. Here right now: ${here}.`) }
+          return { r, ok: false, ts: await frame(thread_ts, `I do not see *${r.who}* in this room. Here right now: ${here}.`, ch) }
         }
-        hive.control(real, r.intent === 'stop' ? 'paused' : 'running', user || 'slack')
-        return { r, ok: true, who: real, ts: await frame(thread_ts, `${r.intent === 'stop' ? ':octagonal_sign: paused' : ':arrow_forward: resumed'} *${real}*.`) }
+        hive.control(real, r.intent === 'stop' ? 'paused' : 'running', by)
+        return { r, ok: true, who: real, ts: await frame(thread_ts, `${r.intent === 'stop' ? ':octagonal_sign: paused' : ':arrow_forward: resumed'} *${real}*.${r.intent === 'stop' ? note : ''}`, ch) }
       }
-      if (r.intent === 'status') return { r, ts: await frame(thread_ts) }
-      return { r, ts: await frame(thread_ts, `I can stop, resume and report. I did not act on "${r.text}".`) }
+      if (r.intent === 'status') return { r, ts: await frame(thread_ts, undefined, ch) }
+      return { r, ts: await frame(thread_ts, `I can stop, resume and report. I did not act on "${r.text}".`, ch) }
     } finally {
-      await busy(thread_ts, false)
+      await busy(thread_ts, false, ch)
     }
   }
 
   /** Slack's native stop button. This is the one path that must never be clever. */
-  async function onSessionStopped({ thread_ts, user }) {
-    const who = stopAll(hive, user || 'slack')
-    await busy(thread_ts, false)
+  async function onSessionStopped({ thread_ts, user, channel: ch = channel }) {
+    const check = await authorize(user, 'stop-all')
+    if (!check.ok) {
+      if (check.reply) await say(thread_ts, check.reply, ch)
+      await busy(thread_ts, false, ch)
+      return []
+    }
+    const who = stopAll(hive, check.by || formatSlackSender(user))
+    await busy(thread_ts, false, ch)
     return who
   }
 
-  return { onPrompt, onSessionStopped, frame, queue }
+  /** The one entry point for Slack events. Only a message in the configured channel or in a DM, or
+   *  the native stop button, does anything; everything else is ignored before any actor lookup. */
+  async function onEvent(ev) {
+    if (!ev || ev.bot_id || ev.subtype || (botUserId && ev.user === botUserId)) return { ignored: 'bot_or_subtype' }
+    const targetChannel = ev.channel || channel
+    const isDm = ev.channel_type === 'im' || (typeof targetChannel === 'string' && targetChannel.startsWith('D'))
+    const here = targetChannel === channel || isDm
+    if (!here) return { ignored: 'wrong_channel' }
+    if (ev.type === 'agent_session_stopped') {
+      const who = await onSessionStopped({ thread_ts: ev.thread_ts || ev.ts, user: ev.user, channel: targetChannel })
+      return { action: 'session-stopped', stopped: who }
+    }
+    if (ev.type !== 'message' || !ev.text) return { ignored: 'unsupported_event' }
+    return onPrompt({ text: ev.text, thread_ts: ev.thread_ts || ev.ts, user: ev.user, channel: targetChannel })
+  }
+
+  return { onPrompt, onSessionStopped, onEvent, frame, queue }
 }
 
-export const SUGGESTED = [
-  { title: 'What is running?', message: 'status' },
-  { title: 'Stop everything', message: 'stop all' },
-  { title: 'What happened overnight?', message: 'what happened overnight' },
-]
+// Suggested prompts are declared once, in slack-app-manifest-agent.json
+// (features.assistant_view.suggested_prompts); there is no second copy in code to drift from it.
 
 /** Verify SLACK_BOT_TOKEN scopes (chat:write, assistant:write, im:history/channels:history/groups:history, users:read)
  *  and SLACK_APP_TOKEN Socket Mode connection before starting hive-slack-agent (Q630, Q634). */
@@ -212,6 +272,11 @@ export async function preflightSlackAgent({
   const scopes = Array.isArray(auth && auth._scopes) ? auth._scopes : null
   const sc = checkAgentScopes({ scopes, channel })
   if (!sc.ok) return sc
+  // Without the workspace id, users from OTHER workspaces (Slack Connect) cannot be told apart, so
+  // nobody could be refused as an outsider. Refused here, as hive-github.js and hive-mcp-http.js do.
+  if (!auth || !auth.team_id) {
+    return { ok: false, code: 'Q634', error: 'Q634 Slack did not say which workspace the bot is in (auth.test returned no team_id), so users from other workspaces could not be refused. Reinstall the Slack app.' }
+  }
   const sockPre = await preflightSocketMode({ appToken, api, fetchImpl })
   if (!sockPre.ok) return sockPre
   return {
@@ -246,18 +311,14 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
     relay, room, dir: (process.env.TEMP || '.') + '/hive-agent-' + room,
     name: flag('name', 'Hivecode'), kind: 'human', token: process.env.HIVE_TOKEN || '', syncFiles: false, log: () => {},
   })
-  const agent = makeAgent({ hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN) })
+  const agent = makeAgent({
+    hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN),
+    teamId: pre.teamId, botUserId: pre.botUserId, allow: flag('allow', process.env.SLACK_ALLOW || ''),
+  })
   await connectSocketMode({
     appToken: APP_TOKEN,
     initialUrl: pre.url,
-    onEvent: async (ev) => {
-      if (!ev || ev.bot_id || ev.subtype) return
-      if (ev.type === 'agent_session_stopped') {
-        await agent.onSessionStopped({ thread_ts: ev.thread_ts || ev.ts, user: ev.user })
-      } else if (ev.type === 'message' && ev.text) {
-        await agent.onPrompt({ text: ev.text, thread_ts: ev.thread_ts || ev.ts, user: ev.user })
-      }
-    },
+    onEvent: (ev) => agent.onEvent(ev),
   })
   console.log(`READY: [hive-slack-agent] ${room} -> ${CHANNEL} (Socket Mode connected)`)
 }
