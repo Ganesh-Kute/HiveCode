@@ -886,7 +886,13 @@ export function makeWatcher(o) {
       if (!labeled || !it.pr) return
       const pr = gh.pull(it.pr)
       if (pr.state === 'open') { it.status = 'review'; it.ciSeen = ''; say(n, `pull request #${it.pr} reopened; watching it again`); return }
-      if (readComments(n, it).retry) { delete state.issues[n]; consider(labeled) }
+      if (readComments(n, it).retry) {
+        delete state.issues[n]
+        consider(labeled)
+        // A NEW attempt, from the default branch: resuming the closed pull request's branch would build
+        // on the work the person just said no to.
+        if (state.issues[n]) state.issues[n].restart = true
+      }
       return
     }
     if (it.status === 'skipped') {
@@ -1067,6 +1073,7 @@ export function makeWatcher(o) {
       }
       const prompt = taskPrompt({ owner: gh.owner, repo: gh.repo, n, issue: it.issue, branch: it.branch, repoPath: root, name: who, dir, pr: it.pr || 0, feedback, context: it.context || [], allowWorkflows, role, diff, builder: name })
       const child = spawnAgent(role === 'tester' ? tester : agent, { cwd: dir, input: prompt, env: process.env })
+      delete it.waitWhy
       it.run = { pid: child.pid, startedAt: now(), deadline: now() + maxMinutes * 60000, link: bound.link, dir, role, who, kind: role === 'tester' ? 'check' : it.pr ? 'fix' : 'build' }
       const promise = child.done
         .then((res) => finishRun(n, res))
@@ -1086,6 +1093,8 @@ export function makeWatcher(o) {
       if (!loginHint(e.message) && (e.status === 0 || /^Q6(03|04|10)\b/.test(e.code || '') || /Q565|Q470/.test(e.message))) {
         it.status = 'waiting'
         it.notBefore = now() + (e.retryAt ? Math.max(0, e.retryAt - now()) : 120000)
+        // Kept, so `github status` can say WHY it is waiting, not only until when.
+        it.waitWhy = `not started: ${oneLine(e.message, 200)}`
         say(n, `not started: ${e.message}`)
         return false
       }
@@ -1104,7 +1113,9 @@ export function makeWatcher(o) {
     for (let i = 0; i < 10 && !hive; i++) {
       const prov = process.env.HIVE_PROVENANCE
       process.env.HIVE_PROVENANCE = 'on'
-      try { hive = startSync({ relay: r, room, dir: run.dir, name, kind: 'ai', token: '', syncFiles: true, log: () => {} }) }
+      // Under the identity of whoever wrote it: the tester's edits sent as the builder's were landed as
+      // the builder's commit.
+      try { hive = startSync({ relay: r, room, dir: run.dir, name: run.who || name, kind: 'ai', token: '', syncFiles: true, log: () => {} }) }
       catch (e) { if (e.code !== 'EHIVELOCKED') { log(`could not flush the agent's folder: ${e.message}`); return } await sleep(1000) }
       finally { if (prov === undefined) delete process.env.HIVE_PROVENANCE; else process.env.HIVE_PROVENANCE = prov }
     }
@@ -1190,6 +1201,7 @@ export function makeWatcher(o) {
       if (it.failures >= 2) return needsHuman(n, it, `${who} failed twice in a row. ${noVerdict ? 'The last time, ' : 'Its last output: '}${why}`)
       it.status = 'waiting'
       it.notBefore = now() + 15 * 60000
+      it.waitWhy = `${who} failed: ${oneLine(why, 160)}`
       say(n, `${who} failed (exit ${res.code}); trying again in 15 minutes: ${oneLine(why, 160)}`)
       toSlack(n, `${who} failed; trying again in 15 minutes.`)
       return
@@ -1299,7 +1311,9 @@ export function makeWatcher(o) {
     else {
       const what = (it.current || []).map((f) => (f.kind === 'ci' ? `CI (${f.failed.map((c) => c.name).join(', ')})` : f.kind === 'test' ? 'the failing tests' : f.kind === 'tester' ? `${f.name}'s report` : `comments from ${[...new Set(f.items.map((c) => c.author))].join(', ')}`)).join('; ')
       const count = commitsBetween(root, before, newTip).length
-      const checked = role === 'tester' && it.check ? `\n\nChecked by ${it.check.name}: **${it.check.verdict}.** ${it.check.report || ''}` : ''
+      // The same warning the pull request's body carries: a reviewer of a fix reads those files with care too.
+      const touched = role === 'tester' && it.check && it.check.touched && it.check.touched.length ? ` ${it.check.name} also changed files that are not tests: ${it.check.touched.map((f) => `\`${f}\``).join(', ')}. Read those with care.` : ''
+      const checked = role === 'tester' && it.check ? `\n\nChecked by ${it.check.name}: **${it.check.verdict}.** ${it.check.report || ''}${touched}` : ''
       comment(it.pr, `Pushed ${count} commit${count === 1 ? '' : 's'}${what ? ` for ${what}` : ''}.\n\n${it.summary || ''}${it.tests ? `\n\nTests:${block(it.tests).join('\n')}` : ''}${checked}\n\n${MARK('run', { kind: 'fix' })}`)
       // The push above succeeded (a refused one returned before here): the thread hears the fix landed.
       toSlack(n, `Pushed ${count} commit${count === 1 ? '' : 's'} to the pull request${what ? ` for ${what}` : ''}: ${it.prUrl}`)
@@ -1404,7 +1418,7 @@ export function makeWatcher(o) {
       return `${it.status}${pr}, but no longer open and labelled "${label}": a start finishes it if its pull request was merged or closed, and stops it otherwise`
     }
     switch (it.status) {
-      case 'waiting': return (it.notBefore || 0) > now() ? `waiting: tried again after ${new Date(it.notBefore).toLocaleTimeString()}` : ''
+      case 'waiting': return (it.notBefore || 0) > now() ? `waiting: tried again after ${new Date(it.notBefore).toLocaleTimeString()}${it.waitWhy ? ` (${oneLine(it.waitWhy, 120)})` : ''}` : ''
       case 'running': return live ? `running now, in the watcher on this clone (process ${live.pid})` : 'running'
       case 'review': return `in review${pr}: a start goes on watching it for CI and reviews`
       case 'needs-human': return `needs a person${pr}: ${why || 'no reason was saved'}; to go on, remove the ${HUMAN_LABEL} label or comment /hivecode retry`
@@ -1422,6 +1436,9 @@ export function makeWatcher(o) {
   function holdOff(e) {
     holdUntil = e.retryAt || now() + 60000
     log(`waiting: ${e.message}`)
+    // In the state file too, so `github status` -- another process -- can say why nothing is moving.
+    state.hold = { until: holdUntil, why: oneLine(e.message, 200) }
+    try { save() } catch { /* said in the log above; the hold itself is in memory */ }
     // A login that stopped working will not come back by itself, and the terminal that shows the log
     // may be on a machine nobody is looking at: said once where the owner will see it.
     if (e.code === 'Q600' && !loginLost) { loginLost = true; notify(`Needs you: GitHub refused the login gh has on the machine running the watcher for ${gh.owner}/${gh.repo}. Nothing is being picked up. Run there: gh auth login`) }
@@ -1448,6 +1465,7 @@ export function makeWatcher(o) {
       let labeled
       const readAt = now()
       try { labeled = gh.labeledIssues(label).filter((i) => !i.pull_request) } catch (e) { return dry ? { failed: e.message } : holdOff(e) }
+      delete state.hold // GitHub answered: whatever held us off is over
       loginLost = false
       const byNum = new Map(labeled.map((i) => [i.number, i]))
       if (dry) return await dryPlan(labeled, byNum)
@@ -1567,13 +1585,14 @@ export function makeSlackReplyHandler({ w, check, allow = [], channel }) {
 export function describe(state, { owner = '', repo = '' } = {}) {
   const rows = Object.entries(state.issues).sort((a, b) => Number(a[0]) - Number(b[0]))
   const L = [`Hivecode on GitHub${owner ? ` for ${owner}/${repo}` : ''}: ${rows.length} issue(s) seen; ${state.day.date ? `${state.day.runs} run(s) on ${state.day.date}` : 'no runs yet'}`]
+  if (state.hold && state.hold.until > Date.now()) L.push(`  Not asking GitHub until ${new Date(state.hold.until).toLocaleTimeString()}: ${oneLine(state.hold.why, 200)}`)
   for (const [n, it] of rows) {
     const bits = [`#${n}`.padEnd(6), String(it.status).padEnd(12)]
     if (it.pr) bits.push(`PR #${it.pr}`)
     if (it.runs) bits.push(`runs ${it.runs}/${it.allowedRuns}`)
     if (it.cost) bits.push(`$${it.cost.toFixed(2)}`)
     if (it.reason && (it.status === 'needs-human' || it.status === 'skipped' || it.status === 'stopped')) bits.push(`- ${oneLine(it.reason, 140)}`)
-    if (it.status === 'waiting' && it.notBefore && it.notBefore > Date.now()) bits.push(`(next try ${new Date(it.notBefore).toLocaleTimeString()})`)
+    if (it.status === 'waiting' && it.notBefore && it.notBefore > Date.now()) bits.push(`(next try ${new Date(it.notBefore).toLocaleTimeString()}${it.waitWhy ? `: ${oneLine(it.waitWhy, 140)}` : ''})`)
     L.push(`  ${bits.join('  ')}`)
   }
   return L.join('\n')
@@ -1715,7 +1734,7 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     if (typeof mod.makeSlackThreader !== 'function') { logErr('Q633 this Hivecode cannot post Slack threads yet (hive-slack.js has no makeSlackThreader).'); return 1 }
     // Token and channel checked against Slack itself (auth.test, conversations.info): both are reads.
     const pf = await mod.preflightSlack({ token, channel: slackChannel })
-    if (!pf || !pf.ok) { logErr((pf && pf.error) || `Q633 Slack refused ${slackChannel}`); return 1 }
+    if (!pf || !pf.ok) { logErr(`${(pf && pf.error) || `Q633 Slack refused ${slackChannel}`}${whence('slack-channel') ? ` That is --slack-channel ${slackChannel}${whence('slack-channel')}.` : ''}`); return 1 }
     slack = (threads) => mod.makeSlackThreader({ token, channel: slackChannel, threads, room: '', link: '' })
     log(`Slack: each issue's progress goes to its own thread in #${pf.channelName}, posted by @${pf.botUser}.`)
     // REPLIES FROM SLACK, with SLACK_APP_TOKEN (Socket Mode: no public URL). `stop` or `retry` in an

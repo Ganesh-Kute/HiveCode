@@ -320,6 +320,10 @@ try {
     T('CK14 a --slack-allow saved by the last start says so, and how to drop it', r.code === 1 && /Q634 /.test(r.out) && /last start/.test(r.out) && /--slack-allow ""/.test(r.out) && fs.readFileSync(slState, 'utf8') === savedText, r.out)
     r = await run(sl, [...slArgs, '--slack-allow', ''], fakeCall(github()).call)
     T('CK15 --slack-allow "" drops it, and the watcher starts', r.code === 0 && /watching acme\/app/.test(r.out) && !/Q634/.test(r.out), r.out)
+    mode = 'notmember'
+    r = await run(sl, ['start', '--once', '--agent', NODE], fakeCall(github()).call)
+    T('CK15b a saved --slack-channel that Slack refuses: the error says it came from the last start', r.code === 1 && /Q631 /.test(r.out) && /saved by your last start; pass --slack-channel "" to drop it/.test(r.out), r.out)
+    mode = 'ok'
 
     // Replies need scopes the default manifest does not ask for. Without them the start looked
     // fine: a "stop" in the thread never arrived (no history scope, so Slack sends no message

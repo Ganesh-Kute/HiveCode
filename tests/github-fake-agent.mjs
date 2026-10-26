@@ -12,6 +12,7 @@
 // As the tester (its task has a <<<DIFF), it reads TESTER: lines from the issue instead:
 //   TESTER:write <path> <content>        TESTER:touch <path> <content>   (a file that is not a test)
 //   TESTER:fail-until <path> <content>   TESTER:noverdict   TESTER:fail-always
+//   TESTER:touch-each <path> (a non-test file changed on every check)   TESTER:fast (exit without leaving)
 import fs from 'fs'
 import path from 'path'
 
@@ -46,6 +47,19 @@ if (prompt.includes('<<<DIFF\n')) {
     const file = path.join(tjoin.dir, ...rel.split('/'))
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, raw.replace(/\\n/g, '\n'))
+  }
+  // touch-each: a non-test file changed on EVERY check (a counter), so a second check touches it too.
+  for (const s of t.filter((x) => x.verb === 'touch-each')) {
+    const file = path.join(tjoin.dir, ...s.arg.split('/'))
+    let k = 0
+    try { k = Number((fs.readFileSync(file, 'utf8').match(/\d+/) || [0])[0]) || 0 } catch { }
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, `export const checks = ${k + 1}\n`)
+  }
+  if (t.some((x) => x.verb === 'fast')) {
+    // Gone the moment its files are written, without leaving: the watcher's flush must send them.
+    console.log('VERDICT: PASS\nREPORT: checked it\nTESTS: fake tester: 1 passed')
+    process.exit(0)
   }
   let verdict = 'PASS'
   let report = 'checked it, and it does what the issue asks'

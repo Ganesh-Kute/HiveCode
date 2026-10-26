@@ -306,6 +306,8 @@ try {
   GH.S.faults.push({ re: /^GET repos\/acme\/app\/issues\?/ })
   await tick()
   T('K1 the list failing (network) changed no issue', JSON.stringify(w.state.issues) === before)
+  // `github status` runs in another process: what holds the watcher off must be in the state file.
+  T('K1b the state file says it is holding off, and why; status shows it', !!w.state.hold && !!w.state.hold.why && /Not asking GitHub until .*:/.test(HG.describe(w.state)), JSON.stringify(w.state.hold || null))
   skew += 61000
   GH.unlabel(e)
   GH.S.faults.push({ re: new RegExp(`^GET repos/acme/app/issues/${e}$`), status: 502 })
@@ -319,9 +321,23 @@ try {
   const callsK = GH.S.calls.length
   await tick()
   T('K4 rate-limited: it waits for the reset and asks nothing', GH.S.calls.length === callsK)
+  T('K4b status says it is the rate limit', /Not asking GitHub until .*rate limit/i.test(HG.describe(w.state)), HG.describe(w.state).split('\n')[1] || '(no hold line)')
   skew += 301000
   await tick()
   T('K5 and goes on after it', GH.S.calls.length > callsK)
+  T('K5b a good read clears the hold', !w.state.hold, JSON.stringify(w.state.hold || null))
+  // A run that cannot start (the relay is unreachable) waits, and says WHY where status shows it.
+  w.shutdown()
+  w = makeW({ relay: 'ws://127.0.0.1:9' })
+  const kI = GH.addIssue({ title: 'Relay down', body: 'FAKE:write k.js 1' })
+  await tick()
+  const kRow = HG.describe(w.state).split('\n').find((l) => l.includes(`#${kI} `)) || ''
+  T('K6 the relay unreachable: the run waits, and the state file says why', it(kI).status === 'waiting' && /^not started: /.test(it(kI).waitWhy || ''), `${it(kI).status} why=${it(kI).waitWhy || ''} ${it(kI).reason || ''}`)
+  T('K7 status says why it is waiting, not only until when', /next try [^)]*: not started: /.test(kRow), kRow)
+  GH.unlabel(kI)
+  w.shutdown()
+  w = makeW()
+  await tick()
 
   // ─── L. another watcher's issue; the daily cap ───────────────────────────────────────────
   console.log('\n# L. another watcher, and the daily limit')
@@ -408,6 +424,36 @@ try {
   T('P13 on retry the builder fixes what the tester found, and the count starts again', /^You are Builder, working on/.test(lastPrompt()) && /Tester checked your change independently/.test(lastPrompt()) && it(r).testerFails === 0 && it(r).next === 'test', `${it(r).status} next=${it(r).next} fails=${it(r).testerFails}`)
   GH.unlabel(r)
   await tick()
+  // The tester's last edit reaches the room only through the flush, which must send it under the
+  // TESTER's name: it went out as the builder's, so the pull request credited the wrong agent.
+  w.state.day.runs = 0
+  const pfI = GH.addIssue({ title: 'Tester exits at once', body: 'FAKE:write quick.js export const q = 1\\n\nTESTER:write test/quick.test.js // quick\\n\nTESTER:fast' })
+  await tick() // the builder
+  await tick() // the tester: writes, says PASS, exits without leaving
+  const brPF = it(pfI).branch
+  const pfAuthor = spawnSync('git', ['--git-dir', originDir, 'log', '--format=%an', `refs/heads/${brPF}`, '--', 'test/quick.test.js'], { encoding: 'utf8' }).stdout.trim()
+  T('P14 a tester that exits at once: its edit still lands, credited to the tester', originFile(brPF, 'test/quick.test.js') !== null && pfAuthor === 'Tester', `${it(pfI).status} author=${pfAuthor || 'none'} ${it(pfI).reason || ''}`)
+  GH.unlabel(pfI)
+  await tick()
+  w.state.day.runs = 0
+  // A fix the tester checks again: the comment on the pull request must warn about files it changed
+  // that are not tests, as the pull request's body does. It said only "Checked by Tester: PASS".
+  const ptI = GH.addIssue({ title: 'Touchy tester', body: 'FAKE:write t.js export const t = 1\\n\nTESTER:touch-each src/checked.js' })
+  await tick() // the builder
+  await tick() // the tester: PASS, then the push and the pull request
+  const prT = GH.pr(ptI)
+  if (prT) {
+    GH.reviewComment(prT.number, { path: 't.js', body: 'Make it 2.\nFAKE:write t.js export const t = 2\\n' })
+    GH.review(prT.number, { state: 'CHANGES_REQUESTED', body: 'See the comment.' })
+  }
+  // A review is debounced (E1), then the builder's fix, then the tester again: up to five ticks.
+  const fixNoteNow = () => (prT ? GH.on(prT.number).map((c) => c.body) : []).find((b) => /Checked by Tester/.test(b)) || ''
+  for (let i = 0; i < 5 && !fixNoteNow(); i++) await tick()
+  const fixNote = fixNoteNow()
+  T('P15 a fix the tester checked: the comment names what it changed that is not a test', /also changed files that are not tests: `src\/checked\.js`/.test(fixNote), `${it(ptI).status} pr=${prT ? prT.number : 'none'} ${fixNote.slice(0, 160) || '(no comment)'}`)
+  GH.unlabel(ptI)
+  await tick()
+  w.state.day.runs = 0
 
   // ─── Q. the pull request falls behind main ────────────────────────────────────────────────
   console.log('\n# Q. the pull request falls behind main')
@@ -456,6 +502,8 @@ try {
   GH.comment(rI, '/hivecode retry', 'dev')
   await tick()
   T('R3 /hivecode retry starts it again', it(rI).status !== 'closed' && it(rI).runs >= 1, `${it(rI).status} runs=${it(rI).runs}`)
+  // A new attempt, not the rejected one resumed: the person closed that pull request.
+  T('R3b ...on a new branch, not the closed pull request\'s', !!it(rI).branch && it(rI).branch !== prR.head.ref, `${it(rI).branch} vs closed ${prR.head.ref}`)
   GH.unlabel(rI)
   await tick()
   const loginNotes = () => notes.filter((t) => /GitHub refused the login gh has/.test(t)).length

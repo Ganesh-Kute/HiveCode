@@ -14,8 +14,11 @@ The tables below describe what the code does.
 
 1. Once per repo, in their clone:
    `npx -y hivecode-mcp@latest github start --agent "<agent command>"`
-   It checks that `gh` is logged in, that the agent command exists and that the labels exist, then
-   keeps running and watches the repo.
+   It checks that `gh` is logged in, that the agent command exists and can use Hivecode, and that the
+   labels exist, then keeps running and watches the repo.
+   **Private code:** every run puts the branch in a room on a relay, by default our public one.
+   Run your own (`npx -y hivecode-relay`, see docs/SELF_HOSTING.md) and add
+   `--relay wss://<your relay>`.
 2. They label an issue `hivecode`.
 3. A PR comes back, with:
    - the issue's title;
