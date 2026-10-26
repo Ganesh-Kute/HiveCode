@@ -1924,7 +1924,8 @@ if (isEntryPoint && process.argv[2] === 'setup') {
 } else if (isEntryPoint && (process.argv[2] === 'github' || process.argv[2] === 'notify' || process.argv[2] === 'slack')) {
   // `github start|status`: issues labelled hivecode come back as pull requests (hive-github.js).
   // `notify "<link>"`: a person hears on Slack or Discord when an agent is waiting on them
-  // (hive-notify.js). `slack start "<link>" --channel <id>`: threads per task in Slack (hive-slack.js).
+  // (hive-notify.js). `slack start "<link>" --channel <id>` or `slack check --channel <id>`:
+  // threads per task in Slack and end-to-end setup check (hive-slack.js).
   const modPath = process.argv[2] === 'github' ? './hive-github.js' : process.argv[2] === 'slack' ? './hive-slack.js' : './hive-notify.js'
   const mod = await import(modPath)
   process.exit(await mod.main(process.argv.slice(3)))

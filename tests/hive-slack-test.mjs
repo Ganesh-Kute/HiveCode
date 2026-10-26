@@ -423,10 +423,14 @@ try {
   // Fake Slack Socket Mode WSS server
   const acks = []
   let activeSock = null
+  let suppressHello = false
   sockSrv = http.createServer()
   const sockWss = new WebSocketServer({ server: sockSrv })
   sockWss.on('connection', (ws) => {
     activeSock = ws
+    if (!suppressHello) {
+      try { ws.send(JSON.stringify({ type: 'hello' })) } catch { }
+    }
     ws.on('message', (raw) => {
       try { acks.push(JSON.parse(String(raw))) } catch { }
     })
@@ -599,6 +603,149 @@ try {
   await sleep(450)
   T('userCache expires after 10 minutes: a member demoted to guest is re-checked and refused',
     agent.isPaused() === false)
+
+  // 11. slack check end-to-end: events arrive (0), never arrive (1), token bad (1), no hello (1), missing_scope needed (1)
+  console.log('\n# slack check end-to-end')
+  if (sockConn) { try { sockConn.stop() } catch { } sockConn = null }
+
+  async function runWithBound(fn, boundMs) {
+    let timer
+    const t0 = Date.now()
+    const hung = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ hung: true, code: -1 }), boundMs)
+    })
+    const res = await Promise.race([
+      fn().then((code) => ({ hung: false, code })),
+      hung,
+    ])
+    clearTimeout(timer)
+    return { ...res, elapsed: Date.now() - t0 }
+  }
+
+  // (a) Events arrive (exit 0): prompt says "reply anything in this thread", says up front it posts in #dev-agents, and a reply of "ok" passes
+  {
+    const logs = [], errs = []
+    const checkWatcher = setInterval(() => {
+      const promptPost = calls.slice().reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
+      if (promptPost && activeSock && activeSock.readyState === 1) {
+        clearInterval(checkWatcher)
+        // Find the ts returned for that prompt (tsSeq - 1 at the time it was answered)
+        const promptIdx = calls.filter((c) => c.method === 'chat.postMessage').length
+        const promptTs = String(1000 + promptIdx - 1)
+        activeSock.send(JSON.stringify({
+          envelope_id: 'env-check-ok',
+          payload: {
+            event_id: 'Ev_CHECK_OK_1',
+            event: { type: 'message', channel: 'C-TEST', thread_ts: promptTs, user: 'U_OWNER', text: 'ok' },
+          },
+        }))
+      }
+    }, 30)
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'C-TEST', '--timeout', '1500'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-ok', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      1500 + 5000,
+    )
+    clearInterval(checkWatcher)
+    const allOut = logs.join('\n')
+    T('slack check (events arrive): exits 0 within timeout+5s and prints every verified step + replies reach Hivecode',
+      !r.hung && r.code === 0 && r.elapsed < 6500 &&
+      /token/i.test(allOut) &&
+      /workspace/i.test(allOut) &&
+      /channel/i.test(allOut) &&
+      /scopes/i.test(allOut) &&
+      /Socket Mode/i.test(allOut) &&
+      /This posts one message in #dev-agents \(and one reply in its thread\)/.test(allOut) &&
+      /replies reach Hivecode/.test(allOut),
+      `code=${r.code} elapsed=${r.elapsed}ms out=${JSON.stringify(logs)} err=${JSON.stringify(errs)}`)
+  }
+
+  // (b) Events never arrive (exit 1): Socket Mode connects (hello) but no reply arrives within timeout
+  {
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'C-TEST', '--timeout', '200'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-ok', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      200 + 5000,
+    )
+    const allOut = logs.join('\n')
+    const allErr = errs.join('\n')
+    T('slack check (events never arrive): exits 1 within timeout+5s, never prints replies reach Hivecode, and names slack-app-manifest-inbound.json',
+      !r.hung && r.code === 1 && r.elapsed < 5200 &&
+      !/replies reach Hivecode/.test(allOut) &&
+      /replies did not arrive\. Event subscriptions are probably missing: reinstall from slack-app-manifest-inbound\.json/.test(allErr),
+      `code=${r.code} elapsed=${r.elapsed}ms err=${allErr}`)
+  }
+
+  // (c) Token bad (exit 1): auth.test fails -> exits 1 with Q630, never prints ✓ for workspace/channel/scopes/Socket Mode
+  {
+    nextResponses.push({ status: 200, body: { ok: false, error: 'invalid_auth' } })
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'C-TEST', '--timeout', '200'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-bad', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      200 + 5000,
+    )
+    const allOut = logs.join('\n')
+    const allErr = errs.join('\n')
+    T('slack check (token bad): exits 1 with Q630 and never prints OK/✓ for unverified steps',
+      !r.hung && r.code === 1 && r.elapsed < 5200 &&
+      /Q630/.test(allErr) &&
+      !/workspace|channel|scopes|Socket Mode|replies reach Hivecode/i.test(allOut),
+      `code=${r.code} out=${allOut} err=${allErr}`)
+  }
+
+  // (d) Socket Mode never sends `hello` frame (exit 1): times out on hello and exits 1 with Q634, never hangs
+  {
+    suppressHello = true
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'C-TEST', '--timeout', '500', '--hello-timeout', '150'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-ok', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      500 + 5000,
+    )
+    suppressHello = false
+    const allOut = logs.join('\n')
+    const allErr = errs.join('\n')
+    T('slack check (Socket Mode no hello frame): exits 1 with Q634 within timeout+5s and never hangs or prints Socket Mode OK',
+      !r.hung && r.code === 1 && r.elapsed < 5500 &&
+      /Q634/.test(allErr) &&
+      !/✓ Socket Mode/.test(allOut),
+      `code=${r.code} elapsed=${r.elapsed}ms err=${allErr}`)
+  }
+
+  // (e) missing_scope on conversations.info or chat.postMessage names the exact `needed` scope from Slack's response
+  {
+    nextResponses.push(
+      { status: 200, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team: 'TestTeam', team_id: 'T_OUR_TEAM' } },
+      { status: 200, body: { ok: false, error: 'missing_scope', needed: 'groups:read', provided: 'chat:write,channels:read' } },
+    )
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'G123PRIV', '--timeout', '200'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      200 + 5000,
+    )
+    const allErr = errs.join('\n')
+    T('missing_scope error names the exact scope from Slack\'s `needed` field (groups:read)',
+      !r.hung && r.code === 1 && /groups:read/.test(allErr),
+      `code=${r.code} err=${allErr}`)
+  }
 } catch (e) {
   T('end to end ran', false, e.message)
 } finally {

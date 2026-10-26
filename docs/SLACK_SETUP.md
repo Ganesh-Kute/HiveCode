@@ -41,7 +41,7 @@ Hivecode posts to Slack using **one thread per task** (for a live room) or **one
 ```
 
 4. Click **Next** → **Create**, then click **Install to Workspace** and **Allow**.
-5. In the left sidebar under **OAuth & Permissions**, copy the **Bot User OAuth Token** (`xoxb-…`).
+5. In the left sidebar under **OAuth & Permissions**, copy the **Bot User OAuth Token** (`xoxb-…`). (After inviting `@Hivecode` to your channel in Step 2, run `SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack check --channel C0123456789` to verify the app end to end.)
 
 ---
 
@@ -53,6 +53,11 @@ Hivecode posts to Slack using **one thread per task** (for a live room) or **one
    ```
 2. Right-click the channel name (or click the channel header at the top) → **View channel details**.
 3. Scroll to the bottom of the dialog and copy the **Channel ID** (looks like `C0123456789`).
+4. Run **`slack check`** to prove your token, workspace, channel membership, scopes, and (when `SLACK_APP_TOKEN` is set) inbound Socket Mode event subscriptions work end to end before starting any workflow:
+   ```bash
+   SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel C0123456789
+   ```
+   *(This posts one message in `#your-channel` — `"Hivecode check: reply anything in this thread"` — and one reply in its thread once your reply arrives.)*
 
 ---
 

@@ -34,6 +34,7 @@ const MAX_SEEN_EVENTS = 500
 
 export const USAGE = `usage:
   SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--dry-run]
+  SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--timeout <ms>]
 `
 
 export const NON_RETRYABLE = new Set([
@@ -54,6 +55,13 @@ function extractSlackError(err) {
   if (err.code && typeof err.code === 'string') return err.code
   const m = /slack [^:]+:\s*([a-z0-9_]+)/i.exec(err.message || '')
   return m ? m[1].toLowerCase() : ''
+}
+
+function formatSlackWhy(err) {
+  if (!err) return 'unknown_error'
+  const code = extractSlackError(err) || err.message || 'unknown_error'
+  if (code === 'missing_scope' && err.needed) return `missing_scope: needs ${err.needed}`
+  return code
 }
 
 export function isRateLimitError(err) {
@@ -187,10 +195,15 @@ export async function slackPost(
   }
   if (!j || !j.ok) {
     const code = (j && j.error) || `http_${r.status || 'unknown'}`
-    const err = new Error(`slack ${method}: ${code}`)
+    const needed = j && j.needed ? String(j.needed) : ''
+    const provided = j && j.provided ? String(j.provided) : ''
+    const detail = code === 'missing_scope' && needed ? `${code} (needs ${needed})` : code
+    const err = new Error(`slack ${method}: ${detail}`)
     err.status = r.status
     err.code = code
     err.slackError = code
+    if (needed) err.needed = needed
+    if (provided) err.provided = provided
     throw err
   }
   if (rawScopes !== undefined && rawScopes !== null && j && typeof j === 'object') {
@@ -291,7 +304,7 @@ export async function preflightSlack({
   try {
     auth = await slackPost('auth.test', {}, token, fetchImpl, api)
   } catch (e) {
-    const why = extractSlackError(e) || e.message
+    const why = formatSlackWhy(e)
     return { ok: false, code: 'Q630', error: `Q630 SLACK_BOT_TOKEN was rejected by Slack (${why}). Check the token or reinstall the Slack app.` }
   }
   const botUser = auth.user || 'Hivecode'
@@ -299,7 +312,7 @@ export async function preflightSlack({
   try {
     info = await slackPost('conversations.info', { channel }, token, fetchImpl, api)
   } catch (e) {
-    const why = extractSlackError(e) || e.message
+    const why = formatSlackWhy(e)
     return { ok: false, code: 'Q631', error: `Q631 Slack channel ${channel} could not be accessed (${why}). Check the channel ID and run /invite @${botUser} in the channel.` }
   }
   if (info && info.channel && info.channel.is_member === false) {
@@ -905,25 +918,267 @@ export function makeBridge({
   return { emit, onChat, deliver, onInboundEvent, threads, queue, threader }
 }
 
+export async function runSlackCheck({
+  token = '',
+  appToken = '',
+  channel = '',
+  timeoutMs = 120000,
+  helloTimeoutMs = 10000,
+  api = process.env.HIVE_SLACK_API || DEFAULT_API,
+  fetchImpl = fetch,
+  WebSocketImpl = WebSocket,
+  log = console.log,
+  logErr = console.error,
+} = {}) {
+  if (!token || !String(token).trim()) {
+    logErr('Q630 SLACK_BOT_TOKEN is missing. Set SLACK_BOT_TOKEN=xoxb-… in your environment.')
+    return 1
+  }
+  if (!channel || !String(channel).trim()) {
+    logErr('Q631 --channel <id> is required (for example: --channel C0123456789).')
+    return 2
+  }
+
+  // 1. Token (auth.test)
+  let auth
+  try {
+    auth = await slackPost('auth.test', {}, token, fetchImpl, api)
+  } catch (e) {
+    logErr(`Q630 SLACK_BOT_TOKEN was rejected by Slack (${formatSlackWhy(e)}). Check the token or reinstall the Slack app.`)
+    return 1
+  }
+  const botUser = auth.user || 'Hivecode'
+  const botUserId = auth.user_id || ''
+  log(`✓ token: @${botUser} (${botUserId || 'bot'})`)
+
+  // 2. Workspace
+  if (!auth.team_id) {
+    logErr('Q634 Slack auth.test did not return a workspace team_id. Reinstall the Slack app.')
+    return 1
+  }
+  log(`✓ workspace: ${auth.team || auth.team_id} (${auth.team_id})`)
+
+  // 3. Channel & membership (conversations.info)
+  let info
+  try {
+    info = await slackPost('conversations.info', { channel }, token, fetchImpl, api)
+  } catch (e) {
+    logErr(`Q631 Slack channel ${channel} could not be accessed (${formatSlackWhy(e)}). Check the channel ID and run /invite @${botUser} in the channel.`)
+    return 1
+  }
+  if (info && info.channel && info.channel.is_member === false) {
+    const chName = info.channel.name ? `#${info.channel.name}` : channel
+    logErr(`Q631 @${botUser} is not a member of ${chName} (${channel}). In Slack, open ${chName} and run: /invite @${botUser}`)
+    return 1
+  }
+  const channelName = (info && info.channel && info.channel.name) || channel
+  const isPrivate = Boolean(
+    info && info.channel && (
+      info.channel.is_private === true ||
+      info.channel.is_group === true ||
+      String(channel || '').startsWith('G')
+    ),
+  )
+  log(`✓ channel: #${channelName} (${channel}, member)`)
+
+  // 4. Scopes (x-oauth-scopes)
+  const scopes = Array.isArray(auth && auth._scopes)
+    ? auth._scopes
+    : (Array.isArray(info && info._scopes) ? info._scopes : null)
+  if (scopes === null) {
+    log('- scopes: x-oauth-scopes header not returned by server (not verified)')
+  } else {
+    const have = new Set(scopes)
+    const readScope = isPrivate ? 'groups:read' : 'channels:read'
+    const outMissing = []
+    if (!have.has('chat:write')) outMissing.push('chat:write')
+    if (!have.has(readScope)) outMissing.push(readScope)
+    if (outMissing.length) {
+      logErr(`Q630 SLACK_BOT_TOKEN is missing required outbound scope(s): ${outMissing.join(', ')}. Reinstall your Slack app from slack-app-manifest.json.`)
+      return 1
+    }
+    if (appToken) {
+      const inCheck = checkInboundScopes({ scopes, isPrivate, channel })
+      if (!inCheck.ok) {
+        logErr(inCheck.error)
+        return 1
+      }
+      log(`✓ scopes (outbound + inbound): ${scopes.join(', ')}`)
+    } else {
+      log(`✓ scopes (outbound): ${scopes.join(', ')} (SLACK_APP_TOKEN not set; inbound reply check skipped)`)
+    }
+  }
+
+  // Outbound-only mode (when SLACK_APP_TOKEN is not set): verify outbound post + thread reply, never claim inbound replies work
+  if (!appToken || !String(appToken).trim()) {
+    log(`This posts one message in #${channelName} (and one reply in its thread)`)
+    try {
+      const rootPost = await slackPost('chat.postMessage', { channel, text: 'Hivecode check: outbound posting works.' }, token, fetchImpl, api)
+      if (rootPost && rootPost.ts) {
+        await slackPost('chat.postMessage', { channel, thread_ts: rootPost.ts, text: '✓ Hivecode check: thread reply works (set SLACK_APP_TOKEN to verify inbound replies).' }, token, fetchImpl, api)
+      }
+    } catch (e) {
+      logErr(`Q630 Slack chat.postMessage failed (${formatSlackWhy(e)}).`)
+      return 1
+    }
+    log(`✓ outbound post: delivered to #${channelName} (set SLACK_APP_TOKEN to verify inbound replies)`)
+    return 0
+  }
+
+  // 5. Socket Mode connect (must receive Slack's `hello` frame within helloTimeoutMs BEFORE we post the prompt)
+  const sm = await preflightSocketMode({ appToken, scopes, isPrivate, channel, api, fetchImpl })
+  if (!sm.ok) {
+    logErr(sm.error)
+    return 1
+  }
+
+  let sock = null
+  const closeSock = () => {
+    if (!sock) return
+    try { sock.removeAllListeners && sock.removeAllListeners() } catch { }
+    try { sock.close() } catch { }
+    try { sock.terminate && sock.terminate() } catch { }
+    sock = null
+  }
+
+  let checkTs = ''
+  let replyResolver = null
+  const replyPromise = new Promise((resolve) => { replyResolver = resolve })
+
+  const helloOk = await new Promise((resolve) => {
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      clearTimeout(hTimer)
+      resolve(ok)
+    }
+    const hTimer = setTimeout(() => finish(false), helloTimeoutMs)
+    try {
+      sock = new WebSocketImpl(sm.url)
+    } catch {
+      finish(false)
+      return
+    }
+    sock.on('error', () => finish(false))
+    sock.on('close', () => {
+      finish(false)
+      if (replyResolver) replyResolver(false)
+    })
+    sock.on('message', (raw) => {
+      let frame
+      try { frame = JSON.parse(String(raw)) } catch { return }
+      if (frame && frame.envelope_id) {
+        try { sock && sock.send(JSON.stringify({ envelope_id: frame.envelope_id })) } catch { }
+      }
+      if (!frame) return
+      if (frame.type === 'hello') {
+        finish(true)
+        return
+      }
+      const ev = frame.payload && frame.payload.event
+      if (
+        ev &&
+        ev.type === 'message' &&
+        !ev.bot_id &&
+        !ev.subtype &&
+        ev.user &&
+        ev.user !== botUserId &&
+        ev.channel === channel &&
+        checkTs &&
+        ev.thread_ts === checkTs
+      ) {
+        if (replyResolver) replyResolver(true)
+      }
+    })
+  })
+
+  if (!helloOk) {
+    closeSock()
+    logErr('Q634 Socket Mode did not open (no hello frame received within timeout). Check SLACK_APP_TOKEN (connections:write) and network access to Slack.')
+    return 1
+  }
+  log('✓ Socket Mode: connected')
+
+  // 6. Real proof: post prompt and wait up to timeoutMs for any non-bot reply in that thread
+  log(`This posts one message in #${channelName} (and one reply in its thread)`)
+  try {
+    const postRes = await slackPost(
+      'chat.postMessage',
+      { channel, text: 'Hivecode check: reply anything in this thread' },
+      token,
+      fetchImpl,
+      api,
+    )
+    checkTs = (postRes && postRes.ts) || ''
+  } catch (e) {
+    closeSock()
+    logErr(`Q630 Slack chat.postMessage failed (${formatSlackWhy(e)}).`)
+    return 1
+  }
+
+  let waitTimer = null
+  const arrived = await Promise.race([
+    replyPromise,
+    new Promise((resolve) => { waitTimer = setTimeout(() => resolve(false), timeoutMs) }),
+  ])
+  clearTimeout(waitTimer)
+
+  if (!arrived) {
+    closeSock()
+    logErr('Q634 replies did not arrive. Event subscriptions are probably missing: reinstall from slack-app-manifest-inbound.json')
+    return 1
+  }
+
+  await slackPost(
+    'chat.postMessage',
+    { channel, thread_ts: checkTs, text: '✓ Hivecode check: replies reach Hivecode.' },
+    token,
+    fetchImpl,
+    api,
+  ).catch(() => {})
+  closeSock()
+  log('✓ replies reach Hivecode')
+  return 0
+}
+
 export async function main(argv = process.argv.slice(2), { log = console.log, logErr = console.error, fetchImpl = fetch, env = process.env, WebSocketImpl = WebSocket } = {}) {
+  let mode = 'start'
   let CHANNEL = env.SLACK_CHANNEL || ''
   let NAME = 'SlackBridge'
   let ALLOW = env.SLACK_ALLOW || ''
   let LINK = ''
   let dryRun = false
+  let timeoutMs = Number(env.HIVE_SLACK_CHECK_TIMEOUT_MS) || 120000
+  let helloTimeoutMs = Number(env.HIVE_SLACK_HELLO_TIMEOUT_MS) || 10000
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if (a === 'start' && !LINK && i === 0) continue
+    if ((a === 'start' || a === 'check') && !LINK && i === 0) { mode = a; continue }
     if (a === '--help' || a === '-h') { log(USAGE.trim()); return 0 }
     if (a === '--dry-run') { dryRun = true; continue }
     if (a === '--channel') { CHANNEL = argv[++i] || ''; continue }
     if (a === '--name') { NAME = argv[++i] || 'SlackBridge'; continue }
     if (a === '--allow') { ALLOW = argv[++i] || ''; continue }
+    if (a === '--timeout') { timeoutMs = Number(argv[++i]) || timeoutMs; continue }
+    if (a === '--hello-timeout') { helloTimeoutMs = Number(argv[++i]) || helloTimeoutMs; continue }
     if (a.startsWith('--')) { logErr(USAGE.trim()); return 2 }
     if (!LINK) LINK = a
   }
   const TOKEN = env.SLACK_BOT_TOKEN || ''
   const APP_TOKEN = env.SLACK_APP_TOKEN || ''
+  if (mode === 'check') {
+    return await await runSlackCheck({
+      token: TOKEN,
+      appToken: APP_TOKEN,
+      channel: CHANNEL,
+      timeoutMs,
+      helloTimeoutMs,
+      fetchImpl,
+      WebSocketImpl,
+      log,
+      logErr,
+    })
+  }
   if (!LINK) {
     logErr(USAGE.trim())
     return 2
