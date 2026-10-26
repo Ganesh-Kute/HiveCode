@@ -128,6 +128,98 @@ try {
   await until(() => watcher.connection().connected, 20000)
   await w.check()
   T('NT15 and back is said once', hook.posts.length === beforeLost + 2 && /back in the night shift/.test(hook.posts[beforeLost + 1]))
+
+  console.log('\n# help and secret sanitization')
+  const helpOut = []
+  const helpErr = []
+  const codeHelp = await N.main(['--help'], { log: (s) => helpOut.push(s), logErr: (s) => helpErr.push(s) })
+  T('NT16 notify --help: usage on stdout, exit 0', codeHelp === 0 && /usage:/.test(helpOut.join('\n')) && helpErr.length === 0)
+
+  const secretToken = 'T000/B000/XXXXsecret999'
+  const secretUrl = `https://hooks.slack.com:invalid/services/${secretToken}`
+  const leakOut = []
+  const leakErr = []
+  const codeLeak = await N.main([LINK, '--webhook', secretUrl, '--for', 'Ganesh'], {
+    fetchImpl: async () => { throw new TypeError(`Failed to parse URL from ${secretUrl}`) },
+    log: (s) => leakOut.push(s),
+    logErr: (s) => leakErr.push(s),
+    home: tmp,
+    once: true,
+  })
+  const combinedLogs = [...leakOut, ...leakErr].join('\n')
+  T('NT17 secret in webhook URL is never printed on stdout or stderr', !combinedLogs.includes(secretToken) && !combinedLogs.includes(secretUrl) && /Q643/.test(combinedLogs), combinedLogs)
+
+  console.log('\n# unknown hosts (Mattermost / Rocket.Chat)')
+  const mmOut = []
+  const mmHook = webhook(200)
+  const codeMm = await N.main([LINK, '--webhook', 'https://chat.mycorp.example/hooks/tok', '--for', 'Ganesh'], {
+    fetchImpl: mmHook.fetchImpl,
+    log: (s) => mmOut.push(s),
+    logErr: () => {},
+    home: tmp,
+    once: true,
+  })
+  T('NT18 unknown host announces Slack format to host only', codeMm === 0 && mmOut.some((l) => /posting in Slack format to chat\.mycorp\.example/.test(l)) && !mmOut.some((l) => l.includes('/hooks/tok')))
+
+  console.log('\n# 429/5xx transient error does not drop tasks')
+  let hookStatus = 429
+  const flappyHook = {
+    posts: [],
+    fetchImpl: async (u, init) => {
+      if (hookStatus >= 300) return { ok: false, status: hookStatus }
+      const b = JSON.parse(init.body)
+      flappyHook.posts.push(b.text || b.content)
+      return { ok: true, status: 200 }
+    }
+  }
+  const flappySend = makeNotifier('https://hooks.slack.com/services/T/B/x', { fetchImpl: flappyHook.fetchImpl })
+  const stateFile2 = path.join(tmp, 'sent-flappy.json')
+  const w2 = N.makeWatch({ hive: watcher, forNames: ['Ganesh'], title: 'the night shift', send: flappySend, now: () => clock, every: 5, stateFile: stateFile2 })
+  alice.assign('Claude', 'deploy hotfix 429')
+  await until(() => w2.waiting().length === 3)
+  await w2.check() // fails on 429!
+  T('NT19a on 429, task is not delivered', flappyHook.posts.length === 0)
+  hookStatus = 200 // recovers!
+  await w2.check()
+  T('NT19b recovered: task delivered without loss', flappyHook.posts.some((p) => /deploy hotfix 429/.test(p)), flappyHook.posts.join(' | '))
+
+  console.log('\n# 429/5xx transient error does not drop mentions')
+  builder.say('@Ganesh test mention retry 429')
+  await until(() => watcher.doc.getArray('chat').toArray().some((m) => /test mention retry 429/.test(m.text)))
+  hookStatus = 429
+  clock += 6 * 60000
+  await w2.check() // fails on 429
+  const countBefore = flappyHook.posts.length
+  hookStatus = 200 // recovers
+  await w2.check()
+  T('NT19c recovered: mentions delivered without loss', flappyHook.posts.length === countBefore + 1 && /test mention retry 429/.test(flappyHook.posts[countBefore]))
+
+  console.log('\n# single-notifier lock (Q644)')
+  const lockOut2 = []
+  const lockHook = webhook(200)
+  const lockFile = N.lockFileFor(ROOM, tmp)
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true })
+  const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: sleeper.pid, at: 'earlier' }))
+  const codeLock2 = await N.main([LINK, '--webhook', 'https://hooks.slack.com/services/T/B/x', '--for', 'Ganesh'], {
+    fetchImpl: lockHook.fetchImpl,
+    log: (s) => lockOut2.push(s),
+    logErr: (s) => lockOut2.push(s),
+    home: tmp,
+    once: true,
+  })
+  T('NT20 a second notifier for the same room is refused with Q644', codeLock2 === 2 && lockOut2.some((l) => /Q644/.test(l) && new RegExp(`process ${sleeper.pid}`).test(l)), lockOut2.join(' | '))
+  sleeper.kill()
+  await new Promise((res) => sleeper.on('exit', res))
+  const lockOut3 = []
+  const codeLock3 = await N.main([LINK, '--webhook', 'https://hooks.slack.com/services/T/B/x', '--for', 'Ganesh'], {
+    fetchImpl: lockHook.fetchImpl,
+    log: (s) => lockOut3.push(s),
+    logErr: (s) => lockOut3.push(s),
+    home: tmp,
+    once: true,
+  })
+  T('NT21 a stale lock whose process is gone is taken over', codeLock3 === 0, lockOut3.join(' | '))
 } catch (err) {
   T(`no exception (${err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err})`, false)
 } finally {

@@ -43,6 +43,37 @@ export function stateFileFor(room, home = os.homedir()) {
   const h = crypto.createHash('sha256').update(String(room)).digest('hex').slice(0, 16)
   return path.join(home, '.hivecode', 'notify', `${h}.json`)
 }
+export function lockFileFor(room, home = os.homedir()) {
+  const h = crypto.createHash('sha256').update(String(room)).digest('hex').slice(0, 16)
+  return path.join(home, '.hivecode', 'notify', `${h}.lock`)
+}
+const alive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+
+/** One notifier per room. Created exclusively so two starting at the same time cannot double-post. */
+export function takeLock(file) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  for (let i = 0; i < 2; i++) {
+    try {
+      const fd = fs.openSync(file, 'wx')
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
+      fs.closeSync(fd)
+      return () => { try { if (JSON.parse(fs.readFileSync(file, 'utf8')).pid === process.pid) fs.unlinkSync(file) } catch { } }
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+      let held = null
+      try { held = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { held = null }
+      if (held && held.pid && held.pid !== process.pid && alive(held.pid)) {
+        const err = new Error(`Q644 a notifier is already running for this room (process ${held.pid}, since ${held.at}). Use that one, or stop it first.`)
+        err.code = 'Q644'
+        throw err
+      }
+      try { fs.unlinkSync(file) } catch { }
+    }
+  }
+  const err = new Error(`Q644 could not take ${file}`)
+  err.code = 'Q644'
+  throw err
+}
 function loadSent(file) {
   try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); if (j && j.tasks) return j } catch { }
   return { tasks: {} }
@@ -102,9 +133,11 @@ export function makeWatch({ hive, forNames, title, send, now = () => Date.now(),
     for (const task of waiting()) {
       const owner = ownerOf(task)
       if (sent.tasks[task.id] || here(owner)) continue
-      sent.tasks[task.id] = t
-      saveSent(stateFile, sent)
-      await send(`Approval needed in ${title}: ${task.by} asked ${task.to} to "${oneLine(task.text, 300)}". ${task.to} waits until ${owner} approves or denies it in the Control Room.`)
+      const ok = await send(`Approval needed in ${title}: ${task.by} asked ${task.to} to "${oneLine(task.text, 300)}". ${task.to} waits until ${owner} approves or denies it in the Control Room.`)
+      if (ok) {
+        sent.tasks[task.id] = t
+        saveSent(stateFile, sent)
+      }
     }
 
     // MESSAGES NAMING THEM, from agents, while they are away: batched.
@@ -116,12 +149,15 @@ export function makeWatch({ hive, forNames, title, send, now = () => Date.now(),
     }
     seenChat = all.length
     if (buffer.length && t - lastFlush >= every * 60000) {
-      const shown = buffer.splice(0, buffer.length)
-      lastFlush = t
+      const shown = buffer.slice()
       const to = [...new Set(shown.map((b) => b.to))].join(', ')
       const lines = shown.slice(0, 5).map((b) => `- ${b.by}: ${oneLine(b.text, 220)}`)
       if (shown.length > 5) lines.push(`- and ${shown.length - 5} more`)
-      await send(`${shown.length} message${shown.length === 1 ? '' : 's'} for ${to} in ${title}:\n${lines.join('\n')}`)
+      const ok = await send(`${shown.length} message${shown.length === 1 ? '' : 's'} for ${to} in ${title}:\n${lines.join('\n')}`)
+      if (ok) {
+        buffer.splice(0, shown.length)
+        lastFlush = t
+      }
     }
   }
 
@@ -139,9 +175,20 @@ const USAGE = `usage:
   --name <name>     the notifier's own name in the room (default Notifier)`
 
 export async function main(argv, { log = console.log, logErr = console.error, fetchImpl = globalThis.fetch, home = os.homedir(), now = () => Date.now(), once = false } = {}) {
+  if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') { log(USAGE); return 0 }
+  const SWITCHES = new Set(['dry-run', 'once'])
   const pos = []
   const f = {}
-  for (let i = 0; i < argv.length; i++) { const a = argv[i]; if (a.startsWith('--')) f[a.slice(2)] = argv[++i] ?? ''; else pos.push(a) }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a.startsWith('--')) {
+      const k = a.slice(2)
+      if (SWITCHES.has(k)) f[k] = true
+      else f[k] = argv[++i] ?? ''
+    } else {
+      pos.push(a)
+    }
+  }
   const link = pos[0] || ''
   const { relay, room, token } = parseLink(link)
   if (!relay || !room) { logErr(`Q640 "${link}" is not a room link (it looks like wss://relay|room-...).\n\n${USAGE}`); return 2 }
@@ -155,20 +202,29 @@ export async function main(argv, { log = console.log, logErr = console.error, fe
 
   // FIRST, PROVE THE WEBHOOK WORKS. A notifier whose posts go nowhere is worse than none: the person
   // believes they will be told.
+  if (send.kind === 'other' && send.host) log(`posting in Slack format to ${send.host}`)
   const okSent = await send(`Hivecode will post here when an agent in ${title} is waiting on ${forNames.join(', ')}.`)
   if (!okSent) { logErr('Q643 the webhook refused the first post (see above). Check the URL, then start again. Nothing is running.'); return 1 }
+
+  const lockFile = lockFileFor(room, home)
+  const releaseLock = (() => { try { return takeLock(lockFile) } catch (e) { logErr(e.message); return null } })()
+  if (!releaseLock) return 2
 
   const dir = path.join(home, '.hivecode', 'notify', `room-${crypto.createHash('sha256').update(room).digest('hex').slice(0, 12)}`)
   const hive = startSync({ relay, room, dir, name: f.name || 'Notifier', kind: 'ai', token: token || process.env.HIVE_TOKEN || '', syncFiles: false, passive: true, log: () => { } })
   const w = makeWatch({ hive, forNames, title, send, now, every, stateFile: stateFileFor(room, home), log })
-  await new Promise((res) => { const t = setTimeout(res, 15000); hive.provider.on('sync', (s) => { if (s) { clearTimeout(t); res() } }) })
+  let synced = false
+  await new Promise((res) => { const t = setTimeout(res, 15000); hive.provider.on('sync', (s) => { if (s) { synced = true; clearTimeout(t); res() } }) })
+  if (!synced && !(hive.provider && hive.provider.wsconnected)) {
+    logErr(`NOTE: could not connect to relay at ${relay}. The room may be unreachable or the network down.`)
+  }
   const members = (hive.members() || []).filter((m) => m.name !== (f.name || 'Notifier')).map((m) => `${m.name} (${m.kind})`)
   const pending = w.waiting().length
   log(`watching ${title}: ${members.length ? members.join(', ') : 'nobody here yet'}; ${pending} approval(s) waiting now. Ctrl+C stops it.`)
   if (!members.length && !hive.doc.getArray('chat').length) log('NOTE: this room is empty -- no members and no chat. Is the link right?')
-  if (once) { await w.check(); hive.stop(); return 0 }
+  if (once || f['dry-run']) { await w.check(); hive.stop(); releaseLock(); return 0 }
   const timer = setInterval(() => { w.check().catch((e) => log(`check failed: ${e.message}`)) }, 15000)
-  const quit = () => { clearInterval(timer); try { hive.stop() } catch { } process.exit(0) }
+  const quit = () => { clearInterval(timer); try { hive.stop() } catch { } try { releaseLock() } catch { } process.exit(0) }
   process.on('SIGINT', quit)
   process.on('SIGTERM', quit)
   await w.check()
