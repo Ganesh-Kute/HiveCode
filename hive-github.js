@@ -35,6 +35,8 @@ import { PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 export { scrub, makeNotifier } // the same webhook rules for every integration (hive-webhook.js)
 
 const coded = (code, msg, extra = {}) => Object.assign(new Error(`${code} ${msg}`), { code, ...extra })
+// Ours, already worded for the user. Node's own errors have a .code too (ECONNREFUSED): not these.
+const isQ = (e) => /^Q\d{3}$/.test(String((e && e.code) || ''))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
@@ -103,6 +105,9 @@ function failure(where, r, now) {
     return coded('Q604', `GitHub's rate limit on ${where}; waiting ${Math.ceil(wait / 1000)} s before asking again`, { status: r.status, retryAt: now() + wait })
   }
   if (r.status === 401) return coded('Q600', 'GitHub refused the login gh has (HTTP 401). Run: gh auth login', { status: 401 })
+  // gh with no login answers no HTTP at all: "please run: gh auth login" on stderr, exit 4. That is
+  // not a network outage. Read as one, a running watcher held off forever and never asked for a login.
+  if (!r.status && /gh auth login/.test(msg)) return coded('Q600', 'gh is not logged in on this machine. Run: gh auth login (or set GH_TOKEN)', { status: 0 })
   if (!r.status) return coded('Q603', `could not reach GitHub for ${where}: ${msg}`, { status: 0 })
   return coded('Q603', `GitHub answered ${where} with HTTP ${r.status}: ${msg}`, { status: r.status })
 }
@@ -1649,6 +1654,8 @@ options (saved for the next start):
 
 export async function main(argv, { cwd: here = process.cwd(), log = console.log, logErr = console.error, call = ghCall() } = {}) {
   const [sub, ...rest] = argv
+  // Asking for help is not an error: stdout, exit 0, before git or GitHub is asked anything.
+  if (sub === 'help' || sub === '--help' || sub === '-h' || rest.includes('--help') || rest.includes('-h')) { log(USAGE); return 0 }
   // --repo <path>: the clone to watch, when it is not the folder this was started from (a service,
   // or a terminal that opens somewhere else). Read before anything, because everything is relative to it.
   const ri = rest.indexOf('--repo')
@@ -1682,14 +1689,21 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
 
   const origin = git(root, ['remote', 'get-url', 'origin'])
   const id = parseRepo(origin.out)
-  if (!id) { logErr(`Q601 origin (${origin.out || 'none'}) is not a github.com repository.`); return 1 }
+  // A remote URL can carry a token (https://x-access-token:<token>@host/...): never quote that part.
+  const shown = String(origin.out || '').replace(/\/\/[^/@\s]+@/, '//')
+  if (!id) { logErr(`Q601 origin (${shown || 'none'}) is not a github.com repository.`); return 1 }
   const gh = makeGitHub({ call, ...id })
   let info
+  let me = null
   try {
-    gh.user()
+    me = gh.user()
     info = gh.repoInfo()
   } catch (e) {
-    logErr(/not installed/.test(e.message) ? 'Q600 GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run: gh auth login' : e.code === 'Q600' || e.status === 401 ? e.message : `Q600 ${e.message}. Is gh logged in? Run: gh auth login`)
+    // Said once, with one code. A 404 here is the REPO: gh.user() just answered, so the login works,
+    // and "is gh logged in?" would send the user the wrong way.
+    logErr(/not installed/.test(e.message) && !e.status ? 'Q600 GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run: gh auth login'
+      : e.status === 404 ? `Q601 GitHub has no repository ${id.owner}/${id.repo} that ${(me && me.login) || 'the account gh uses'} can see (HTTP 404). Check origin (${shown}); a private repo needs an account with access to it (gh auth status shows which one gh uses).`
+        : isQ(e) ? e.message : `Q603 ${e.message}`)
     return 1
   }
   if (info.permissions && info.permissions.push === false) { logErr(`Q601 the GitHub account gh is logged in as cannot push to ${id.owner}/${id.repo}.`); return 1 }
@@ -1759,7 +1773,10 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
       // Without the workspace id, users from OTHER workspaces (Slack Connect) cannot be told apart.
       if (!pf.teamId) { logErr('Q634 Slack did not say which workspace the bot is in, so replies from outside it could not be refused. Replies stay off: unset SLACK_APP_TOKEN, or reinstall the app.'); return 1 }
       const allow = String(opt('slack-allow') || '').split(',').map((s) => s.trim()).filter(Boolean)
-      slackIn = { appToken, allow, connect: mod.connectSocketMode, check: mod.makeSlackActorCheck({ token, teamId: pf.teamId || '', allowFlag: '--slack-allow' }) }
+      slackIn = {
+        appToken, allow, connect: mod.connectSocketMode, check: mod.makeSlackActorCheck({ token, teamId: pf.teamId || '', allowFlag: '--slack-allow' }),
+        tell: (text) => Promise.resolve().then(() => mod.slackPost('chat.postMessage', { channel: slackChannel, text }, token)).catch(() => {}),
+      }
       log(`Slack: \`stop\` in an issue's thread stops it; \`retry\` ${allow.length ? `works for ${allow.join(', ')}` : 'is off until --slack-allow names who may'}.`)
     }
   }
@@ -1825,15 +1842,27 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const notify = makeNotifier(opt('notify'), { log: say })
   const w = makeWatcher({ ...watcherOpts, notify, slack })
   w.recover()
-  log(`Hivecode is watching ${id.owner}/${id.repo} for issues labelled "${label}". Ctrl+C stops it.`)
   let inbound = null
   if (slackIn) {
-    inbound = await slackIn.connect({
-      appToken: slackIn.appToken,
-      onError: (e) => say(`Slack replies: ${oneLine(String((e && e.message) || e), 200)}`),
-      onEvent: makeSlackReplyHandler({ w, check: slackIn.check, allow: slackIn.allow, channel: slackChannel }),
-    })
+    // Replies are connected BEFORE it says it is watching. A start that cannot read them -- another
+    // process on the same Slack app (Q635: Slack splits events between them, so a "stop" could go
+    // there), or no Socket Mode at all -- says so once, gives the lock back, and stops. It used to
+    // print "watching" and then die on the exception.
+    try {
+      inbound = await slackIn.connect({
+        appToken: slackIn.appToken,
+        logErr,
+        onError: (e) => say(`Slack replies: ${oneLine(String((e && e.message) || e), 200)}`),
+        onMultiConnection: (n) => slackIn.tell(`:warning: ${n} processes are now connected with this Slack app, and Slack gives each reply to only one of them: a \`stop\` in an issue's thread may not reach this watcher. Stop the other one ("github start --slack-allow", "slack start" or hive-slack-agent on the same app).`),
+        onEvent: makeSlackReplyHandler({ w, check: slackIn.check, allow: slackIn.allow, channel: slackChannel }),
+      })
+    } catch (e) {
+      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start (Socket Mode): ${oneLine(String((e && e.message) || e), 200)}. Check SLACK_APP_TOKEN and that this machine can reach Slack, or unset SLACK_APP_TOKEN to post progress only.`)
+      releaseLock()
+      return 1
+    }
   }
+  log(`Hivecode is watching ${id.owner}/${id.repo} for issues labelled "${label}". Ctrl+C stops it.`)
   let stopping = false
   const quit = () => { if (stopping) return; stopping = true; say('stopping: ending the runs in progress'); try { if (inbound) inbound.stop() } catch { } w.shutdown(); releaseLock(); process.exit(0) }
   process.on('SIGINT', quit)

@@ -75,6 +75,20 @@ const MUTANTS = [
   { t: 'cli', id: 'agent-allowed-tools-unchecked', expect: 'CA4', find: 'if (/--allowed-?tools\\b/i.test(s) && ', to: 'if (false && ' },
   { t: 'cli', id: 'agent-unchecked-silent', expect: 'CA8', find: 'log(ac.note || ac.warn)', to: 'if (ac.note) log(ac.note)' },
   { t: 'cli', id: 'saved-channel-silent', expect: 'CK15b', find: "${whence('slack-channel') ? ` That is --slack-channel ${slackChannel}${whence('slack-channel')}.` : ''}", to: '' },
+  // Start-up as a stranger meets it (found by antigravity-2's install walk from the packed tarball).
+  { t: 'cli', id: 'logged-out-is-outage', expect: 'CL4c', find: "  if (!r.status && /gh auth login/.test(msg)) return coded('Q600',", to: "  if (false) return coded('Q600'," },
+  { t: 'cli', id: 'repo-404-asks-login', expect: 'CL4d', find: '      : e.status === 404 ? `Q601 GitHub has no repository', to: '      : false ? `Q601 GitHub has no repository' },
+  { t: 'cli', id: 'double-code', expect: 'CL4e', find: '        : isQ(e) ? e.message : `Q603 ${e.message}`)', to: '        : `Q600 ${e.message}`)' },
+  // Slack replies at start: a refusal (Q635) or a socket that never opens is said once, the lock is
+  // given back, and it never says "watching" first.
+  // Uncaught, the throw ends the whole suite at CK19: what goes red is its last check, "no exception".
+  // (No mutant for the isQ() wrapper beside it: hive-slack.js now codes every start error, so the
+  // wrapper is a backstop for an older hive-slack.js and no test here can tell it apart.)
+  { t: 'cli', id: 'socket-uncaught', expect: 'no', find: '    } catch (e) {\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start', to: '    } catch (e) {\n      throw e\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start' },
+  { t: 'cli', id: 'watching-before-slack', expect: 'CK19', find: '  w.recover()\n  let inbound = null\n', to: "  w.recover()\n  log('Hivecode is watching (before Slack answered)')\n  let inbound = null\n" },
+  { t: 'cli', id: 'socket-lock-kept', expect: 'CK19', find: '      releaseLock()\n      return 1\n    }\n  }\n  log(`Hivecode is watching', to: '      return 1\n    }\n  }\n  log(`Hivecode is watching' },
+  { t: 'cli', id: 'origin-token-shown', expect: 'CL2b', find: "const shown = String(origin.out || '').replace(/\\/\\/[^/@\\s]+@/, '//')", to: "const shown = String(origin.out || '')" },
+  { t: 'cli', id: 'help-is-error', expect: 'CT4', find: "rest.includes('-h')) { log(USAGE); return 0 }", to: "rest.includes('-h')) { logErr(USAGE); return 2 }" },
   { t: 'cli', id: 'reply-retry-as-stop', expect: 'CK8', find: "check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)", to: "check.mayAct(actor, 'stop', allow)" },
   { t: 'cli', id: 'reply-note-first', expect: 'CK10', find: '    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:', to: "    if (may.unverified) w.slackNote({ threadTs: ev.thread_ts, text: 'stopped; I could not confirm who you are' })\n    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:" },
   { t: 'cli', id: 'dry-saves', expect: 'CD4', find: 'const save = () => { if (!dry) saveState(file, state) }', to: 'const save = () => { saveState(file, state) }' },

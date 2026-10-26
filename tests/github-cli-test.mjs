@@ -84,12 +84,37 @@ try {
   const gitlab = repo(path.join(tmp, 'gitlab'), 'https://gitlab.com/acme/app.git')
   r = await run(gitlab, ['start', '--agent', NODE], fakeCall(github()).call)
   T('CL2 an origin that is not github.com', r.code === 1 && /Q601 origin \(https:\/\/gitlab\.com/.test(r.out), r.out)
+  {
+    // A token in the remote URL (https://x-access-token:<token>@host/...) is common in CI and scripts.
+    // A refusal that quotes the origin must not print it: logs and screenshots travel.
+    const tokened = repo(path.join(tmp, 'tokened'), 'https://x-access-token:ghp_SECRETsecret123@gitlab.com/acme/app.git')
+    r = await run(tokened, ['start', '--agent', NODE], fakeCall(github()).call)
+    T('CL2b a token in the origin URL is not printed', r.code === 1 && /Q601 origin \(https:\/\/gitlab\.com\/acme\/app\.git\)/.test(r.out) && !/SECRET|x-access-token/.test(r.out), r.out)
+  }
 
   const app = repo(path.join(tmp, 'app'), 'https://github.com/acme/app.git')
   r = await run(app, ['start', '--agent', NODE], fakeCall({}, { down: 'gh is not installed' }).call)
   T('CL3 gh missing: says where to get it', r.code === 1 && /Q600 GitHub CLI \(gh\) is not installed.*cli\.github\.com.*gh auth login/s.test(r.out), r.out)
   r = await run(app, ['start', '--agent', NODE], fakeCall({ 'GET user': { status: 401, headers: {}, body: { message: 'Bad credentials' }, text: '' } }).call)
   T('CL4 gh logged out: says gh auth login', r.code === 1 && /Q600 .*gh auth login/.test(r.out), r.out)
+  {
+    // What gh REALLY does with no login (gh 2.x, measured): no HTTP answer at all, this on stderr, exit 4.
+    const LOGGED_OUT = 'To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.'
+    const codes = (s) => (s.match(/\bQ\d{3}\b/g) || []).length
+    r = await run(app, ['start', '--agent', NODE], fakeCall({}, { down: LOGGED_OUT }).call)
+    T('CL4b gh with no login (no HTTP answer): one Q600 that says so, not "could not reach GitHub"',
+      r.code === 1 && /^Q600 gh is not logged in on this machine\. Run: gh auth login/.test(r.out) && codes(r.out) === 1 && !/could not reach/.test(r.out), r.out)
+    // The running watcher reads the same answer through makeGitHub: it must be Q600, the code that
+    // holds off AND tells the owner to log in. As a network outage it waited forever, saying nothing.
+    let e = null
+    try { HG.makeGitHub({ call: fakeCall({}, { down: LOGGED_OUT }).call, owner: 'acme', repo: 'app' }).labeledIssues('hivecode') } catch (err) { e = err }
+    T('CL4c mid-run, a logged-out gh is Q600 (login notice), not a status-0 outage', e && e.code === 'Q600', e ? `${e.code}: ${e.message}` : 'no error')
+    r = await run(app, ['start', '--agent', NODE], fakeCall(github({ 'GET repos/acme/app': { status: 404, headers: {}, body: { message: 'Not Found' }, text: '' } })).call)
+    T('CL4d a repo GitHub cannot show this login: Q601 naming the repo and the account, not "is gh logged in?"',
+      r.code === 1 && /^Q601 GitHub has no repository acme\/app that owner can see \(HTTP 404\)/.test(r.out) && codes(r.out) === 1 && !/logged in\?/.test(r.out), r.out)
+    r = await run(app, ['start', '--agent', NODE], fakeCall({}, { down: 'dial tcp: lookup api.github.com: no such host' }).call)
+    T('CL4e no network: one Q603, said once', r.code === 1 && /^Q603 could not reach GitHub/.test(r.out) && codes(r.out) === 1, r.out)
+  }
   r = await run(app, ['start'], fakeCall(github()).call)
   T('CL5 no --agent: asks for one and shows the Claude Code line', r.code === 2 && /Q602 say which agent/.test(r.out) && /claude -p --output-format json/.test(r.out))
   r = await run(app, ['start', '--agent', 'no-such-agent-cli-xyz -p'], fakeCall(github()).call)
@@ -268,13 +293,23 @@ try {
     // Slack says which scopes a token has in this header, on every Web API answer.
     let scopes = 'chat:write,channels:read,groups:read'
     let privateChannel = false
+    // Socket Mode, faked too: a WebSocket that says hello the way Slack does. `helloCount` is the
+    // num_connections it reports; `deadSocket` hands out a URL nothing listens on.
+    const { WebSocketServer } = await import('ws')
+    let helloCount = 1
+    let deadSocket = false
+    const sockSrv = http.createServer()
+    const sockWss = new WebSocketServer({ server: sockSrv })
+    sockWss.on('connection', (ws) => { try { ws.send(JSON.stringify({ type: 'hello', num_connections: helloCount, connection_info: { app_id: 'A1' } })) } catch { } })
+    await new Promise((res) => sockSrv.listen(0, '127.0.0.1', res))
+    const sockUrl = () => (deadSocket ? 'ws://127.0.0.1:9/nobody-listens' : `ws://127.0.0.1:${sockSrv.address().port}/`)
     const srv = http.createServer((req, res) => {
       req.resume()
       req.on('end', () => {
         const m = req.url.replace(/^\/api\//, '')
         const out = m === 'auth.test' ? (mode === 'badtoken' ? { ok: false, error: 'invalid_auth' } : { ok: true, user: 'hivecode', user_id: 'U1', team: 'Acme', team_id: 'T1' })
           : m === 'conversations.info' ? { ok: true, channel: { id: 'C1', name: 'eng', is_member: mode !== 'notmember', is_private: privateChannel } }
-            : m === 'apps.connections.open' ? { ok: true, url: 'ws://127.0.0.1:9/nobody-listens' }
+            : m === 'apps.connections.open' ? { ok: true, url: sockUrl() }
               : { ok: false, error: 'unknown_method' }
         res.writeHead(200, { 'content-type': 'application/json', 'x-oauth-scopes': scopes })
         res.end(JSON.stringify(out))
@@ -340,12 +375,30 @@ try {
     scopes = 'chat:write,channels:read,groups:read,users:read,channels:history,groups:history'
     r = await run(sc, slArgs, fakeCall(github()).call)
     T('CK18 with the inbound scopes it starts, and says who may stop and retry', r.code === 0 && /`stop` in an issue's thread stops it/.test(r.out) && !/Q634/.test(r.out), r.out)
+    // Another process on the same Slack app: Slack gives each event to ONE connection, so a "stop"
+    // could go to the other one. Refused at start, once, with the lock given back -- not "watching".
+    const lockGone = () => !fs.existsSync(path.join(sc, '.git', 'hivecode', 'watcher.lock'))
+    process.env.HIVE_SLACK_START_RETRY_MS = '400'
+    helloCount = 2
+    r = await run(sc, slArgs, fakeCall(github()).call)
+    T('CK19 another process on the same Slack app: Q635 at start, not "watching", lock given back',
+      r.code === 1 && /Q635 /.test(r.out) && !/is watching/.test(r.out) && lockGone(), r.out.slice(0, 300))
+    helloCount = 1
+    deadSocket = true
+    r = await run(sc, slArgs, fakeCall(github()).call)
+    T('CK20 Socket Mode that cannot connect: one coded line, no stack, not "watching", lock given back',
+      r.code === 1 && /^Q63\d /m.test(r.out) && !/\n\s+at /.test(r.out) && !/is watching/.test(r.out) && lockGone(), r.out.slice(0, 300))
+    deadSocket = false
+    delete process.env.HIVE_SLACK_START_RETRY_MS
     privateChannel = false
     scopes = 'chat:write,channels:read,groups:read'
     delete process.env.SLACK_APP_TOKEN
     delete process.env.SLACK_BOT_TOKEN
     delete process.env.HIVE_SLACK_API
     srv.close()
+    for (const c of sockWss.clients) { try { c.terminate() } catch { } }
+    sockWss.close()
+    sockSrv.close()
   }
 
   console.log('\n# a reply in an issue\'s Slack thread: who may do what')
@@ -414,6 +467,13 @@ try {
   T('CT1 status reads only the local file: no call to GitHub', r.code === 0 && /Hivecode on GitHub for acme\/app/.test(r.out))
   r = await run(app, ['nonsense'], fakeCall({}).call)
   T('CT2 an unknown subcommand prints the usage', r.code === 2 && /github start --agent/.test(r.out))
+  // Asking for help is not an error: the usage goes to stdout with exit 0 (so `| less` and `&&` work),
+  // before any git or GitHub call -- here in a folder that is not a repo, with a gh that would fail.
+  for (const argv of [['--help'], ['-h'], ['help'], ['start', '--help'], ['status', '-h']]) {
+    const so = []; const se = []
+    const code = await HG.main(argv, { cwd: notRepo, call: fakeCall({}, { down: 'should not be called' }).call, log: (s) => so.push(String(s)), logErr: (s) => se.push(String(s)) })
+    T(`CT4 github ${argv.join(' ')}: usage on stdout, exit 0`, code === 0 && /github start --agent/.test(so.join('\n')) && !se.length, `code ${code}; stderr: ${se.join(' | ').slice(0, 120)}`)
+  }
 } catch (err) {
   T(`no exception (${err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err})`, false)
 } finally {

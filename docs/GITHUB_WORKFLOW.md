@@ -194,7 +194,10 @@ Each row below says what the user sees.
 
 | what goes wrong | what we do |
 |---|---|
-| `gh` is missing, logged out, or its token can't do something | `start` refuses and prints the exact fix, e.g. `gh auth login`. If the login stops working later, the watcher holds off and logs it every minute. It also sends one notification, since nobody may be watching that terminal. |
+| `gh` is missing, logged out, or its token can't do something | `start` refuses and prints the exact fix, e.g. `gh auth login`. A logged-out `gh` gives no HTTP answer at all, only "please run: gh auth login", so that text is read as a login problem (Q600), not as a network outage. If the login stops working later, the watcher holds off and logs it every minute. It also sends one notification, since nobody may be watching that terminal. |
+| The repo doesn't exist, or it is private and the account `gh` uses can't see it | GitHub answers 404 for both. `start` says which repo and which account (Q601), and that a private repo needs an account with access. It doesn't say "is gh logged in?", because the login just worked. |
+| The `origin` URL has a token in it (`https://x-access-token:<token>@...`) | A message that quotes the origin drops everything between `//` and `@`, so the token never reaches a log or a screenshot. |
+| Someone runs `github --help` | Usage goes to stdout with exit 0, before git or GitHub is asked anything. |
 | The `hivecode` label doesn't exist | `start` creates `hivecode` and `hivecode:needs-human`. |
 | A read from GitHub fails (network, outage, 5xx) | **A failed read is never treated as "no issues" or "PR closed".** Nothing changes state on a failed read. We back off and retry, and status says so. |
 | Rate limit, primary or secondary | We wait for `Retry-After` or the reset time and do nothing twice. Status shows it. |
