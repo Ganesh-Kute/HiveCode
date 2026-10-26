@@ -14,7 +14,7 @@ import fs from 'fs'
 import os from 'os'
 import http from 'http'
 import path from 'path'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync } from '../sync.js'
 import * as HSA from '../hive-slack-agent.js'
@@ -317,6 +317,30 @@ try {
     T('preflightSlackAgent refuses (Q634) when auth.test gives no team_id: outsiders could not be told apart',
       !noTeam.ok && noTeam.code === 'Q634' && /team_id/.test(noTeam.error || ''),
       noTeam.error || 'succeeded unexpectedly')
+
+    // ---- CLI main spawned checks (Q630 / Q634 missing tokens) ----------------
+    console.log('\n# CLI main missing token checks')
+    const agentScript = path.join(ROOT, 'hive-slack-agent.js')
+
+    const runNoTokens = spawnSync(process.execPath, [agentScript, 'wss://relay|room-test', '--channel', 'D-TEST'], {
+      env: { ...process.env, SLACK_BOT_TOKEN: '', SLACK_APP_TOKEN: '' },
+      encoding: 'utf8',
+    })
+    T('slack agent with no tokens prints Q630 and usage and exits 2',
+      runNoTokens.status === 2 &&
+      /Q630.*SLACK_BOT_TOKEN is missing/.test(runNoTokens.stderr) &&
+      /usage:/.test(runNoTokens.stderr),
+      `code=${runNoTokens.status} err=${runNoTokens.stderr}`)
+
+    const runNoAppToken = spawnSync(process.execPath, [agentScript, 'wss://relay|room-test', '--channel', 'D-TEST'], {
+      env: { ...process.env, SLACK_BOT_TOKEN: 'xoxb-dummy', SLACK_APP_TOKEN: '' },
+      encoding: 'utf8',
+    })
+    T('slack agent with no app token prints Q634 and usage and exits 2',
+      runNoAppToken.status === 2 &&
+      /Q634.*SLACK_APP_TOKEN is missing/.test(runNoAppToken.stderr) &&
+      /usage:/.test(runNoAppToken.stderr),
+      `code=${runNoAppToken.status} err=${runNoAppToken.stderr}`)
   }
 } catch (e) {
   T('end to end ran', false, e.message)

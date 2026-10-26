@@ -258,7 +258,7 @@ export async function preflightSlackAgent({
     return {
       ok: false,
       code: 'Q634',
-      error: 'Q634 SLACK_APP_TOKEN is missing. Set SLACK_APP_TOKEN=xapp-… (with connections:write scope) to start hive-slack-agent.js.',
+      error: 'Q634 SLACK_APP_TOKEN is missing. Set SLACK_APP_TOKEN=xapp-… (with connections:write scope) to start slack agent.',
     }
   }
   let auth
@@ -311,7 +311,17 @@ export async function main(argv = process.argv.slice(2), {
   const CHANNEL = flag('channel')
   const TOKEN = env.SLACK_BOT_TOKEN || ''
   const APP_TOKEN = env.SLACK_APP_TOKEN || ''
-  if (!LINK || !CHANNEL || !TOKEN || !APP_TOKEN) {
+  if (!LINK || !CHANNEL) {
+    logErr(USAGE)
+    return 2
+  }
+  if (!TOKEN) {
+    logErr('Q630 SLACK_BOT_TOKEN is missing. Set SLACK_BOT_TOKEN=xoxb-… in your environment.')
+    logErr(USAGE)
+    return 2
+  }
+  if (!APP_TOKEN) {
+    logErr('Q634 SLACK_APP_TOKEN is missing. Set SLACK_APP_TOKEN=xapp-… (with connections:write scope) to start slack agent.')
     logErr(USAGE)
     return 2
   }
