@@ -17,7 +17,8 @@ import path from 'path'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync } from '../sync.js'
-import { makeAgent, planChunks, route, snapshot, taskState, taskTitle, stopAll } from '../hive-slack-agent.js'
+import * as HSA from '../hive-slack-agent.js'
+const { makeAgent, planChunks, route, snapshot, taskState, taskTitle, stopAll, preflightSlackAgent } = HSA
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const PORT = 1283, SLACK_PORT = 1284
@@ -143,6 +144,51 @@ try {
   // A human is never paused: the control map is read by hive_wait, which only agents call.
   const ctl = panel.doc.getMap('controls')
   T('the human was not paused', !ctl.get('Hivecode') || ctl.get('Hivecode').state !== 'paused')
+
+  // ---- preflightSlackAgent scope check (Q634 + slack-app-manifest-agent.json) ----------------
+  console.log('\n# preflightSlackAgent scope check')
+  if (typeof preflightSlackAgent !== 'function') {
+    T('preflightSlackAgent is exported from hive-slack-agent.js', false, 'missing export')
+    T('preflightSlackAgent refuses with Q634 naming missing scopes and slack-app-manifest-agent.json', false, 'missing export')
+    T('preflightSlackAgent succeeds when token has assistant:write, im:history, users:read, chat:write', false, 'missing export')
+  } else {
+    T('preflightSlackAgent is exported from hive-slack-agent.js', true)
+    const badRes = await preflightSlackAgent({
+      token: 'xoxb-outbound-only',
+      appToken: 'xapp-ok',
+      channel: 'D-TEST',
+      fetchImpl: async (url) => ({
+        status: 200,
+        headers: new Map([['x-oauth-scopes', 'chat:write,channels:read,groups:read,users:read']]),
+        json: async () => String(url).endsWith('/auth.test')
+          ? { ok: true, user: 'hivecode', user_id: 'U_BOT', team_id: 'T1' }
+          : { ok: true, url: 'ws://127.0.0.1:9999' },
+      }),
+    })
+    T('preflightSlackAgent refuses with Q634 naming missing scopes and slack-app-manifest-agent.json',
+      !badRes.ok &&
+      badRes.code === 'Q634' &&
+      /assistant:write/.test(badRes.error || '') &&
+      /im:history/.test(badRes.error || '') &&
+      /slack-app-manifest-agent\.json/.test(badRes.error || ''),
+      badRes.error || 'succeeded unexpectedly')
+
+    const okRes = await preflightSlackAgent({
+      token: 'xoxb-agent-ok',
+      appToken: 'xapp-ok',
+      channel: 'D-TEST',
+      fetchImpl: async (url) => ({
+        status: 200,
+        headers: new Map([['x-oauth-scopes', 'chat:write,assistant:write,im:history,im:read,im:write,users:read']]),
+        json: async () => String(url).endsWith('/auth.test')
+          ? { ok: true, user: 'hivecode', user_id: 'U_BOT', team_id: 'T1' }
+          : { ok: true, url: 'ws://127.0.0.1:9999' },
+      }),
+    })
+    T('preflightSlackAgent succeeds when token has assistant:write, im:history, users:read, chat:write',
+      okRes.ok === true && okRes.url === 'ws://127.0.0.1:9999',
+      okRes.error || '')
+  }
 } catch (e) {
   T('end to end ran', false, e.message)
 } finally {

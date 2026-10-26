@@ -398,6 +398,37 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
       pkg.files.includes('slack-app-manifest-inbound.json') &&
       jsonBlocks.length >= 2 &&
       JSON.stringify(inboundManifest) === JSON.stringify(jsonBlocks[1]))
+
+    const agentManifestPath = path.join(ROOT, 'slack-app-manifest-agent.json')
+    const agentManifestExists = fs.existsSync(agentManifestPath)
+    const agentManifest = agentManifestExists ? JSON.parse(fs.readFileSync(agentManifestPath, 'utf8')) : null
+    T('slack-app-manifest-agent.json is in package.json files[], includes assistant:write + agent_session_stopped + assistant_view, and matches docs/SLACK_SETUP.md Section 5',
+      agentManifestExists &&
+      Array.isArray(pkg.files) &&
+      pkg.files.includes('slack-app-manifest-agent.json') &&
+      Boolean(agentManifest?.features?.assistant_view) &&
+      Array.isArray(agentManifest?.oauth_config?.scopes?.bot) &&
+      agentManifest.oauth_config.scopes.bot.includes('assistant:write') &&
+      agentManifest.oauth_config.scopes.bot.includes('im:history') &&
+      Array.isArray(agentManifest?.settings?.event_subscriptions?.bot_events) &&
+      agentManifest.settings.event_subscriptions.bot_events.includes('agent_session_stopped') &&
+      jsonBlocks.length >= 3 &&
+      JSON.stringify(agentManifest) === JSON.stringify(jsonBlocks[2]))
+
+    const agentScopeCheck = typeof HS.checkAgentScopes === 'function'
+      ? HS.checkAgentScopes({ scopes: ['chat:write', 'channels:read', 'users:read'], channel: 'D12345' })
+      : { ok: true }
+    const agentScopeNull = typeof HS.checkAgentScopes === 'function'
+      ? HS.checkAgentScopes({ scopes: null, channel: 'D12345' })
+      : { ok: false }
+    T('checkAgentScopes refuses with Q634 naming assistant:write, im:history, and slack-app-manifest-agent.json (and passes when scopes is null)',
+      !agentScopeCheck.ok &&
+      agentScopeCheck.code === 'Q634' &&
+      /assistant:write/.test(agentScopeCheck.error || '') &&
+      /im:history/.test(agentScopeCheck.error || '') &&
+      /slack-app-manifest-agent\.json/.test(agentScopeCheck.error || '') &&
+      agentScopeNull.ok === true,
+      agentScopeCheck.error || 'missing checkAgentScopes')
   }
 }
 
@@ -745,6 +776,179 @@ try {
     T('missing_scope error names the exact scope from Slack\'s `needed` field (groups:read)',
       !r.hung && r.code === 1 && /groups:read/.test(allErr),
       `code=${r.code} err=${allErr}`)
+  }
+
+  // (f) slack check --agent: top-level `warning: "missing_agent_session_stopped_event_subscription"` refuses with Q634 AND clears status in finally
+  {
+    const agentScopes = 'chat:write,assistant:write,im:history,im:read,im:write,channels:read,groups:read,channels:history,groups:history,users:read'
+    nextResponses.push(
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team: 'TestTeam', team_id: 'T_OUR_TEAM' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, channel: { id: 'D-TEST', name: 'hivecode-dm', is_member: true, is_im: true } } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, ts: '9101.01' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, warning: 'missing_agent_session_stopped_event_subscription' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true } },
+    )
+    const beforeCalls = calls.length
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'D-TEST', '--agent', '--timeout', '300'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-agent', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      300 + 5000,
+    )
+    const recentStatusCalls = calls.slice(beforeCalls).filter((c) => c.method === 'agents.sessions.setStatus')
+    const allErr = errs.join('\n')
+    T('slack check --agent (top-level warning): refuses with Q634 naming missing_agent_session_stopped_event_subscription + slack-app-manifest-agent.json, and clears status in finally',
+      !r.hung && r.code === 1 &&
+      /Q634/.test(allErr) &&
+      /missing_agent_session_stopped_event_subscription/.test(allErr) &&
+      /slack-app-manifest-agent\.json/.test(allErr) &&
+      recentStatusCalls.length === 2 &&
+      recentStatusCalls[0].status === 'processing' &&
+      recentStatusCalls[0].thread_ts === '9101.01' &&
+      recentStatusCalls[1].status === 'active' &&
+      recentStatusCalls[1].thread_ts === '9101.01',
+      `code=${r.code} statusCalls=${JSON.stringify(recentStatusCalls)} err=${allErr}`)
+  }
+
+  // (g) slack check --agent: `response_metadata.warnings: ["missing_agent_session_stopped_event_subscription"]` refuses with Q634 AND clears status in finally
+  {
+    const agentScopes = 'chat:write,assistant:write,im:history,im:read,im:write,channels:read,groups:read,channels:history,groups:history,users:read'
+    nextResponses.push(
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team: 'TestTeam', team_id: 'T_OUR_TEAM' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, channel: { id: 'D-TEST', name: 'hivecode-dm', is_member: true, is_im: true } } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, ts: '9102.02' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, response_metadata: { warnings: ['missing_agent_session_stopped_event_subscription'] } } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true } },
+    )
+    const beforeCalls = calls.length
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'D-TEST', '--agent', '--timeout', '300'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-agent', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      300 + 5000,
+    )
+    const recentStatusCalls = calls.slice(beforeCalls).filter((c) => c.method === 'agents.sessions.setStatus')
+    const allErr = errs.join('\n')
+    T('slack check --agent (response_metadata.warnings[]): refuses with Q634 and clears status in finally',
+      !r.hung && r.code === 1 &&
+      /Q634/.test(allErr) &&
+      /missing_agent_session_stopped_event_subscription/.test(allErr) &&
+      recentStatusCalls.length === 2 &&
+      recentStatusCalls[0].status === 'processing' &&
+      recentStatusCalls[1].status === 'active' &&
+      recentStatusCalls[1].thread_ts === '9102.02',
+      `code=${r.code} statusCalls=${JSON.stringify(recentStatusCalls)} err=${allErr}`)
+  }
+
+  // (h) slack check --agent: `feature_disabled` or `thread_ts_required` error is named and still clears status in finally
+  {
+    const agentScopes = 'chat:write,assistant:write,im:history,im:read,im:write,channels:read,groups:read,channels:history,groups:history,users:read'
+    nextResponses.push(
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team: 'TestTeam', team_id: 'T_OUR_TEAM' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, channel: { id: 'D-TEST', name: 'hivecode-dm', is_member: true, is_im: true } } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, ts: '9103.03' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: false, error: 'feature_disabled' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true } },
+    )
+    const beforeCalls = calls.length
+    const errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'D-TEST', '--agent', '--timeout', '300'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-agent', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: () => {},
+        logErr: (m) => errs.push(m),
+      }),
+      300 + 5000,
+    )
+    const recentStatusCalls = calls.slice(beforeCalls).filter((c) => c.method === 'agents.sessions.setStatus')
+    const allErr = errs.join('\n')
+    T('slack check --agent (feature_disabled): names feature_disabled + paid Slack plan and clears status in finally',
+      !r.hung && r.code === 1 &&
+      /Q634/.test(allErr) &&
+      /feature_disabled/.test(allErr) &&
+      recentStatusCalls.length === 2 &&
+      recentStatusCalls[1].status === 'active',
+      `code=${r.code} err=${allErr}`)
+
+    nextResponses.push(
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team: 'TestTeam', team_id: 'T_OUR_TEAM' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, channel: { id: 'D-TEST', name: 'hivecode-dm', is_member: true, is_im: true } } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, ts: '9104.04' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: false, error: 'thread_ts_required' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true } },
+    )
+    const errsThreadTs = []
+    const rThreadTs = await runWithBound(
+      () => HS.main(['check', '--channel', 'D-TEST', '--agent', '--timeout', '300'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-agent', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: () => {},
+        logErr: (m) => errsThreadTs.push(m),
+      }),
+      300 + 5000,
+    )
+    T('slack check --agent (thread_ts_required): names thread_ts_required when Slack rejects setStatus',
+      !rThreadTs.hung && rThreadTs.code === 1 && /thread_ts_required/.test(errsThreadTs.join('\n')),
+      `code=${rThreadTs.code} err=${errsThreadTs.join('\n')}`)
+  }
+
+  // (i) slack check --agent happy path: passes thread_ts to setStatus, verifies no warning, receives reply, clears status in finally, exits 0
+  {
+    const agentScopes = 'chat:write,assistant:write,im:history,im:read,im:write,channels:read,groups:read,channels:history,groups:history,users:read'
+    nextResponses.push(
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team: 'TestTeam', team_id: 'T_OUR_TEAM' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, channel: { id: 'D-TEST', name: 'hivecode-dm', is_member: true, is_im: true } } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, ts: '9105.05' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true, ts: '9105.06' } },
+      { status: 200, headers: { 'x-oauth-scopes': agentScopes }, body: { ok: true } },
+    )
+    const beforeCalls = calls.length
+    const logs = [], errs = []
+    const checkWatcher = setInterval(() => {
+      const statusPost = calls.slice(beforeCalls).find((c) => c.method === 'agents.sessions.setStatus' && c.status === 'processing')
+      if (statusPost && activeSock && activeSock.readyState === 1) {
+        clearInterval(checkWatcher)
+        activeSock.send(JSON.stringify({
+          envelope_id: 'env-agent-ok',
+          payload: {
+            event_id: 'Ev_AGENT_OK_1',
+            event: { type: 'message', channel: 'D-TEST', thread_ts: '9105.05', user: 'U_OWNER', text: 'ok' },
+          },
+        }))
+      }
+    }, 30)
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'D-TEST', '--agent', '--timeout', '1500'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-agent', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      1500 + 5000,
+    )
+    clearInterval(checkWatcher)
+    const recentStatusCalls = calls.slice(beforeCalls).filter((c) => c.method === 'agents.sessions.setStatus')
+    const allOut = logs.join('\n')
+    T('slack check --agent (happy path): exits 0, verifies agent session with thread_ts, receives reply, and clears status in finally',
+      !r.hung && r.code === 0 &&
+      /agent session/i.test(allOut) &&
+      /replies reach Hivecode/.test(allOut) &&
+      recentStatusCalls.length === 2 &&
+      recentStatusCalls[0].status === 'processing' &&
+      recentStatusCalls[0].thread_ts === '9105.05' &&
+      recentStatusCalls[1].status === 'active' &&
+      recentStatusCalls[1].thread_ts === '9105.05',
+      `code=${r.code} out=${allOut} err=${errs.join('\n')}`)
   }
 } catch (e) {
   T('end to end ran', false, e.message)

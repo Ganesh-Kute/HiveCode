@@ -32,6 +32,7 @@ import {
   resumeAll,
   resolveName,
   route,
+  checkAgentScopes,
   preflightSocketMode,
   connectSocketMode,
 } from './hive-slack.js'
@@ -175,6 +176,54 @@ export const SUGGESTED = [
   { title: 'What happened overnight?', message: 'what happened overnight' },
 ]
 
+/** Verify SLACK_BOT_TOKEN scopes (chat:write, assistant:write, im:history/channels:history/groups:history, users:read)
+ *  and SLACK_APP_TOKEN Socket Mode connection before starting hive-slack-agent (Q630, Q634). */
+export async function preflightSlackAgent({
+  token = '',
+  appToken = '',
+  channel = '',
+  api,
+  fetchImpl = fetch,
+} = {}) {
+  if (!token || !String(token).trim()) {
+    return {
+      ok: false,
+      code: 'Q630',
+      error: 'Q630 SLACK_BOT_TOKEN is missing. Set SLACK_BOT_TOKEN=xoxb-… in your environment.',
+    }
+  }
+  if (!appToken || !String(appToken).trim()) {
+    return {
+      ok: false,
+      code: 'Q634',
+      error: 'Q634 SLACK_APP_TOKEN is missing. Set SLACK_APP_TOKEN=xapp-… (with connections:write scope) to start hive-slack-agent.js.',
+    }
+  }
+  let auth
+  try {
+    auth = await slackPost('auth.test', {}, token, fetchImpl, api)
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'Q630',
+      error: `Q630 SLACK_BOT_TOKEN was rejected by Slack (${e.code || e.message || 'auth_failed'}). Check the token or reinstall the Slack app.`,
+    }
+  }
+  const scopes = Array.isArray(auth && auth._scopes) ? auth._scopes : null
+  const sc = checkAgentScopes({ scopes, channel })
+  if (!sc.ok) return sc
+  const sockPre = await preflightSocketMode({ appToken, api, fetchImpl })
+  if (!sockPre.ok) return sockPre
+  return {
+    ok: true,
+    url: sockPre.url,
+    botUser: (auth && auth.user) || 'Hivecode',
+    botUserId: (auth && auth.user_id) || '',
+    teamId: (auth && auth.team_id) || '',
+    scopes,
+  }
+}
+
 // ---- main -------------------------------------------------------------------------------
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const argv = process.argv.slice(2)
@@ -187,9 +236,9 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
     console.error('usage: SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node hive-slack-agent.js "<relay|room>" --channel <id>')
     process.exit(2)
   }
-  const sockPre = await preflightSocketMode({ appToken: APP_TOKEN })
-  if (!sockPre.ok) {
-    console.error(sockPre.error)
+  const pre = await preflightSlackAgent({ token: TOKEN, appToken: APP_TOKEN, channel: CHANNEL })
+  if (!pre.ok) {
+    console.error(pre.error)
     process.exit(1)
   }
   const { relay, room } = parseLink(LINK)
@@ -200,7 +249,7 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const agent = makeAgent({ hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN) })
   await connectSocketMode({
     appToken: APP_TOKEN,
-    initialUrl: sockPre.url,
+    initialUrl: pre.url,
     onEvent: async (ev) => {
       if (!ev || ev.bot_id || ev.subtype) return
       if (ev.type === 'agent_session_stopped') {

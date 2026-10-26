@@ -79,6 +79,7 @@
     "hive-slack.js",
     "slack-app-manifest.json",
     "slack-app-manifest-inbound.json",
+    "slack-app-manifest-agent.json",
     "hive-time.js",
     "docs/GITHUB_WORKFLOW.md",
     "docs/SLACK_SETUP.md",

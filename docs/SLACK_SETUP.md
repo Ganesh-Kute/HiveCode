@@ -61,9 +61,46 @@ Hivecode posts to Slack using **one thread per task** (for a live room) or **one
 
 ---
 
-## 3. Verify with `--dry-run`, Then Start
+## 3. Run `slack check` First, Then Start
 
-Always run `--dry-run` first. It calls Slack's `auth.test` and `conversations.info` to verify your token (`Q630`) and that `@Hivecode` has been invited to the channel (`Q631`) before starting any work.
+Before starting a room bridge or the GitHub watcher, run **`slack check`** once. It verifies each piece of your Slack app in order (`token`, `workspace`, `channel`, `scopes`, `Socket Mode`), then posts `"Hivecode check: reply anything in this thread"` in `#your-channel` and waits up to 2 minutes for your reply so you know outbound posting **and** inbound event subscriptions actually work end to end.
+
+**macOS / Linux (bash, zsh):**
+```bash
+# Outbound only (3-scope manifest):
+SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack check --channel C0123456789
+
+# Outbound + inbound stop/retry/replies (Socket Mode manifest):
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack check --channel C0123456789
+
+# Slack AI Agent surface + native stop button (Paid Slack plan manifest):
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack check --channel D0123456789 --agent
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:SLACK_BOT_TOKEN="xoxb-…"
+$env:SLACK_APP_TOKEN="xapp-…" # optional: include when using inbound stop/retry/replies or --agent
+npx -y hivecode-mcp@latest slack check --channel C0123456789
+```
+
+**What Each `slack check` Line Means & the One Fix When It Fails:**
+
+| Failing Step / Line | Cause | The One Fix |
+| :--- | :--- | :--- |
+| **`Q630 SLACK_BOT_TOKEN is missing` / `rejected by Slack (invalid_auth)`** | `SLACK_BOT_TOKEN` is unset, pasted from the wrong field, or revoked. | Copy the **Bot User OAuth Token** (`xoxb-…`) from **OAuth & Permissions** in your Slack app settings and export `SLACK_BOT_TOKEN` in the same terminal. |
+| **`Q634 Slack auth.test did not return a workspace team_id`** | Slack did not associate the token with a workspace. | Reinstall the app to your workspace under **OAuth & Permissions → Reinstall to Workspace**. |
+| **`Q631 @Hivecode is not a member of #channel`** | The bot has not been invited to the target channel. | Open `#channel` in Slack and run `/invite @Hivecode`. |
+| **`Q631 Slack channel … could not be accessed (missing_scope: needs groups:read)`** | Target channel is private, or the bot lacks the channel read scope (`needed` scope named in error). | Add the named scope (`groups:read` / `channels:read`) under **OAuth & Permissions → Bot Token Scopes** and click **Reinstall to Workspace**. |
+| **`Q634 SLACK_BOT_TOKEN is missing required inbound scope(s): users:read, channels:history`** | `SLACK_APP_TOKEN` is set for inbound `stop`/`retry`, but the app was created from the outbound-only manifest. | Recreate or update the app's manifest from [`slack-app-manifest-inbound.json`](../slack-app-manifest-inbound.json) (Section 5 below) and click **Reinstall to Workspace**. |
+| **`Q634 SLACK_BOT_TOKEN is missing required agent scope(s): assistant:write, im:history`** | `--agent` (or `hive-slack-agent.js`) was started with a token from the outbound or inbound-only manifest. | Update the app's manifest from [`slack-app-manifest-agent.json`](../slack-app-manifest-agent.json) (Section 5 below) and click **Reinstall to Workspace**. |
+| **`Q634 SLACK_APP_TOKEN was rejected` / `Socket Mode did not open (no hello frame)`** | Socket Mode is disabled in the Slack app, or `SLACK_APP_TOKEN` (`xapp-…`) lacks `connections:write`. | Enable **Socket Mode** in your Slack app settings and generate a new App-Level Token (`xapp-…`) with `connections:write` under **Basic Information → App-Level Tokens**. |
+| **`Q634 Slack agents.sessions.setStatus returned warning missing_agent_session_stopped_event_subscription`** | `--agent` checked `agents.sessions.setStatus`, and Slack reported that `agent_session_stopped` is not subscribed (so the native stop button is not rendered). | Subscribe to `agent_session_stopped` by updating your app's manifest from [`slack-app-manifest-agent.json`](../slack-app-manifest-agent.json) and reinstalling. |
+| **`Q634 Slack agents.sessions.setStatus failed (feature_disabled)`** | The workspace is on a Free Slack plan or Agents & Assistants is disabled for the workspace. | Use [`slack-app-manifest-inbound.json`](../slack-app-manifest-inbound.json) for typed `stop` / `retry` in channel threads (works on all Slack plans), or enable Agents & Assistants on a paid Slack plan. |
+| **`Q634 Slack agents.sessions.setStatus failed (thread_ts_required)`** | Slack rejected `agents.sessions.setStatus` because the DM session requires a valid `thread_ts`. | Run `slack check --channel <D…> --agent` on a DM or channel where `@Hivecode` can post a thread root message first. |
+| **`Q634 replies did not arrive. Event subscriptions are probably missing`** | You replied in the check thread, but Slack never sent the event (`message.channels` / `message.groups` / `message.im` not subscribed). | Update your app's manifest with [`slack-app-manifest-inbound.json`](../slack-app-manifest-inbound.json) (or [`slack-app-manifest-agent.json`](../slack-app-manifest-agent.json) for `--agent`) and reinstall the app. |
+
+Once `slack check` passes, you can also run `--dry-run` on `slack start` or `github start` before launching:
 
 ### Option A — Bridge a Live Hivecode Room (`slack start`)
 
@@ -203,9 +240,87 @@ Paste the contents of [`slack-app-manifest-inbound.json`](../slack-app-manifest-
 - **Guests & Slack Connect users are refused**: Single-channel/multi-channel guests (`is_restricted` / `is_ultra_restricted`) and external Slack Connect users from other workspaces (`team_id` mismatch via `users.info`) are refused for all actions (including `stop`) and receive a refusal reply in the thread.
 - **No impersonation (`slack:<handle>`)**: Every message delivered from Slack into the room is attributed as `slack:<handle>` (for example, `slack:ganesh`), never as a bare room member name (`Ganesh`), so a Slack display name cannot impersonate the room owner.
 
-### Free vs Paid Slack Plans
-- **Typed `stop` works on every Slack plan (including Free)**: Replying `stop`, `stop all`, `stop <AgentName>`, `resume <AgentName>`, or `retry` in a channel thread requires only standard channel events and works on **all Slack plans**.
-- **Native AI stop button requires a paid Slack plan**: Slack's native stop button (`agent_session_stopped` in `hive-slack-agent.js`) belongs to Slack's AI agent surface (`assistant:write`), which requires a paid Slack plan.
+### Free vs Paid Slack Plans & the Slack AI Agent Surface (`hive-slack-agent.js`)
+- **Typed `stop` works on every Slack plan (including Free)**: Replying `stop`, `stop all`, `stop <AgentName>`, `resume <AgentName>`, or `retry` in a channel thread requires only standard channel events (`slack-app-manifest-inbound.json`) and works on **all Slack plans**. We keep `slack-app-manifest-inbound.json` separate from `slack-app-manifest-agent.json` so Free-plan workspaces can install inbound `stop`/`retry` without hitting `feature_disabled`.
+- **Native AI stop button & streamed plan cards (`hive-slack-agent.js`) require a paid Slack plan**: `hive-slack-agent.js` renders live room tasks as a streamed plan (`chat.startStream` / `chat.appendStream` / `chat.stopStream` with `task_display_mode: "plan"`) and enables Slack's native stop button via `agents.sessions.setStatus` (`status: "processing"` / `"active"`) and `agent_session_stopped`.
+- **Official Slack requirements for `hive-slack-agent.js`**:
+  - **Bot Token Scopes**: `chat:write` ([`chat.startStream`](https://docs.slack.dev/reference/methods/chat.startStream)), `assistant:write` ([`agents.sessions.setStatus`](https://docs.slack.dev/reference/methods/agents.sessions.setStatus) and [`agent_session_stopped`](https://docs.slack.dev/reference/events/agent_session_stopped)), `im:history`, `im:read`, `im:write` ([Developing AI Apps](https://docs.slack.dev/ai/developing-ai-apps)), plus `channels:read`, `groups:read`, `channels:history`, `groups:history`, `users:read`.
+  - **Bot Events**: `agent_session_stopped` ([`agent_session_stopped` event](https://docs.slack.dev/reference/events/agent_session_stopped)), `assistant_thread_started`, `assistant_thread_context_changed`, `message.im`, `message.channels`, `message.groups`.
+  - **App Settings**: `features.assistant_view` (`assistant_description` and `suggested_prompts`) and `settings.socket_mode_enabled: true` ([Agent Sessions](https://docs.slack.dev/ai/agent-sessions)).
+  - **Startup & `slack check --agent` verification**:
+    - At startup, `hive-slack-agent.js` (`preflightSlackAgent`) checks `x-oauth-scopes` from `auth.test` via `checkAgentScopes` and refuses with `Q634` (naming missing scopes such as `assistant:write, im:history` and `slack-app-manifest-agent.json`) before opening Socket Mode.
+    - Running `SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack check --channel D0123456789 --agent` verifies those scopes, posts a check message (`checkTs`), and calls `agents.sessions.setStatus({ status: 'processing', channel_id, thread_ts: checkTs })`. Per Slack's [`agent_session_stopped` docs](https://docs.slack.dev/reference/events/agent_session_stopped), if your app is not subscribed to `agent_session_stopped`, Slack returns a `missing_agent_session_stopped_event_subscription` warning (checked in both top-level `warning` and `response_metadata.warnings[]`) and renders a non-interactive spinner instead of the stop button; `slack check --agent` catches that warning (as well as `feature_disabled` and `thread_ts_required`) and refuses with `Q634`. On every exit path (pass, fail, timeout, or `Ctrl+C`), `slack check --agent` clears the session status back to `active` in a `finally` block so the DM is never left spinning.
+    - *(Note: `features.assistant_view` and `suggested_prompts` control the top-bar split-view UI in Slack and cannot be probed via a Web API read call; installing from `slack-app-manifest-agent.json` configures them declaratively.)*
+
+<details>
+<summary><strong>Optional Paid-Plan AI Agent Surface Manifest (<code>slack-app-manifest-agent.json</code>)</strong></summary>
+
+Paste the contents of [`slack-app-manifest-agent.json`](../slack-app-manifest-agent.json):
+
+```json
+{
+  "display_information": {
+    "name": "Hivecode",
+    "description": "AI agent panel, native stop button, and one Slack thread per task or GitHub issue.",
+    "background_color": "#111318"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hivecode",
+      "always_online": true
+    },
+    "assistant_view": {
+      "assistant_description": "Inspect live Hivecode rooms, stream task plans, and halt or resume AI agents from Slack.",
+      "suggested_prompts": [
+        {
+          "title": "What is running?",
+          "message": "status"
+        },
+        {
+          "title": "Stop everything",
+          "message": "stop all"
+        },
+        {
+          "title": "What happened overnight?",
+          "message": "what happened overnight"
+        }
+      ]
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "assistant:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "channels:read",
+        "groups:read",
+        "channels:history",
+        "groups:history",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "agent_session_stopped",
+        "assistant_thread_started",
+        "assistant_thread_context_changed",
+        "message.im",
+        "message.channels",
+        "message.groups"
+      ]
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}
+```
+</details>
 
 **macOS / Linux (bash, zsh):**
 ```bash

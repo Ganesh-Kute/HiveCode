@@ -34,7 +34,7 @@ const MAX_SEEN_EVENTS = 500
 
 export const USAGE = `usage:
   SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--dry-run]
-  SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--timeout <ms>]
+  SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--agent] [--timeout <ms>]
 `
 
 export const NON_RETRYABLE = new Set([
@@ -369,6 +369,55 @@ export function checkInboundScopes({ scopes = null, isPrivate = false, channel =
     }
   }
   return { ok: true, missingScopes: [] }
+}
+
+/** Return the list of missing Slack Agent surface scopes (chat:write, assistant:write, users:read, plus im:history / channels:history / groups:history).
+ *  When `scopes` is null/undefined (header absent), returns [] so "unknown" is never treated as "none". */
+export function missingAgentScopes({ scopes = null, isPrivate = false, channel = '' } = {}) {
+  if (scopes === null || scopes === undefined) return []
+  const have = new Set(
+    (Array.isArray(scopes) ? scopes : String(scopes || '').split(','))
+      .map((s) => String(s || '').trim())
+      .filter(Boolean),
+  )
+  const ch = String(channel || '').trim()
+  const histScope = (!ch || ch.startsWith('D'))
+    ? 'im:history'
+    : ((isPrivate || ch.startsWith('G')) ? 'groups:history' : 'channels:history')
+  const required = ['chat:write', 'assistant:write', histScope, 'users:read']
+  return required.filter((s) => !have.has(s))
+}
+
+/** Verify that SLACK_BOT_TOKEN has the scopes required for the Slack Agent surface (hive-slack-agent.js). */
+export function checkAgentScopes({ scopes = null, isPrivate = false, channel = '' } = {}) {
+  const missing = missingAgentScopes({ scopes, isPrivate, channel })
+  if (missing.length) {
+    return {
+      ok: false,
+      code: 'Q634',
+      missingScopes: missing,
+      error: `Q634 SLACK_BOT_TOKEN is missing required agent scope(s): ${missing.join(', ')}. Reinstall your Slack app with slack-app-manifest-agent.json (docs/SLACK_SETUP.md Section 5).`,
+    }
+  }
+  return { ok: true, missingScopes: [] }
+}
+
+/** Read Slack warnings from both shapes Slack uses: top-level `warning` string and `response_metadata.warnings[]`. */
+export function extractSlackWarnings(res) {
+  if (!res || typeof res !== 'object') return []
+  const out = []
+  if (typeof res.warning === 'string' && res.warning.trim()) {
+    for (const w of res.warning.split(',')) {
+      if (w.trim()) out.push(w.trim())
+    }
+  }
+  const metaWarnings = res.response_metadata && Array.isArray(res.response_metadata.warnings)
+    ? res.response_metadata.warnings
+    : []
+  for (const w of metaWarnings) {
+    if (typeof w === 'string' && w.trim() && !out.includes(w.trim())) out.push(w.trim())
+  }
+  return out
 }
 
 /** Verify SLACK_APP_TOKEN (xapp-…) with apps.connections.open (and inbound bot scopes when passed) before READY (Q634). */
@@ -922,6 +971,7 @@ export async function runSlackCheck({
   token = '',
   appToken = '',
   channel = '',
+  agent = false,
   timeoutMs = 120000,
   helloTimeoutMs = 10000,
   api = process.env.HIVE_SLACK_API || DEFAULT_API,
@@ -937,6 +987,10 @@ export async function runSlackCheck({
   if (!channel || !String(channel).trim()) {
     logErr('Q631 --channel <id> is required (for example: --channel C0123456789).')
     return 2
+  }
+  if (agent && (!appToken || !String(appToken).trim())) {
+    logErr('Q634 --agent requires SLACK_APP_TOKEN=xapp-… (with connections:write scope) for Socket Mode.')
+    return 1
   }
 
   // 1. Token (auth.test)
@@ -987,6 +1041,13 @@ export async function runSlackCheck({
     : (Array.isArray(info && info._scopes) ? info._scopes : null)
   if (scopes === null) {
     log('- scopes: x-oauth-scopes header not returned by server (not verified)')
+  } else if (agent) {
+    const agCheck = checkAgentScopes({ scopes, isPrivate, channel })
+    if (!agCheck.ok) {
+      logErr(agCheck.error)
+      return 1
+    }
+    log(`✓ scopes (outbound + inbound + agent): ${scopes.join(', ')}`)
   } else {
     const have = new Set(scopes)
     const readScope = isPrivate ? 'groups:read' : 'channels:read'
@@ -1026,7 +1087,7 @@ export async function runSlackCheck({
   }
 
   // 5. Socket Mode connect (must receive Slack's `hello` frame within helloTimeoutMs BEFORE we post the prompt)
-  const sm = await preflightSocketMode({ appToken, scopes, isPrivate, channel, api, fetchImpl })
+  const sm = await preflightSocketMode({ appToken, scopes: agent ? null : scopes, isPrivate, channel, api, fetchImpl })
   if (!sm.ok) {
     logErr(sm.error)
     return 1
@@ -1079,14 +1140,14 @@ export async function runSlackCheck({
       const ev = frame.payload && frame.payload.event
       if (
         ev &&
-        ev.type === 'message' &&
+        (ev.type === 'message' || (agent && ev.type === 'agent_session_stopped')) &&
         !ev.bot_id &&
         !ev.subtype &&
         ev.user &&
         ev.user !== botUserId &&
-        ev.channel === channel &&
+        (!ev.channel || ev.channel === channel) &&
         checkTs &&
-        ev.thread_ts === checkTs
+        (ev.thread_ts || ev.ts) === checkTs
       ) {
         if (replyResolver) replyResolver(true)
       }
@@ -1118,28 +1179,80 @@ export async function runSlackCheck({
   }
 
   let waitTimer = null
-  const arrived = await Promise.race([
-    replyPromise,
-    new Promise((resolve) => { waitTimer = setTimeout(() => resolve(false), timeoutMs) }),
-  ])
-  clearTimeout(waitTimer)
-
-  if (!arrived) {
-    closeSock()
-    logErr('Q634 replies did not arrive. Event subscriptions are probably missing: reinstall from slack-app-manifest-inbound.json')
-    return 1
+  const onSigInt = () => {
+    if (replyResolver) replyResolver(false)
+  }
+  if (agent) {
+    process.once('SIGINT', onSigInt)
   }
 
-  await slackPost(
-    'chat.postMessage',
-    { channel, thread_ts: checkTs, text: '✓ Hivecode check: replies reach Hivecode.' },
-    token,
-    fetchImpl,
-    api,
-  ).catch(() => {})
-  closeSock()
-  log('✓ replies reach Hivecode')
-  return 0
+  try {
+    if (agent) {
+      let statusRes
+      try {
+        statusRes = await slackPost(
+          'agents.sessions.setStatus',
+          { status: 'processing', channel_id: channel, thread_ts: checkTs },
+          token,
+          fetchImpl,
+          api,
+        )
+      } catch (e) {
+        const code = extractSlackError(e)
+        if (code === 'feature_disabled') {
+          logErr('Q634 Slack agents.sessions.setStatus failed (feature_disabled): Slack AI agent sessions require a paid Slack plan with Agents & Assistants enabled (slack-app-manifest-agent.json).')
+        } else if (code === 'thread_ts_required') {
+          logErr('Q634 Slack agents.sessions.setStatus failed (thread_ts_required): Slack requires thread_ts for thread-based agent sessions in DMs.')
+        } else {
+          logErr(`Q634 Slack agents.sessions.setStatus failed (${formatSlackWhy(e)}). Reinstall from slack-app-manifest-agent.json.`)
+        }
+        return 1
+      }
+      const warnings = extractSlackWarnings(statusRes)
+      if (warnings.includes('missing_agent_session_stopped_event_subscription')) {
+        logErr('Q634 Slack agents.sessions.setStatus returned warning missing_agent_session_stopped_event_subscription: the native Slack stop button is not active because agent_session_stopped is not subscribed. Reinstall from slack-app-manifest-agent.json.')
+        return 1
+      }
+      log('✓ agent session: native stop button subscribed (agents.sessions.setStatus)')
+    }
+
+    const arrived = await Promise.race([
+      replyPromise,
+      new Promise((resolve) => { waitTimer = setTimeout(() => resolve(false), timeoutMs) }),
+    ])
+    clearTimeout(waitTimer)
+
+    if (!arrived) {
+      const manifestName = agent ? 'slack-app-manifest-agent.json' : 'slack-app-manifest-inbound.json'
+      logErr(`Q634 replies did not arrive. Event subscriptions are probably missing: reinstall from ${manifestName}`)
+      return 1
+    }
+
+    await slackPost(
+      'chat.postMessage',
+      { channel, thread_ts: checkTs, text: '✓ Hivecode check: replies reach Hivecode.' },
+      token,
+      fetchImpl,
+      api,
+    ).catch(() => {})
+    log('✓ replies reach Hivecode')
+    return 0
+  } finally {
+    clearTimeout(waitTimer)
+    if (agent) {
+      process.removeListener('SIGINT', onSigInt)
+      if (checkTs) {
+        await slackPost(
+          'agents.sessions.setStatus',
+          { status: 'active', channel_id: channel, thread_ts: checkTs },
+          token,
+          fetchImpl,
+          api,
+        ).catch(() => {})
+      }
+    }
+    closeSock()
+  }
 }
 
 export async function main(argv = process.argv.slice(2), { log = console.log, logErr = console.error, fetchImpl = fetch, env = process.env, WebSocketImpl = WebSocket } = {}) {
@@ -1149,6 +1262,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   let ALLOW = env.SLACK_ALLOW || ''
   let LINK = ''
   let dryRun = false
+  let agent = false
   let timeoutMs = Number(env.HIVE_SLACK_CHECK_TIMEOUT_MS) || 120000
   let helloTimeoutMs = Number(env.HIVE_SLACK_HELLO_TIMEOUT_MS) || 10000
   for (let i = 0; i < argv.length; i++) {
@@ -1156,6 +1270,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     if ((a === 'start' || a === 'check') && !LINK && i === 0) { mode = a; continue }
     if (a === '--help' || a === '-h') { log(USAGE.trim()); return 0 }
     if (a === '--dry-run') { dryRun = true; continue }
+    if (a === '--agent') { agent = true; continue }
     if (a === '--channel') { CHANNEL = argv[++i] || ''; continue }
     if (a === '--name') { NAME = argv[++i] || 'SlackBridge'; continue }
     if (a === '--allow') { ALLOW = argv[++i] || ''; continue }
@@ -1167,10 +1282,11 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   const TOKEN = env.SLACK_BOT_TOKEN || ''
   const APP_TOKEN = env.SLACK_APP_TOKEN || ''
   if (mode === 'check') {
-    return await await runSlackCheck({
+    return await runSlackCheck({
       token: TOKEN,
       appToken: APP_TOKEN,
       channel: CHANNEL,
+      agent,
       timeoutMs,
       helloTimeoutMs,
       fetchImpl,
