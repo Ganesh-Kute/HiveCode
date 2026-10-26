@@ -51,6 +51,8 @@ Update the `"version"` field in `package.json`:
 
 > **Note on `hive-version.js`:** `hive-version.js` dynamically reads `package.json` (`new URL('./package.json', import.meta.url)`). It does not hardcode the version, so updating `package.json` automatically updates `VERSION` and `VERSION_LABEL`.
 
+> **Note on `docs/ALWAYS_ON.md`:** Confirm that `docs/ALWAYS_ON.md` accurately notes the release version where the 0/1/2 exit-code contract begins (e.g. `hivecode-mcp@0.13.0`), ensuring no unpinned release placeholders remain in the documentation.
+
 Verify the bump:
 ```bash
 node -e "import('C:/Users/G1/Desktop/N/hive-version.js').then(m => console.log('Version:', m.VERSION))"

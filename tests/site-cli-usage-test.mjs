@@ -183,6 +183,7 @@ const TARGET_GUIDES = [
   'docs/SLACK_SETUP.md',
   'docs/GITHUB_WORKFLOW.md',
   'docs/DEPLOY.md',
+  'docs/ALWAYS_ON.md',
   'README.md'
 ]
 
