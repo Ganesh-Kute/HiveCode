@@ -24,7 +24,7 @@ const T = (name, ok, detail = '') => {
 }
 
 // Server state configuration
-let serverMode = 'all-present' // 'all-present' | 'missing-flag' | 'missing-command-file' | 'registry-html'
+let serverMode = 'all-present' // 'all-present' | 'missing-flag' | 'missing-command-file' | 'registry-html' | 'missing-link' | 'missing-package'
 
 const server = http.createServer((req, res) => {
   const url = req.url || ''
@@ -41,10 +41,35 @@ const server = http.createServer((req, res) => {
     return
   }
 
+  // Handle npm registry package lookups: /hivecode-mcp, /icr-merge, /git-clash
+  if (url === '/hivecode-mcp' || url === '/icr-merge' || url === '/git-clash') {
+    if (serverMode === 'missing-package' && url === '/git-clash') {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Not found' }))
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ name: url.slice(1) }))
+    return
+  }
+
+  // unpkg SPA browse trap: /browse/ returns 200 HTML for missing files too
+  if (url.startsWith('/browse/')) {
+    res.writeHead(200, { 'Content-Type': 'text/html' })
+    res.end('<!DOCTYPE html><html><body>unpkg SPA browse page always 200</body></html>')
+    return
+  }
+
   if (url.includes('/hivecode-mcp@0.13.0/')) {
     const filename = url.split('/hivecode-mcp@0.13.0/')[1]
 
     if (serverMode === 'missing-command-file' && filename === 'hive-slack.js') {
+      res.writeHead(404, { 'Content-Type': 'text/plain' })
+      res.end('File not found')
+      return
+    }
+
+    if (serverMode === 'missing-link' && filename === 'docs/QUICKSTART.md') {
       res.writeHead(404, { 'Content-Type': 'text/plain' })
       res.end('File not found')
       return
@@ -123,7 +148,7 @@ try {
   })
   const outText3 = outLog3.join('\n')
   T('Case 3 all present returns exit 0', code3 === 0)
-  T('Case 3 logs OK status', outText3.includes('OK: all commands and flags on site exist in published'))
+  T('Case 3 logs OK status', outText3.includes('OK: all commands, flags, and links on site exist in published'))
 
   // --- Test Case 4: Server down (Exit 2) ---
   // Point to a closed port
@@ -151,6 +176,45 @@ try {
   const errText5 = errLog5.join('\n')
   T('Case 5 registry HTML returns exit 2', code5 === 2)
   T('Case 5 reports invalid JSON error', errText5.includes('not valid JSON'))
+
+  // --- Test Case 6: Missing unpkg link (Exit 1) ---
+  serverMode = 'missing-link'
+  const errLog6 = []
+  const outLog6 = []
+  const code6 = await runCheckSiteRelease({
+    registryUrl: baseUrl,
+    unpkgUrl: baseUrl,
+    rootDir: ROOT,
+    log: msg => outLog6.push(msg),
+    errorLog: msg => errLog6.push(msg),
+  })
+  const errText6 = errLog6.join('\n')
+  T('Case 6 missing unpkg link returns exit 1', code6 === 1)
+  T('Case 6 identifies dead link to docs/QUICKSTART.md', errText6.includes('docs/QUICKSTART.md'))
+  T('Case 6 identifies 404 on unpkg', errText6.includes('404 on unpkg'))
+  T('Case 6 concludes with "publish to npm first, then deploy the site"', errText6.includes('publish to npm first, then deploy the site'))
+
+  // --- Test Case 7: Unpkg SPA browse trap proof ---
+  // Verify that the server's /browse endpoint returns HTTP 200 (simulating unpkg's SPA trap),
+  // proving that if check-site-release didn't strip /browse/, the check would falsely pass.
+  const browseRes = await fetch(`${baseUrl}/browse/hivecode-mcp@0.13.0/docs/QUICKSTART.md`)
+  T('Case 7 unpkg /browse returns 200 HTML (simulating unpkg SPA trap)', browseRes.status === 200)
+
+  // --- Test Case 8: Missing npm package link (Exit 1) ---
+  serverMode = 'missing-package'
+  const errLog8 = []
+  const outLog8 = []
+  const code8 = await runCheckSiteRelease({
+    registryUrl: baseUrl,
+    unpkgUrl: baseUrl,
+    rootDir: ROOT,
+    log: msg => outLog8.push(msg),
+    errorLog: msg => errLog8.push(msg),
+  })
+  const errText8 = errLog8.join('\n')
+  T('Case 8 missing npm package returns exit 1', code8 === 1)
+  T('Case 8 identifies missing package link', errText8.includes('package not found on npm') && errText8.includes('git-clash'))
+  T('Case 8 concludes with "publish to npm first, then deploy the site"', errText8.includes('publish to npm first, then deploy the site'))
 
 } finally {
   await new Promise(resolve => server.close(resolve))

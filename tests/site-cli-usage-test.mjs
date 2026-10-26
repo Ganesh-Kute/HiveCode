@@ -60,16 +60,21 @@ for (const [subcmd, filename] of Object.entries(SUBCOMMAND_FILES)) {
     USAGE_MAP.set(subcmd, extractSubcommandUsageFlags(subcmd, content))
   }
 }
-USAGE_MAP.set('invite', new Set())
-USAGE_MAP.set('revoke', new Set())
 
-export function validateHtml(html) {
-  const { commands, flagsFound } = extractCommandsAndFlags(html)
+export function validateText(text) {
+  const { commands, flagsFound } = extractCommandsAndFlags(text)
   const errors = []
 
   for (const { subcmd, raw } of commands) {
     if (!VALID_SUBCOMMANDS.has(subcmd)) {
       errors.push(`Unknown subcommand "${subcmd}" (not dispatched in hive-mcp.js) in "${raw}"`)
+    }
+    const claudeAgentMatch = raw.match(/--agent\s+(?:"([^"]*claude[^"]*)"|'([^']*claude[^']*)')/i)
+    if (claudeAgentMatch) {
+      const agentCmd = claudeAgentMatch[1] || claudeAgentMatch[2] || ''
+      if (!agentCmd.includes('--allowedTools') || !agentCmd.includes('mcp__hivecode')) {
+        errors.push(`--agent "${agentCmd}" invokes claude without --allowedTools including mcp__hivecode in "${raw}"`)
+      }
     }
   }
 
@@ -87,10 +92,52 @@ export function validateHtml(html) {
   return { ok: errors.length === 0, errors, commands, flagsFound }
 }
 
+export const validateHtml = validateText
+
 // P0: Guard against false success — validator fails on made-up flag
 const fakeFlagHtml = '<pre><code>npx -y hivecode-mcp@latest github start --fake-nonexistent-flag</code></pre>'
 const fakeFlagCheck = validateHtml(fakeFlagHtml)
 T('P0 validator fails on made-up flag --fake-nonexistent-flag', !fakeFlagCheck.ok && fakeFlagCheck.errors.some(e => e.includes('--fake-nonexistent-flag')))
+
+// P0b: Guard against line continuation evasion — bash trailing \
+const fakeContinuationBash = `
+\`\`\`bash
+npx -y hivecode-mcp@latest slack start \\
+  --channel C0123456789 \\
+  --fake-continuation-flag
+\`\`\`
+`
+const bashCheck = validateText(fakeContinuationBash)
+T('P0b validator catches fake flag on bash continuation line', !bashCheck.ok && bashCheck.errors.some(e => e.includes('--fake-continuation-flag')))
+
+// P0c: Guard against line continuation evasion — PowerShell trailing \`
+const fakeContinuationPwsh = `
+\`\`\`powershell
+npx -y hivecode-mcp@latest slack start \`
+  --channel C0123456789 \`
+  --fake-pwsh-flag
+\`\`\`
+`
+const pwshCheck = validateText(fakeContinuationPwsh)
+T('P0c validator catches fake flag on PowerShell continuation line', !pwshCheck.ok && pwshCheck.errors.some(e => e.includes('--fake-pwsh-flag')))
+
+// P0d: Red proof — made-up flag injected into temporary copy of a guide
+const slackGuideContent = fs.readFileSync(path.join(ROOT, 'docs/SLACK_SETUP.md'), 'utf8')
+const fakeGuide = slackGuideContent.replace(
+  '--channel C0123456789',
+  '--channel C0123456789 --made-up-guide-flag'
+)
+const fakeGuideCheck = validateText(fakeGuide)
+T('P0d validator catches made-up flag injected into guide copy', !fakeGuideCheck.ok && fakeGuideCheck.errors.some(e => e.includes('--made-up-guide-flag')))
+
+// P0e: Guard against tool-less claude agent invocation in guides
+const fakeClaudeAgent = `
+\`\`\`bash
+npx -y hivecode-mcp@latest github start --agent "claude -p 'Read the issue and fix'"
+\`\`\`
+`
+const fakeClaudeCheck = validateText(fakeClaudeAgent)
+T('P0e validator catches claude --agent without mcp__hivecode and --allowedTools', !fakeClaudeCheck.ok && fakeClaudeCheck.errors.some(e => e.includes('mcp__hivecode')))
 
 // P1: Guard against false success — validator fails on unknown subcommand
 const fakeSubcmdHtml = '<pre><code>npx -y hivecode-mcp@latest fake-cmd --dry-run</code></pre>'
@@ -129,6 +176,34 @@ for (const page of targetPages) {
 }
 
 T(`P4 public site commands & flags match real USAGE (${totalCommands} commands, ${totalFlags} flags checked)`, siteErrors.length === 0, siteErrors.join(' | '))
+
+// P4b: Markdown documentation guides check (docs/QUICKSTART.md, docs/SLACK_SETUP.md, docs/GITHUB_WORKFLOW.md, docs/DEPLOY.md, README.md)
+const TARGET_GUIDES = [
+  'docs/QUICKSTART.md',
+  'docs/SLACK_SETUP.md',
+  'docs/GITHUB_WORKFLOW.md',
+  'docs/DEPLOY.md',
+  'README.md'
+]
+
+let guideErrors = []
+let totalGuideCommands = 0
+let totalGuideFlags = 0
+
+for (const guide of TARGET_GUIDES) {
+  const filePath = path.join(ROOT, guide)
+  T(`vacuity guard: ${guide} exists on disk`, fs.existsSync(filePath))
+  const content = fs.readFileSync(filePath, 'utf8')
+  const res = validateText(content)
+  totalGuideCommands += res.commands.length
+  totalGuideFlags += res.flagsFound.length
+  T(`vacuity guard: ${guide} yields >0 commands`, res.commands.length > 0, `found ${res.commands.length} commands, ${res.flagsFound.length} flags`)
+  if (!res.ok) {
+    guideErrors.push(`${guide}: ${res.errors.join('; ')}`)
+  }
+}
+
+T(`P4b markdown guides commands & flags match real USAGE (${totalGuideCommands} commands, ${totalGuideFlags} flags checked)`, guideErrors.length === 0, guideErrors.join(' | '))
 
 // P5: Guard against dead links to private repository
 const REPO_LINKS = [/github\.com\/Ganesh-Kute/gi]

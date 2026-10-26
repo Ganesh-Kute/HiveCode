@@ -82,6 +82,7 @@
     "slack-app-manifest-agent.json",
     "hive-time.js",
     "docs/GITHUB_WORKFLOW.md",
+    "docs/QUICKSTART.md",
     "docs/SLACK_SETUP.md",
     "docs/ALWAYS_ON.md"
   ],

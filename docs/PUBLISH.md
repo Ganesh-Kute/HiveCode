@@ -1,79 +1,182 @@
-# Publishing Hivecode to the VS Code Marketplace
+# Release Runbook: Publishing Hivecode (`hivecode-mcp`)
 
-This is the one-time setup + the repeatable publish flow. Goal: anyone can find
-"Hivecode" in the Extensions panel and install with one click.
-
-The extension lives in [`extension/`](extension/); its listing page is
-[`extension/README.md`](extension/README.md); the icon is
-[`extension/resources/icon.png`](extension/resources/icon.png).
+Runbook for Ganesh executing releases from `C:/Users/G1/Desktop/N`.
 
 ---
 
-## One-time setup (≈15 min)
+## Step 0: Merge `team` to `main`
 
-### 1. Create a publisher
-The `package.json` uses `"publisher": "hivecode"`. You must own that id.
+The working branch during collaboration is `team` (in the `N-claude` worktree).
 
-1. Go to https://marketplace.visualstudio.com/manage and sign in with a Microsoft
-   account.
-2. **Create publisher** → set the ID to `hivecode` (if taken, pick another and
-   update `"publisher"` in `extension/package.json`). Display name: `Hivecode`.
+> **Note:** Claude prepares the exact commands to bring `team` to `main` at release time (one commit to drop). Do not invent this merge flow yourself.
 
-### 2. Get a Personal Access Token (PAT)
-The token authorizes `vsce` to publish on your behalf.
+Once `main` is updated and active in `C:/Users/G1/Desktop/N`, proceed with the steps below.
 
-1. Go to https://dev.azure.com → sign in with the **same** Microsoft account.
-2. User settings (top-right) → **Personal access tokens** → **New Token**.
-3. Organization: **All accessible organizations**.
-   Scopes: **Custom defined** → expand **Marketplace** → check **Manage**.
-   Expiry: up to 1 year.
-4. Copy the token (you only see it once). Keep it out of git.
+---
 
-### 3. Log in locally
+## Step 1: Run Pre-Release Quality & Deploy Gates
+
+Run the verification suites against the repository:
+
 ```bash
-cd extension
-npx vsce login hivecode      # paste the PAT when prompted
+npm --prefix C:/Users/G1/Desktop/N test
+node C:/Users/G1/Desktop/N/scripts/sync-engine.mjs --check
+node C:/Users/G1/Desktop/N/scripts/check-files.mjs
+node C:/Users/G1/Desktop/N/scripts/check-deploy.mjs
+node C:/Users/G1/Desktop/N/tests/site-cli-usage-test.mjs
+node C:/Users/G1/Desktop/N/tests/readme-promises-test.mjs
+```
+
+### How to Tell It Worked
+- `test`: exits with `ok` for all unit and integration tests.
+- `sync-engine`: prints `=== ENGINE IN SYNC: 8 files identical (root <-> packages/icr-merge) ===`.
+- `check-files`: prints `=== PACKAGE OK: 48 shipped code file(s), every relative import present in files[] ===`.
+- `check-deploy`: prints `=== DEPLOY OK ===`.
+- `site-cli-usage-test`: prints `all passed` (commands, flags, line continuations, and guides verified).
+- `readme-promises-test`: prints `24 passed, 0 failed`.
+
+### What to Do If It Failed
+**Stop immediately.** Fix the specific failing assertion reported in stderr. Never publish a release or bump versions while any gate fails.
+
+---
+
+## Step 2: Version Bump
+
+Update the `"version"` field in `package.json`:
+
+```bash
+# Edit package.json in C:/Users/G1/Desktop/N
+# e.g., "version": "0.13.0" -> "0.14.0"
+```
+
+> **Note on `hive-version.js`:** `hive-version.js` dynamically reads `package.json` (`new URL('./package.json', import.meta.url)`). It does not hardcode the version, so updating `package.json` automatically updates `VERSION` and `VERSION_LABEL`.
+
+Verify the bump:
+```bash
+node -e "import('C:/Users/G1/Desktop/N/hive-version.js').then(m => console.log('Version:', m.VERSION))"
 ```
 
 ---
 
-## Publish
+## Step 3: Commit, Push, and Verify CI
 
-```bash
-cd extension
-npx vsce package             # builds hivecode-<version>.vsix locally (sanity check)
-npx vsce publish             # uploads to the Marketplace
-```
+> **CAUTION:** Never run `git add .` in `C:/Users/G1/Desktop/N`. The working folder contains untracked development scratch files, and `.env` holds real production tokens.
 
-To bump the version and publish in one step: `npx vsce publish patch` (or
-`minor` / `major`). Live within a few minutes at:
-`https://marketplace.visualstudio.com/items?itemName=hivecode.hivecode`
-
-### Also publish to Open VSX (Cursor / Windsurf / VSCodium users)
-The VS Code Marketplace doesn't serve those editors. Open VSX does.
-
-1. Sign in at https://open-vsx.org with GitHub, create an access token.
-2. ```bash
-   npx ovsx create-namespace hivecode -p <openvsx-token>   # one-time
-   npx ovsx publish hivecode-<version>.vsix -p <openvsx-token>
+1. Inspect modified files:
+   ```bash
+   git -C C:/Users/G1/Desktop/N status
+   ```
+2. Stage only tracked modifications (or add release files by name):
+   ```bash
+   git -C C:/Users/G1/Desktop/N add -u
+   ```
+3. Inspect the staged diff before committing:
+   ```bash
+   git -C C:/Users/G1/Desktop/N diff --cached --stat
+   ```
+   Confirm that only intended release files (e.g. `package.json`) are staged.
+4. Commit and push:
+   ```bash
+   git -C C:/Users/G1/Desktop/N commit -m "Release vX.Y.Z"
+   git -C C:/Users/G1/Desktop/N push origin main
+   ```
+5. Wait for GitHub Actions CI to pass:
+   ```bash
+   gh run watch --repo Ganesh-Kute/HiveCode
    ```
 
+### How to Tell It Worked
+- `gh run watch` finishes with `✓ Completed` (all jobs green).
+
+### What to Do If It Failed
+Do **NOT** proceed to `npm publish`. View failure logs with `gh run view --repo Ganesh-Kute/HiveCode --log-failed`, fix on a new commit, push to `main`, and wait for CI to turn green.
+
 ---
 
-## Pre-publish checklist
-- [ ] `extension/README.md` reads well — it **is** the Marketplace page.
-- [ ] `extension/resources/icon.png` exists (128×128, referenced in `package.json`).
-- [ ] `version` bumped in `extension/package.json` (Marketplace rejects a re-publish
-      of the same version).
-- [ ] `repository`, `homepage`, `bugs` URLs are correct.
-- [ ] `npx vsce package` produces a clean `.vsix` with no warnings you care about.
-- [ ] Installed the local `.vsix` once (`code --install-extension hivecode-x.y.z.vsix`)
-      and smoke-tested host → invite → join.
-- [ ] Relay (`livecode-xoss.onrender.com`) is deployed with the matching protocol
-      version, so a freshly-installed user can actually connect.
+## Step 4: Publish to npm (`npm publish`)
 
-## Notes
-- The relay also serves the landing page at `/` — pushing `server.js` +
-  `public/index.html` redeploys both.
-- Keep the extension's relay default (`hivecode.relayUrl`) pointing at the live
-  relay so a new install works with zero config.
+1. Preview the published tarball contents:
+   ```bash
+   npm publish --dry-run C:/Users/G1/Desktop/N
+   ```
+   Confirm the file list matches `package.json` `files[]`.
+2. Publish the package:
+   ```bash
+   npm publish C:/Users/G1/Desktop/N
+   ```
+
+### How to Tell It Worked
+npm prints `+ hivecode-mcp@X.Y.Z`.
+
+### What to Do If It Failed
+- **403 / ENEEDAUTH:** Run `npm login` to authenticate with your npm publisher account.
+- **400 / E400 (Cannot publish over existing version):** Check `npm view hivecode-mcp version` and ensure `package.json` was bumped to an unused version.
+
+---
+
+## Step 5: Confirm Publication on npm and unpkg
+
+Confirm that the npm registry and unpkg CDN serve the new release:
+
+```bash
+npm view hivecode-mcp version
+curl -I https://unpkg.com/hivecode-mcp@<version>/docs/QUICKSTART.md
+```
+
+### How to Tell It Worked
+- `npm view` prints the new version (`X.Y.Z`).
+- `curl -I` returns `HTTP/1.1 200 OK`.
+
+### What to Do If It Failed
+If unpkg returns 404 immediately, wait 30–60 seconds for npm replica synchronization and CDN cache warming, then retry.
+
+---
+
+## Step 6: Site Release Gate & Website Deploy
+
+**ONLY AFTER** Step 5 confirms publication on npm and unpkg, run the pre-deploy site gate:
+
+```bash
+node C:/Users/G1/Desktop/N/scripts/check-site-release.mjs
+```
+
+### How to Tell It Worked
+Exits with code `0` and prints:
+```
+[check-site-release] OK: all commands, flags, and links on site exist in published hivecode-mcp@X.Y.Z
+```
+
+### What to Do If It Failed
+- If it exits with code `1`: It lists commands, flags, or unpkg links that 404 in the published release. **Never deploy the website if this check exits 1 or 2.**
+- If it exits with code `2`: Network or CDN timeout (`could not check`). Retry once connectivity is stable.
+
+Once exit code `0` is verified, deploy `public/` files to your production web host.
+
+---
+
+## Step 7: Deploy the Relay on Render
+
+> **IMPORTANT:** Render does **NOT** auto-deploy on `git push`. The relay must be manually triggered.
+
+1. Open the Render Dashboard: [dashboard.render.com](https://dashboard.render.com).
+2. Select your `hivecode-relay` web service.
+3. Click **Manual Deploy** → **Clear build cache & deploy**.
+4. Wait ~2 minutes for the build and container startup to complete.
+5. Verify the live relay endpoint:
+   ```bash
+   curl https://hivecode-relay.onrender.com/health
+   ```
+
+### How to Tell It Worked
+`/health` returns HTTP 200 JSON with `"ok": true`, matching your new version and commit:
+```json
+{
+  "ok": true,
+  "version": "X.Y.Z",
+  "build": "<commit-sha>",
+  "uptimeSec": 12
+}
+```
+
+### What to Do If It Failed
+If `/health` returns the previous version or fails, open the Render deploy logs in the dashboard to inspect build or startup errors.

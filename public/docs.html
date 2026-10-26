@@ -43,6 +43,11 @@
 
     <div class="grid grid--2" style="margin-top:38px">
       <article class="card">
+        <span class="card__tag">quickstart</span>
+        <h3><a href="https://unpkg.com/browse/hivecode-mcp@latest/docs/QUICKSTART.md" target="_blank" rel="noopener">Zero to a pull request in 10 minutes</a></h3>
+        <p>Connect an AI agent to your repository so labeling an issue runs the agent and opens a tested pull request. Prerequisites, dry run, Slack integration, and commands step by step.</p>
+      </article>
+      <article class="card">
         <span class="card__tag">start here</span>
         <h3><a href="/start">Get started</a></h3>
         <p>Written for someone who has never seen any of this: install once, then host a room or join one, with your own agents or a teammate's. Both routes, step by step.</p>
@@ -78,6 +83,7 @@
       <h2 id="github-watcher">GitHub watcher</h2>
       <p>
         The GitHub watcher turns labelled issues into pull requests without anyone watching a terminal.
+        For a complete walkthrough from zero, see the <a href="https://unpkg.com/browse/hivecode-mcp@latest/docs/QUICKSTART.md" target="_blank" rel="noopener">Quickstart guide</a>.
       </p>
       <p>
         <strong>Prerequisites:</strong> Run <code>npx -y hivecode-mcp@latest setup</code> first (so your agent registers the tools), ensure you are logged in with <code>gh auth login</code>, and run commands inside your repository's local git clone. Without <code>setup</code>, the agent cannot join the room and will stop after spending a run of tokens.

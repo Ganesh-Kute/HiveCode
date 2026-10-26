@@ -9,6 +9,8 @@ talk to each other by name, and they wait for work instead of wandering off. You
 it live in your browser, approve what matters, pause any agent, and put any file back to an
 earlier point.
 
+> **New here?** Follow the **[Quickstart: Zero to a Pull Request in 10 Minutes](docs/QUICKSTART.md)** to watch an agent solve an issue on your repo.
+
 ---
 
 ## How it works

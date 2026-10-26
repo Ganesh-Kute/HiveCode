@@ -34,6 +34,8 @@ export const SUBCOMMAND_FILES = {
   notify: 'hive-notify.js',
   setup: 'hive-setup.js',
   slack: 'hive-slack.js',
+  invite: 'hive-room-key.js',
+  revoke: 'hive-room-key.js',
 }
 
 export function resolveSubcommandFile(subcmd) {
@@ -67,7 +69,11 @@ export function extractSubcommandUsageFlags(subcmd, fileContent) {
     return extractUsageFlags(m ? m[1] : '')
   }
   if (subcmd === 'invite' || subcmd === 'revoke') {
-    return new Set()
+    const m = fileContent.match(/const USAGE = `([\s\S]*?)`/)
+    if (!m) return new Set()
+    const lines = m[1].split('\n')
+    const filtered = lines.filter(l => l.includes(`hivecode-mcp ${subcmd}`) || (subcmd === 'invite' && l.startsWith('  --'))).join('\n')
+    return extractUsageFlags(filtered)
   }
   const m = fileContent.match(/USAGE\s*=\s*`([\s\S]*?)`/)
   return extractUsageFlags(m ? m[1] : '')
@@ -79,6 +85,7 @@ export function stripHtml(html) {
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/(?:code|pre|p|div|li|h[1-6])>|<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -88,19 +95,67 @@ export function stripHtml(html) {
     .replace(/&#39;/g, "'")
 }
 
-// 6. Parser for commands and flags from HTML text
-export function extractCommandsAndFlags(html) {
-  const clean = stripHtml(html)
+// 5b. Join line continuations (bash trailing backslash or PowerShell trailing backtick)
+export function joinLineContinuations(text) {
+  return text
+    .replace(/(?<!\\)\\\r?\n\s*/g, ' ')
+    .replace(/(?<!`)`\r?\n\s*/g, ' ')
+}
+
+// 6. Parser for commands and flags from HTML or Markdown text
+export function extractCommandsAndFlags(text) {
+  const clean = joinLineContinuations(stripHtml(text))
   const commands = []
   const flagsFound = []
 
-  const cmdRegex = /npx\s+(?:-y\s+)?hivecode-mcp(?:@latest)?\s+([a-z0-9-]+)([^\n]*)/g
-  for (const m of clean.matchAll(cmdRegex)) {
-    const subcmd = m[1]
-    const argsLine = m[2]
-    commands.push({ subcmd, raw: m[0].trim() })
+  const prefixRegex = /(?:npx\s+(?:-y\s+)?hivecode-mcp(?:@latest)?|node\s+(?:\S*\/)?hive-mcp\.js)\s+([a-z0-9-]+)/g
 
-    for (const flagMatch of argsLine.matchAll(/--([a-z0-9-]+)/g)) {
+  let match
+  while ((match = prefixRegex.exec(clean)) !== null) {
+    const subcmd = match[1]
+    const startIndex = match.index + match[0].length
+
+    let inSingleQuote = false
+    let inDoubleQuote = false
+    let endIndex = startIndex
+
+    const lineStart = clean.lastIndexOf('\n', match.index) + 1
+    const precedingOnLine = clean.slice(lineStart, match.index)
+    const inBackticks = (precedingOnLine.match(/`/g) || []).length % 2 === 1
+
+    while (endIndex < clean.length) {
+      const char = clean[endIndex]
+      const prevChar = endIndex > 0 ? clean[endIndex - 1] : ' '
+
+      // Shell quotes start on boundary (^, whitespace, =, ()
+      if (char === "'" && !inDoubleQuote) {
+        if (!inSingleQuote && /[\s=(]/.test(prevChar)) {
+          inSingleQuote = true
+        } else if (inSingleQuote) {
+          inSingleQuote = false
+        }
+      } else if (char === '"' && !inSingleQuote) {
+        if (!inDoubleQuote && /[\s=(]/.test(prevChar)) {
+          inDoubleQuote = true
+        } else if (inDoubleQuote) {
+          inDoubleQuote = false
+        }
+      } else {
+        if (char === '\n') break
+        if (inBackticks && char === '`') break
+        if (!inBackticks && !inSingleQuote && !inDoubleQuote) {
+          if (char === '<' || (char === '|' && !clean.slice(0, endIndex).includes('wss://'))) {
+            break
+          }
+        }
+      }
+      endIndex++
+    }
+
+    const argsText = clean.slice(startIndex, endIndex)
+    commands.push({ subcmd, raw: clean.slice(match.index, endIndex).trim() })
+
+    for (const flagMatch of argsText.matchAll(/--([a-z0-9-]+)/g)) {
       flagsFound.push({ subcmd, flag: `--${flagMatch[1]}` })
     }
   }

@@ -33,17 +33,20 @@ export async function runCheckSiteRelease(options = {}) {
   const log = options.log || console.log
   const errorLog = options.errorLog || console.error
 
-  // 1. Extract commands and flags from public site pages
-  const targetPages = ['index.html', 'docs.html'].filter(f => fs.existsSync(path.join(publicDir, f)))
-  if (targetPages.length === 0) {
+  // 1. Extract commands, flags, and unpkg/npm links from public site pages
+  const allHtmlPages = fs.readdirSync(publicDir).filter(f => f.endsWith('.html'))
+  if (allHtmlPages.length === 0) {
     errorLog('[check-site-release] ERROR: could not check: no public/*.html pages found')
     return 2
   }
 
   const documentedCommands = new Map() // subcmd -> Set of raw command strings
   const documentedFlags = new Map()    // subcmd -> Set of flags
+  const unpkgLinks = new Map()         // rawUrl -> Set of pages
+  const npmLinks = new Map()           // rawUrl -> Set of pages
 
-  for (const page of targetPages) {
+  const targetDocPages = ['index.html', 'docs.html'].filter(f => fs.existsSync(path.join(publicDir, f)))
+  for (const page of targetDocPages) {
     const html = fs.readFileSync(path.join(publicDir, page), 'utf8')
     const { commands, flagsFound } = extractCommandsAndFlags(html)
     for (const { subcmd, raw } of commands) {
@@ -53,6 +56,20 @@ export async function runCheckSiteRelease(options = {}) {
     for (const { subcmd, flag } of flagsFound) {
       if (!documentedFlags.has(subcmd)) documentedFlags.set(subcmd, new Set())
       documentedFlags.get(subcmd).add(flag)
+    }
+  }
+
+  for (const page of allHtmlPages) {
+    const html = fs.readFileSync(path.join(publicDir, page), 'utf8')
+    for (const m of html.matchAll(/https?:\/\/(?:www\.)?unpkg\.com\/[^\s"'<>]+/g)) {
+      const url = m[0]
+      if (!unpkgLinks.has(url)) unpkgLinks.set(url, new Set())
+      unpkgLinks.get(url).add(page)
+    }
+    for (const m of html.matchAll(/https?:\/\/(?:www\.)?npmjs\.com\/package\/[^\s"'<>]+/g)) {
+      const url = m[0]
+      if (!npmLinks.has(url)) npmLinks.set(url, new Set())
+      npmLinks.get(url).add(page)
     }
   }
 
@@ -156,9 +173,72 @@ export async function runCheckSiteRelease(options = {}) {
     }
   }
 
+  // 4b. Verify unpkg links against published release
+  for (const [rawUrl, pages] of unpkgLinks) {
+    const pathPart = rawUrl.replace(/^https?:\/\/(?:www\.)?unpkg\.com\//, '')
+    // Strip leading browse/ to hit raw asset endpoint directly, avoiding the unpkg SPA redirect trap
+    const rawPath = pathPart.replace(/^browse\//, '')
+    // Resolve @latest to published version
+    const resolvedPath = rawPath.replace(/hivecode-mcp@latest\b/, `hivecode-mcp@${version}`)
+    const probeUrl = `${unpkgUrl}/${resolvedPath}`
+
+    try {
+      let res = await fetch(probeUrl, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (res.status === 405) {
+        res = await fetch(probeUrl, {
+          method: 'GET',
+          signal: AbortSignal.timeout(timeoutMs),
+        })
+      }
+      if (res.status === 404) {
+        const pagesList = Array.from(pages).join(', ')
+        missing.push(`link "${rawUrl}" (in ${pagesList}): 404 on unpkg (version ${version})`)
+        continue
+      }
+      if (res.status >= 500 || !res.ok) {
+        errorLog(`[check-site-release] ERROR: could not check: unpkg returned HTTP ${res.status} for ${probeUrl}`)
+        return 2
+      }
+    } catch (err) {
+      errorLog(`[check-site-release] ERROR: could not check: unpkg unreachable or timed out probing ${probeUrl} (${err.message})`)
+      return 2
+    }
+  }
+
+  // 4c. Verify npm package links
+  for (const [rawUrl, pages] of npmLinks) {
+    const pkgMatch = rawUrl.match(/npmjs\.com\/package\/([^\s"'<>\/#]+)/)
+    if (!pkgMatch) continue
+    const pkgName = pkgMatch[1]
+    const probeUrl = `${registryUrl}/${pkgName}`
+
+    try {
+      const res = await fetch(probeUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: { 'Accept': 'application/json' },
+      })
+      if (res.status === 404) {
+        const pagesList = Array.from(pages).join(', ')
+        missing.push(`link "${rawUrl}" (in ${pagesList}): package not found on npm`)
+        continue
+      }
+      if (res.status >= 500 || !res.ok) {
+        errorLog(`[check-site-release] ERROR: could not check: npm registry returned HTTP ${res.status} for ${pkgName}`)
+        return 2
+      }
+    } catch (err) {
+      errorLog(`[check-site-release] ERROR: could not check: npm registry unreachable or timed out probing ${pkgName} (${err.message})`)
+      return 2
+    }
+  }
+
   // 5. Determine result
   if (missing.length > 0) {
-    errorLog(`\n[check-site-release] FAILED: site documents commands or flags missing from published hivecode-mcp@${version}:`)
+    errorLog(`\n[check-site-release] FAILED: site documents commands, flags, or links missing from published hivecode-mcp@${version}:`)
     for (const item of missing) {
       errorLog(`  - ${item}`)
     }
@@ -166,7 +246,7 @@ export async function runCheckSiteRelease(options = {}) {
     return 1
   }
 
-  log(`[check-site-release] OK: all commands and flags on site exist in published hivecode-mcp@${version}`)
+  log(`[check-site-release] OK: all commands, flags, and links on site exist in published hivecode-mcp@${version}`)
   return 0
 }
 

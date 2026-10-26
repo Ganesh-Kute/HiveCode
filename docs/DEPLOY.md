@@ -1,7 +1,7 @@
 # Deploy the relay (permanent address, no more tunnels)
 
 Goal: run `server.js` in the cloud so it has a fixed URL like
-`wss://livecode-relay.onrender.com`. Then you never touch cloudflared again —
+`wss://<your-service>.onrender.com`. Then you never touch cloudflared again —
 everyone just connects to that address.
 
 You only deploy ONCE. After that it stays up.
@@ -12,23 +12,23 @@ You only deploy ONCE. After that it stays up.
 
 1. Put this project on GitHub:
    - Create a free account at https://github.com
-   - Create a new empty repository (e.g. `livecode`).
+   - Create a new empty repository (e.g. `<your-repo>`).
    - In this folder, run:
      ```
      git init
      git add .
-     git commit -m "livecode relay"
+     git commit -m "hivecode relay"
      git branch -M main
-     git remote add origin https://github.com/<you>/livecode.git
+     git remote add origin https://github.com/<you>/<your-repo>.git
      git push -u origin main
      ```
 2. Go to https://render.com, sign up (free), click **New > Web Service**.
-3. Connect your GitHub and pick the `livecode` repo.
+3. Connect your GitHub and pick the `<your-repo>` repo.
 4. Render reads `render.yaml` automatically. Just click **Create Web Service**.
-5. Wait ~2 min. You get a URL like `https://livecode-relay.onrender.com`.
+5. Wait ~2 min. You get a URL like `https://<your-service>.onrender.com`.
    Your relay address is the same with `wss://`:
    ```
-   wss://livecode-relay.onrender.com
+   wss://<your-service>.onrender.com
    ```
 
 Note: the FREE Render service sleeps after ~15 min idle (first connection then
@@ -51,10 +51,10 @@ instance (~$7/mo) so it never sleeps.
 
 ## Using the hosted relay
 
-Once you have the address, nobody needs cloudflared. Host a session with:
+Once you have the address, nobody needs cloudflared. Host a branch with:
 
-```
-node go.js host ./workspace Jeevan --relay wss://livecode-relay.onrender.com
+```bash
+npx -y hivecode-mcp@latest branch <branch> --relay wss://<your-service>.onrender.com
 ```
 
 It prints the join line (with that relay baked in) for your friend, exactly
@@ -62,8 +62,8 @@ like before — but now the address never changes and your laptop doesn't have
 to be the server.
 
 Friend joins normally:
-```
-node go.js join wss://livecode-relay.onrender.com room-XXXX ./workspace Friend
+```bash
+npx -y hivecode-mcp@latest branch <branch> --join "wss://<your-service>.onrender.com|room-XXXX"
 ```
 
 ---
@@ -72,7 +72,7 @@ node go.js join wss://livecode-relay.onrender.com room-XXXX ./workspace Friend
 
 Open the `https://...` version of your relay URL in a browser. You should see:
 ```
-livecode relay is up. Connect a client to ws://<this-host>:PORT/<room>
+hivecode relay is up. Connect a client to ws://<this-host>:PORT/<room>
 ```
 
 ---
