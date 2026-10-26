@@ -17,6 +17,26 @@
 import fs from 'fs'
 import path from 'path'
 import assert from 'node:assert'
+import {
+  extractValidSubcommands,
+  extractUsageFlags,
+  extractSlackManifests,
+  extractSlackManifest,
+  extractCommandsAndFlags,
+  stripHtml,
+  SUBCOMMAND_FILES,
+  resolveSubcommandFile,
+  extractSubcommandUsageFlags,
+} from '../scripts/site-commands.mjs'
+
+export {
+  extractValidSubcommands,
+  extractUsageFlags,
+  extractSlackManifests,
+  extractSlackManifest,
+  extractCommandsAndFlags,
+  stripHtml,
+}
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
 const PUBLIC = path.join(ROOT, 'public')
@@ -29,111 +49,19 @@ const T = (name, ok, detail = '') => {
 
 // 1. Derive valid subcommands from hive-mcp.js dispatch lines
 const mcpJs = fs.readFileSync(path.join(ROOT, 'hive-mcp.js'), 'utf8')
-export function extractValidSubcommands(source) {
-  const set = new Set()
-  const regex = /process\.argv\[2\]\s*===?\s*['"]([a-zA-Z0-9_-]+)['"]/g
-  for (const m of source.matchAll(regex)) {
-    if (!m[1].startsWith('-')) {
-      set.add(m[1])
-    }
-  }
-  return set
-}
 const VALID_SUBCOMMANDS = extractValidSubcommands(mcpJs)
 
-// 2. Extract flags from USAGE text
-export function extractUsageFlags(usageText) {
-  const flags = new Set()
-  for (const m of usageText.matchAll(/--([a-z0-9-]+)/g)) {
-    flags.add(`--${m[1]}`)
-  }
-  return flags
-}
-
-// 2b. Extract Slack manifest JSON from docs.html
-export function extractSlackManifest(docsHtml) {
-  const match = docsHtml.match(/<pre><code>\s*(\{[\s\S]*?"display_information"[\s\S]*?\})\s*<\/code><\/pre>/)
-  if (!match) return null
-  return JSON.parse(match[1])
-}
-
-// Map subcommands to their allowed flags
+// Map subcommands to their allowed flags using shared resolution
 const USAGE_MAP = new Map()
-
-// github
-const githubJs = fs.readFileSync(path.join(ROOT, 'hive-github.js'), 'utf8')
-const githubUsageMatch = githubJs.match(/const USAGE = `([\s\S]*?)`/)
-USAGE_MAP.set('github', extractUsageFlags(githubUsageMatch ? githubUsageMatch[1] : ''))
-
-// branch & pr
-const branchJs = fs.readFileSync(path.join(ROOT, 'hive-branch.js'), 'utf8')
-const branchUsageMatch = branchJs.match(/USAGE = `([\s\S]*?)`/)
-if (branchUsageMatch) {
-  const branchLines = branchUsageMatch[1].split('\n')
-  const branchText = branchLines.filter(l => l.includes('branch')).join('\n')
-  const prText = branchLines.filter(l => l.includes('pr')).join('\n')
-  USAGE_MAP.set('branch', extractUsageFlags(branchText))
-  USAGE_MAP.set('pr', extractUsageFlags(prText))
-}
-
-// notify
-const notifyJs = fs.readFileSync(path.join(ROOT, 'hive-notify.js'), 'utf8')
-const notifyUsageMatch = notifyJs.match(/USAGE = `([\s\S]*?)`/)
-USAGE_MAP.set('notify', extractUsageFlags(notifyUsageMatch ? notifyUsageMatch[1] : ''))
-
-// setup
-const setupJs = fs.readFileSync(path.join(ROOT, 'hive-setup.js'), 'utf8')
-const setupUsageMatch = setupJs.match(/Usage: npx[^\n]+/)
-USAGE_MAP.set('setup', extractUsageFlags(setupUsageMatch ? setupUsageMatch[0] : '--name --dry-run --help'))
-
-// slack (from hive-slack.js)
-const slackPath = path.join(ROOT, 'hive-slack.js')
-if (fs.existsSync(slackPath)) {
-  const slackJs = fs.readFileSync(slackPath, 'utf8')
-  const slackMatch = slackJs.match(/USAGE\s*=\s*`([\s\S]*?)`/)
-  if (slackMatch) {
-    USAGE_MAP.set('slack', extractUsageFlags(slackMatch[1]))
+for (const [subcmd, filename] of Object.entries(SUBCOMMAND_FILES)) {
+  const filePath = path.join(ROOT, filename)
+  if (fs.existsSync(filePath)) {
+    const content = fs.readFileSync(filePath, 'utf8')
+    USAGE_MAP.set(subcmd, extractSubcommandUsageFlags(subcmd, content))
   }
 }
-
-// invite & revoke take no flags
 USAGE_MAP.set('invite', new Set())
 USAGE_MAP.set('revoke', new Set())
-
-// 3. Strip HTML tags and decode entities
-export function stripHtml(html) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-}
-
-// 4. Parser for commands and flags in stripped text
-export function extractCommandsAndFlags(html) {
-  const clean = stripHtml(html)
-  const commands = []
-  const flagsFound = []
-
-  const cmdRegex = /npx\s+(?:-y\s+)?hivecode-mcp(?:@latest)?\s+([a-z0-9-]+)([^\n]*)/g
-  for (const m of clean.matchAll(cmdRegex)) {
-    const subcmd = m[1]
-    const argsLine = m[2]
-    commands.push({ subcmd, raw: m[0].trim() })
-
-    for (const flagMatch of argsLine.matchAll(/--([a-z0-9-]+)/g)) {
-      flagsFound.push({ subcmd, flag: `--${flagMatch[1]}` })
-    }
-  }
-
-  return { commands, flagsFound }
-}
 
 export function validateHtml(html) {
   const { commands, flagsFound } = extractCommandsAndFlags(html)
@@ -228,20 +156,48 @@ try {
 }
 T('P6a manifest equality validator catches modified scope', caughtMutation)
 
-// P6: Guard against drift between docs.html Slack manifest and slack-app-manifest.json
+// P6: Guard against drift between docs.html Slack manifests and repo manifest files
 const docsHtmlForManifest = fs.readFileSync(path.join(PUBLIC, 'docs.html'), 'utf8')
-const docsManifest = extractSlackManifest(docsHtmlForManifest)
-const rootManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'slack-app-manifest.json'), 'utf8'))
+const docsManifests = extractSlackManifests(docsHtmlForManifest)
 
-let manifestMatches = false
-let manifestDiff = ''
-try {
-  assert.deepStrictEqual(docsManifest, rootManifest)
-  manifestMatches = true
-} catch (err) {
-  manifestDiff = err.message
+// Outbound manifest
+const rootOutboundManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'slack-app-manifest.json'), 'utf8'))
+const docsOutbound = docsManifests.find(m => m && m.settings && m.settings.socket_mode_enabled === false)
+
+let outboundMatches = false
+let outboundDiff = ''
+if (docsOutbound) {
+  try {
+    assert.deepStrictEqual(docsOutbound, rootOutboundManifest)
+    outboundMatches = true
+  } catch (err) {
+    outboundDiff = err.message
+  }
+} else {
+  outboundDiff = 'outbound manifest (socket_mode_enabled: false) not found in docs.html'
 }
-T('P6 Slack app manifest in docs.html parses and matches slack-app-manifest.json', manifestMatches, manifestDiff)
+T('P6 Slack outbound manifest in docs.html matches slack-app-manifest.json', outboundMatches, outboundDiff)
+
+// Inbound manifest
+const rootInboundPath = path.join(ROOT, 'slack-app-manifest-inbound.json')
+const docsInbound = docsManifests.find(m => m && m.settings && m.settings.socket_mode_enabled === true)
+
+let inboundMatches = false
+let inboundDiff = ''
+if (!fs.existsSync(rootInboundPath)) {
+  inboundDiff = 'slack-app-manifest-inbound.json does not exist'
+} else if (docsInbound) {
+  const rootInboundManifest = JSON.parse(fs.readFileSync(rootInboundPath, 'utf8'))
+  try {
+    assert.deepStrictEqual(docsInbound, rootInboundManifest)
+    inboundMatches = true
+  } catch (err) {
+    inboundDiff = err.message
+  }
+} else {
+  inboundDiff = 'inbound manifest (socket_mode_enabled: true) not found in docs.html'
+}
+T('P6b Slack inbound manifest in docs.html matches slack-app-manifest-inbound.json', inboundMatches, inboundDiff)
 
 console.log(failed ? `\n${failed} FAILED` : '\nall passed')
 process.exit(failed ? 1 : 0)

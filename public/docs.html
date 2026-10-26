@@ -115,11 +115,16 @@
       </p>
 
       <h3>Create the Slack App</h3>
+      <p>Choose the manifest that matches your workflow:</p>
+      <ul>
+        <li><strong>Outbound only (alerts and progress updates):</strong> Standard manifest with lowest privilege (<code>chat:write</code>, <code>channels:read</code>, <code>groups:read</code>). No message history and no public webhook URL or Socket Mode required.</li>
+        <li><strong>Inbound controls (stop / retry from threads):</strong> Inbound manifest preconfigured with Socket Mode, message event subscriptions, and <code>users:read</code>. Required if you want full workspace members to reply <code>stop</code> or authorized users to reply <code>retry</code>.</li>
+      </ul>
       <ol>
         <li>Open <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a> and click <strong>Create New App</strong> &rarr; <strong>From a manifest</strong>.</li>
-        <li>Select your workspace, switch to the <strong>JSON</strong> tab, and paste the manifest below:
+        <li>Select your workspace, switch to the <strong>JSON</strong> tab, and paste one of the manifests below:
           <details style="margin-top:8px; margin-bottom:8px">
-            <summary style="cursor:pointer; font-weight:600">Slack app manifest (JSON)</summary>
+            <summary style="cursor:pointer; font-weight:600">Option A: Outbound manifest (JSON — alerts only)</summary>
             <pre><code>{
   "display_information": {
     "name": "Hivecode",
@@ -148,10 +153,50 @@
   }
 }</code></pre>
           </details>
+
+          <details style="margin-top:8px; margin-bottom:8px">
+            <summary style="cursor:pointer; font-weight:600">Option B: Inbound manifest (JSON — required for stop / retry with Socket Mode)</summary>
+            <pre><code>{
+  "display_information": {
+    "name": "Hivecode",
+    "description": "One Slack thread per task or GitHub issue, with inbound stop and thread replies.",
+    "background_color": "#111318"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hivecode",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "channels:read",
+        "groups:read",
+        "channels:history",
+        "groups:history",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "message.channels",
+        "message.groups"
+      ]
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}</code></pre>
+          </details>
         </li>
         <li>Click <strong>Next</strong> &rarr; <strong>Create</strong>, then click <strong>Install to Workspace</strong> and <strong>Allow</strong>.</li>
         <li>Under <strong>OAuth &amp; Permissions</strong> in the left sidebar, copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>).</li>
-        <li><strong>For in-thread controls (stop / retry):</strong> Under <strong>Basic Information</strong> &rarr; <strong>App-Level Tokens</strong>, click <em>Generate Token and Scopes</em>, name it <code>socket-mode</code>, add scope <code>connections:write</code>, and copy the token (starts with <code>xapp-</code>). Under <strong>Socket Mode</strong>, enable it. Under <strong>OAuth &amp; Permissions</strong>, add bot scopes <code>channels:history</code>, <code>groups:history</code>, and <code>users:read</code>. Under <strong>Event Subscriptions</strong>, toggle on and add bot events <code>message.channels</code> and <code>message.groups</code>. Reinstall the app when prompted.</li>
+        <li><strong>For in-thread controls (stop / retry):</strong> Ensure you selected Option B (the inbound manifest above). Under <strong>Basic Information</strong> &rarr; <strong>App-Level Tokens</strong>, click <em>Generate Token and Scopes</em>, name it <code>socket-mode</code>, add scope <code>connections:write</code>, and copy the token (starts with <code>xapp-</code>).</li>
         <li><strong>Invite the bot &amp; copy IDs:</strong> In your channel, run <code>/invite @Hivecode</code>. Click the channel name &rarr; view channel details to copy the <strong>Channel ID</strong> (<code>C&hellip;</code>). For <code>--slack-allow</code>, click any user's profile &rarr; More (&vellip;) &rarr; <strong>Copy member ID</strong> (<code>U&hellip;</code>).</li>
       </ol>
 

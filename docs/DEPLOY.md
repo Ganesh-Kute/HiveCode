@@ -74,3 +74,25 @@ Open the `https://...` version of your relay URL in a browser. You should see:
 ```
 livecode relay is up. Connect a client to ws://<this-host>:PORT/<room>
 ```
+
+---
+
+## Deploy the website (`public/`)
+
+Before deploying changes in `public/` to production, always run the release gate check:
+
+```bash
+node scripts/check-site-release.mjs
+```
+
+This verifies that every CLI command and flag documented on public pages actually exists in the latest version published to npm (`hivecode-mcp@latest`).
+
+- **Exit 0**: All documented commands and flags are published. Safe to deploy.
+- **Exit 1**: The site documents unreleased commands or flags (e.g. `github start --slack-channel`, `--slack-allow`, or `slack start`). Halts with:
+  > publish to npm first, then deploy the site
+- **Exit 2**: Network or CDN unreachable or timed out (`could not check`). Fails closed so unverified site releases are never deployed.
+
+Configurable via environment variables:
+- `HIVE_NPM_REGISTRY_URL` (default: `https://registry.npmjs.org`)
+- `HIVE_UNPKG_URL` (default: `https://unpkg.com`)
+- `HIVE_CHECK_TIMEOUT_MS` (default: `10000`)
