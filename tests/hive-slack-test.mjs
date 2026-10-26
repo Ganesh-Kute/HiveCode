@@ -534,12 +534,16 @@ try {
   // Fake Slack Socket Mode WSS server
   const acks = []
   let activeSock = null
+  let onSockConn = null
   let suppressHello = false
   let helloNumConnections = 1
   sockSrv = http.createServer()
   sockWss = new WebSocketServer({ server: sockSrv })
   sockWss.on('connection', (ws) => {
     activeSock = ws
+    if (typeof onSockConn === 'function') {
+      try { onSockConn(ws) } catch { }
+    }
     if (!suppressHello) {
       const num = typeof helloNumConnections === 'function' ? helloNumConnections() : helloNumConnections
       try { ws.send(JSON.stringify({ type: 'hello', num_connections: num })) } catch { }
@@ -643,6 +647,60 @@ try {
   T('connectSocketMode logs retry warning to logErr once during retry',
     deadStderr.some((m) => /Slack Socket Mode could not connect/.test(m)),
     `stderr=${JSON.stringify(deadStderr)}`)
+
+  // Liveness check: (a) half-open socket (simulated with ws._socket.pause())
+  // Must detect silence, probe with ping, timeout, terminate, reconnect, and log outage + recovery
+  let halfOpenConnections = 0
+  const halfOpenLogs = []
+  onSockConn = (ws) => {
+    halfOpenConnections++
+    if (halfOpenConnections === 1) {
+      setTimeout(() => {
+        try { ws._socket.pause() } catch { }
+      }, 20)
+    }
+  }
+  const halfOpenConn = await connectSocketMode({
+    appToken: 'xapp-test',
+    api: process.env.HIVE_SLACK_API,
+    pingIntervalMs: 80,
+    probeTimeoutMs: 40,
+    reconnectDelayMs: 40,
+    logErr: (m) => halfOpenLogs.push(m),
+  })
+  await sleep(350)
+  halfOpenConn.stop()
+  onSockConn = null
+
+  T('half-open socket: detects silence, probes, terminates, reconnects, and logs outage + recovery',
+    halfOpenConnections >= 2 &&
+    halfOpenLogs.some((m) => /went silent/i.test(m)) &&
+    halfOpenLogs.some((m) => /reconnected/i.test(m)),
+    `connections=${halfOpenConnections} logs=${JSON.stringify(halfOpenLogs)}`)
+
+  // Liveness check: (b) quiet but ALIVE server that sends nothing but answers pings
+  // Must NOT reconnect over multiple watchdog periods
+  let quietConnections = 0
+  const quietLogs = []
+  onSockConn = () => {
+    quietConnections++
+  }
+  const quietConn = await connectSocketMode({
+    appToken: 'xapp-test',
+    api: process.env.HIVE_SLACK_API,
+    pingIntervalMs: 60,
+    probeTimeoutMs: 30,
+    reconnectDelayMs: 40,
+    logErr: (m) => quietLogs.push(m),
+  })
+  await sleep(280)
+  quietConn.stop()
+  onSockConn = null
+
+  T('quiet but alive server: answers pings and does NOT reconnect over multiple watchdog periods',
+    quietConnections === 1 &&
+    !quietLogs.some((m) => /went silent/i.test(m)),
+    `connections=${quietConnections} logs=${JSON.stringify(quietLogs)}`)
 
   const bridgeStderr = []
   sockConn = await connectSocketMode({

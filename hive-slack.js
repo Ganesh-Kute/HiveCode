@@ -36,6 +36,8 @@ const MAX_SEEN_EVENTS = 500
 export const USAGE = `usage:
   SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--dry-run] [--start-retry <ms>]
   SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--agent] [--timeout <ms>] [--start-retry <ms>]
+  SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack agent "<relay|room>" --channel <id> [--name <name>] [--allow <U123,U456>]
+  SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack mcp-server "<relay|room>" [--port 8790] [--auth slack|none] [--allow <U123,U456>] [--trust-proxy]
 `
 
 export const NON_RETRYABLE = new Set([
@@ -471,6 +473,9 @@ export async function connectSocketMode({
   onMultiConnection = null,
   logErr = console.error,
   reconnectDelayMs = 1000,
+  maxReconnectDelayMs = 60000,
+  pingIntervalMs = Number(process.env.HIVE_SLACK_PING_INTERVAL_MS) || 30000,
+  probeTimeoutMs = Number(process.env.HIVE_SLACK_PROBE_TIMEOUT_MS) || 5000,
   helloTimeoutMs = Number(process.env.HIVE_SLACK_HELLO_TIMEOUT_MS) || 10000,
   startRetryMs = Number(process.env.HIVE_SLACK_START_RETRY_MS) || 60000,
   startRetryDelayMs = 1000,
@@ -483,6 +488,14 @@ export async function connectSocketMode({
   const seenEvents = new Set()
   let lastCloseTime = 0
   let warnedMulti = false
+  let reconnectAttempts = 0
+  let inOutage = false
+
+  function getNextReconnectDelay() {
+    const delay = Math.min(maxReconnectDelayMs, reconnectDelayMs * Math.pow(2, reconnectAttempts))
+    reconnectAttempts++
+    return delay
+  }
 
   function rememberEvent(id) {
     if (!id) return false
@@ -496,7 +509,59 @@ export async function connectSocketMode({
   }
 
   function wireSocket(sock) {
+    let lastActivity = Date.now()
+    let probeTimer = null
+    let watchdogTimer = null
+    let healthyTimer = null
+
+    function recordActivity() {
+      lastActivity = Date.now()
+      if (probeTimer) {
+        clearTimeout(probeTimer)
+        probeTimer = null
+        scheduleWatchdog()
+      }
+    }
+
+    function scheduleWatchdog() {
+      if (stopped || halted || ws !== sock || probeTimer) return
+      if (watchdogTimer) clearTimeout(watchdogTimer)
+      const silence = Date.now() - lastActivity
+      const delay = Math.max(50, pingIntervalMs - silence)
+      watchdogTimer = timer(checkWatchdog, delay)
+    }
+
+    function checkWatchdog() {
+      if (stopped || halted || ws !== sock) return
+      const silence = Date.now() - lastActivity
+      if (silence >= pingIntervalMs) {
+        if (!probeTimer) {
+          try {
+            if (typeof sock.ping === 'function') sock.ping()
+          } catch { }
+
+          probeTimer = timer(() => {
+            if (stopped || halted || ws !== sock) return
+            if (!inOutage) {
+              inOutage = true
+              if (typeof logErr === 'function') {
+                try {
+                  logErr(`Slack Socket Mode connection went silent (no ping or message for ${Math.round((Date.now() - lastActivity) / 1000)} s); terminating to reconnect...`)
+                } catch { }
+              }
+            }
+            try { sock.terminate ? sock.terminate() : sock.close() } catch { }
+          }, probeTimeoutMs)
+        }
+        return
+      }
+      scheduleWatchdog()
+    }
+
+    scheduleWatchdog()
+
     sock.on('message', (raw) => {
+      recordActivity()
       let frame
       try { frame = JSON.parse(String(raw)) } catch { return }
       // Acknowledge every envelope immediately (<3s) so Slack never retries and duplicates a stop/reply.
@@ -505,6 +570,19 @@ export async function connectSocketMode({
       }
       if (!frame) return
       if (frame.type === 'hello') {
+        if (inOutage) {
+          inOutage = false
+          if (typeof logErr === 'function') {
+            try { logErr('Slack Socket Mode reconnected.') } catch { }
+          }
+        }
+        if (healthyTimer) clearTimeout(healthyTimer)
+        const healthyDelay = Math.min(pingIntervalMs, reconnectDelayMs * 2)
+        healthyTimer = timer(() => {
+          if (!stopped && !halted && ws === sock) {
+            reconnectAttempts = 0
+          }
+        }, healthyDelay)
         const num = Number(frame.num_connections) || 1
         const isOwnLingering = (num === 2 && (Date.now() - lastCloseTime < 15000))
         if (num > 1 && !isOwnLingering) {
@@ -538,15 +616,27 @@ export async function connectSocketMode({
       }
     })
 
+    sock.on('ping', () => {
+      recordActivity()
+    })
+
+    sock.on('pong', () => {
+      recordActivity()
+    })
+
     sock.on('error', (e) => {
       if (typeof onError === 'function') { try { onError(e) } catch { } }
     })
 
     sock.on('close', () => {
       lastCloseTime = Date.now()
+      if (probeTimer) { clearTimeout(probeTimer); probeTimer = null }
+      if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null }
+      if (healthyTimer) { clearTimeout(healthyTimer); healthyTimer = null }
       if (ws === sock) ws = null
       if (!stopped && !halted) {
-        reconnectTimer = timer(() => openSocket(''), reconnectDelayMs)
+        const delay = getNextReconnectDelay()
+        reconnectTimer = timer(() => openSocket(''), delay)
       }
     })
   }
@@ -565,7 +655,10 @@ export async function connectSocketMode({
           return
         }
         if (typeof onError === 'function') { try { onError(e) } catch { } }
-        if (!stopped) reconnectTimer = timer(() => openSocket(''), reconnectDelayMs)
+        if (!stopped) {
+          const delay = getNextReconnectDelay()
+          reconnectTimer = timer(() => openSocket(''), delay)
+        }
         return
       }
     }
@@ -728,7 +821,11 @@ export async function connectSocketMode({
     stop: () => {
       stopped = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (ws) { try { ws.close() } catch { } ws = null }
+      if (ws) {
+        try { ws.close() } catch { }
+        try { ws.terminate && ws.terminate() } catch { }
+        ws = null
+      }
     },
     isHalted: () => halted,
   }
