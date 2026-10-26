@@ -1586,8 +1586,8 @@ options (saved for the next start):
   --test "<command>"          run the tests ourselves before every push
   --notify <webhook url>      a Slack or Discord incoming webhook
   --slack-channel <id>        one Slack thread per issue (the bot token comes from SLACK_BOT_TOKEN)
-  --slack-allow <ids>         Slack user ids (U…, comma-separated) who may reply "retry" in an issue's thread;
-                              with SLACK_APP_TOKEN set, any full member may reply "stop" there
+  --slack-allow <ids>         Slack member ids (U…, comma-separated) who may reply "retry" in an issue's thread;
+                              needs SLACK_APP_TOKEN, with which any full member may reply "stop" there
   --every <seconds>           how often to ask GitHub (default 60)
   --max-parallel <n>          runs at once (default 1)
   --max-minutes <n>           per run (default 40)
@@ -1655,11 +1655,24 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   // in shell history and in the flags saved to .git/hivecode/github.json. Checked here, before any
   // work starts, so a typo'd channel or a revoked token is said now, not discovered at the first PR.
   const slackChannel = opt('slack-channel') || ''
+  // A flag the last start saved is used again without being typed: an error about it says so.
+  const typed = flags(rest)
+  const whence = (k) => (k in typed || !(k in (saved.flags || {})) ? '' : ` (saved by your last start; pass --${k} "" to drop it)`)
+  // --slack-allow THAT CANNOT WORK IS REFUSED, not ignored. Each case below used to start green and
+  // then never let anyone retry from Slack: the replies were never read, or no id could ever match.
+  const allowRaw = String(opt('slack-allow') || '').trim()
+  if (allowRaw) {
+    const flag = `--slack-allow${whence('slack-allow')}`
+    if (!slackChannel) { logErr(`Q634 ${flag} names who may reply "retry" in an issue's Slack thread, and there are no threads without --slack-channel <channel id>.`); return 1 }
+    const notIds = allowRaw.split(',').map((s) => s.trim()).filter((s) => s && !/^[UW][A-Z0-9]{2,}$/.test(s))
+    if (notIds.length) { logErr(`Q634 ${flag} takes Slack member ids like U012AB3CD, not ${notIds.join(', ')}. In Slack, open the person's profile, click More, then Copy member ID.`); return 1 }
+    if (!process.env.SLACK_APP_TOKEN) { logErr(`Q634 ${flag} needs SLACK_APP_TOKEN too: without it the watcher posts to Slack but never reads replies, so nobody could retry from there. Set SLACK_APP_TOKEN to your app's xapp-... app-level token (docs/SLACK_SETUP.md), or drop --slack-allow.`); return 1 }
+  }
   let slack = null
   let slackIn = null
   if (slackChannel) {
     const token = process.env.SLACK_BOT_TOKEN || ''
-    if (!token) { logErr('Q633 --slack-channel needs the bot token in the environment: set SLACK_BOT_TOKEN to the xoxb-... token of your Slack app (docs/SLACK_SETUP.md).'); return 1 }
+    if (!token) { logErr(`Q633 --slack-channel${whence('slack-channel')} needs the bot token in the environment: set SLACK_BOT_TOKEN to the xoxb-... token of your Slack app (docs/SLACK_SETUP.md).`); return 1 }
     let mod
     try { mod = await import('./hive-slack.js') } catch (e) { logErr(`Q633 could not load the Slack bridge (hive-slack.js): ${e.message}`); return 1 }
     if (typeof mod.makeSlackThreader !== 'function') { logErr('Q633 this Hivecode cannot post Slack threads yet (hive-slack.js has no makeSlackThreader).'); return 1 }

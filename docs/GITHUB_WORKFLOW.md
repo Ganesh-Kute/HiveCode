@@ -89,6 +89,10 @@ command path acts on it, and GitHub keeps who asked.
 | Slack cannot confirm who replied `stop` (rate limit, outage) | It stops anyway, and says it could not confirm who asked. `retry` stays refused. |
 | GitHub refuses the comment | Slack is told "Could not stop: GitHub refused". It never says "stopping" for a stop that did not happen. |
 | A reply in a thread the watcher does not own | Ignored. |
+| `--slack-allow` without `SLACK_APP_TOKEN` | Start refuses (Q634) and says to set it. Without it the replies are never read, so nobody could retry from Slack, while the start looked fine. |
+| `--slack-allow` without `--slack-channel` | Start refuses (Q634): there are no threads to reply in. |
+| `--slack-allow ganesh` or `@ganesh` (a name, not a member id) | Start refuses (Q634) and says where the id is: profile, More, Copy member ID. Slack sends ids like `U012AB3CD`, so a name would never match and every retry would be refused. |
+| A `--slack-allow` (or `--slack-channel`) saved by the last start, refused now | The error says it was saved by the last start, and that passing it empty (`--slack-allow ""`) drops it. Every flag is saved and used again by the next start. |
 
 ## How it works
 

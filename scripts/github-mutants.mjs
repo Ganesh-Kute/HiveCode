@@ -55,7 +55,12 @@ const MUTANTS = [
   { t: 'github', id: 'slack-fix-pushed', expect: 'T4b', find: "toSlack(n, `Pushed ${count} commit", to: "void (n, `Pushed ${count} commit" },
   { t: 'github', id: 'slack-gate-said', expect: 'T10', find: "toSlack(n, `\\`${oneLine(test, 80)}\\` failed on", to: "void (n, `\\`${oneLine(test, 80)}\\` failed on" },
   // hive-github.js, under the CLI test
-  { t: 'cli', id: 'slack-token', expect: 'CK1', find: "if (!token) { logErr('Q633", to: "if (false) { logErr('Q633" },
+  { t: 'cli', id: 'slack-token', expect: 'CK1', find: "if (!token) { logErr(`Q633", to: "if (false) { logErr(`Q633" },
+  // --slack-allow as first written: taken as given, so each of these started green and did nothing.
+  { t: 'cli', id: 'allow-no-app-token', expect: 'CK11', find: "if (!process.env.SLACK_APP_TOKEN) { logErr(`Q634 ${flag}", to: "if (false) { logErr(`Q634 ${flag}" },
+  { t: 'cli', id: 'allow-no-channel', expect: 'CK12', find: "if (!slackChannel) { logErr(`Q634 ${flag}", to: "if (false) { logErr(`Q634 ${flag}" },
+  { t: 'cli', id: 'allow-any-name', expect: 'CK13', find: "s && !/^[UW][A-Z0-9]{2,}$/.test(s)", to: "s && false" },
+  { t: 'cli', id: 'allow-whence-silent', expect: 'CK14', find: "k in typed || !(k in (saved.flags || {}))", to: "true" },
   { t: 'cli', id: 'reply-retry-as-stop', expect: 'CK8', find: "check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)", to: "check.mayAct(actor, 'stop', allow)" },
   { t: 'cli', id: 'reply-note-first', expect: 'CK10', find: '    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:', to: "    if (may.unverified) w.slackNote({ threadTs: ev.thread_ts, text: 'stopped; I could not confirm who you are' })\n    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:" },
   { t: 'cli', id: 'dry-saves', expect: 'CD4', find: 'const save = () => { if (!dry) saveState(file, state) }', to: 'const save = () => { saveState(file, state) }' },

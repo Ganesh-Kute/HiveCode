@@ -241,6 +241,27 @@ try {
     r = await run(sl, slArgs, fakeCall(github()).call)
     T('CK4 a good token and channel: it says where each issue goes, and starts', r.code === 0 && /its own thread in #eng, posted by @hivecode/.test(r.out) && /watching acme\/app/.test(r.out), r.out)
     T('CK5 the token is never saved with the flags', !/xoxb-/.test(fs.readFileSync(path.join(sl, '.git', 'hivecode', 'github.json'), 'utf8')))
+
+    // --slack-allow that cannot work is refused at start. Each of these used to start green and then
+    // never let anyone retry from Slack: the replies were not read, or no id could ever match.
+    delete process.env.SLACK_APP_TOKEN
+    const sa = repo(path.join(tmp, 'slack-allow'), 'https://github.com/acme/app.git')
+    const nothingThere = () => !fs.existsSync(path.join(sa, '.git', 'hivecode'))
+    r = await run(sa, ['start', '--once', '--agent', NODE, '--slack-channel', 'C1', '--slack-allow', 'UOWN'], fakeCall(github()).call)
+    T('CK11 --slack-allow without SLACK_APP_TOKEN (replies would never be read) is refused with the fix', r.code === 1 && /Q634 .*SLACK_APP_TOKEN/.test(r.out) && nothingThere(), r.out)
+    r = await run(sa, ['start', '--once', '--agent', NODE, '--slack-allow', 'UOWN'], fakeCall(github()).call)
+    T('CK12 --slack-allow without --slack-channel is refused, not ignored', r.code === 1 && /Q634 .*--slack-channel/.test(r.out) && nothingThere(), r.out)
+    r = await run(sa, ['start', '--once', '--agent', NODE, '--slack-channel', 'C1', '--slack-allow', '@ganesh,UOWN'], fakeCall(github()).call)
+    T('CK13 a name where a member id goes is refused, and says how to find the id', r.code === 1 && /Q634 .*@ganesh/.test(r.out) && /Copy member ID/.test(r.out) && !/UOWN is not/.test(r.out) && nothingThere(), r.out)
+    const slState = path.join(sl, '.git', 'hivecode', 'github.json')
+    const st = JSON.parse(fs.readFileSync(slState, 'utf8'))
+    st.config.flags['slack-allow'] = 'UOWN'
+    fs.writeFileSync(slState, JSON.stringify(st))
+    const savedText = fs.readFileSync(slState, 'utf8')
+    r = await run(sl, slArgs, fakeCall(github()).call)
+    T('CK14 a --slack-allow saved by the last start says so, and how to drop it', r.code === 1 && /Q634 /.test(r.out) && /last start/.test(r.out) && /--slack-allow ""/.test(r.out) && fs.readFileSync(slState, 'utf8') === savedText, r.out)
+    r = await run(sl, [...slArgs, '--slack-allow', ''], fakeCall(github()).call)
+    T('CK15 --slack-allow "" drops it, and the watcher starts', r.code === 0 && /watching acme\/app/.test(r.out) && !/Q634/.test(r.out), r.out)
     delete process.env.SLACK_BOT_TOKEN
     delete process.env.HIVE_SLACK_API
     srv.close()
