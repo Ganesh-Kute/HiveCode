@@ -16,6 +16,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import assert from 'node:assert'
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
 const PUBLIC = path.join(ROOT, 'public')
@@ -47,6 +48,13 @@ export function extractUsageFlags(usageText) {
     flags.add(`--${m[1]}`)
   }
   return flags
+}
+
+// 2b. Extract Slack manifest JSON from docs.html
+export function extractSlackManifest(docsHtml) {
+  const match = docsHtml.match(/<pre><code>\s*(\{[\s\S]*?"display_information"[\s\S]*?\})\s*<\/code><\/pre>/)
+  if (!match) return null
+  return JSON.parse(match[1])
 }
 
 // Map subcommands to their allowed flags
@@ -207,6 +215,33 @@ for (const page of targetPages) {
   }
 }
 T('P5 no public page links to private repository (github.com/Ganesh-Kute)', badRepoLinks.length === 0, badRepoLinks.join(' | '))
+
+// P6a: Guard against false success — manifest validator catches modified scope
+const baseManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'slack-app-manifest.json'), 'utf8'))
+const mutatedManifest = JSON.parse(JSON.stringify(baseManifest))
+mutatedManifest.oauth_config.scopes.bot.push('files:write')
+let caughtMutation = false
+try {
+  assert.deepStrictEqual(baseManifest, mutatedManifest)
+} catch {
+  caughtMutation = true
+}
+T('P6a manifest equality validator catches modified scope', caughtMutation)
+
+// P6: Guard against drift between docs.html Slack manifest and slack-app-manifest.json
+const docsHtmlForManifest = fs.readFileSync(path.join(PUBLIC, 'docs.html'), 'utf8')
+const docsManifest = extractSlackManifest(docsHtmlForManifest)
+const rootManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'slack-app-manifest.json'), 'utf8'))
+
+let manifestMatches = false
+let manifestDiff = ''
+try {
+  assert.deepStrictEqual(docsManifest, rootManifest)
+  manifestMatches = true
+} catch (err) {
+  manifestDiff = err.message
+}
+T('P6 Slack app manifest in docs.html parses and matches slack-app-manifest.json', manifestMatches, manifestDiff)
 
 console.log(failed ? `\n${failed} FAILED` : '\nall passed')
 process.exit(failed ? 1 : 0)

@@ -78,6 +78,11 @@
       <h2 id="github-watcher">GitHub watcher</h2>
       <p>
         The GitHub watcher turns labelled issues into pull requests without anyone watching a terminal.
+      </p>
+      <p>
+        <strong>Prerequisites:</strong> Run <code>npx -y hivecode-mcp@latest setup</code> first (so your agent registers the tools), ensure you are logged in with <code>gh auth login</code>, and run commands inside your repository's local git clone. Without <code>setup</code>, the agent cannot join the room and will stop after spending a run of tokens.
+      </p>
+      <p>
         Always test with a dry run first:
       </p>
       <pre><code>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --dry-run</code></pre>
@@ -106,23 +111,73 @@
       <h2 id="slack-integration" style="margin-top:40px">Slack integration</h2>
       <p>
         Hivecode connects to Slack to give your team live visibility and control over running agents,
-        organizing work into one Slack thread per issue.
+        organizing work into one Slack thread per task or GitHub issue.
       </p>
+
+      <h3>Create the Slack App</h3>
+      <ol>
+        <li>Open <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a> and click <strong>Create New App</strong> &rarr; <strong>From a manifest</strong>.</li>
+        <li>Select your workspace, switch to the <strong>JSON</strong> tab, and paste the manifest below:
+          <details style="margin-top:8px; margin-bottom:8px">
+            <summary style="cursor:pointer; font-weight:600">Slack app manifest (JSON)</summary>
+            <pre><code>{
+  "display_information": {
+    "name": "Hivecode",
+    "description": "One Slack thread per task or GitHub issue for Hivecode rooms.",
+    "background_color": "#111318"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hivecode",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "channels:read",
+        "groups:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}</code></pre>
+          </details>
+        </li>
+        <li>Click <strong>Next</strong> &rarr; <strong>Create</strong>, then click <strong>Install to Workspace</strong> and <strong>Allow</strong>.</li>
+        <li>Under <strong>OAuth &amp; Permissions</strong> in the left sidebar, copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>).</li>
+        <li><strong>For in-thread controls (stop / retry):</strong> Under <strong>Basic Information</strong> &rarr; <strong>App-Level Tokens</strong>, click <em>Generate Token and Scopes</em>, name it <code>socket-mode</code>, add scope <code>connections:write</code>, and copy the token (starts with <code>xapp-</code>). Under <strong>Socket Mode</strong>, enable it. Under <strong>OAuth &amp; Permissions</strong>, add bot scopes <code>channels:history</code>, <code>groups:history</code>, and <code>users:read</code>. Under <strong>Event Subscriptions</strong>, toggle on and add bot events <code>message.channels</code> and <code>message.groups</code>. Reinstall the app when prompted.</li>
+        <li><strong>Invite the bot &amp; copy IDs:</strong> In your channel, run <code>/invite @Hivecode</code>. Click the channel name &rarr; view channel details to copy the <strong>Channel ID</strong> (<code>C&hellip;</code>). For <code>--slack-allow</code>, click any user's profile &rarr; More (&vellip;) &rarr; <strong>Copy member ID</strong> (<code>U&hellip;</code>).</li>
+      </ol>
 
       <h3>1. GitHub watcher with Slack threads</h3>
       <p>
-        Pass <code>--slack-channel</code> to the GitHub watcher so every issue run opens a dedicated thread in your channel:
+        Pass <code>--slack-channel</code> to the GitHub watcher so every issue run opens a dedicated thread in your channel.
+        To also enable stopping and retrying from Slack, set <code>SLACK_APP_TOKEN</code> (Socket Mode, so no public URL) and pass <code>--slack-allow</code>:
       </p>
       <p><strong>Bash / Zsh (macOS / Linux):</strong></p>
       <pre><code>export SLACK_BOT_TOKEN="xoxb-your-token"
-npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678</code></pre>
+export SLACK_APP_TOKEN="xapp-your-token"
+npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678 --slack-allow U12345678</code></pre>
       <p><strong>PowerShell (Windows):</strong></p>
       <pre><code>$env:SLACK_BOT_TOKEN="xoxb-your-token"
-npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678</code></pre>
+$env:SLACK_APP_TOKEN="xapp-your-token"
+npx -y hivecode-mcp@latest github start --agent 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode' --slack-channel C12345678 --slack-allow U12345678</code></pre>
+      <ul>
+        <li><strong>Stopping from a thread:</strong> With <code>SLACK_APP_TOKEN</code> set, replying <code>stop</code> in an issue's Slack thread stops that issue. The watcher posts <code>/hivecode stop (from Slack, by @handle)</code> on the GitHub issue, and the normal command path acts on it, so GitHub keeps who asked.</li>
+        <li><strong>Retrying (<code>--slack-allow</code>):</strong> <code>retry</code> works only for the Slack user IDs in <code>--slack-allow U&hellip;,U&hellip;</code>. Note that <code>--slack-allow</code> takes member IDs (<code>U…</code> from profile &rarr; More &rarr; Copy member ID, not display names), and requires <code>SLACK_APP_TOKEN</code> and <code>--slack-channel</code> (passing it without them refuses with error <code>Q634</code>).</li>
+        <li><strong>Fail-safe permissions:</strong> Any full member may stop. Guests and other workspaces are refused. If Slack can't say who replied, stop still stops and says so afterwards.</li>
+        <li><strong>Thread feedback:</strong> Also reported directly in the thread: <em>"Pushed N commits to the pull request"</em>, and our own <code>--test</code> failing (<em>"nothing was pushed"</em>).</li>
+      </ul>
 
       <h3>2. Dedicated room bridge</h3>
       <p>
-        To stream an existing Hivecode room into a Slack channel independently:
+        To stream an existing Hivecode room into a Slack channel independently (with <code>SLACK_BOT_TOKEN</code> set as above). The room link (<code>"wss://&hellip;|room-&hellip;"</code>) is printed by <code>hive_join</code> as the "invite link", or shown in the Control Room:
       </p>
       <p><strong>Preview with a dry run:</strong></p>
       <pre><code>npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-example" --channel C12345678 --dry-run</code></pre>
@@ -131,7 +186,7 @@ npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json 
 
       <h3>Inbound controls and stopping from Slack</h3>
       <ul>
-        <li><strong>Stopping is fail-safe:</strong> Any full workspace member can type <code>stop all</code>, <code>stop</code>, or <code>stop &lt;Agent&gt;</code> in an issue thread to halt agents immediately. Works on every Slack plan (including Free).</li>
+        <li><strong>Stopping is fail-safe:</strong> Any full workspace member can type <code>stop all</code>, <code>stop</code>, or <code>stop &lt;Agent&gt;</code> in a task's thread to halt agents immediately. Works on every Slack plan (including Free).</li>
         <li><strong>Owner permissions (<code>--allow</code>):</strong> Only user IDs specified in <code>--allow</code> can resume agents or send messages into the room. Refused actions are reported back in the thread.</li>
         <li><strong>Attribution:</strong> Messages sent from Slack arrive in the room attributed as <code>slack:&lt;handle&gt;</code>, preventing impersonation.</li>
         <li><strong>Honest updates:</strong> Channel posts and thread status updates are sent only after writes succeed on GitHub, avoiding false success signals.</li>

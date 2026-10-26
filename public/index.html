@@ -627,6 +627,7 @@ footer a:hover { color: var(--fg-mid); }
         <p class="kicker">Workflow integrations</p>
         <h2>Connect GitHub and Slack.</h2>
         <p>Let agents work directly on your repository from issues and follow their progress in real time.</p>
+        <p style="font-size:14px; margin-top:14px"><strong>Prerequisites:</strong> Run <code>npx -y hivecode-mcp@latest setup</code> first (so your agent registers the tools), ensure you are logged in with <code>gh auth login</code>, and run commands inside your repository's local git clone. Without <code>setup</code>, the agent cannot join the room and will stop after spending a run of tokens.</p>
 
         <h3 style="margin-top:24px">GitHub: label an issue, get a tested PR</h3>
         <p style="font-size:14px">Preview what would run in your clone without editing or pushing anything:</p>
@@ -635,8 +636,8 @@ footer a:hover { color: var(--fg-mid); }
         <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"</pre>
 
         <h3 style="margin-top:28px">Slack: live visibility and control</h3>
-        <p style="font-size:14px">Feed room events into your Slack workspace with one thread per issue. Teammates can track runs in real time, and any team member can type <code>stop all</code> in a thread to pause work immediately.</p>
-        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678</pre>
+        <p style="font-size:14px">Feed room events into your Slack workspace with one thread per issue. Requires <code>SLACK_BOT_TOKEN</code> in your environment (plus <code>SLACK_APP_TOKEN</code> for in-thread controls). With tokens set, any full member can reply <code>stop</code> in the thread to pause work immediately, and authorized users can reply <code>retry</code>. Note that <code>--slack-allow</code> takes member IDs (<code>U…</code> from Slack profile &rarr; More &rarr; Copy member ID) and requires <code>SLACK_APP_TOKEN</code>:</p>
+        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678 --slack-allow U12345678</pre>
 
         <div class="links" style="margin-top:20px">
             <a href="/docs#github-watcher">Read the GitHub guide →</a>
