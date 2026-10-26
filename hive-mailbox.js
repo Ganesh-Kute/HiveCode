@@ -18,6 +18,8 @@
 // plain objects out, no Yjs and no I/O — so the delivery rules are unit-testable without a
 // relay, a room, or a network.
 
+import { formatTime } from './hive-time.js'
+
 /** A chat message as stored in the room: { by, kind, at, text }. */
 
 /**
@@ -483,7 +485,8 @@ export function createMailbox({ me, startAt = 0 }) {
 /** One-line rendering used in tool output, with the repeat count when a run was collapsed. */
 export function formatMessage(m) {
   const times = m.repeated > 1 ? `  (×${m.repeated})` : ''
-  return `${m.at || ''} ${m.by}(${m.kind || 'ai'}): ${m.text}${times}`
+  const atStr = m.at ? formatTime(m.at) : ''
+  return `${atStr} ${m.by}(${m.kind || 'ai'}): ${m.text}${times}`
 }
 
 /**

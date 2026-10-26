@@ -1196,6 +1196,7 @@ const server = http.createServer((req, res) => {
       // The control room's CRDT bundle. Without this entry /control loads and then cannot
       // sync at all on this host, while working fine on Vercel.
       '/hive-crdt.js': 'hive-crdt.js',
+      '/hive-time.js': '../hive-time.js',
       '/favicon.ico': 'favicon.ico',
       '/favicon-32.png': 'favicon-32.png',
       '/apple-touch-icon.png': 'apple-touch-icon.png',
@@ -1210,7 +1211,8 @@ const server = http.createServer((req, res) => {
     const file = STATIC[(req.url || '').split('?')[0]]
     if (file) {
       try {
-        const body = fs.readFileSync(path.join(__dirname, 'public', file))
+        const filePath = file.startsWith('../') ? path.join(__dirname, file.slice(3)) : path.join(__dirname, 'public', file)
+        const body = fs.readFileSync(filePath)
         const ext = file.slice(file.lastIndexOf('.'))
         // HTML is the app shell — keep it fresh (60s) so deploys land fast; static
         // image assets can cache longer.

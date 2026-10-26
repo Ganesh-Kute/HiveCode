@@ -308,6 +308,7 @@
 </div>
 
 <script type="module">
+import { ago } from './hive-time.js'
 // --- AUTO-GENERATED: hive-secrets ---
 // LIVE CREDENTIALS ARE NOT SENT TO THE ROOM (3 Oct 2026).
 //
@@ -440,7 +441,7 @@ const COLORS=['#4285F4','#9B72CB','#D96570','#34D399','#FBBF24','#8AB4F8','#E052
 const colorFor=(s)=>{let h=0;for(const c of String(s||''))h=(h*31+c.charCodeAt(0))>>>0;return COLORS[h%COLORS.length]}
 const initials=(s)=>String(s||'?').replace(/[^a-zA-Z0-9]/g,'').slice(0,2).toUpperCase()||'?'
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
-const ago=(t)=>{if(!t)return'';const d=Math.max(0,Date.now()-t),m=Math.floor(d/60000);if(m<1)return'now';if(m<60)return m+'m';const h=Math.floor(m/60);return h<24?h+'h':Math.floor(h/24)+'d'}
+// ago(t) imported from ./hive-time.js
 const efile=(e)=>e?(typeof e==='object'?e.file:e):null
 // A member between writes is not "idle" -- that word makes a working room look dead, which
 // is the one thing this panel must not do on camera. Report what is true: editing now, or

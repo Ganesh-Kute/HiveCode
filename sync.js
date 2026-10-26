@@ -52,6 +52,7 @@ import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of th
 import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
 import { newSecrets, describeSecret } from './hive-secrets.js' // a credential inside a file is held here, not sent to the room
 import * as OB from './hive-obligations.js'
+import { formatTime } from './hive-time.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -3059,7 +3060,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       '# and announce what you are about to do (e.g. "taking auth.js: add login").',
       '',
     ]
-    for (const m of chat.toArray()) out.push(`- ${m.at}  ${m.by} (${m.kind}): ${m.text}`)
+    for (const m of chat.toArray()) out.push(`- ${formatTime(m.at)}  ${m.by} (${m.kind}): ${m.text}`)
     writeToDisk(CHAT_FILE, out.join('\n') + '\n')
   }
   // Hand the room's history to the memory add-on, when present, whenever it changes, so this ROOM has a memory: an
