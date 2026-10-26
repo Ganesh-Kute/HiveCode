@@ -68,6 +68,7 @@ This guide explains every error code (`Qxxx`) emitted by Hivecode CLI commands, 
 | `Q606` | `hive-github.js` | Watcher reading state | State file `.git/hivecode/github-watcher.json` is corrupted. | The corrupted state file is moved aside automatically, and watcher rebuilds state from GitHub. |
 | `Q607` | `hive-github.js` | Watcher picking up issue | Branch name collision: exhausted 50 suffix attempts (`hivecode/issue-N-49`). | Delete old merged issue branches on GitHub and locally. |
 | `Q608` | `hive-github.js` | Running `github start` | Repository has more than 5,000 files, exceeding public relay capacity. | Use your own self-hosted relay with `--relay <url>`, or pass `--allow-large`. |
+| `Q609` | `hive-github.js` | Running `github start` with `--notify` or `HIVE_NOTIFY_WEBHOOK` | The webhook given is not a web address (it must start with https:// or http://). | Copy the channel's incoming-webhook URL again from Slack or Discord. |
 | `Q610` | `hive-github.js` | Watcher fetching branches | Git remote error: could not list or fetch branches from origin. | Check network connection, git credentials, and remote repository existence. |
 | `Q611` | `hive-github.js` | Watcher creating issue branch | Branch diverged (commits on GitHub and local that are not in each other) or branch creation failed. | Reconcile branches manually and comment `/hivecode retry` on the issue. |
 | `Q612` | `hive-github.js` | Watcher updating checkpoint | Marker update failed during watcher run. | Check disk space and permissions in `.git/hivecode`. |
@@ -82,3 +83,4 @@ This guide explains every error code (`Qxxx`) emitted by Hivecode CLI commands, 
 | `Q641` | `hive-notify.js` | Running `notify` | Missing `--webhook <url>` argument. | Provide incoming webhook URL from Slack or Discord. |
 | `Q642` | `hive-notify.js` | Running `notify` | Missing `--for <name>` argument or non-positive `--every` interval. | Specify who to notify with `--for <name>` and positive minutes with `--every <minutes>`. |
 | `Q643` | `hive-notify.js` | Running `notify` | The webhook endpoint refused the initial test post. | Check the webhook URL and ensure the receiving service is accessible. |
+| `Q644` | `hive-notify.js` | Running `notify` | A notifier is already running for this room (lock file held by another process). | Stop the other running notifier process or let it run. |
