@@ -85,6 +85,10 @@ const MUTANTS = [
   // (No mutant for the isQ() wrapper beside it: hive-slack.js now codes every start error, so the
   // wrapper is a backstop for an older hive-slack.js and no test here can tell it apart.)
   { t: 'cli', id: 'socket-uncaught', expect: 'no', find: '    } catch (e) {\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start', to: '    } catch (e) {\n      throw e\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start' },
+  // The --notify webhook is a secret: checked at start, shown by host only, the env one never saved.
+  { t: 'cli', id: 'notify-unchecked', expect: 'CN1b', find: "    if (!u || !/^https?:$/.test(u.protocol) || !u.host) {", to: '    if (!u) {' },
+  { t: 'cli', id: 'notify-url-printed', expect: 'CN2', find: 'it is posted to ${notifyHost}.`)', to: 'it is posted to ${notifyUrl}.`)' },
+  { t: 'cli', id: 'notify-env-ignored', expect: 'CN4', find: "  const notifyUrl = opt('notify') || process.env.HIVE_NOTIFY_WEBHOOK || ''", to: "  const notifyUrl = opt('notify') || ''" },
   // How `github start` exits, for whatever restarts it: 1 = try again, 2 = a person must act.
   { t: 'cli', id: 'busy-is-fix', expect: 'CL4f', find: '    return busy ? EXIT_AGAIN : EXIT_FIX', to: '    return EXIT_FIX' },
   { t: 'cli', id: 'refusal-is-again', expect: 'CL4h', find: '    return busy ? EXIT_AGAIN : EXIT_FIX', to: '    return EXIT_AGAIN' },

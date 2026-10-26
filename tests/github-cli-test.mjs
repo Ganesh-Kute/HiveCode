@@ -151,6 +151,28 @@ try {
   r = await run(notRepo, ['start', '--once', '--repo', app], fakeCall(github()).call)
   T('CS8 --repo watches that clone from anywhere', r.code === 0 && /watching acme\/app/.test(r.out), r.out.split('\n').slice(-1)[0])
 
+  console.log('\n# --notify: the webhook URL is a secret (anyone holding it posts as you)')
+  {
+    const SECRET = 'XXXXsecretXXXX'
+    const hook = `https://hooks.slack.com/services/T000/B000/${SECRET}`
+    const nf = repo(path.join(tmp, 'notify'), 'https://github.com/acme/app.git')
+    const stateOf = (d) => path.join(d, '.git', 'hivecode', 'github.json')
+    r = await run(nf, ['start', '--agent', NODE, '--once', '--notify', 'not a url'], fakeCall(github()).call)
+    T('CN1 a --notify that is not a web address: Q609, exit 2, nothing saved', r.code === 2 && /^Q609 --notify is not a web address/m.test(r.out) && !fs.existsSync(stateOf(nf)), r.out)
+    r = await run(nf, ['start', '--agent', NODE, '--once', '--notify', 'ftp://hooks.slack.com/services/T000/B000/x'], fakeCall(github()).call)
+    T('CN1b a URL that parses but is not http(s): refused the same way', r.code === 2 && /^Q609 /m.test(r.out) && !fs.existsSync(stateOf(nf)), r.out)
+    r = await run(nf, ['start', '--agent', NODE, '--once', '--notify', hook], fakeCall(github()).call)
+    T('CN2 --notify: says where notices go by HOST only, and never prints the URL', r.code === 0 && /posted to hooks\.slack\.com\./.test(r.out) && !r.out.includes(SECRET), r.out.split('\n').filter((l) => /otif/.test(l)).join(' | '))
+    // A service restarts from the saved flags, so a --notify given on the command line is kept --
+    // in a file only its owner can read. (Windows has no such mode bits; checked where they exist.)
+    const mode = fs.statSync(stateOf(nf)).mode & 0o777
+    T('CN3 the saved flags (which hold that URL) are owner-only', process.platform === 'win32' || mode === 0o600, `mode ${mode.toString(8)} on ${process.platform}`)
+    const ne = repo(path.join(tmp, 'notify-env'), 'https://github.com/acme/app.git')
+    process.env.HIVE_NOTIFY_WEBHOOK = `https://discord.com/api/webhooks/1/${SECRET}`
+    try { r = await run(ne, ['start', '--agent', NODE, '--once'], fakeCall(github()).call) } finally { delete process.env.HIVE_NOTIFY_WEBHOOK }
+    T('CN4 HIVE_NOTIFY_WEBHOOK: used (host shown) but never saved and never printed', r.code === 0 && /posted to discord\.com\./.test(r.out) && !r.out.includes(SECRET) && !fs.readFileSync(stateOf(ne), 'utf8').includes(SECRET), r.out.split('\n').filter((l) => /otif/.test(l)).join(' | '))
+  }
+
   console.log('\n# --dry-run: what a start would do, and nothing written')
   {
     const dryRepo = repo(path.join(tmp, 'dry'), 'https://github.com/acme/app.git')

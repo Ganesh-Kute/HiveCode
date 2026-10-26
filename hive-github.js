@@ -393,7 +393,9 @@ export function loadState(file, log = () => {}, { peek = false } = {}) {
 export function saveState(file, s) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(s, null, 2))
+  // Owner-only: the saved flags can hold a --notify webhook URL, which lets anyone holding it post as
+  // you. (Windows has no such mode; the file is in the user's own clone there.)
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600 })
   // Windows refuses a rename while another process (an antivirus scan, an editor) has the file open.
   for (let i = 0; ; i++) {
     try { fs.renameSync(tmp, file); return } catch (e) { if (i >= 8) throw e; sleepSync(60) }
@@ -1644,7 +1646,7 @@ options (saved for the next start):
   --base <branch>             the branch pull requests go into (default: the repo's default branch)
   --relay <url>               the relay rooms run on (default: the public one; run your own for private code)
   --test "<command>"          run the tests ourselves before every push
-  --notify <webhook url>      a Slack or Discord incoming webhook
+  --notify <webhook url>      a Slack or Discord incoming webhook (or HIVE_NOTIFY_WEBHOOK, which is never saved)
   --slack-channel <id>        one Slack thread per issue (the bot token comes from SLACK_BOT_TOKEN)
   --slack-allow <ids>         Slack member ids (U…, comma-separated) who may reply "retry" in an issue's thread;
                               needs SLACK_APP_TOKEN, with which any full member may reply "stop" there
@@ -1738,6 +1740,21 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   // A flag the last start saved is used again without being typed: an error about it says so.
   const typed = flags(rest)
   const whence = (k) => (k in typed || !(k in (saved.flags || {})) ? '' : ` (saved by your last start; pass --${k} "" to drop it)`)
+  // THE WEBHOOK IS A SECRET: anyone holding the URL posts as you. From HIVE_NOTIFY_WEBHOOK it is never
+  // saved; from --notify it is saved with the flags (owner-only file) because a service restarts from
+  // them. Either way only its host is ever printed.
+  const notifyUrl = opt('notify') || process.env.HIVE_NOTIFY_WEBHOOK || ''
+  let notifyHost = ''
+  if (notifyUrl) {
+    let u = null
+    try { u = new URL(notifyUrl) } catch { }
+    if (!u || !/^https?:$/.test(u.protocol) || !u.host) {
+      logErr(`Q609 ${opt('notify') ? `--notify${whence('notify')}` : 'HIVE_NOTIFY_WEBHOOK'} is not a web address. Give the https://… incoming-webhook URL of a Slack or Discord channel.`)
+      return EXIT_FIX
+    }
+    notifyHost = u.host
+    log(`Notifications: when an issue needs a person, it is posted to ${notifyHost}.`)
+  }
   // --slack-allow THAT CANNOT WORK IS REFUSED, not ignored. Each case below used to start green and
   // then never let anyone retry from Slack: the replies were never read, or no id could ever match.
   const allowRaw = String(opt('slack-allow') || '').trim()
@@ -1849,7 +1866,7 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   state.config = { owner: id.owner, repo: id.repo, flags: { ...f, once: undefined } }
   saveState(file, state)
 
-  const notify = makeNotifier(opt('notify'), { log: say })
+  const notify = makeNotifier(notifyUrl, { log: say })
   const w = makeWatcher({ ...watcherOpts, notify, slack })
   w.recover()
   let inbound = null
