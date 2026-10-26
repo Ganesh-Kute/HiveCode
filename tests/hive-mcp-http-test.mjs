@@ -82,6 +82,7 @@ try {
     port: HTTP_PORT,
     auth: 'slack',
     signingSecret: SECRET,
+    token: 'xoxb-test',
     allow: ['U0GANESH'],
     teamId: 'T1',
     lookupUser: async (uid) => ({ ok: true, user: { id: uid || 'U0GANESH', name: uid || 'U0GANESH', team_id: 'T1', is_restricted: false, is_ultra_restricted: false } }),
@@ -179,7 +180,7 @@ try {
   console.log('\n# per-IP rate limiting (HIV-15)')
   const ratePort = HTTP_PORT + 10
   const rateHttpd = await serve({
-    hive: panel, room: ROOM, port: ratePort, auth: 'slack', signingSecret: SECRET, trustProxy: true,
+    hive: panel, room: ROOM, port: ratePort, auth: 'slack', signingSecret: SECRET, token: 'xoxb-test', teamId: 'T1', trustProxy: true,
     tier: { msgsPerSec: 1, msgBurst: 2, cooloffMs: 2000, bytesPerSec: 1024 * 1024, byteBurst: 2 * 1024 * 1024 }
   })
 
@@ -276,6 +277,7 @@ try {
     port: aclPort,
     auth: 'slack',
     signingSecret: SECRET,
+    token: 'xoxb-test',
     allow: ['U_OWNER'],
     teamId: 'T_OUR_TEAM',
     lookupUser: async (uid) => {
@@ -349,6 +351,139 @@ try {
     : {}
   T('PORT is read from environment when --port is not given', cfg.port === 9912, `port=${cfg.port}`)
   T('token is extracted from a wss://relay|room|token link', cfg.hiveToken === 'tok-secret-99', `token=${cfg.hiveToken}`)
+
+  // 11. Slack startup preflight: SLACK_BOT_TOKEN required + team_id resolved from auth.test when no --team given
+  console.log('\n# Slack startup: require SLACK_BOT_TOKEN and resolve team_id from auth.test')
+  await rpc('tools/call', { name: 'hive_resume', arguments: { who: 'all' }, _meta: { slack: { user_id: 'U0GANESH' } } })
+  await sleep(600)
+
+  // (a) serve() in slack mode without SLACK_BOT_TOKEN is refused with Q-code and fix
+  let noTokErr = ''
+  let noTokSrv = null
+  try {
+    noTokSrv = await serve({
+      hive: panel,
+      room: ROOM,
+      port: HTTP_PORT + 30,
+      auth: 'slack',
+      signingSecret: SECRET,
+      token: '',
+    })
+  } catch (e) {
+    noTokErr = e.message || String(e)
+  } finally {
+    try { noTokSrv && noTokSrv.close() } catch {}
+  }
+  T('start without SLACK_BOT_TOKEN is refused with Q-code and fix',
+    /Q630/.test(noTokErr) && /SLACK_BOT_TOKEN/.test(noTokErr),
+    noTokErr || 'started without error')
+
+  // (b) CLI process start in slack mode without SLACK_BOT_TOKEN is refused with Q-code and fix
+  const cliNoTok = await new Promise((resolve) => {
+    const child = spawn(process.execPath, ['hive-mcp-http.js', `ws://127.0.0.1:${PORT}|${ROOM}`, '--port', String(HTTP_PORT + 31), '--auth', 'slack'], {
+      cwd: ROOT,
+      env: { ...process.env, SLACK_SIGNING_SECRET: SECRET, SLACK_BOT_TOKEN: '' },
+    })
+    let out = ''
+    const timer = setTimeout(() => { try { child.kill() } catch {} resolve({ code: 0, out: out || 'timed out (server started instead of refusing)' }) }, 2500)
+    child.stdout.on('data', (d) => { out += String(d) })
+    child.stderr.on('data', (d) => { out += String(d) })
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out: out.trim() }) })
+  })
+  T('CLI start without SLACK_BOT_TOKEN exits non-zero with Q-code and fix',
+    cliNoTok.code !== 0 && /Q630/.test(cliNoTok.out) && /SLACK_BOT_TOKEN/.test(cliNoTok.out),
+    `code=${cliNoTok.code} out=${cliNoTok.out}`)
+
+  // (c) serve() in slack mode when auth.test fails or returns no team_id is refused with Q-code
+  let noTeamErr = ''
+  let noTeamSrv = null
+  try {
+    noTeamSrv = await serve({
+      hive: panel,
+      room: ROOM,
+      port: HTTP_PORT + 32,
+      auth: 'slack',
+      signingSecret: SECRET,
+      token: 'xoxb-valid',
+      fetchImpl: async () => ({
+        status: 200,
+        headers: new Map(),
+        json: async () => ({ ok: true, user: 'Hivecode', user_id: 'B1', team_id: '' }),
+      }),
+    })
+  } catch (e) {
+    noTeamErr = e.message || String(e)
+  } finally {
+    try { noTeamSrv && noTeamSrv.close() } catch {}
+  }
+  T('start when auth.test returns no team_id is refused with Q634 and fix',
+    /Q634/.test(noTeamErr) && /--team|reinstall/i.test(noTeamErr),
+    noTeamErr || 'started without error')
+
+  // (d) With NO --team given, serve() fetches team_id from auth.test and refuses external workspace stop
+  const autoTeamPort = HTTP_PORT + 33
+  const autoTeamSrv = await serve({
+    hive: panel,
+    room: ROOM,
+    port: autoTeamPort,
+    auth: 'slack',
+    signingSecret: SECRET,
+    token: 'xoxb-valid',
+    // NO teamId passed! Must come from auth.test below:
+    fetchImpl: async (url, opts) => {
+      const body = JSON.parse((opts && opts.body) || '{}')
+      if (String(url).endsWith('/auth.test')) {
+        return {
+          status: 200,
+          headers: new Map(),
+          json: async () => ({ ok: true, user: 'Hivecode', user_id: 'B1', team: 'HomeTeam', team_id: 'T_HOME_AUTO' }),
+        }
+      }
+      if (String(url).endsWith('/users.info')) {
+        const map = {
+          U_EXT_AUTO: { id: 'U_EXT_AUTO', name: 'ext_carol', team_id: 'T_FOREIGN_WS', is_restricted: false, is_ultra_restricted: false },
+          U_HOME_AUTO: { id: 'U_HOME_AUTO', name: 'home_alice', team_id: 'T_HOME_AUTO', is_restricted: false, is_ultra_restricted: false },
+        }
+        return {
+          status: 200,
+          headers: new Map(),
+          json: async () => ({ ok: true, user: map[body.user] }),
+        }
+      }
+      throw new Error('unexpected url: ' + url)
+    },
+  })
+  try {
+    async function autoRpc(name, args, userId) {
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: ++id,
+        method: 'tools/call',
+        params: { name, arguments: args, _meta: { slack: { user_id: userId } } },
+      })
+      const ts = String(Math.floor(Date.now() / 1000))
+      const sig = 'v0=' + crypto.createHmac('sha256', SECRET).update(`v0:${ts}:${body}`).digest('hex')
+      const r = await fetch(`http://127.0.0.1:${autoTeamPort}/mcp`, {
+        method: 'POST',
+        body,
+        headers: { 'Content-Type': 'application/json', 'X-Slack-Request-Timestamp': ts, 'X-Slack-Signature': sig },
+      })
+      return { status: r.status, text: await r.text() }
+    }
+    const extStop = await autoRpc('hive_pause', { who: 'AgentA' }, 'U_EXT_AUTO')
+    await sleep(600)
+    T('an external user\'s stop is refused with no --team given (team_id resolved from auth.test)',
+      /Refused/i.test(said(extStop)) && A.isPaused() === false,
+      `reply="${said(extStop)}" paused=${A.isPaused()}`)
+
+    const homeStop = await autoRpc('hive_pause', { who: 'AgentA' }, 'U_HOME_AUTO')
+    await sleep(600)
+    T('a home-workspace member\'s stop succeeds with team_id resolved from auth.test',
+      /paused AgentA/.test(said(homeStop)) && A.isPaused() === true,
+      `reply="${said(homeStop)}" paused=${A.isPaused()}`)
+  } finally {
+    try { autoTeamSrv.close() } catch {}
+  }
 
   try { rateHttpd.close() } catch {}
 } catch (e) {

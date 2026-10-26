@@ -25,7 +25,7 @@ import http from 'http'
 import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 import { attachRateLimit } from './limits.js'
-import { makeSlackActorCheck, formatSlackSender } from './hive-slack.js'
+import { makeSlackActorCheck, formatSlackSender, slackPost } from './hive-slack.js'
 
 import { VERSION } from "./hive-version.js"
 export { VERSION }
@@ -376,11 +376,49 @@ export function makeHandler({
   }
 }
 
-export function serve({
+/** Verify SLACK_BOT_TOKEN and resolve workspace team_id via auth.test when --team is not given (Q630, Q634). */
+export async function preflightMcpSlack({ token = '', teamId = '', api = undefined, fetchImpl = undefined } = {}) {
+  if (!token || !String(token).trim()) {
+    return {
+      ok: false,
+      code: 'Q630',
+      error: 'Q630 --auth slack needs SLACK_BOT_TOKEN. Set SLACK_BOT_TOKEN=xoxb-… in your environment (docs/SLACK_SETUP.md).',
+    }
+  }
+  if (teamId && String(teamId).trim()) {
+    return { ok: true, teamId: String(teamId).trim() }
+  }
+  let auth
+  try {
+    auth = await slackPost('auth.test', {}, token, fetchImpl, api)
+  } catch (e) {
+    const why = (e && (e.slackError || e.code || e.message)) || 'auth_failed'
+    return {
+      ok: false,
+      code: 'Q630',
+      error: `Q630 SLACK_BOT_TOKEN was rejected by Slack (${why}). Check SLACK_BOT_TOKEN or reinstall the Slack app (docs/SLACK_SETUP.md).`,
+    }
+  }
+  if (!auth || !auth.team_id) {
+    return {
+      ok: false,
+      code: 'Q634',
+      error: 'Q634 Slack did not say which workspace the bot is in (auth.test returned no team_id), so external workspaces could not be refused. Pass --team <T…> (or SLACK_TEAM_ID) or reinstall the Slack app.',
+    }
+  }
+  return {
+    ok: true,
+    teamId: String(auth.team_id),
+    botUser: auth.user || 'Hivecode',
+    botUserId: auth.user_id || '',
+  }
+}
+
+export async function serve({
   hive,
   room = '',
   port,
-  auth,
+  auth = 'slack',
   signingSecret,
   now,
   tier = null,
@@ -393,6 +431,12 @@ export function serve({
   fetchImpl = undefined,
   actorCheck = null,
 }) {
+  let resolvedTeamId = teamId
+  if (auth === 'slack' && !actorCheck) {
+    const pf = await preflightMcpSlack({ token, teamId, api, fetchImpl })
+    if (!pf.ok) throw new Error(pf.error)
+    resolvedTeamId = pf.teamId
+  }
   const handle = makeHandler({
     hive,
     room,
@@ -403,7 +447,7 @@ export function serve({
     trustProxy,
     allow,
     token,
-    teamId,
+    teamId: resolvedTeamId,
     lookupUser,
     api,
     fetchImpl,
@@ -448,6 +492,19 @@ if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\
     console.error('Q510 --auth slack needs SLACK_SIGNING_SECRET. Use --auth none only on localhost.')
     process.exit(2)
   }
+  if (cfg.auth === 'slack' && !cfg.token) {
+    console.error('Q630 --auth slack needs SLACK_BOT_TOKEN. Set SLACK_BOT_TOKEN=xoxb-… in your environment (docs/SLACK_SETUP.md).')
+    process.exit(2)
+  }
+  let resolvedTeamId = cfg.teamId
+  if (cfg.auth === 'slack') {
+    const pf = await preflightMcpSlack({ token: cfg.token, teamId: cfg.teamId })
+    if (!pf.ok) {
+      console.error(pf.error)
+      process.exit(1)
+    }
+    resolvedTeamId = pf.teamId
+  }
   const hive = startSync({
     relay: cfg.relay,
     room: cfg.room,
@@ -466,10 +523,14 @@ if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\
     signingSecret: cfg.secret,
     allow: cfg.allow,
     token: cfg.token,
-    teamId: cfg.teamId,
+    teamId: resolvedTeamId,
     trustProxy: cfg.trustProxy,
   }).then(() => {
     console.log(`[hive-mcp-http] room ${cfg.room} on :${cfg.port}/  auth=${cfg.auth}`)
     if (cfg.auth === 'none') console.log('  auth=none: do NOT expose this beyond localhost.')
+  }).catch((e) => {
+    console.error((e && e.message) || String(e))
+    try { hive.stop() } catch {}
+    process.exit(1)
   })
 }
