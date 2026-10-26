@@ -37,6 +37,7 @@ import {
   checkAgentScopes,
   preflightSocketMode,
   connectSocketMode,
+  parseSlackAllow,
 } from './hive-slack.js'
 
 export { stopAll, resumeAll, resolveName, route }
@@ -301,6 +302,14 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
     console.error('usage: SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node hive-slack-agent.js "<relay|room>" --channel <id>')
     process.exit(2)
   }
+  const allowIdx = argv.indexOf('--allow')
+  const allowSource = allowIdx !== -1 ? '--allow' : (process.env.SLACK_ALLOW ? 'SLACK_ALLOW' : '--allow')
+  const rawAllow = allowIdx !== -1 ? (argv[allowIdx + 1] || '') : (process.env.SLACK_ALLOW || '')
+  const allowParsed = parseSlackAllow(rawAllow, allowSource)
+  if (!allowParsed.ok) {
+    console.error(allowParsed.error)
+    process.exit(1)
+  }
   const pre = await preflightSlackAgent({ token: TOKEN, appToken: APP_TOKEN, channel: CHANNEL })
   if (!pre.ok) {
     console.error(pre.error)
@@ -313,12 +322,24 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   })
   const agent = makeAgent({
     hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN),
-    teamId: pre.teamId, botUserId: pre.botUserId, allow: flag('allow', process.env.SLACK_ALLOW || ''),
+    teamId: pre.teamId, botUserId: pre.botUserId, allow: allowParsed.ids,
   })
-  await connectSocketMode({
-    appToken: APP_TOKEN,
-    initialUrl: pre.url,
-    onEvent: (ev) => agent.onEvent(ev),
-  })
-  console.log(`READY: [hive-slack-agent] ${room} -> ${CHANNEL} (Socket Mode connected)`)
+  try {
+    await connectSocketMode({
+      appToken: APP_TOKEN,
+      initialUrl: pre.url,
+      onEvent: (ev) => agent.onEvent(ev),
+      onMultiConnection: (n) => {
+        slackPost('chat.postMessage', {
+          channel: CHANNEL,
+          text: `:warning: Another process connected to Slack Socket Mode with this app token (${n} active connections). Slack distributes incoming events across connections, so messages or "stop" commands may go to the other process. Check for another terminal running hivecode-mcp slack start, github start --slack-allow, or hive-slack-agent.`,
+        }, TOKEN).catch(() => {})
+      },
+    })
+  } catch (e) {
+    console.error(e.message)
+    try { hive.stop() } catch { }
+    process.exit(1)
+  }
+  console.log(`READY: [hive-slack-agent] ${room} -> ${CHANNEL} (Socket Mode connected) — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}`)
 }

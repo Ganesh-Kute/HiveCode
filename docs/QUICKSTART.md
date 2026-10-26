@@ -74,15 +74,19 @@ Follow the interactive prompts to log in via your browser.
 `gh` confirms you're logged in and displays your active account.
 
 ### Likely Failure & Fix
-If `gh` is not logged in or you run outside a repository:
-- `Q600 gh auth login is required. Run: gh auth login`
-  **Fix:** Complete `gh auth login`.
+If `gh` is not logged in, network is down, or you run outside a repository:
+- `Q600 gh is not logged in on this machine. Run: gh auth login (or set GH_TOKEN)`
+  **Fix:** Complete `gh auth login` or set `GH_TOKEN`.
+- `Q601 GitHub has no repository <owner>/<repo> that <login> can see (HTTP 404). Check origin (<url>); a private repo needs an account with access to it (gh auth status shows which one gh uses).`
+  **Fix:** Verify `git remote -v` points to the intended repository, and confirm `gh auth status` shows an account with read access to it.
 - `Q601 <cwd> is not inside a git repository. Run this in your clone of the repo.`
   **Fix:** `cd` into your git clone before running.
 - `Q601 origin (<url>) is not a github.com repository.`
   **Fix:** Verify `git remote -v` points to GitHub.
 - `Q601 the GitHub account gh is logged in as cannot push to <owner>/<repo>.`
   **Fix:** Ensure your GitHub account has write permissions to push branches.
+- `Q603 could not reach GitHub for <endpoint>: <error>`
+  **Fix:** Check your network connection to `github.com`.
 
 ---
 
@@ -94,6 +98,8 @@ To receive per-issue progress updates and stop runs directly from Slack:
 2. Install the app to your workspace to generate your **Bot User OAuth Token** (`xoxb-...`).
 3. Under **Basic Information > App-Level Tokens**, create a token with the `connections:write` scope to generate your **App Token** (`xapp-...`).
 4. In Slack, invite the bot to your channel: `/invite @Hivecode`.
+
+> **One Slack app per process:** Each process that reads Slack (e.g. `github start --slack-allow`, `slack start`, or `hive-slack-agent`) needs its own dedicated Slack app and App Token (`xapp-...`). Slack Socket Mode distributes incoming messages across all active connections on the same token without channel routing; sharing an app between the watcher and a room bridge will cause stop commands and thread replies to split between the two processes (`Q635`).
 
 Set the tokens in your shell:
 
@@ -136,6 +142,11 @@ Q631 @Hivecode is not a member of #dev-feed (C0123456789). In Slack, open #dev-f
 ---
 
 ## Step 5: Start the GitHub Watcher
+
+To inspect all available watcher options and flags (exits 0):
+```bash
+npx -y hivecode-mcp@latest github --help
+```
 
 ### 1. Test with a Dry Run First
 Verify permissions and agent configuration without modifying your repository:

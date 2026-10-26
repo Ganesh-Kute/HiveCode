@@ -11,7 +11,7 @@ import fs from 'fs'
 import os from 'os'
 import http from 'http'
 import path from 'path'
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync } from '../sync.js'
 import * as HS from '../hive-slack.js'
@@ -388,6 +388,77 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
       c3 === 1 && errsInboundScope.some((m) => /Q634/.test(m) && /slack-app-manifest-inbound\.json/.test(m)),
       errsInboundScope.join(' | ') || `code=${c3}`)
 
+    // parseSlackAllow validator unit tests
+    T('parseSlackAllow is exported from hive-slack.js', typeof HS.parseSlackAllow === 'function')
+    if (typeof HS.parseSlackAllow === 'function') {
+      T('parseSlackAllow accepts valid member ids (U..., W...) and empty string',
+        HS.parseSlackAllow('').ok === true &&
+        HS.parseSlackAllow('U12345, W67890').ok === true &&
+        JSON.stringify(HS.parseSlackAllow('U12345, W67890').ids) === JSON.stringify(['U12345', 'W67890']))
+      const badAllowFlag = HS.parseSlackAllow('ganesh, @alice', '--allow')
+      T('parseSlackAllow refuses invalid member ids naming --allow and Q634',
+        !badAllowFlag.ok && badAllowFlag.code === 'Q634' &&
+        /Q634 --allow takes Slack member ids like U012AB3CD, not ganesh, @alice/.test(badAllowFlag.error))
+      const badAllowEnv = HS.parseSlackAllow('ganesh', 'SLACK_ALLOW')
+      T('parseSlackAllow names SLACK_ALLOW when value came from environment',
+        !badAllowEnv.ok && badAllowEnv.code === 'Q634' &&
+        /Q634 SLACK_ALLOW takes Slack member ids like U012AB3CD, not ganesh/.test(badAllowEnv.error))
+    }
+
+    // CLI --allow validation tests (spawning CLI)
+    const spawnOut = (cmd, args, envExtra = {}) => {
+      const res = spawnSync(cmd, args, {
+        encoding: 'utf8',
+        cwd: ROOT,
+        env: { ...process.env, ...envExtra },
+      })
+      return { code: res.status, out: res.stdout || '', err: res.stderr || '' }
+    }
+    const badCliAllow = spawnOut(process.execPath, [
+      path.join(ROOT, 'hive-mcp.js'), 'slack', 'start',
+      'ws://127.0.0.1:1281|room-123456', '--channel', 'C-TEST', '--allow', 'ganesh',
+    ], { SLACK_BOT_TOKEN: 'xoxb-dummy', SLACK_APP_TOKEN: 'xapp-dummy' })
+    T('slack start --allow ganesh refuses with Q634 naming --allow before connecting',
+      badCliAllow.code === 1 && /Q634 --allow takes Slack member ids.*not ganesh/.test(badCliAllow.err),
+      badCliAllow.err || `code=${badCliAllow.code}`)
+
+    const badCliAllowEnv = spawnOut(process.execPath, [
+      path.join(ROOT, 'hive-mcp.js'), 'slack', 'start',
+      'ws://127.0.0.1:1281|room-123456', '--channel', 'C-TEST',
+    ], { SLACK_BOT_TOKEN: 'xoxb-dummy', SLACK_APP_TOKEN: 'xapp-dummy', SLACK_ALLOW: 'ganesh' })
+    T('slack start with SLACK_ALLOW=ganesh refuses naming SLACK_ALLOW before connecting',
+      badCliAllowEnv.code === 1 && /Q634 SLACK_ALLOW takes Slack member ids.*not ganesh/.test(badCliAllowEnv.err),
+      badCliAllowEnv.err || `code=${badCliAllowEnv.code}`)
+
+    const dryRunAllowOut = []
+    nextResponses.push(
+      { status: 200, headers: { 'x-oauth-scopes': 'chat:write,channels:read,groups:read' }, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team_id: 'T_OUR_TEAM' } },
+      { status: 200, headers: { 'x-oauth-scopes': 'chat:write,channels:read,groups:read' }, body: { ok: true, channel: { id: 'C-TEST', name: 'dev-agents', is_member: true, is_private: false } } },
+    )
+    await HS.main(['start', '--channel', 'C-TEST', 'ws://127.0.0.1:1281|room-123456', '--allow', 'U12345,W67890', '--dry-run'], {
+      env: { SLACK_BOT_TOKEN: 'xoxb-ok' }, log: (m) => dryRunAllowOut.push(m), logErr: () => {},
+    })
+    T('slack start --allow U12345,W67890 prints resume info in READY / DRY RUN line',
+      dryRunAllowOut.some((m) => /resume: U12345, W67890/.test(m)),
+      dryRunAllowOut.join(' | '))
+
+    // hive-slack-agent spawn tests
+    const badAgentAllow = spawnOut(process.execPath, [
+      path.join(ROOT, 'hive-slack-agent.js'),
+      'ws://127.0.0.1:1281|room-123456', '--channel', 'D-TEST', '--allow', 'ganesh',
+    ], { SLACK_BOT_TOKEN: 'xoxb-dummy', SLACK_APP_TOKEN: 'xapp-dummy' })
+    T('hive-slack-agent --allow ganesh refuses with Q634 naming --allow before connecting',
+      badAgentAllow.code === 1 && /Q634 --allow takes Slack member ids.*not ganesh/.test(badAgentAllow.err),
+      badAgentAllow.err || `code=${badAgentAllow.code}`)
+
+    const badAgentAllowEnv = spawnOut(process.execPath, [
+      path.join(ROOT, 'hive-slack-agent.js'),
+      'ws://127.0.0.1:1281|room-123456', '--channel', 'D-TEST',
+    ], { SLACK_BOT_TOKEN: 'xoxb-dummy', SLACK_APP_TOKEN: 'xapp-dummy', SLACK_ALLOW: 'ganesh' })
+    T('hive-slack-agent with SLACK_ALLOW=ganesh refuses naming SLACK_ALLOW before connecting',
+      badAgentAllowEnv.code === 1 && /Q634 SLACK_ALLOW takes Slack member ids.*not ganesh/.test(badAgentAllowEnv.err),
+      badAgentAllowEnv.err || `code=${badAgentAllowEnv.code}`)
+
     // Verify slack-app-manifest-inbound.json matches package.json files[] and docs/SLACK_SETUP.md Section 5
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
     const inboundManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'slack-app-manifest-inbound.json'), 'utf8'))
@@ -442,7 +513,9 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
 // ---- end to end ----------------------------------------------------------------------------
 console.log('\n# end to end: room -> fake Slack -> Socket Mode inbound -> room')
 let relaySrv = null
+let relayWss = null
 let sockSrv = null
+let sockWss = null
 let sockConn = null
 const clients = []
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-slack-t-'))
@@ -451,8 +524,8 @@ try {
   const { WebSocketServer } = await import('ws')
   const { setupWSConnection } = await import('../vendor/y-websocket/utils.cjs')
   relaySrv = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}') })
-  const wss = new WebSocketServer({ server: relaySrv })
-  wss.on('connection', (ws, req) => {
+  relayWss = new WebSocketServer({ server: relaySrv })
+  relayWss.on('connection', (ws, req) => {
     const docName = (req.url || '/').slice(1).split('?')[0]
     setupWSConnection(ws, req, { docName })
   })
@@ -462,12 +535,14 @@ try {
   const acks = []
   let activeSock = null
   let suppressHello = false
+  let helloNumConnections = 1
   sockSrv = http.createServer()
-  const sockWss = new WebSocketServer({ server: sockSrv })
+  sockWss = new WebSocketServer({ server: sockSrv })
   sockWss.on('connection', (ws) => {
     activeSock = ws
     if (!suppressHello) {
-      try { ws.send(JSON.stringify({ type: 'hello' })) } catch { }
+      const num = typeof helloNumConnections === 'function' ? helloNumConnections() : helloNumConnections
+      try { ws.send(JSON.stringify({ type: 'hello', num_connections: num })) } catch { }
     }
     ws.on('message', (raw) => {
       try { acks.push(JSON.parse(String(raw))) } catch { }
@@ -502,11 +577,83 @@ try {
   let at = chat.length
   chat.observe(() => { const all = chat.toArray(); bridge.onChat(all.slice(at), at); at = all.length })
 
+  // Multi-connection restart retry on start (fake sends 2, then on retry sends 1 -> starts cleanly)
+  let retryAttempts = 0
+  helloNumConnections = () => (++retryAttempts === 1 ? 2 : 1)
+  let retryConn = null
+  let retryErr = null
+  try {
+    retryConn = await connectSocketMode({
+      appToken: 'xapp-test',
+      api: process.env.HIVE_SLACK_API,
+      startRetryMs: 1500,
+      startRetryDelayMs: 60,
+      reconnectDelayMs: 80,
+    })
+  } catch (e) {
+    retryErr = e
+  }
+  T('connectSocketMode retries when num_connections > 1 and starts cleanly when count drops to 1',
+    Boolean(retryConn) && !retryErr && retryAttempts >= 2 && !retryConn.isHalted(),
+    retryErr ? retryErr.message : `attempts=${retryAttempts}`)
+  if (retryConn) retryConn.stop()
+
+  // Multi-connection persistent refusal on start-up (Q635)
+  helloNumConnections = 2
+  let multiConnErr = null
+  try {
+    await connectSocketMode({
+      appToken: 'xapp-test',
+      api: process.env.HIVE_SLACK_API,
+      startRetryMs: 150,
+      startRetryDelayMs: 50,
+      reconnectDelayMs: 80,
+    })
+  } catch (e) {
+    multiConnErr = e
+  }
+  T('connectSocketMode refuses with Q635 after startRetryMs expires when num_connections stays > 1',
+    Boolean(multiConnErr) &&
+    multiConnErr.code === 'Q635' &&
+    /Q635.*Another process is already connected/.test(multiConnErr.message) &&
+    /If you just stopped a bridge, wait a minute for Slack to release the connection and start again/.test(multiConnErr.message) &&
+    !/pkill/.test(multiConnErr.message) &&
+    !/~50%/.test(multiConnErr.message) &&
+    !/round-robin/.test(multiConnErr.message),
+    multiConnErr ? `code=${multiConnErr.code} msg=${multiConnErr.message}` : 'succeeded unexpectedly')
+  helloNumConnections = 1
+
+  // Dead WebSocket URL: retries for startRetryMs then fails with coded Q634 Error (not raw ECONNREFUSED)
+  let deadErr = null
+  const deadStderr = []
+  try {
+    await connectSocketMode({
+      appToken: 'xapp-test',
+      initialUrl: 'ws://127.0.0.1:9/nobody-listens',
+      startRetryMs: 120,
+      startRetryDelayMs: 40,
+      logErr: (m) => deadStderr.push(m),
+    })
+  } catch (e) {
+    deadErr = e
+  }
+  T('connectSocketMode throws coded Q634 on dead socket after retry window',
+    Boolean(deadErr) && deadErr.code === 'Q634' && /^Q634 Socket Mode could not connect: /m.test(deadErr.message),
+    deadErr ? `code=${deadErr.code} msg=${deadErr.message}` : 'succeeded unexpectedly')
+  T('connectSocketMode logs retry warning to logErr once during retry',
+    deadStderr.some((m) => /Slack Socket Mode could not connect/.test(m)),
+    `stderr=${JSON.stringify(deadStderr)}`)
+
+  const bridgeStderr = []
   sockConn = await connectSocketMode({
     appToken: 'xapp-test',
     api: process.env.HIVE_SLACK_API,
     reconnectDelayMs: 80,
+    logErr: (m) => bridgeStderr.push(m),
     onEvent: (ev) => bridge.onInboundEvent(ev),
+    onMultiConnection: (n) => bridge.postChannel(
+      `:warning: Another process connected to Slack Socket Mode with this app token (${n} active connections). Slack will distribute events across them, so commands or replies may be dropped. Check for another running bridge or agent panel.`,
+    ),
   })
   await sleep(200)
 
@@ -620,10 +767,40 @@ try {
 
   // 9. Socket Mode disconnect frame triggers a clean reconnect via apps.connections.open
   const openCallsBefore = calls.filter((c) => c.method === 'apps.connections.open').length
+  // (a) Reconnect with num_connections: 2 within 15s of our own socket closing (recognized as our own socket, no warning)
+  helloNumConnections = 2
   activeSock.send(JSON.stringify({ type: 'disconnect', reason: 'refresh_requested' }))
   await sleep(350)
   const openCallsAfter = calls.filter((c) => c.method === 'apps.connections.open').length
   T('Socket Mode reconnects via apps.connections.open on disconnect frame', openCallsAfter > openCallsBefore, `${openCallsBefore} -> ${openCallsAfter}`)
+  T('reconnect with num_connections: 2 within 15s does not warn (recognized as own lingering socket)',
+    !postCalls().some((c) => /Another process connected to Slack Socket Mode/.test(c.text || '')))
+
+  // (b) Later reconnect with num_connections: 3 (foreign process joined while running) warns in channel and stderr once per rise, and keeps running
+  helloNumConnections = 3
+  activeSock.send(JSON.stringify({ type: 'disconnect', reason: 'refresh_requested' }))
+  await sleep(350)
+  T('foreign process with num_connections > 2 warns in channel and stderr once and keeps running',
+    postCalls().some((c) => /Another process connected to Slack Socket Mode/.test(c.text || '')) &&
+    bridgeStderr.some((c) => /WARNING: Slack Socket Mode reports 3 active connections/.test(c)) &&
+    !sockConn.isHalted())
+  const stderrCountBefore = bridgeStderr.length
+  // Another disconnect frame while num_connections is still 3: does not warn again (once per rise)
+  activeSock.send(JSON.stringify({ type: 'disconnect', reason: 'refresh_requested' }))
+  await sleep(350)
+  T('mid-run warning does not repeat while count stays high',
+    bridgeStderr.length === stderrCountBefore)
+  // Drop back to 1:
+  helloNumConnections = 1
+  activeSock.send(JSON.stringify({ type: 'disconnect', reason: 'refresh_requested' }))
+  await sleep(350)
+  // Rise back to 3:
+  helloNumConnections = 3
+  activeSock.send(JSON.stringify({ type: 'disconnect', reason: 'refresh_requested' }))
+  await sleep(350)
+  T('mid-run warning emits again on next rise',
+    bridgeStderr.length === stderrCountBefore + 1)
+  helloNumConnections = 1
 
   // 10. Fail-safe STOP when users.info fails (outage / rate limit): stop succeeds, resume stays refused
   nextResponses.push({ status: 500, body: { ok: false, error: 'internal_error' } })
@@ -838,6 +1015,68 @@ try {
       `code=${r.code} elapsed=${r.elapsed}ms err=${allErr}`)
   }
 
+  // (d1) Socket Mode multi-connection persistent failure (exit 1 with Q635)
+  {
+    helloNumConnections = 2
+    const logs = [], errs = []
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'C-TEST', '--timeout', '500', '--start-retry', '120'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-ok', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      500 + 5000,
+    )
+    helloNumConnections = 1
+    const allOut = logs.join('\n')
+    const allErr = errs.join('\n')
+    T('slack check (multi-connection persistent failure): exits 1 with Q635, names retry guidance, and never prints Socket Mode OK',
+      !r.hung && r.code === 1 &&
+      /Q635/.test(allErr) &&
+      /Another process is already connected/.test(allErr) &&
+      /wait a minute for Slack to release the connection/.test(allErr) &&
+      !/✓ Socket Mode/.test(allOut),
+      `code=${r.code} err=${allErr}`)
+  }
+
+  // (d2) Socket Mode multi-connection retry succeeds (fake sends 2, then on retry sends 1 -> exits 0)
+  {
+    let checkRetry = 0
+    helloNumConnections = () => (++checkRetry === 1 ? 2 : 1)
+    const logs = [], errs = []
+    const checkWatcher = setInterval(() => {
+      const promptPost = calls.slice().reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
+      if (promptPost && activeSock && activeSock.readyState === 1) {
+        clearInterval(checkWatcher)
+        const promptIdx = calls.filter((c) => c.method === 'chat.postMessage').length
+        const promptTs = String(1000 + promptIdx - 1)
+        activeSock.send(JSON.stringify({
+          envelope_id: 'env-check-retry-ok',
+          payload: {
+            event_id: 'Ev_CHECK_RETRY_OK_1',
+            event: { type: 'message', channel: 'C-TEST', thread_ts: promptTs, user: 'U_OWNER', text: 'ok' },
+          },
+        }))
+      }
+    }, 30)
+    const r = await runWithBound(
+      () => HS.main(['check', '--channel', 'C-TEST', '--timeout', '1500', '--start-retry', '1500'], {
+        env: { SLACK_BOT_TOKEN: 'xoxb-ok', SLACK_APP_TOKEN: 'xapp-ok' },
+        log: (m) => logs.push(m),
+        logErr: (m) => errs.push(m),
+      }),
+      1500 + 5000,
+    )
+    clearInterval(checkWatcher)
+    helloNumConnections = 1
+    const allOut = logs.join('\n')
+    T('slack check (multi-connection retry): retries when count is 2 and exits 0 when count drops to 1',
+      !r.hung && r.code === 0 && checkRetry >= 2 &&
+      /✓ Socket Mode: connected/.test(allOut) &&
+      /✓ replies reach Hivecode/.test(allOut),
+      `code=${r.code} checkRetry=${checkRetry} out=${allOut} err=${errs.join('\n')}`)
+  }
+
   // (e) missing_scope on conversations.info or chat.postMessage names the exact `needed` scope from Slack's response
   {
     nextResponses.push(
@@ -1036,8 +1275,22 @@ try {
 } finally {
   if (sockConn) { try { sockConn.stop() } catch { } }
   for (const c of clients) { try { c.stop() } catch { /* going away */ } }
-  if (relaySrv) await new Promise((r) => relaySrv.close(r))
-  if (sockSrv) await new Promise((r) => sockSrv.close(r))
+  if (relayWss) {
+    for (const c of relayWss.clients) { try { c.terminate() } catch { } }
+    try { relayWss.close() } catch { }
+  }
+  if (relaySrv) {
+    try { relaySrv.closeAllConnections && relaySrv.closeAllConnections() } catch { }
+    await new Promise((r) => relaySrv.close(r))
+  }
+  if (sockWss) {
+    for (const c of sockWss.clients) { try { c.terminate() } catch { } }
+    try { sockWss.close() } catch { }
+  }
+  if (sockSrv) {
+    try { sockSrv.closeAllConnections && sockSrv.closeAllConnections() } catch { }
+    await new Promise((r) => sockSrv.close(r))
+  }
   await new Promise((r) => slack.close(r))
   try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* best effort */ }
 }

@@ -182,6 +182,18 @@ try {
     T('a refused user is not shown the room\'s tasks (no plan frame was streamed for them)',
       !calls.slice(nCalls).some((c) => c.method === 'chat.startStream'))
 
+    // 2b. guests and outside workspace are also refused for "status" (never streamed task plan)
+    const nStatus = calls.length
+    await agent.onEvent(msg('guest', 'status'))
+    await agent.onEvent(msg('ext', 'status'))
+    await sleep(1200)
+    const statusRefusals = calls.slice(nStatus).filter((c) => c.method === 'chat.postMessage' && /guests and external Slack Connect users cannot/.test(c.text || ''))
+    const statusStreams = calls.slice(nStatus).filter((c) => c.method === 'chat.startStream')
+    T('a guest and an outside user typing status get refusal replies in thread',
+      statusRefusals.length === 2, `${statusRefusals.length} refusal(s)`)
+    T('a guest and an outside user typing status are never streamed task plans (no chat.startStream)',
+      statusStreams.length === 0, `${statusStreams.length} stream(s)`)
+
     // 3. any full member may stop; it is attributed as slack:<handle>
     await agent.onEvent(msg('alice', 'stop all'))
     await until(() => A.isPaused() && B.isPaused())

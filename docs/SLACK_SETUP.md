@@ -99,6 +99,7 @@ npx -y hivecode-mcp@latest slack check --channel C0123456789
 | **`Q634 Slack agents.sessions.setStatus failed (feature_disabled)`** | The workspace is on a Free Slack plan or Agents & Assistants is disabled for the workspace. | Use [`slack-app-manifest-inbound.json`](../slack-app-manifest-inbound.json) for typed `stop` / `retry` in channel threads (works on all Slack plans), or enable Agents & Assistants on a paid Slack plan. |
 | **`Q634 Slack agents.sessions.setStatus failed (thread_ts_required)`** | Slack rejected `agents.sessions.setStatus` because the DM session requires a valid `thread_ts`. | Run `slack check --channel <D…> --agent` on a DM or channel where `@Hivecode` can post a thread root message first. |
 | **`Q634 replies did not arrive. Event subscriptions are probably missing`** | You replied in the check thread, but Slack never sent the event (`message.channels` / `message.groups` / `message.im` not subscribed). | Update your app's manifest with [`slack-app-manifest-inbound.json`](../slack-app-manifest-inbound.json) (or [`slack-app-manifest-agent.json`](../slack-app-manifest-agent.json) for `--agent`) and reinstall the app. |
+| **`Q635 Another process is already connected to Slack Socket Mode`** | Another running terminal or service is connected with the same `SLACK_APP_TOKEN` (e.g. `slack start`, `github start --slack-allow`, or `hive-slack-agent`). | Use a separate Slack app per process that reads Slack. If you recently stopped a bridge or watcher, wait a minute for Slack to release the socket and retry. |
 
 Once `slack check` passes, you can also run `--dry-run` on `slack start` or `github start` before launching:
 
@@ -239,6 +240,7 @@ Paste the contents of [`slack-app-manifest-inbound.json`](../slack-app-manifest-
 - **STOP is fail-safe**: Any full member of your Slack workspace may type `stop`, `stop all`, or `stop <AgentName>` in a thread to pause agents (or stop an active GitHub issue run) immediately. If Slack's `users.info` endpoint fails during an outage, `stop` still succeeds and notes `(stopped; I could not confirm who you are)`.
 - **RESUME, RETRY, and thread replies require the allowlist (`--allow U123,U456` on `slack start`, or `--slack-allow U123,U456` on `github start`)**: Only Slack user IDs explicitly listed in the allowlist (find yours in Slack under **Profile → `⋯` → Copy member ID**) may resume agents (`resume`, `resume all`, `resume <AgentName>`), retry a GitHub issue run (`retry`), or send replies into the room. If the allowlist is omitted, inbound is **stop-only**.
 - **Guests & Slack Connect users are refused**: Single-channel/multi-channel guests (`is_restricted` / `is_ultra_restricted`) and external Slack Connect users from other workspaces (`team_id` mismatch via `users.info`) are refused for all actions (including `stop`) and receive a refusal reply in the thread.
+- **One Slack app per process (Socket Mode multi-connection guard)**: Each process that reads Slack (`slack start`, `github start --slack-allow`, or `hive-slack-agent`) requires its own dedicated Slack app and App-Level Token (`xapp-…`). Slack Socket Mode supports up to 10 connections per token and arbitrarily distributes incoming events across them without channel routing. Sharing an app token across two processes causes events (including `stop all` and thread replies) to split between the two processes (`Q635`).
 - **No impersonation (`slack:<handle>`)**: Every message delivered from Slack into the room is attributed as `slack:<handle>` (for example, `slack:ganesh`), never as a bare room member name (`Ganesh`), so a Slack display name cannot impersonate the room owner.
 
 ### Free vs Paid Slack Plans & the Slack AI Agent Surface (`hive-slack-agent.js`)
@@ -419,7 +421,7 @@ Use these 5 steps to demonstrate either **GitHub-to-Slack issue threads** (`gith
 
 ---
 
-## 7. Troubleshooting (`Q510` – `Q521`, `Q630` – `Q634`)
+## 7. Troubleshooting (`Q510` – `Q521`, `Q630` – `Q635`)
 
 | Code | Cause | Fix |
 | :--- | :--- | :--- |
@@ -431,3 +433,4 @@ Use these 5 steps to demonstrate either **GitHub-to-Slack issue threads** (`gith
 | **`Q632`** | Another `SlackBridge` with the same `--name` is already connected to this room. | Stop the existing `slack start` process before starting a new one so events are not posted twice. |
 | **`Q633`** | `--slack-channel` was passed to `github start`, but `SLACK_BOT_TOKEN` is not set in the environment. | Set `SLACK_BOT_TOKEN=xoxb-…` (or `$env:SLACK_BOT_TOKEN="xoxb-…"` in PowerShell) before running `github start --slack-channel`. |
 | **`Q634`** | Inbound Slack configuration cannot work safely: (1) `SLACK_APP_TOKEN` (`xapp-…`) is missing or rejected by `apps.connections.open`; (2) `--slack-allow` was passed to `github start` without `--slack-channel`, without `SLACK_APP_TOKEN`, or with usernames instead of member IDs (`U…`); or (3) Slack `auth.test` did not return a workspace `team_id` (in `github start` or `hive-mcp-http.js`), so external workspaces could not be refused. | Enable **Socket Mode** and set `SLACK_APP_TOKEN=xapp-…` (`connections:write` scope); pass Slack member IDs (`U…` from **Profile → `⋯` → Copy member ID**) to `--slack-allow` / `--allow`; or pass `--team <T…>` (`SLACK_TEAM_ID`) / reinstall the Slack app if `auth.test` omitted `team_id`. |
+| **`Q635`** | Another process is already connected to Slack Socket Mode with this `SLACK_APP_TOKEN` (Slack distributes incoming events across active connections, so messages or "stop" commands may go to the other process). | Ensure each process reading Slack (`slack start`, `github start --slack-allow`, `hive-slack-agent`) uses its own dedicated Slack app and App-Level Token. Check for another running terminal or service and stop it. If you just stopped a bridge or watcher, wait a minute for Slack to release the connection and start again. |

@@ -17,11 +17,12 @@
 // not in this process. A bridge that restarts must land its next update in the same Slack
 // thread, or a task's history splits in half and the thread stops being worth reading.
 //
-// Error codes Q630-Q634 are this module's:
+// Error codes Q630-Q635 are this module's:
 //   Q630  SLACK_BOT_TOKEN missing, invalid, or revoked at preflight
 //   Q631  --channel missing, not found, or the bot has not been invited (/invite @Hivecode)
 //   Q632  a Slack bridge with this name is already running in the room
 //   Q634  SLACK_APP_TOKEN (xapp-…) invalid or missing connections:write for Socket Mode
+//   Q635  multiple concurrent Socket Mode processes on same app token
 
 import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
@@ -33,8 +34,8 @@ const CURSOR_KEY = '__cursor__'
 const MAX_SEEN_EVENTS = 500
 
 export const USAGE = `usage:
-  SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--dry-run]
-  SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--agent] [--timeout <ms>]
+  SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--dry-run] [--start-retry <ms>]
+  SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--agent] [--timeout <ms>] [--start-retry <ms>]
 `
 
 export const NON_RETRYABLE = new Set([
@@ -467,7 +468,12 @@ export async function connectSocketMode({
   WebSocketImpl = WebSocket,
   onEvent,
   onError = null,
+  onMultiConnection = null,
+  logErr = console.error,
   reconnectDelayMs = 1000,
+  helloTimeoutMs = Number(process.env.HIVE_SLACK_HELLO_TIMEOUT_MS) || 10000,
+  startRetryMs = Number(process.env.HIVE_SLACK_START_RETRY_MS) || 60000,
+  startRetryDelayMs = 1000,
   timer = setTimeout,
 } = {}) {
   let ws = null
@@ -475,6 +481,8 @@ export async function connectSocketMode({
   let halted = false
   let reconnectTimer = null
   const seenEvents = new Set()
+  let lastCloseTime = 0
+  let warnedMulti = false
 
   function rememberEvent(id) {
     if (!id) return false
@@ -485,6 +493,62 @@ export async function connectSocketMode({
       seenEvents.delete(oldest)
     }
     return false
+  }
+
+  function wireSocket(sock) {
+    sock.on('message', (raw) => {
+      let frame
+      try { frame = JSON.parse(String(raw)) } catch { return }
+      // Acknowledge every envelope immediately (<3s) so Slack never retries and duplicates a stop/reply.
+      if (frame && frame.envelope_id) {
+        try { sock.send(JSON.stringify({ envelope_id: frame.envelope_id })) } catch { }
+      }
+      if (!frame) return
+      if (frame.type === 'hello') {
+        const num = Number(frame.num_connections) || 1
+        const isOwnLingering = (num === 2 && (Date.now() - lastCloseTime < 15000))
+        if (num > 1 && !isOwnLingering) {
+          if (!warnedMulti) {
+            warnedMulti = true
+            if (typeof logErr === 'function') {
+              try {
+                logErr(`WARNING: Slack Socket Mode reports ${num} active connections on this SLACK_APP_TOKEN. Events may go to another process (check for another terminal running "hivecode-mcp slack start", "github start --slack-allow", or "hive-slack-agent").`)
+              } catch { }
+            }
+            if (typeof onMultiConnection === 'function') {
+              try { onMultiConnection(num) } catch { }
+            }
+          }
+        } else if (num <= 1) {
+          warnedMulti = false
+        }
+        return
+      }
+      if (frame.type === 'disconnect') {
+        try { sock.close() } catch { }
+        return
+      }
+      const evId = (frame.payload && frame.payload.event_id) || frame.envelope_id || ''
+      if (evId && rememberEvent(evId)) return
+      const ev = frame.payload && frame.payload.event
+      if (ev && typeof onEvent === 'function') {
+        Promise.resolve(onEvent(ev, frame.payload)).catch((e) => {
+          if (typeof onError === 'function') { try { onError(e) } catch { } }
+        })
+      }
+    })
+
+    sock.on('error', (e) => {
+      if (typeof onError === 'function') { try { onError(e) } catch { } }
+    })
+
+    sock.on('close', () => {
+      lastCloseTime = Date.now()
+      if (ws === sock) ws = null
+      if (!stopped && !halted) {
+        reconnectTimer = timer(() => openSocket(''), reconnectDelayMs)
+      }
+    })
   }
 
   async function openSocket(firstUrl = '') {
@@ -508,42 +572,157 @@ export async function connectSocketMode({
     if (!url || stopped || halted) return
     const sock = new WebSocketImpl(url)
     ws = sock
-
-    sock.on('message', (raw) => {
-      let frame
-      try { frame = JSON.parse(String(raw)) } catch { return }
-      // Acknowledge every envelope immediately (<3s) so Slack never retries and duplicates a stop/reply.
-      if (frame && frame.envelope_id) {
-        try { sock.send(JSON.stringify({ envelope_id: frame.envelope_id })) } catch { }
-      }
-      if (!frame) return
-      if (frame.type === 'disconnect') {
-        try { sock.close() } catch { }
-        return
-      }
-      const evId = (frame.payload && frame.payload.event_id) || frame.envelope_id || ''
-      if (evId && rememberEvent(evId)) return
-      const ev = frame.payload && frame.payload.event
-      if (ev && typeof onEvent === 'function') {
-        Promise.resolve(onEvent(ev, frame.payload)).catch((e) => {
-          if (typeof onError === 'function') { try { onError(e) } catch { } }
-        })
-      }
-    })
-
-    sock.on('error', (e) => {
-      if (typeof onError === 'function') { try { onError(e) } catch { } }
-    })
-
-    sock.on('close', () => {
-      if (ws === sock) ws = null
-      if (!stopped && !halted) {
-        reconnectTimer = timer(() => openSocket(''), reconnectDelayMs)
-      }
-    })
+    wireSocket(sock)
   }
 
-  await openSocket(initialUrl)
+  // Initial connection handshake with startRetryMs retry for transient socket/network errors and num_connections > 1
+  const startTime = Date.now()
+  let currentUrl = initialUrl
+  let lastWhy = ''
+  let lastNum = 1
+  let warnedRetry = false
+
+  while (true) {
+    if (stopped || halted) return { stop: () => {}, isHalted: () => true }
+    if (!currentUrl) {
+      try {
+        const res = await slackPost('apps.connections.open', {}, appToken, fetchImpl, api)
+        currentUrl = res && res.url
+      } catch (e) {
+        if (isPermanentSlackError(e)) {
+          halted = true
+          throw e
+        }
+        lastWhy = extractSlackError(e) || e.message
+        const elapsed = Date.now() - startTime
+        if (elapsed < startRetryMs) {
+          if (!warnedRetry && typeof logErr === 'function') {
+            warnedRetry = true
+            try { logErr(`Slack Socket Mode could not connect (${lastWhy}); retrying for up to ${Math.round(startRetryMs / 1000)} s...`) } catch { }
+          }
+          await new Promise((r) => timer(r, Math.min(startRetryDelayMs, startRetryMs - elapsed)))
+          continue
+        }
+        halted = true
+        stopped = true
+        const err = new Error(`Q634 Socket Mode could not connect: ${lastWhy}`)
+        err.code = 'Q634'
+        throw err
+      }
+    }
+    if (!currentUrl) {
+      const err = new Error('Q634 Slack apps.connections.open did not return a WebSocket URL.')
+      err.code = 'Q634'
+      throw err
+    }
+
+    let sock = null
+    const handshake = await new Promise((resolve) => {
+      let settled = false
+      const finish = (result) => {
+        if (settled) return
+        settled = true
+        clearTimeout(hTimer)
+        resolve(result)
+      }
+      const hTimer = timer(() => finish({ type: 'timeout', reason: 'no hello frame received within timeout' }), helloTimeoutMs)
+      try {
+        sock = new WebSocketImpl(currentUrl)
+      } catch (e) {
+        finish({ type: 'error', error: e, reason: e.message })
+        return
+      }
+      ws = sock
+
+      const onMsg = (raw) => {
+        let frame
+        try { frame = JSON.parse(String(raw)) } catch { return }
+        if (frame && frame.envelope_id) {
+          try { sock.send(JSON.stringify({ envelope_id: frame.envelope_id })) } catch { }
+        }
+        if (!frame) return
+        if (frame.type === 'hello') {
+          finish({ type: 'hello', frame, sock, onMsg, onErr, onClose })
+          return
+        }
+      }
+
+      const onErr = (e) => {
+        finish({ type: 'error', error: e, reason: e.message || String(e) })
+      }
+
+      const onClose = () => {
+        lastCloseTime = Date.now()
+        finish({ type: 'close', reason: 'connection closed before receiving hello frame' })
+      }
+
+      sock.on('message', onMsg)
+      sock.on('error', onErr)
+      sock.on('close', onClose)
+    })
+
+    if (handshake.type === 'hello') {
+      const num = Number(handshake.frame && handshake.frame.num_connections) || 1
+      lastNum = num
+      if (num <= 1) {
+        wireSocket(handshake.sock)
+        try {
+          handshake.sock.removeListener('message', handshake.onMsg)
+          handshake.sock.removeListener('close', handshake.onClose)
+          handshake.sock.removeListener('error', handshake.onErr)
+        } catch { }
+        break
+      }
+
+      lastWhy = `${num} active connections`
+      const elapsed = Date.now() - startTime
+      if (elapsed < startRetryMs) {
+        if (!warnedRetry && typeof logErr === 'function') {
+          warnedRetry = true
+          try { logErr(`Slack reports ${num} connections on this app token; waiting up to ${Math.round(startRetryMs / 1000)} s for the other to drop...`) } catch { }
+        }
+        try { handshake.sock.removeAllListeners && handshake.sock.removeAllListeners() } catch { }
+        try { handshake.sock.close() } catch { }
+        const waitTime = Math.min(startRetryDelayMs, Math.max(50, startRetryMs - elapsed))
+        await new Promise((r) => timer(r, waitTime))
+        currentUrl = initialUrl || ''
+        continue
+      }
+
+      halted = true
+      stopped = true
+      try { handshake.sock.close() } catch { }
+      const err = new Error(`Q635 Another process is already connected to Slack Socket Mode with this SLACK_APP_TOKEN (${num} active connections). Slack distributes incoming events across connections, so messages and "stop" commands may go to the other process. Check for another terminal or service running "hivecode-mcp slack start", "github start --slack-allow", or "hive-slack-agent" with the same app token. If you just stopped a bridge, wait a minute for Slack to release the connection and start again.`)
+      err.code = 'Q635'
+      throw err
+    }
+
+    // Handshake failed (socket error, timeout, or close-before-hello)
+    lastWhy = handshake.reason || (handshake.error && handshake.error.message) || 'could not connect'
+    if (sock) {
+      try { sock.removeAllListeners && sock.removeAllListeners() } catch { }
+      try { sock.close() } catch { }
+      try { sock.terminate && sock.terminate() } catch { }
+    }
+
+    const elapsed = Date.now() - startTime
+    if (elapsed < startRetryMs) {
+      if (!warnedRetry && typeof logErr === 'function') {
+        warnedRetry = true
+        try { logErr(`Slack Socket Mode could not connect (${lastWhy}); retrying for up to ${Math.round(startRetryMs / 1000)} s...`) } catch { }
+      }
+      const waitTime = Math.min(startRetryDelayMs, Math.max(50, startRetryMs - elapsed))
+      await new Promise((r) => timer(r, waitTime))
+      currentUrl = initialUrl || ''
+      continue
+    }
+
+    halted = true
+    stopped = true
+    const err = new Error(`Q634 Socket Mode could not connect: ${lastWhy}`)
+    err.code = 'Q634'
+    throw err
+  }
 
   return {
     stop: () => {
@@ -737,6 +916,25 @@ export function makeSlackActorCheck({
 
   return { resolve, mayAct }
 }
+
+/** Parse and validate Slack member ids from --allow or SLACK_ALLOW (Q634).
+ *  Refuses anything not matching /^[UW][A-Z0-9]{2,}$/ (e.g. usernames or handles). */
+export function parseSlackAllow(allowRaw, flag = '--allow') {
+  const raw = Array.isArray(allowRaw) ? allowRaw.join(',') : String(allowRaw || '').trim()
+  if (!raw) return { ok: true, ids: [] }
+  const list = raw.split(',').map((s) => s.trim()).filter(Boolean)
+  const notIds = list.filter((s) => !/^[UW][A-Z0-9]{2,}$/.test(s))
+  if (notIds.length) {
+    return {
+      ok: false,
+      code: 'Q634',
+      error: `Q634 ${flag} takes Slack member ids like U012AB3CD, not ${notIds.join(', ')}. In Slack, open the person's profile, click More, then Copy member ID.`,
+    }
+  }
+  return { ok: true, ids: list }
+}
+
+export const validateSlackAllow = parseSlackAllow
 
 export function makeBridge({
   hive,
@@ -1007,7 +1205,9 @@ export function makeBridge({
     return { stop: () => { try { tasks.unobserve(kick); gates.unobserve(kick) } catch { } } }
   }
 
-  return { emit, onChat, deliver, onInboundEvent, watchRoom, threads, queue, threader }
+  const postChannel = (text) => queue.push({ channel, text })
+
+  return { emit, onChat, deliver, onInboundEvent, watchRoom, threads, queue, threader, postChannel }
 }
 
 export async function runSlackCheck({
@@ -1016,7 +1216,9 @@ export async function runSlackCheck({
   channel = '',
   agent = false,
   timeoutMs = 120000,
-  helloTimeoutMs = 10000,
+  helloTimeoutMs = Number(process.env.HIVE_SLACK_HELLO_TIMEOUT_MS) || 10000,
+  startRetryMs = Number(process.env.HIVE_SLACK_START_RETRY_MS) || 60000,
+  startRetryDelayMs = 1000,
   api = process.env.HIVE_SLACK_API || DEFAULT_API,
   fetchImpl = fetch,
   WebSocketImpl = WebSocket,
@@ -1149,59 +1351,99 @@ export async function runSlackCheck({
   let replyResolver = null
   const replyPromise = new Promise((resolve) => { replyResolver = resolve })
 
-  const helloOk = await new Promise((resolve) => {
-    let settled = false
-    const finish = (ok) => {
-      if (settled) return
-      settled = true
-      clearTimeout(hTimer)
-      resolve(ok)
-    }
-    const hTimer = setTimeout(() => finish(false), helloTimeoutMs)
-    try {
-      sock = new WebSocketImpl(sm.url)
-    } catch {
-      finish(false)
-      return
-    }
-    sock.on('error', () => finish(false))
-    sock.on('close', () => {
-      finish(false)
-      if (replyResolver) replyResolver(false)
-    })
-    sock.on('message', (raw) => {
-      let frame
-      try { frame = JSON.parse(String(raw)) } catch { return }
-      if (frame && frame.envelope_id) {
-        try { sock && sock.send(JSON.stringify({ envelope_id: frame.envelope_id })) } catch { }
+  let currentUrl = sm.url
+  const startTime = Date.now()
+
+  while (true) {
+    if (!currentUrl) {
+      try {
+        const res = await slackPost('apps.connections.open', {}, appToken, fetchImpl, api)
+        currentUrl = res && res.url
+      } catch (e) {
+        closeSock()
+        logErr(`Q634 Slack apps.connections.open failed (${formatSlackWhy(e)}).`)
+        return 1
       }
-      if (!frame) return
-      if (frame.type === 'hello') {
-        finish(true)
+    }
+    if (!currentUrl) {
+      closeSock()
+      logErr('Q634 Slack apps.connections.open did not return a WebSocket URL.')
+      return 1
+    }
+
+    const res = await new Promise((resolve) => {
+      let settled = false
+      const finish = (val) => {
+        if (settled) return
+        settled = true
+        clearTimeout(hTimer)
+        resolve(val)
+      }
+      const hTimer = setTimeout(() => finish({ timedOut: true }), helloTimeoutMs)
+      try {
+        sock = new WebSocketImpl(currentUrl)
+      } catch (e) {
+        finish({ error: e })
         return
       }
-      const ev = frame.payload && frame.payload.event
-      if (
-        ev &&
-        (ev.type === 'message' || (agent && ev.type === 'agent_session_stopped')) &&
-        !ev.bot_id &&
-        !ev.subtype &&
-        ev.user &&
-        ev.user !== botUserId &&
-        (!ev.channel || ev.channel === channel) &&
-        checkTs &&
-        (ev.thread_ts || ev.ts) === checkTs
-      ) {
-        if (replyResolver) replyResolver(true)
-      }
+      sock.on('error', (e) => finish({ error: e }))
+      sock.on('close', () => {
+        finish({ closed: true })
+        if (replyResolver) replyResolver(false)
+      })
+      sock.on('message', (raw) => {
+        let frame
+        try { frame = JSON.parse(String(raw)) } catch { return }
+        if (frame && frame.envelope_id) {
+          try { sock && sock.send(JSON.stringify({ envelope_id: frame.envelope_id })) } catch { }
+        }
+        if (!frame) return
+        if (frame.type === 'hello') {
+          finish({ ok: true, frame })
+          return
+        }
+        const ev = frame.payload && frame.payload.event
+        if (
+          ev &&
+          (ev.type === 'message' || (agent && ev.type === 'agent_session_stopped')) &&
+          !ev.bot_id &&
+          !ev.subtype &&
+          ev.user &&
+          ev.user !== botUserId &&
+          (!ev.channel || ev.channel === channel) &&
+          checkTs &&
+          (ev.thread_ts || ev.ts) === checkTs
+        ) {
+          if (replyResolver) replyResolver(true)
+        }
+      })
     })
-  })
 
-  if (!helloOk) {
+    if (res.timedOut || res.closed || res.error) {
+      closeSock()
+      logErr('Q634 Socket Mode did not open (no hello frame received within timeout). Check SLACK_APP_TOKEN (connections:write) and network access to Slack.')
+      return 1
+    }
+
+    const num = Number(res.frame && res.frame.num_connections) || 1
+    if (num <= 1) {
+      break
+    }
+
+    const elapsed = Date.now() - startTime
+    if (elapsed < startRetryMs) {
+      closeSock()
+      const waitTime = Math.min(startRetryDelayMs, Math.max(50, startRetryMs - elapsed))
+      await new Promise((r) => setTimeout(r, waitTime))
+      currentUrl = ''
+      continue
+    }
+
     closeSock()
-    logErr('Q634 Socket Mode did not open (no hello frame received within timeout). Check SLACK_APP_TOKEN (connections:write) and network access to Slack.')
+    logErr(`Q635 Another process is already connected to Slack Socket Mode with this SLACK_APP_TOKEN (${num} active connections). Slack distributes incoming events across connections, so messages and "stop" commands may go to the other process. Check for another terminal or service running "hivecode-mcp slack start", "github start --slack-allow", or "hive-slack-agent" with the same app token. If you just stopped a bridge, wait a minute for Slack to release the connection and start again.`)
     return 1
   }
+
   log('✓ Socket Mode: connected')
 
   // 6. Real proof: post prompt and wait up to timeoutMs for any non-bot reply in that thread
@@ -1303,11 +1545,13 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   let CHANNEL = env.SLACK_CHANNEL || ''
   let NAME = 'SlackBridge'
   let ALLOW = env.SLACK_ALLOW || ''
+  let allowSource = env.SLACK_ALLOW ? 'SLACK_ALLOW' : '--allow'
   let LINK = ''
   let dryRun = false
   let agent = false
   let timeoutMs = Number(env.HIVE_SLACK_CHECK_TIMEOUT_MS) || 120000
   let helloTimeoutMs = Number(env.HIVE_SLACK_HELLO_TIMEOUT_MS) || 10000
+  let startRetryMs = Number(env.HIVE_SLACK_START_RETRY_MS) || 60000
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if ((a === 'start' || a === 'check') && !LINK && i === 0) { mode = a; continue }
@@ -1316,9 +1560,10 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     if (a === '--agent') { agent = true; continue }
     if (a === '--channel') { CHANNEL = argv[++i] || ''; continue }
     if (a === '--name') { NAME = argv[++i] || 'SlackBridge'; continue }
-    if (a === '--allow') { ALLOW = argv[++i] || ''; continue }
+    if (a === '--allow') { ALLOW = argv[++i] || ''; allowSource = '--allow'; continue }
     if (a === '--timeout') { timeoutMs = Number(argv[++i]) || timeoutMs; continue }
     if (a === '--hello-timeout') { helloTimeoutMs = Number(argv[++i]) || helloTimeoutMs; continue }
+    if (a === '--start-retry') { startRetryMs = Number(argv[++i]) || startRetryMs; continue }
     if (a.startsWith('--')) { logErr(USAGE.trim()); return 2 }
     if (!LINK) LINK = a
   }
@@ -1332,6 +1577,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
       agent,
       timeoutMs,
       helloTimeoutMs,
+      startRetryMs,
       fetchImpl,
       WebSocketImpl,
       log,
@@ -1341,6 +1587,11 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   if (!LINK) {
     logErr(USAGE.trim())
     return 2
+  }
+  const allowParsed = parseSlackAllow(ALLOW, allowSource)
+  if (!allowParsed.ok) {
+    logErr(allowParsed.error)
+    return 1
   }
   const pre = await preflightSlack({ token: TOKEN, channel: CHANNEL, fetchImpl })
   if (!pre.ok) {
@@ -1368,7 +1619,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   }
   if (dryRun) {
     const mode = sockPre ? 'outbound + inbound Socket Mode' : 'outbound'
-    log(`DRY RUN OK: @${pre.botUser} is in #${pre.channelName} (${CHANNEL}) [${mode}] and ready to bridge ${room}.`)
+    log(`DRY RUN OK: @${pre.botUser} is in #${pre.channelName} (${CHANNEL}) [${mode}] and ready to bridge ${room} — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}.`)
     return 0
   }
   const dir = (env.TEMP || process.env.TEMP || '.') + '/hive-slack-' + room + '-' + process.pid
@@ -1399,20 +1650,34 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     post: (m) => slackPost('chat.postMessage', m, TOKEN, fetchImpl),
   })
   if (sockPre) {
-    await connectSocketMode({
-      appToken: APP_TOKEN,
-      initialUrl: sockPre.url,
-      fetchImpl,
-      WebSocketImpl,
-      onEvent: (ev) => bridge.onInboundEvent(ev),
-    })
+    try {
+      await connectSocketMode({
+        appToken: APP_TOKEN,
+        initialUrl: sockPre.url,
+        fetchImpl,
+        WebSocketImpl,
+        logErr,
+        helloTimeoutMs,
+        startRetryMs,
+        onEvent: (ev) => bridge.onInboundEvent(ev),
+        onMultiConnection: (n) => {
+          bridge.postChannel(
+            `:warning: Another process connected to Slack Socket Mode with this app token (${n} active connections). Slack distributes incoming events across connections, so messages or "stop" commands may go to the other process. Check for another terminal running hivecode-mcp slack start, github start --slack-allow, or hive-slack-agent.`,
+          )
+        },
+      })
+    } catch (e) {
+      logErr(e.message)
+      try { hive.stop() } catch { }
+      return 1
+    }
   }
   const chat = hive.doc.getArray('chat')
   const savedCursor = Number(bridge.threads.get(CURSOR_KEY)) || 0
   let at = savedCursor > 0 && savedCursor <= chat.length ? savedCursor : chat.length
   chat.observe(() => { const all = chat.toArray(); bridge.onChat(all.slice(at), at); at = all.length })
   await bridge.watchRoom()
-  log(`READY: [hive-slack] @${pre.botUser} bridging ${room} -> #${pre.channelName} (${CHANNEL})`)
+  log(`READY: [hive-slack] @${pre.botUser} bridging ${room} -> #${pre.channelName} (${CHANNEL}) — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}`)
   return 0
 }
 
