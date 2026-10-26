@@ -25,6 +25,7 @@ import http from 'http'
 import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 import { attachRateLimit } from './limits.js'
+import { makeSlackActorCheck, formatSlackSender } from './hive-slack.js'
 
 import { VERSION } from "./hive-version.js"
 export { VERSION }
@@ -32,6 +33,7 @@ export { VERSION }
 const PROTOCOL = '2025-06-18'
 const MAX_BODY = 1 << 20           // a control-plane request is never a megabyte
 const SKEW_MS = 5 * 60 * 1000      // Slack's own replay window
+const MAX_SESSIONS = 1000          // LRU bound on tracked MCP session IDs
 
 /** Slack's v0 request signature.
  *
@@ -64,8 +66,12 @@ const pausedOf = (hive, who) => { const c = hive.doc.getMap('controls').get(who)
 
 // `room` is passed in: startSync returns no room field, so `hive.room` is undefined and the
 // status tool reported "room: undefined" to whoever asked Slackbot what was going on.
-export function makeTools(hive, room = '') {
+export function makeTools(hive, room = '', { actorCheck = null, allow = [] } = {}) {
   const ai = () => (hive.members ? hive.members() : []).filter((p) => p.kind === 'ai')
+  const userIdOf = (actor) => {
+    const s = String(actor || '')
+    return s.startsWith('slack:') ? s.slice(6) : ''
+  }
   return [
     {
       name: 'hive_status',
@@ -127,31 +133,49 @@ export function makeTools(hive, room = '') {
       name: 'hive_pause',
       description: 'STOP an agent: it finishes its current step and is then refused any new work until resumed. Pass who="all" to stop every agent in the room. This is the control to reach for when something is going wrong and nobody is at a desk.',
       inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'an agent name, or "all"' } }, required: ['who'] },
-      run: ({ who }, actor) => {
+      run: async ({ who }, actor) => {
+        let by = actor
+        let unverifiedNote = ''
+        const uid = userIdOf(actor)
+        if (actorCheck && uid) {
+          const resolved = await actorCheck.resolve(uid)
+          const check = actorCheck.mayAct(resolved, 'stop', allow)
+          if (!check.ok) return text(check.reply || 'Q521 refused by Slack actor check')
+          by = (resolved.ok && resolved.handle && resolved.handle !== uid) ? check.by : (actor || check.by)
+          if (check.unverified && check.reply) unverifiedNote = ` (${check.reply})`
+        }
         if (String(who).toLowerCase() === 'all') {
           const names = ai().map((p) => p.name)
-          for (const n of names) hive.control(n, 'paused', actor)
-          return text(names.length ? `paused ${names.join(', ')} — nothing new will be picked up` : 'there are no agents to pause')
+          for (const n of names) hive.control(n, 'paused', by)
+          return text(names.length ? `paused ${names.join(', ')} — nothing new will be picked up${unverifiedNote}` : 'there are no agents to pause')
         }
         const real = resolveName(hive, who)
         if (!real) return text(`Q514 there is nobody called "${who}" in this room. Here now: ${(hive.members ? hive.members() : []).map((p) => p.name).join(', ') || 'nobody'}`)
-        hive.control(real, 'paused', actor)
-        return text(`paused ${real} — it will finish its current step and then stop picking up work`)
+        hive.control(real, 'paused', by)
+        return text(`paused ${real} — it will finish its current step and then stop picking up work${unverifiedNote}`)
       },
     },
     {
       name: 'hive_resume',
       description: 'Let a paused agent pick up work again. Pass who="all" to resume every agent.',
       inputSchema: { type: 'object', properties: { who: { type: 'string', description: 'an agent name, or "all"' } }, required: ['who'] },
-      run: ({ who }, actor) => {
+      run: async ({ who }, actor) => {
+        let by = actor
+        if (actorCheck) {
+          const uid = userIdOf(actor)
+          const resolved = await actorCheck.resolve(uid)
+          const check = actorCheck.mayAct(resolved, 'resume', allow)
+          if (!check.ok) return text(check.reply || 'Q521 refused: not in --allow')
+          by = check.by || actor
+        }
         if (String(who).toLowerCase() === 'all') {
           const names = ai().map((p) => p.name)
-          for (const n of names) hive.control(n, 'running', actor)
+          for (const n of names) hive.control(n, 'running', by)
           return text(names.length ? `resumed ${names.join(', ')}` : 'there are no agents to resume')
         }
         const real = resolveName(hive, who)
         if (!real) return text(`Q514 there is nobody called "${who}" in this room`)
-        hive.control(real, 'running', actor)
+        hive.control(real, 'running', by)
         return text(`resumed ${real}`)
       },
     },
@@ -159,9 +183,27 @@ export function makeTools(hive, room = '') {
       name: 'hive_say',
       description: 'Send a message into the room. Address an agent with @Name so it lands as mail rather than ambient chatter — an agent only acts on what names it.',
       inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-      run: ({ text: t }, actor) => {
-        hive.say(`${t}`, { by: actor })
-        return text(`sent to the room as ${actor}`)
+      run: async ({ text: t }, actor) => {
+        let by = formatSlackSender(userIdOf(actor) || actor || 'user')
+        if (actorCheck) {
+          const uid = userIdOf(actor)
+          const resolved = await actorCheck.resolve(uid)
+          const check = actorCheck.mayAct(resolved, 'reply', allow)
+          if (!check.ok) return text(check.reply || 'Q521 refused: not in --allow')
+          by = check.by || by
+        }
+        if (hive && hive.doc && typeof hive.doc.getArray === 'function') {
+          hive.doc.getArray('chat').push([{
+            by,
+            kind: 'say',
+            at: Date.now() * 1000,
+            text: String(t || '').trim(),
+            viaSlack: true,
+          }])
+        } else if (hive && typeof hive.say === 'function') {
+          hive.say(`${t}`, { by })
+        }
+        return text(`sent to the room as ${by}`)
       },
     },
   ]
@@ -221,10 +263,37 @@ export function clientAddress(req, trustProxy = TRUST_PROXY) {
   return hops.length ? hops[hops.length - 1] : sock
 }
 
-export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '', now = Date.now, tier = null, trustProxy = TRUST_PROXY }) {
-  const tools = makeTools(hive, room)
-  const sessions = new Set()
+export function makeHandler({
+  hive,
+  room = '',
+  auth = 'slack',
+  signingSecret = '',
+  now = Date.now,
+  tier = null,
+  trustProxy = TRUST_PROXY,
+  allow = [],
+  token = '',
+  teamId = '',
+  lookupUser = null,
+  api = undefined,
+  fetchImpl = undefined,
+  actorCheck = null,
+}) {
+  const effectiveActorCheck = actorCheck || (auth === 'slack'
+    ? makeSlackActorCheck({ token, teamId, api, fetchImpl, lookupUser, now })
+    : null)
+  const tools = makeTools(hive, room, { actorCheck: effectiveActorCheck, allow })
+  const sessions = new Set() // insertion order = LRU order (oldest first, most-recently-used last)
   const limiters = new Map() // insertion order = age, so the oldest address is the first key
+
+  function touchSession(sid) {
+    if (!sid) return
+    if (sessions.has(sid)) sessions.delete(sid)
+    sessions.add(sid)
+    if (sessions.size > MAX_SESSIONS) {
+      sessions.delete(sessions.values().next().value)
+    }
+  }
 
   function limiterFor(ip) {
     let l = limiters.get(ip)
@@ -238,6 +307,8 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
   }
 
   handle.limiterCount = () => limiters.size
+  handle.sessionCount = () => sessions.size
+  handle.hasSession = (sid) => sessions.has(sid)
   return handle
   async function handle(req, res) {
     const send = (code, obj, headers = {}) => {
@@ -291,7 +362,7 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
 
     const payload = Array.isArray(msg) ? out : out[0]
     const sid = req.headers['mcp-session-id'] || crypto.randomUUID()
-    sessions.add(sid)
+    touchSession(sid)
 
     // Streamable HTTP: the client says which framing it can read. Slack accepts either, but a
     // client that asked ONLY for an event stream will not parse a plain JSON body.
@@ -305,12 +376,59 @@ export function makeHandler({ hive, room = '', auth = 'slack', signingSecret = '
   }
 }
 
-export function serve({ hive, room = '', port, auth, signingSecret, now, tier = null, trustProxy = TRUST_PROXY }) {
-  const handle = makeHandler({ hive, room, auth, signingSecret, now, tier, trustProxy })
+export function serve({
+  hive,
+  room = '',
+  port,
+  auth,
+  signingSecret,
+  now,
+  tier = null,
+  trustProxy = TRUST_PROXY,
+  allow = [],
+  token = '',
+  teamId = '',
+  lookupUser = null,
+  api = undefined,
+  fetchImpl = undefined,
+  actorCheck = null,
+}) {
+  const handle = makeHandler({
+    hive,
+    room,
+    auth,
+    signingSecret,
+    now,
+    tier,
+    trustProxy,
+    allow,
+    token,
+    teamId,
+    lookupUser,
+    api,
+    fetchImpl,
+    actorCheck,
+  })
   const server = http.createServer((req, res) => {
     handle(req, res).catch(() => { try { res.writeHead(500); res.end('{}') } catch { /* already sent */ } })
   })
   return new Promise((resolve) => server.listen(port, () => resolve(server)))
+}
+
+export function resolveConfig(argv = process.argv.slice(2), env = process.env) {
+  const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || '') }
+  const link = argv.find((a) => !a.startsWith('--')) || ''
+  const port = Number(flag('port', '') || env.PORT || '8790')
+  const auth = flag('auth', 'slack')
+  const secret = env.SLACK_SIGNING_SECRET || ''
+  const allow = flag('allow', env.SLACK_ALLOW || '')
+  const token = env.SLACK_BOT_TOKEN || ''
+  const teamId = flag('team', env.SLACK_TEAM_ID || '')
+  const name = flag('name', 'Hivecode')
+  const trustProxy = /^(1|true|yes)$/i.test(env.HIVE_TRUST_PROXY || '') || argv.includes('--trust-proxy')
+  const parsed = link ? parseLink(link) : { relay: '', room: '', token: null }
+  const hiveToken = parsed.token || env.HIVE_TOKEN || ''
+  return { link, relay: parsed.relay, room: parsed.room, port, auth, secret, allow, token, teamId, name, trustProxy, hiveToken }
 }
 
 // ---- main -------------------------------------------------------------------------------
@@ -319,29 +437,39 @@ export function serve({ hive, room = '', port, auth, signingSecret, now, tier = 
 // already guards it; this file did not, so importing it crashed rather than simply not running
 // main. Found while reviewing HIV-P7; pre-existing, not caused by it.
 if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
-  const argv = process.argv.slice(2)
-  const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || '') }
-  const LINK = argv.find((a) => !a.startsWith('--')) || ''
-  const PORT = Number(flag('port', '8790'))
-  const AUTH = flag('auth', 'slack')
-  const SECRET = process.env.SLACK_SIGNING_SECRET || ''
-  if (!LINK) {
-    console.error('usage: node hive-mcp-http.js "<relay|room>" --port 8790 [--auth slack|none] [--trust-proxy]')
+  const cfg = resolveConfig(process.argv.slice(2), process.env)
+  if (!cfg.link) {
+    console.error('usage: node hive-mcp-http.js "<relay|room>" --port 8790 [--auth slack|none] [--allow <U123,U456>] [--trust-proxy]')
     process.exit(2)
   }
   // Fail closed. Starting in `slack` mode without a secret would silently serve an OPEN control
   // plane for a room -- anybody who found the URL could stop every agent in it.
-  if (AUTH === 'slack' && !SECRET) {
+  if (cfg.auth === 'slack' && !cfg.secret) {
     console.error('Q510 --auth slack needs SLACK_SIGNING_SECRET. Use --auth none only on localhost.')
     process.exit(2)
   }
-  const { relay, room } = parseLink(LINK)
   const hive = startSync({
-    relay, room, dir: (process.env.TEMP || '.') + '/hive-mcp-http-' + room,
-    name: flag('name', 'Hivecode'), kind: 'human', token: process.env.HIVE_TOKEN || '', syncFiles: false, log: () => {},
+    relay: cfg.relay,
+    room: cfg.room,
+    dir: (process.env.TEMP || '.') + '/hive-mcp-http-' + cfg.room,
+    name: cfg.name,
+    kind: 'human',
+    token: cfg.hiveToken,
+    syncFiles: false,
+    log: () => {},
   })
-  serve({ hive, room, port: PORT, auth: AUTH, signingSecret: SECRET, trustProxy: TRUST_PROXY || argv.includes('--trust-proxy') }).then(() => {
-    console.log(`[hive-mcp-http] room ${room} on :${PORT}/  auth=${AUTH}`)
-    if (AUTH === 'none') console.log('  auth=none: do NOT expose this beyond localhost.')
+  serve({
+    hive,
+    room: cfg.room,
+    port: cfg.port,
+    auth: cfg.auth,
+    signingSecret: cfg.secret,
+    allow: cfg.allow,
+    token: cfg.token,
+    teamId: cfg.teamId,
+    trustProxy: cfg.trustProxy,
+  }).then(() => {
+    console.log(`[hive-mcp-http] room ${cfg.room} on :${cfg.port}/  auth=${cfg.auth}`)
+    if (cfg.auth === 'none') console.log('  auth=none: do NOT expose this beyond localhost.')
   })
 }

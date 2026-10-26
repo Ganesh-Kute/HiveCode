@@ -76,7 +76,16 @@ try {
   const B = mk('AgentB', 'ai'); clients.push(B)
   await sleep(2500)
 
-  httpd = await serve({ hive: panel, room: ROOM, port: HTTP_PORT, auth: 'slack', signingSecret: SECRET })
+  httpd = await serve({
+    hive: panel,
+    room: ROOM,
+    port: HTTP_PORT,
+    auth: 'slack',
+    signingSecret: SECRET,
+    allow: ['U0GANESH'],
+    teamId: 'T1',
+    lookupUser: async (uid) => ({ ok: true, user: { id: uid || 'U0GANESH', name: uid || 'U0GANESH', team_id: 'T1', is_restricted: false, is_ultra_restricted: false } }),
+  })
 
   // Every call goes over a real socket, signed the way Slack signs.
   let id = 0
@@ -139,7 +148,7 @@ try {
     (panel.doc.getMap('controls').get('AgentA') || {}).by === 'slack:U0GANESH',
     JSON.stringify(panel.doc.getMap('controls').get('AgentA')))
 
-  const resume = await rpc('tools/call', { name: 'hive_resume', arguments: { who: 'agenta' } })
+  const resume = await rpc('tools/call', { name: 'hive_resume', arguments: { who: 'agenta' }, _meta: { slack: { user_id: 'U0GANESH', team_id: 'T1' } } })
   await sleep(1500)
   T('a lowercase name still resolves', /resumed AgentA/.test(said(resume)), said(resume))
   T('only that agent resumed', A.isPaused() === false && B.isPaused() === true)
@@ -219,17 +228,127 @@ try {
   T('a client-written first hop does not escape the limit', spoofPrepended.status === 429)
 
   // Not behind a proxy: the header is not read at all, so rotating it buys nothing.
-  const { clientAddress, makeHandler } = await import('../hive-mcp-http.js')
+  const { clientAddress, makeHandler, resolveConfig } = await import('../hive-mcp-http.js')
   const fakeReq = (xff) => ({ socket: { remoteAddress: '203.0.113.7' }, headers: { 'x-forwarded-for': xff } })
   T('without a trusted proxy, X-Forwarded-For is ignored', clientAddress(fakeReq('1.1.1.1'), false) === '203.0.113.7')
   T('behind one, the last hop is used', clientAddress(fakeReq('6.6.6.6, 198.51.100.4'), true) === '198.51.100.4')
-  const h = makeHandler({ hive: panel, room: ROOM, auth: 'none', trustProxy: true, tier: { msgsPerSec: 1000, msgBurst: 1000, cooloffMs: 1, bytesPerSec: 1e9, byteBurst: 1e9 } })
+  const h = makeHandler({ hive: panel, room: ROOM, auth: 'none', trustProxy: true, tier: { msgsPerSec: 10000, msgBurst: 10000, cooloffMs: 1, bytesPerSec: 1e9, byteBurst: 1e9 } })
   const sink = { writeHead() { }, end() { } }
   // POST: a GET is refused before the limiter ever runs, so it would prove nothing.
   const post = (xff) => ({ method: 'POST', headers: { 'x-forwarded-for': xff }, socket: {}, async *[Symbol.asyncIterator]() { } })
   for (let i = 0; i < 10050; i++) { try { await h(post(`10.0.${i >> 8}.${i & 255}`), sink) } catch { } }
   T('...and actually filled, so the bound is what held it', h.limiterCount() >= 9999, `${h.limiterCount()}`)
   T('the per-address table is bounded', h.limiterCount() <= 10000, `${h.limiterCount()} entries after 10,050 addresses`)
+
+  // 8. sessions LRU cap (1,000)
+  console.log('\n# sessions LRU cap (1,000)')
+  const rpcBody = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+  const postSession = (sid) => ({
+    method: 'POST',
+    headers: { 'mcp-session-id': sid },
+    socket: { remoteAddress: '127.0.0.1' },
+    async *[Symbol.asyncIterator]() { yield rpcBody },
+  })
+  for (let i = 0; i < 1050; i++) {
+    if (i === 500) await h(postSession('sid-0'), sink) // touch sid-0 so it is recently used
+    await h(postSession(`sid-${i}`), sink)
+  }
+  const sessCount = typeof h.sessionCount === 'function' ? h.sessionCount() : Infinity
+  const keptTouched = typeof h.hasSession === 'function' && h.hasSession('sid-0') === true && h.hasSession('sid-1') === false
+  T('sessions table is bounded at 1,000 entries', sessCount <= 1000, `count=${sessCount}`)
+  T('sessions eviction is LRU (touched sid-0 survives while untouched sid-1 is evicted)', keptTouched)
+
+  // 9. makeSlackActorCheck on hive_pause / hive_resume / hive_say (--allow, guest/external refusal, fail-open stop)
+  console.log('\n# makeSlackActorCheck on hive_pause, hive_resume, hive_say')
+  await rpc('tools/call', { name: 'hive_resume', arguments: { who: 'all' }, _meta: { slack: { user_id: 'U0GANESH' } } })
+  await sleep(600)
+  const USERS = {
+    U_OWNER: { id: 'U_OWNER', name: 'Ganesh', team_id: 'T_OUR_TEAM', is_restricted: false, is_ultra_restricted: false },
+    U_COWORKER: { id: 'U_COWORKER', name: 'alice', team_id: 'T_OUR_TEAM', is_restricted: false, is_ultra_restricted: false },
+    U_GUEST: { id: 'U_GUEST', name: 'guest_bob', team_id: 'T_OUR_TEAM', is_restricted: true, is_ultra_restricted: false },
+    U_EXTERNAL: { id: 'U_EXTERNAL', name: 'ext_carol', team_id: 'T_OTHER', is_restricted: false, is_ultra_restricted: false },
+  }
+  let failLookup = false
+  const aclPort = HTTP_PORT + 20
+  const aclHttpd = await serve({
+    hive: panel,
+    room: ROOM,
+    port: aclPort,
+    auth: 'slack',
+    signingSecret: SECRET,
+    allow: ['U_OWNER'],
+    teamId: 'T_OUR_TEAM',
+    lookupUser: async (uid) => {
+      if (failLookup) throw new Error('slack users.info: internal_error')
+      return { ok: true, user: USERS[uid] }
+    },
+  })
+  async function aclRpc(name, args, userId) {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: ++id,
+      method: 'tools/call',
+      params: { name, arguments: args, _meta: { slack: { user_id: userId, team_id: (USERS[userId] && USERS[userId].team_id) || 'T_OUR_TEAM' } } },
+    })
+    const ts = String(Math.floor(Date.now() / 1000))
+    const sig = 'v0=' + crypto.createHmac('sha256', SECRET).update(`v0:${ts}:${body}`).digest('hex')
+    const r = await fetch(`http://127.0.0.1:${aclPort}/mcp`, {
+      method: 'POST',
+      body,
+      headers: { 'Content-Type': 'application/json', 'X-Slack-Request-Timestamp': ts, 'X-Slack-Signature': sig },
+    })
+    return { status: r.status, text: await r.text() }
+  }
+  try {
+    // Guest and external workspace user cannot even pause
+    const gStop = await aclRpc('hive_pause', { who: 'AgentA' }, 'U_GUEST')
+    const eStop = await aclRpc('hive_pause', { who: 'AgentA' }, 'U_EXTERNAL')
+    await sleep(500)
+    T('guests and external workspace users are refused on hive_pause',
+      /Refused/i.test(said(gStop)) && /Refused/i.test(said(eStop)) && A.isPaused() === false,
+      `guest="${said(gStop)}" ext="${said(eStop)}" paused=${A.isPaused()}`)
+
+    // Any full workspace member (not in --allow) CAN pause
+    const cStop = await aclRpc('hive_pause', { who: 'AgentA' }, 'U_COWORKER')
+    await sleep(800)
+    T('full workspace member not in --allow CAN call hive_pause', A.isPaused() === true && /paused AgentA/.test(said(cStop)), said(cStop))
+
+    // Member not in --allow CANNOT call hive_resume or hive_say
+    const cResume = await aclRpc('hive_resume', { who: 'AgentA' }, 'U_COWORKER')
+    const chatBefore = panel.doc.getArray('chat').length
+    const cSay = await aclRpc('hive_say', { text: '@AgentA do unauthorized work' }, 'U_COWORKER')
+    await sleep(600)
+    T('member not in --allow is refused on hive_resume (AgentA stays paused)',
+      /Refused/i.test(said(cResume)) && /--allow/.test(said(cResume)) && A.isPaused() === true, said(cResume))
+    T('member not in --allow is refused on hive_say (nothing posted to room)',
+      /Refused/i.test(said(cSay)) && panel.doc.getArray('chat').length === chatBefore, said(cSay))
+
+    // User in --allow CAN call hive_resume and hive_say (attributed as slack:Ganesh, never bare Ganesh)
+    const oResume = await aclRpc('hive_resume', { who: 'AgentA' }, 'U_OWNER')
+    const oSay = await aclRpc('hive_say', { text: '@AgentA hello from owner' }, 'U_OWNER')
+    await sleep(800)
+    const lastChat = panel.doc.getArray('chat').toArray().slice(-1)[0] || {}
+    T('user in --allow CAN call hive_resume and hive_say (attributed as slack:Ganesh)',
+      A.isPaused() === false && /resumed AgentA/.test(said(oResume)) && lastChat.by === 'slack:Ganesh',
+      `paused=${A.isPaused()} by=${lastChat.by}`)
+
+    // Fail-open stop when users.info fails
+    failLookup = true
+    const outStop = await aclRpc('hive_pause', { who: 'AgentA' }, 'U_EMERGENCY')
+    await sleep(800)
+    T('hive_pause fails open when users.info throws, noting unverified stop',
+      A.isPaused() === true && /stopped; I could not confirm who you are/.test(said(outStop)), said(outStop))
+  } finally {
+    try { aclHttpd.close() } catch {}
+  }
+
+  // 10. PORT from environment and token from wss://relay|room|token link
+  console.log('\n# PORT from env + token from wss://relay|room|token link')
+  const cfg = typeof resolveConfig === 'function'
+    ? resolveConfig(['wss://hivecode-relay.onrender.com|room-xyz123|tok-secret-99', '--auth', 'none'], { PORT: '9912', HIVE_TOKEN: '' })
+    : {}
+  T('PORT is read from environment when --port is not given', cfg.port === 9912, `port=${cfg.port}`)
+  T('token is extracted from a wss://relay|room|token link', cfg.hiveToken === 'tok-secret-99', `token=${cfg.hiveToken}`)
 
   try { rateHttpd.close() } catch {}
 } catch (e) {
