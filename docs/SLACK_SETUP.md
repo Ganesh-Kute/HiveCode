@@ -142,7 +142,9 @@ Inbound Socket Mode requires adding `channels:history`, `groups:history`, and `u
 > **Plain-spoken scope warning:** `channels:history` and `groups:history` let the bot read every message posted in the channels you invite it to. If you only want outbound thread feeds, keep the default 3-scope manifest above.
 
 <details>
-<summary><strong>Optional Inbound Manifest (Socket Mode enabled)</strong></summary>
+<summary><strong>Optional Inbound Manifest (Socket Mode enabled — <code>slack-app-manifest-inbound.json</code>)</strong></summary>
+
+Paste the contents of [`slack-app-manifest-inbound.json`](../slack-app-manifest-inbound.json):
 
 ```json
 {
@@ -222,6 +224,41 @@ npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-a
 npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
 ```
 
+### Slackbot Remote MCP Server (`hive-mcp-http.js`)
+
+If you connect Slackbot's remote MCP client over Streamable HTTP (`hive-mcp-http.js`), it exposes fast room inspection and control tools (`hive_status`, `hive_members`, `hive_tasks`, `hive_claims`, `hive_recent`, `hive_pause`, `hive_resume`, `hive_say`).
+
+- **Requires both `SLACK_SIGNING_SECRET` and `SLACK_BOT_TOKEN`**: In `--auth slack` mode (the default), `hive-mcp-http.js` refuses to start without `SLACK_SIGNING_SECRET` (`Q510`, copied from **Basic Information → App Credentials → Signing Secret**) **and** `SLACK_BOT_TOKEN` (`Q630`, `xoxb-…` with `users:read` scope so `users.info` can verify callers).
+- **Discovers your workspace (`team_id`) from Slack at startup**: When you start `hive-mcp-http.js` without `--team` (`SLACK_TEAM_ID`), it calls Slack's `auth.test` using `SLACK_BOT_TOKEN` before serving requests. If `auth.test` rejects the token (`Q630`) or does not return a `team_id` (`Q634`), startup is refused immediately so external Slack Connect workspace users can never slip through by default.
+- **Same access rules (`makeSlackActorCheck`)**:
+  - **Every request is HMAC-verified first** (`X-Slack-Signature` + 5-minute replay window, `Q511`–`Q513`) before `_meta.slack.user_id` is read.
+  - **Guests and other workspaces are refused** for all tools (`hive_pause`, `hive_resume`, `hive_say`).
+  - **`hive_pause` (`stop`) is fail-safe** for any full member of your workspace (and fails open with `(stopped; I could not confirm who you are)` if `users.info` is unreachable during a Slack outage).
+  - **`hive_resume` and `hive_say` require `--allow <U123,U456>`** (or `SLACK_ALLOW`). Messages sent via `hive_say` are recorded in room chat as `slack:<handle>`.
+
+**macOS / Linux (bash, zsh):**
+```bash
+SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… node hive-mcp-http.js "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:SLACK_SIGNING_SECRET="…"
+$env:SLACK_BOT_TOKEN="xoxb-…"
+node hive-mcp-http.js "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
+```
+
+**What a First-Time User Sees Step by Step (`hive-mcp-http.js`):**
+1. **If `SLACK_SIGNING_SECRET` is missing**: Process exits immediately (`code 2`) with:
+   `Q510 --auth slack needs SLACK_SIGNING_SECRET. Use --auth none only on localhost.`
+2. **If `SLACK_BOT_TOKEN` is missing**: Process exits immediately (`code 2`) with:
+   `Q630 --auth slack needs SLACK_BOT_TOKEN. Set SLACK_BOT_TOKEN=xoxb-… in your environment (docs/SLACK_SETUP.md).`
+3. **When both are set**: `hive-mcp-http.js` calls Slack `auth.test`, locks in your workspace `team_id`, joins the room, and prints:
+   `[hive-mcp-http] room room-abc123 on :8790/  auth=slack`
+4. **When someone asks Slackbot what is happening (`hive_status`)**: Returns the live room name, agent count, paused list, and task counts.
+5. **When a coworker triggers `hive_pause`**: Pauses the named agent (or `all`) on its own client (`paused AgentA — it will finish its current step and then stop picking up work`), while a guest or Slack Connect user from another workspace gets `:no_entry: Refused: guests and external Slack Connect users cannot control or message this room.`
+6. **When someone not in `--allow` triggers `hive_resume` or `hive_say`**: Refused with `:no_entry: Refused: only Slack user IDs listed in --allow may resume/retry agents or send replies into the room (your ID: U…). Any full workspace member may still type stop.` When a user listed in `--allow` calls `hive_say`, it lands in the room attributed as `slack:<handle>`.
+
 ---
 
 ## 6. How to Show It (Live Demo Walkthrough)
@@ -260,12 +297,14 @@ Use these 5 steps to demonstrate either **GitHub-to-Slack issue threads** (`gith
 
 ---
 
-## 7. Troubleshooting (`Q630` – `Q634`)
+## 7. Troubleshooting (`Q510` – `Q513`, `Q630` – `Q634`)
 
 | Code | Cause | Fix |
 | :--- | :--- | :--- |
-| **`Q630`** | `SLACK_BOT_TOKEN` is missing, invalid (`invalid_auth`), or revoked (`token_revoked`). | Copy the **Bot User OAuth Token** (`xoxb-…`) from **OAuth & Permissions** in your Slack app settings and set `SLACK_BOT_TOKEN` in the same terminal session. |
+| **`Q510`** | `hive-mcp-http.js` started in `--auth slack` mode without `SLACK_SIGNING_SECRET`. | Copy your app's **Signing Secret** from **Basic Information → App Credentials** in Slack app settings and set `SLACK_SIGNING_SECRET` (or use `--auth none` on `localhost` only). |
+| **`Q511` – `Q513`** | HTTP request to `hive-mcp-http.js` is unsigned (`Q511`), outside the 5-minute replay window (`Q512`), or its HMAC signature does not match (`Q513`). | Ensure `SLACK_SIGNING_SECRET` matches the Slack app calling the endpoint and that the host clock is synced via NTP. |
+| **`Q630`** | `SLACK_BOT_TOKEN` is missing (required by `slack start` and by `hive-mcp-http.js` in `--auth slack` mode), invalid (`invalid_auth`), or revoked (`token_revoked`) when checked against Slack `auth.test`. | Copy the **Bot User OAuth Token** (`xoxb-…`) from **OAuth & Permissions** in your Slack app settings and set `SLACK_BOT_TOKEN` in the same terminal session. |
 | **`Q631`** | `--channel` is missing, `channel_not_found`, or `@Hivecode` has not been invited to the channel (`is_member: false` / `not_in_channel`). | Open the target channel in Slack and run `/invite @Hivecode`. If it is a private channel, ensure the app has `groups:read` scope and reinstall to workspace. |
 | **`Q632`** | Another `SlackBridge` with the same `--name` is already connected to this room. | Stop the existing `slack start` process before starting a new one so events are not posted twice. |
 | **`Q633`** | `--slack-channel` was passed to `github start`, but `SLACK_BOT_TOKEN` is not set in the environment. | Set `SLACK_BOT_TOKEN=xoxb-…` (or `$env:SLACK_BOT_TOKEN="xoxb-…"` in PowerShell) before running `github start --slack-channel`. |
-| **`Q634`** | `SLACK_APP_TOKEN` (`xapp-…`) was rejected by `apps.connections.open` at Socket Mode preflight. | Enable **Socket Mode** in your Slack app settings, generate an App-Level Token (`xapp-…`) with `connections:write` scope, and set `SLACK_APP_TOKEN`. |
+| **`Q634`** | Inbound Slack configuration cannot work safely: (1) `SLACK_APP_TOKEN` (`xapp-…`) is missing or rejected by `apps.connections.open`; (2) `--slack-allow` was passed to `github start` without `--slack-channel`, without `SLACK_APP_TOKEN`, or with usernames instead of member IDs (`U…`); or (3) Slack `auth.test` did not return a workspace `team_id` (in `github start` or `hive-mcp-http.js`), so external workspaces could not be refused. | Enable **Socket Mode** and set `SLACK_APP_TOKEN=xapp-…` (`connections:write` scope); pass Slack member IDs (`U…` from **Profile → `⋯` → Copy member ID**) to `--slack-allow` / `--allow`; or pass `--team <T…>` (`SLACK_TEAM_ID`) / reinstall the Slack app if `auth.test` omitted `team_id`. |

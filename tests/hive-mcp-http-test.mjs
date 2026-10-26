@@ -407,7 +407,7 @@ try {
       token: 'xoxb-valid',
       fetchImpl: async () => ({
         status: 200,
-        headers: new Map(),
+        headers: new Map([['x-oauth-scopes', 'chat:write,users:read']]),
         json: async () => ({ ok: true, user: 'Hivecode', user_id: 'B1', team_id: '' }),
       }),
     })
@@ -419,6 +419,32 @@ try {
   T('start when auth.test returns no team_id is refused with Q634 and fix',
     /Q634/.test(noTeamErr) && /--team|reinstall/i.test(noTeamErr),
     noTeamErr || 'started without error')
+
+  // (c2) serve() in slack mode when SLACK_BOT_TOKEN lacks users:read in x-oauth-scopes is refused with Q634 and slack-app-manifest-inbound.json
+  let noScopeErr = ''
+  let noScopeSrv = null
+  try {
+    noScopeSrv = await serve({
+      hive: panel,
+      room: ROOM,
+      port: HTTP_PORT + 34,
+      auth: 'slack',
+      signingSecret: SECRET,
+      token: 'xoxb-outbound-only',
+      fetchImpl: async () => ({
+        status: 200,
+        headers: new Map([['x-oauth-scopes', 'chat:write,channels:read,groups:read']]),
+        json: async () => ({ ok: true, user: 'Hivecode', user_id: 'B1', team_id: 'T_HOME_AUTO' }),
+      }),
+    })
+  } catch (e) {
+    noScopeErr = e.message || String(e)
+  } finally {
+    try { noScopeSrv && noScopeSrv.close() } catch {}
+  }
+  T('start when SLACK_BOT_TOKEN lacks users:read scope is refused with Q634 and slack-app-manifest-inbound.json',
+    /Q634/.test(noScopeErr) && /users:read/.test(noScopeErr) && /slack-app-manifest-inbound\.json/.test(noScopeErr),
+    noScopeErr || 'started without error')
 
   // (d) With NO --team given, serve() fetches team_id from auth.test and refuses external workspace stop
   const autoTeamPort = HTTP_PORT + 33
@@ -435,7 +461,7 @@ try {
       if (String(url).endsWith('/auth.test')) {
         return {
           status: 200,
-          headers: new Map(),
+          headers: new Map([['x-oauth-scopes', 'chat:write,users:read']]),
           json: async () => ({ ok: true, user: 'Hivecode', user_id: 'B1', team: 'HomeTeam', team_id: 'T_HOME_AUTO' }),
         }
       }

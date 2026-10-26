@@ -172,6 +172,9 @@ export async function slackPost(
     signal: AbortSignal.timeout(timeoutMs),
   })
   const retryHeader = r.headers && typeof r.headers.get === 'function' ? Number(r.headers.get('retry-after') || 0) : 0
+  const rawScopes = r.headers && typeof r.headers.get === 'function'
+    ? r.headers.get('x-oauth-scopes')
+    : (r.headers && (r.headers['x-oauth-scopes'] || r.headers['X-OAuth-Scopes']))
   const j = await r.json().catch(() => ({ ok: false, error: r.status === 429 ? 'ratelimited' : 'bad_json' }))
   if (r.status === 429 || (j && j.error === 'ratelimited')) {
     const retrySec = retryHeader || Number(j && j.retry_after) || 1
@@ -189,6 +192,10 @@ export async function slackPost(
     err.code = code
     err.slackError = code
     throw err
+  }
+  if (rawScopes !== undefined && rawScopes !== null && j && typeof j === 'object') {
+    const parsedScopes = String(rawScopes).split(',').map((s) => s.trim()).filter(Boolean)
+    Object.defineProperty(j, '_scopes', { value: parsedScopes, enumerable: false, configurable: true })
   }
   return j
 }
@@ -299,6 +306,16 @@ export async function preflightSlack({
     const chName = info.channel.name ? `#${info.channel.name}` : channel
     return { ok: false, code: 'Q631', error: `Q631 @${botUser} is not a member of ${chName} (${channel}). In Slack, open ${chName} and run: /invite @${botUser}` }
   }
+  const scopes = Array.isArray(auth && auth._scopes)
+    ? auth._scopes
+    : (Array.isArray(info && info._scopes) ? info._scopes : null)
+  const isPrivate = Boolean(
+    info && info.channel && (
+      info.channel.is_private === true ||
+      info.channel.is_group === true ||
+      String(channel || '').startsWith('G')
+    ),
+  )
   return {
     ok: true,
     botUser,
@@ -306,12 +323,47 @@ export async function preflightSlack({
     team: auth.team || '',
     teamId: auth.team_id || '',
     channelName: (info && info.channel && info.channel.name) || channel,
+    isPrivate,
+    scopes,
   }
 }
 
-/** Verify SLACK_APP_TOKEN (xapp-…) with apps.connections.open before READY when Socket Mode is enabled (Q634). */
+/** Return the list of missing inbound scopes (users:read, plus channels:history for public or groups:history for private).
+ *  When `scopes` is null/undefined (header absent), returns [] so "unknown" is never treated as "none". */
+export function missingInboundScopes({ scopes = null, isPrivate = false, channel = '' } = {}) {
+  if (scopes === null || scopes === undefined) return []
+  const have = new Set(
+    (Array.isArray(scopes) ? scopes : String(scopes || '').split(','))
+      .map((s) => String(s || '').trim())
+      .filter(Boolean),
+  )
+  const histScope = (isPrivate || String(channel || '').startsWith('G')) ? 'groups:history' : 'channels:history'
+  const missing = []
+  if (!have.has('users:read')) missing.push('users:read')
+  if (!have.has(histScope)) missing.push(histScope)
+  return missing
+}
+
+/** Verify that SLACK_BOT_TOKEN has the scopes required for inbound replies (users:read + channels:history or groups:history). */
+export function checkInboundScopes({ scopes = null, isPrivate = false, channel = '' } = {}) {
+  const missing = missingInboundScopes({ scopes, isPrivate, channel })
+  if (missing.length) {
+    return {
+      ok: false,
+      code: 'Q634',
+      missingScopes: missing,
+      error: `Q634 SLACK_BOT_TOKEN is missing required inbound scope(s): ${missing.join(', ')}. Reinstall your Slack app with slack-app-manifest-inbound.json (docs/SLACK_SETUP.md Section 5).`,
+    }
+  }
+  return { ok: true, missingScopes: [] }
+}
+
+/** Verify SLACK_APP_TOKEN (xapp-…) with apps.connections.open (and inbound bot scopes when passed) before READY (Q634). */
 export async function preflightSocketMode({
   appToken,
+  scopes = null,
+  isPrivate = false,
+  channel = '',
   api = process.env.HIVE_SLACK_API || DEFAULT_API,
   fetchImpl = fetch,
 } = {}) {
@@ -321,6 +373,10 @@ export async function preflightSocketMode({
       code: 'Q634',
       error: 'Q634 SLACK_APP_TOKEN is missing. Set SLACK_APP_TOKEN=xapp-… (with connections:write scope) to enable inbound Socket Mode.',
     }
+  }
+  if (scopes !== null && scopes !== undefined) {
+    const sc = checkInboundScopes({ scopes, isPrivate, channel })
+    if (!sc.ok) return sc
   }
   try {
     const res = await slackPost('apps.connections.open', {}, appToken, fetchImpl, api)
@@ -879,7 +935,13 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   }
   let sockPre = null
   if (APP_TOKEN) {
-    sockPre = await preflightSocketMode({ appToken: APP_TOKEN, fetchImpl })
+    sockPre = await preflightSocketMode({
+      appToken: APP_TOKEN,
+      scopes: pre.scopes,
+      isPrivate: pre.isPrivate,
+      channel: CHANNEL,
+      fetchImpl,
+    })
     if (!sockPre.ok) {
       logErr(sockPre.error)
       return 1

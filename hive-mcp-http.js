@@ -406,9 +406,18 @@ export async function preflightMcpSlack({ token = '', teamId = '', api = undefin
       error: 'Q634 Slack did not say which workspace the bot is in (auth.test returned no team_id), so external workspaces could not be refused. Pass --team <T…> (or SLACK_TEAM_ID) or reinstall the Slack app.',
     }
   }
+  const scopes = Array.isArray(auth._scopes) ? auth._scopes : null
+  if (Array.isArray(scopes) && !scopes.includes('users:read')) {
+    return {
+      ok: false,
+      code: 'Q634',
+      error: 'Q634 SLACK_BOT_TOKEN is missing the users:read scope required to verify Slack callers. Reinstall your Slack app with slack-app-manifest-inbound.json (docs/SLACK_SETUP.md Section 5).',
+    }
+  }
   return {
     ok: true,
     teamId: String(auth.team_id),
+    scopes: scopes || [],
     botUser: auth.user || 'Hivecode',
     botUserId: auth.user_id || '',
   }

@@ -49,6 +49,7 @@ const USERS = {
   U_GUEST: { id: 'U_GUEST', name: 'guest_bob', team_id: 'T_OUR_TEAM', is_restricted: true, is_ultra_restricted: false },
   U_EXTERNAL: { id: 'U_EXTERNAL', name: 'ext_carol', team_id: 'T_OTHER_WORKSPACE', is_restricted: false, is_ultra_restricted: false },
 }
+const DEFAULT_SCOPES = 'chat:write,channels:read,groups:read,channels:history,groups:history,users:read'
 const slack = http.createServer((req, res) => {
   let body = ''
   req.on('data', (d) => { body += d })
@@ -57,34 +58,35 @@ const slack = http.createServer((req, res) => {
     let j = {}
     try { j = JSON.parse(body || '{}') } catch { j = {} }
     calls.push({ method, auth: req.headers.authorization, at: Date.now(), ...j })
+    const defaultHeaders = { 'Content-Type': 'application/json', 'x-oauth-scopes': DEFAULT_SCOPES }
     if (nextResponses.length) {
       const custom = nextResponses.shift()
-      res.writeHead(custom.status || 200, { 'Content-Type': 'application/json', ...(custom.headers || {}) })
+      res.writeHead(custom.status || 200, { ...defaultHeaders, ...(custom.headers || {}) })
       res.end(JSON.stringify(custom.body))
       return
     }
     if (method === 'auth.test') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.writeHead(200, defaultHeaders)
       res.end(JSON.stringify({ ok: true, user: 'hivecode', user_id: 'U_BOT', team: 'TestTeam', team_id: 'T_OUR_TEAM' }))
       return
     }
     if (method === 'conversations.info') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, channel: { id: j.channel || 'C-TEST', name: 'dev-agents', is_member: true } }))
+      res.writeHead(200, defaultHeaders)
+      res.end(JSON.stringify({ ok: true, channel: { id: j.channel || 'C-TEST', name: 'dev-agents', is_member: true, is_private: false } }))
       return
     }
     if (method === 'users.info') {
       const u = USERS[j.user] || { id: j.user, name: j.user, team_id: 'T_OUR_TEAM', is_restricted: false, is_ultra_restricted: false }
-      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.writeHead(200, defaultHeaders)
       res.end(JSON.stringify({ ok: true, user: u }))
       return
     }
     if (method === 'apps.connections.open') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.writeHead(200, defaultHeaders)
       res.end(JSON.stringify({ ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` }))
       return
     }
-    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.writeHead(200, defaultHeaders)
     res.end(JSON.stringify({ ok: true, ts: String(tsSeq++) }))
   })
 })
@@ -297,11 +299,32 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
     T('Q631: bot not in channel is caught with /invite instruction', !pNotIn.ok && /Q631/.test(pNotIn.error) && /\/invite/.test(pNotIn.error))
 
     nextResponses.push(
-      { status: 200, body: { ok: true, user: 'hivecode', user_id: 'U1' } },
-      { status: 200, body: { ok: true, channel: { id: 'C-TEST', name: 'general', is_member: true } } },
+      { status: 200, headers: { 'x-oauth-scopes': 'chat:write,channels:read,groups:read,users:read' }, body: { ok: true, user: 'hivecode', user_id: 'U1' } },
+      { status: 200, body: { ok: true, channel: { id: 'C-TEST', name: 'general', is_member: true, is_private: false } } },
     )
     const pOk = await preflightSlack({ token: 'xoxb-ok', channel: 'C-TEST', api: process.env.HIVE_SLACK_API })
     T('preflight succeeds when auth and channel membership pass', pOk.ok && pOk.botUser === 'hivecode')
+    T('preflightSlack returns token scopes from x-oauth-scopes header and isPrivate from channel info',
+      Array.isArray(pOk.scopes) && pOk.scopes.includes('users:read') && pOk.scopes.includes('chat:write') && pOk.isPrivate === false,
+      `scopes=${JSON.stringify(pOk.scopes)} isPrivate=${pOk.isPrivate}`)
+
+    const pNoHeader = await preflightSlack({
+      token: 'xoxb-ok',
+      channel: 'C-TEST',
+      fetchImpl: async (url) => ({
+        status: 200,
+        headers: new Map(), // x-oauth-scopes header absent
+        json: async () => String(url).endsWith('/auth.test')
+          ? { ok: true, user: 'hivecode', user_id: 'U1', team_id: 'T1' }
+          : { ok: true, channel: { id: 'C-TEST', name: 'general', is_member: true, is_private: true } },
+      }),
+    })
+    T('preflightSlack returns scopes: null when x-oauth-scopes header is absent and isPrivate: true for private channel',
+      pNoHeader.ok && pNoHeader.scopes === null && pNoHeader.isPrivate === true &&
+      typeof HS.missingInboundScopes === 'function' &&
+      HS.missingInboundScopes({ scopes: null, isPrivate: false }).length === 0 &&
+      JSON.stringify(HS.missingInboundScopes({ scopes: ['chat:write'], isPrivate: false })) === JSON.stringify(['users:read', 'channels:history']),
+      `scopes=${pNoHeader.scopes} isPrivate=${pNoHeader.isPrivate}`)
 
     const dup = checkDuplicateBridge({ sameNameElsewhere: () => [{ name: 'SlackBridge', kind: 'ai' }] }, 'SlackBridge')
     T('Q632: second SlackBridge in same room is refused', !dup.ok && /Q632/.test(dup.error))
@@ -309,6 +332,33 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
     nextResponses.push({ status: 200, body: { ok: false, error: 'invalid_auth' } })
     const pSockBad = await preflightSocketMode({ appToken: 'xapp-bad', api: process.env.HIVE_SLACK_API })
     T('Q634: invalid SLACK_APP_TOKEN is caught before READY', !pSockBad.ok && /Q634/.test(pSockBad.error) && /invalid_auth/.test(pSockBad.error))
+
+    const pMissingPublicScopes = await preflightSocketMode({
+      appToken: 'xapp-ok',
+      scopes: ['chat:write', 'channels:read', 'groups:read'],
+      isPrivate: false,
+      api: process.env.HIVE_SLACK_API,
+    })
+    T('Q634: inbound is refused when SLACK_BOT_TOKEN lacks users:read or channels:history (names slack-app-manifest-inbound.json)',
+      !pMissingPublicScopes.ok &&
+      /Q634/.test(pMissingPublicScopes.error || '') &&
+      /users:read/.test(pMissingPublicScopes.error || '') &&
+      /channels:history/.test(pMissingPublicScopes.error || '') &&
+      /slack-app-manifest-inbound\.json/.test(pMissingPublicScopes.error || ''),
+      pMissingPublicScopes.error || 'succeeded unexpectedly')
+
+    const pMissingPrivateScope = await preflightSocketMode({
+      appToken: 'xapp-ok',
+      scopes: ['chat:write', 'channels:read', 'groups:read', 'channels:history', 'users:read'],
+      isPrivate: true,
+      api: process.env.HIVE_SLACK_API,
+    })
+    T('Q634: inbound on a private channel is refused when groups:history is missing',
+      !pMissingPrivateScope.ok &&
+      /Q634/.test(pMissingPrivateScope.error || '') &&
+      /groups:history/.test(pMissingPrivateScope.error || '') &&
+      /slack-app-manifest-inbound\.json/.test(pMissingPrivateScope.error || ''),
+      pMissingPrivateScope.error || 'succeeded unexpectedly')
 
     // CLI main(): missing SLACK_BOT_TOKEN prints Q630 (not just usage), --dry-run succeeds
     const errs1 = []
@@ -322,6 +372,32 @@ console.log('\n# preflight checks (Q630 auth, Q631 channel/not_in_channel, Q632 
       env: { SLACK_BOT_TOKEN: 'xoxb-ok' }, log: (m) => outs2.push(m), logErr: () => {},
     })
     T('slack start --dry-run verifies token + channel regardless of flag order', c2 === 0 && outs2.some((m) => /DRY RUN OK/.test(m)), outs2.join(' | '))
+
+    // CLI main(): with SLACK_APP_TOKEN set, outbound-only bot token scopes (missing users:read, channels:history) refuse with Q634
+    nextResponses.push(
+      { status: 200, headers: { 'x-oauth-scopes': 'chat:write,channels:read,groups:read' }, body: { ok: true, user: 'hivecode', user_id: 'U_BOT', team_id: 'T_OUR_TEAM' } },
+      { status: 200, headers: { 'x-oauth-scopes': 'chat:write,channels:read,groups:read' }, body: { ok: true, channel: { id: 'C-TEST', name: 'dev-agents', is_member: true, is_private: false } } },
+    )
+    const errsInboundScope = []
+    const c3 = await HS.main(['start', 'ws://127.0.0.1:1281|room-123456', '--channel', 'C-TEST', '--dry-run'], {
+      env: { SLACK_BOT_TOKEN: 'xoxb-outbound-only', SLACK_APP_TOKEN: 'xapp-ok' },
+      log: () => {},
+      logErr: (m) => errsInboundScope.push(m),
+    })
+    T('slack start with SLACK_APP_TOKEN and outbound-only bot token fails with Q634 and slack-app-manifest-inbound.json',
+      c3 === 1 && errsInboundScope.some((m) => /Q634/.test(m) && /slack-app-manifest-inbound\.json/.test(m)),
+      errsInboundScope.join(' | ') || `code=${c3}`)
+
+    // Verify slack-app-manifest-inbound.json matches package.json files[] and docs/SLACK_SETUP.md Section 5
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+    const inboundManifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'slack-app-manifest-inbound.json'), 'utf8'))
+    const setupDoc = fs.readFileSync(path.join(ROOT, 'docs', 'SLACK_SETUP.md'), 'utf8')
+    const jsonBlocks = [...setupDoc.matchAll(/```json\r?\n([\s\S]*?)```/g)].map((m) => JSON.parse(m[1]))
+    T('slack-app-manifest-inbound.json is in package.json files[] and matches docs/SLACK_SETUP.md Section 5',
+      Array.isArray(pkg.files) &&
+      pkg.files.includes('slack-app-manifest-inbound.json') &&
+      jsonBlocks.length >= 2 &&
+      JSON.stringify(inboundManifest) === JSON.stringify(jsonBlocks[1]))
   }
 }
 

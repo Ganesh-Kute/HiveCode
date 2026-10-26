@@ -78,6 +78,7 @@
     "hive-webhook.js",
     "hive-slack.js",
     "slack-app-manifest.json",
+    "slack-app-manifest-inbound.json",
     "docs/GITHUB_WORKFLOW.md",
     "docs/SLACK_SETUP.md",
     "docs/ALWAYS_ON.md"
