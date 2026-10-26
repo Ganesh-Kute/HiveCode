@@ -65,7 +65,7 @@ try {
   const notRepo = path.join(tmp, 'plain')
   fs.mkdirSync(notRepo)
   let r = await run(notRepo, ['start', '--agent', NODE], fakeCall(github()).call)
-  T('CL1 outside a git repo', r.code === 1 && /Q601 .*not inside a git repository/.test(r.out), r.out)
+  T('CL1 outside a git repo', r.code === 2 && /Q601 .*not inside a git repository/.test(r.out), r.out)
   {
     // A home folder kept under git (this is so on the machine this was written on): run outside a
     // project, the "repository" is the home folder, and that is what it should say.
@@ -76,34 +76,34 @@ try {
     process.env.HOME = home; process.env.USERPROFILE = home
     try {
       r = await run(sub, ['start', '--agent', NODE], fakeCall(github()).call)
-      T('CL1b inside a home folder that is a git repo: says so, not "origin (none)"', r.code === 1 && /is inside the git repository that is your home folder/.test(r.out), r.out)
+      T('CL1b inside a home folder that is a git repo: says so, not "origin (none)"', r.code === 2 && /is inside the git repository that is your home folder/.test(r.out), r.out)
     } finally {
       for (const [k, v] of Object.entries(was)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
     }
   }
   const gitlab = repo(path.join(tmp, 'gitlab'), 'https://gitlab.com/acme/app.git')
   r = await run(gitlab, ['start', '--agent', NODE], fakeCall(github()).call)
-  T('CL2 an origin that is not github.com', r.code === 1 && /Q601 origin \(https:\/\/gitlab\.com/.test(r.out), r.out)
+  T('CL2 an origin that is not github.com', r.code === 2 && /Q601 origin \(https:\/\/gitlab\.com/.test(r.out), r.out)
   {
     // A token in the remote URL (https://x-access-token:<token>@host/...) is common in CI and scripts.
     // A refusal that quotes the origin must not print it: logs and screenshots travel.
     const tokened = repo(path.join(tmp, 'tokened'), 'https://x-access-token:ghp_SECRETsecret123@gitlab.com/acme/app.git')
     r = await run(tokened, ['start', '--agent', NODE], fakeCall(github()).call)
-    T('CL2b a token in the origin URL is not printed', r.code === 1 && /Q601 origin \(https:\/\/gitlab\.com\/acme\/app\.git\)/.test(r.out) && !/SECRET|x-access-token/.test(r.out), r.out)
+    T('CL2b a token in the origin URL is not printed', r.code === 2 && /Q601 origin \(https:\/\/gitlab\.com\/acme\/app\.git\)/.test(r.out) && !/SECRET|x-access-token/.test(r.out), r.out)
   }
 
   const app = repo(path.join(tmp, 'app'), 'https://github.com/acme/app.git')
   r = await run(app, ['start', '--agent', NODE], fakeCall({}, { down: 'gh is not installed' }).call)
-  T('CL3 gh missing: says where to get it', r.code === 1 && /Q600 GitHub CLI \(gh\) is not installed.*cli\.github\.com.*gh auth login/s.test(r.out), r.out)
+  T('CL3 gh missing: says where to get it', r.code === 2 && /Q600 GitHub CLI \(gh\) is not installed.*cli\.github\.com.*gh auth login/s.test(r.out), r.out)
   r = await run(app, ['start', '--agent', NODE], fakeCall({ 'GET user': { status: 401, headers: {}, body: { message: 'Bad credentials' }, text: '' } }).call)
-  T('CL4 gh logged out: says gh auth login', r.code === 1 && /Q600 .*gh auth login/.test(r.out), r.out)
+  T('CL4 gh logged out: says gh auth login', r.code === 2 && /Q600 .*gh auth login/.test(r.out), r.out)
   {
     // What gh REALLY does with no login (gh 2.x, measured): no HTTP answer at all, this on stderr, exit 4.
     const LOGGED_OUT = 'To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.'
     const codes = (s) => (s.match(/\bQ\d{3}\b/g) || []).length
     r = await run(app, ['start', '--agent', NODE], fakeCall({}, { down: LOGGED_OUT }).call)
     T('CL4b gh with no login (no HTTP answer): one Q600 that says so, not "could not reach GitHub"',
-      r.code === 1 && /^Q600 gh is not logged in on this machine\. Run: gh auth login/.test(r.out) && codes(r.out) === 1 && !/could not reach/.test(r.out), r.out)
+      r.code === 2 && /^Q600 gh is not logged in on this machine\. Run: gh auth login/.test(r.out) && codes(r.out) === 1 && !/could not reach/.test(r.out), r.out)
     // The running watcher reads the same answer through makeGitHub: it must be Q600, the code that
     // holds off AND tells the owner to log in. As a network outage it waited forever, saying nothing.
     let e = null
@@ -111,18 +111,26 @@ try {
     T('CL4c mid-run, a logged-out gh is Q600 (login notice), not a status-0 outage', e && e.code === 'Q600', e ? `${e.code}: ${e.message}` : 'no error')
     r = await run(app, ['start', '--agent', NODE], fakeCall(github({ 'GET repos/acme/app': { status: 404, headers: {}, body: { message: 'Not Found' }, text: '' } })).call)
     T('CL4d a repo GitHub cannot show this login: Q601 naming the repo and the account, not "is gh logged in?"',
-      r.code === 1 && /^Q601 GitHub has no repository acme\/app that owner can see \(HTTP 404\)/.test(r.out) && codes(r.out) === 1 && !/logged in\?/.test(r.out), r.out)
+      r.code === 2 && /^Q601 GitHub has no repository acme\/app that owner can see \(HTTP 404\)/.test(r.out) && codes(r.out) === 1 && !/logged in\?/.test(r.out), r.out)
     r = await run(app, ['start', '--agent', NODE], fakeCall({}, { down: 'dial tcp: lookup api.github.com: no such host' }).call)
     T('CL4e no network: one Q603, said once', r.code === 1 && /^Q603 could not reach GitHub/.test(r.out) && codes(r.out) === 1, r.out)
+    // HOW IT EXITS, for whatever restarts it: 1 = try again (GitHub unreachable or busy), 2 = a
+    // person must change something. A refusal above is 2; these are 1.
+    r = await run(app, ['start', '--agent', NODE], fakeCall({ 'GET user': { status: 503, headers: {}, body: { message: 'Service Unavailable' }, text: '' } }).call)
+    T('CL4f GitHub answering 503: exit 1 (try again), not 2', r.code === 1 && /^Q603 /.test(r.out), `code ${r.code}: ${r.out}`)
+    r = await run(app, ['start', '--agent', NODE], fakeCall({ 'GET user': { status: 429, headers: { 'retry-after': '30' }, body: { message: 'rate limited' }, text: '' } }).call)
+    T('CL4g GitHub rate limit at start: exit 1 (try again)', r.code === 1 && /^Q604 /.test(r.out), `code ${r.code}: ${r.out}`)
+    r = await run(app, ['start', '--agent', NODE], fakeCall({ 'GET user': { status: 403, headers: {}, body: { message: 'Resource protected by organization SAML enforcement' }, text: '' } }).call)
+    T('CL4h GitHub refusing (403, not a rate limit): exit 2 (a person must act)', r.code === 2 && /^Q603 .*SAML/.test(r.out), `code ${r.code}: ${r.out}`)
   }
   r = await run(app, ['start'], fakeCall(github()).call)
   T('CL5 no --agent: asks for one and shows the Claude Code line', r.code === 2 && /Q602 say which agent/.test(r.out) && /claude -p --output-format json/.test(r.out))
   r = await run(app, ['start', '--agent', 'no-such-agent-cli-xyz -p'], fakeCall(github()).call)
-  T('CL6 an agent that is not installed', r.code === 1 && /Q602 "no-such-agent-cli-xyz" is not installed/.test(r.out), r.out)
+  T('CL6 an agent that is not installed', r.code === 2 && /Q602 "no-such-agent-cli-xyz" is not installed/.test(r.out), r.out)
   r = await run(app, ['start', '--agent', NODE, '--max-runs', '0'], fakeCall(github()).call)
   T('CL7 a limit that is not a positive number', r.code === 2 && /Q602 --max-runs must be a positive number/.test(r.out), r.out)
   r = await run(app, ['start', '--agent', NODE], fakeCall(github({ 'GET repos/acme/app': ok({ default_branch: 'main', private: false, permissions: { push: false } }) })).call)
-  T('CL8 an account that cannot push', r.code === 1 && /Q601 .*cannot push to acme\/app/.test(r.out), r.out)
+  T('CL8 an account that cannot push', r.code === 2 && /Q601 .*cannot push to acme\/app/.test(r.out), r.out)
   T('CL9 none of those left a state file behind', !fs.existsSync(path.join(app, '.git', 'hivecode', 'github.json')))
 
   console.log('\n# a good start')
@@ -256,15 +264,15 @@ try {
     const CL = 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode'
     process.env.FAKE_CLAUDE_MODE = 'missing'
     r = await run(ag, ['start', '--once', '--agent', CL], fakeCall(github()).call)
-    T('CA1 claude without the hivecode MCP server: refused before any run is paid for, with the fix', r.code === 1 && /Q602 .*claude has no hivecode MCP server/.test(r.out) && /npx -y hivecode-mcp@latest setup/.test(r.out) && nothingInAg(), r.out)
+    T('CA1 claude without the hivecode MCP server: refused before any run is paid for, with the fix', r.code === 2 && /Q602 .*claude has no hivecode MCP server/.test(r.out) && /npx -y hivecode-mcp@latest setup/.test(r.out) && nothingInAg(), r.out)
     r = await run(ag, ['start', '--dry-run', '--agent', CL], fakeCall(github()).call)
-    T('CA2 a dry run says so too', r.code === 1 && /Q602 .*claude has no hivecode MCP server/.test(r.out) && nothingInAg(), r.out)
+    T('CA2 a dry run says so too', r.code === 2 && /Q602 .*claude has no hivecode MCP server/.test(r.out) && nothingInAg(), r.out)
     process.env.FAKE_CLAUDE_MODE = 'failed'
     r = await run(ag, ['start', '--once', '--agent', CL], fakeCall(github()).call)
-    T('CA3 configured but not connecting: refused, quoting the status', r.code === 1 && /Q602 .*hivecode MCP server .*not working/.test(r.out) && /Failed to connect/.test(r.out) && nothingInAg(), r.out)
+    T('CA3 configured but not connecting: refused, quoting the status', r.code === 2 && /Q602 .*hivecode MCP server .*not working/.test(r.out) && /Failed to connect/.test(r.out) && nothingInAg(), r.out)
     process.env.FAKE_CLAUDE_MODE = 'ok'
     r = await run(ag, ['start', '--once', '--agent', 'claude -p --allowedTools Bash Edit Write'], fakeCall(github()).call)
-    T('CA4 --allowedTools without mcp__hivecode: refused (in -p mode the hive tools would be denied)', r.code === 1 && /Q602 .*--allowedTools .*mcp__hivecode/.test(r.out) && nothingInAg(), r.out)
+    T('CA4 --allowedTools without mcp__hivecode: refused (in -p mode the hive tools would be denied)', r.code === 2 && /Q602 .*--allowedTools .*mcp__hivecode/.test(r.out) && nothingInAg(), r.out)
     r = await run(ag, ['start', '--once', '--agent', CL], fakeCall(github()).call)
     T('CA5 connected: it says so, and starts', r.code === 0 && /claude can use Hivecode/.test(r.out) && /watching acme\/app/.test(r.out), r.out)
     process.env.FAKE_CLAUDE_MODE = 'hang'
@@ -322,14 +330,14 @@ try {
     const nothingHere = () => !fs.existsSync(path.join(sl, '.git', 'hivecode'))
     delete process.env.SLACK_BOT_TOKEN
     r = await run(sl, slArgs, fakeCall(github()).call)
-    T('CK1 --slack-channel without SLACK_BOT_TOKEN is refused with the fix, and nothing is written', r.code === 1 && /Q633 .*SLACK_BOT_TOKEN/.test(r.out) && nothingHere(), r.out)
+    T('CK1 --slack-channel without SLACK_BOT_TOKEN is refused with the fix, and nothing is written', r.code === 2 && /Q633 .*SLACK_BOT_TOKEN/.test(r.out) && nothingHere(), r.out)
     process.env.SLACK_BOT_TOKEN = 'xoxb-test-not-real'
     mode = 'badtoken'
     r = await run(sl, slArgs, fakeCall(github()).call)
-    T('CK2 a token Slack refuses is said before any work starts', r.code === 1 && /Q630 .*\(invalid_auth\)/.test(r.out) && nothingHere(), r.out)
+    T('CK2 a token Slack refuses is said before any work starts', r.code === 2 && /Q630 .*\(invalid_auth\)/.test(r.out) && nothingHere(), r.out)
     mode = 'notmember'
     r = await run(sl, slArgs, fakeCall(github()).call)
-    T('CK3 a bot that is not in the channel: the /invite that fixes it', r.code === 1 && /Q631 .*\/invite @hivecode/.test(r.out) && nothingHere(), r.out)
+    T('CK3 a bot that is not in the channel: the /invite that fixes it', r.code === 2 && /Q631 .*\/invite @hivecode/.test(r.out) && nothingHere(), r.out)
     mode = 'ok'
     r = await run(sl, slArgs, fakeCall(github()).call)
     T('CK4 a good token and channel: it says where each issue goes, and starts', r.code === 0 && /its own thread in #eng, posted by @hivecode/.test(r.out) && /watching acme\/app/.test(r.out), r.out)
@@ -341,23 +349,23 @@ try {
     const sa = repo(path.join(tmp, 'slack-allow'), 'https://github.com/acme/app.git')
     const nothingThere = () => !fs.existsSync(path.join(sa, '.git', 'hivecode'))
     r = await run(sa, ['start', '--once', '--agent', NODE, '--slack-channel', 'C1', '--slack-allow', 'UOWN'], fakeCall(github()).call)
-    T('CK11 --slack-allow without SLACK_APP_TOKEN (replies would never be read) is refused with the fix', r.code === 1 && /Q634 .*SLACK_APP_TOKEN/.test(r.out) && nothingThere(), r.out)
+    T('CK11 --slack-allow without SLACK_APP_TOKEN (replies would never be read) is refused with the fix', r.code === 2 && /Q634 .*SLACK_APP_TOKEN/.test(r.out) && nothingThere(), r.out)
     r = await run(sa, ['start', '--once', '--agent', NODE, '--slack-allow', 'UOWN'], fakeCall(github()).call)
-    T('CK12 --slack-allow without --slack-channel is refused, not ignored', r.code === 1 && /Q634 .*--slack-channel/.test(r.out) && nothingThere(), r.out)
+    T('CK12 --slack-allow without --slack-channel is refused, not ignored', r.code === 2 && /Q634 .*--slack-channel/.test(r.out) && nothingThere(), r.out)
     r = await run(sa, ['start', '--once', '--agent', NODE, '--slack-channel', 'C1', '--slack-allow', '@ganesh,UOWN'], fakeCall(github()).call)
-    T('CK13 a name where a member id goes is refused, and says how to find the id', r.code === 1 && /Q634 .*@ganesh/.test(r.out) && /Copy member ID/.test(r.out) && !/UOWN is not/.test(r.out) && nothingThere(), r.out)
+    T('CK13 a name where a member id goes is refused, and says how to find the id', r.code === 2 && /Q634 .*@ganesh/.test(r.out) && /Copy member ID/.test(r.out) && !/UOWN is not/.test(r.out) && nothingThere(), r.out)
     const slState = path.join(sl, '.git', 'hivecode', 'github.json')
     const st = JSON.parse(fs.readFileSync(slState, 'utf8'))
     st.config.flags['slack-allow'] = 'UOWN'
     fs.writeFileSync(slState, JSON.stringify(st))
     const savedText = fs.readFileSync(slState, 'utf8')
     r = await run(sl, slArgs, fakeCall(github()).call)
-    T('CK14 a --slack-allow saved by the last start says so, and how to drop it', r.code === 1 && /Q634 /.test(r.out) && /last start/.test(r.out) && /--slack-allow ""/.test(r.out) && fs.readFileSync(slState, 'utf8') === savedText, r.out)
+    T('CK14 a --slack-allow saved by the last start says so, and how to drop it', r.code === 2 && /Q634 /.test(r.out) && /last start/.test(r.out) && /--slack-allow ""/.test(r.out) && fs.readFileSync(slState, 'utf8') === savedText, r.out)
     r = await run(sl, [...slArgs, '--slack-allow', ''], fakeCall(github()).call)
     T('CK15 --slack-allow "" drops it, and the watcher starts', r.code === 0 && /watching acme\/app/.test(r.out) && !/Q634/.test(r.out), r.out)
     mode = 'notmember'
     r = await run(sl, ['start', '--once', '--agent', NODE], fakeCall(github()).call)
-    T('CK15b a saved --slack-channel that Slack refuses: the error says it came from the last start', r.code === 1 && /Q631 /.test(r.out) && /saved by your last start; pass --slack-channel "" to drop it/.test(r.out), r.out)
+    T('CK15b a saved --slack-channel that Slack refuses: the error says it came from the last start', r.code === 2 && /Q631 /.test(r.out) && /saved by your last start; pass --slack-channel "" to drop it/.test(r.out), r.out)
     mode = 'ok'
 
     // Replies need scopes the default manifest does not ask for. Without them the start looked
@@ -367,11 +375,11 @@ try {
     const sc = repo(path.join(tmp, 'slack-scopes'), 'https://github.com/acme/app.git')
     const nothingInSc = () => !fs.existsSync(path.join(sc, '.git', 'hivecode'))
     r = await run(sc, slArgs, fakeCall(github()).call)
-    T('CK16 replies on, token without users:read and channels:history: refused, naming the inbound manifest', r.code === 1 && /Q634 .*missing required inbound scope\(s\): users:read, channels:history\./.test(r.out) && /slack-app-manifest-inbound\.json/.test(r.out) && nothingInSc(), r.out)
+    T('CK16 replies on, token without users:read and channels:history: refused, naming the inbound manifest', r.code === 2 && /Q634 .*missing required inbound scope\(s\): users:read, channels:history\./.test(r.out) && /slack-app-manifest-inbound\.json/.test(r.out) && nothingInSc(), r.out)
     privateChannel = true
     scopes = 'chat:write,channels:read,groups:read,users:read,channels:history'
     r = await run(sc, slArgs, fakeCall(github()).call)
-    T('CK17 a private channel needs groups:history, and that is what it says is missing', r.code === 1 && /Q634 .*missing required inbound scope\(s\): groups:history\./.test(r.out) && nothingInSc(), r.out)
+    T('CK17 a private channel needs groups:history, and that is what it says is missing', r.code === 2 && /Q634 .*missing required inbound scope\(s\): groups:history\./.test(r.out) && nothingInSc(), r.out)
     scopes = 'chat:write,channels:read,groups:read,users:read,channels:history,groups:history'
     r = await run(sc, slArgs, fakeCall(github()).call)
     T('CK18 with the inbound scopes it starts, and says who may stop and retry', r.code === 0 && /`stop` in an issue's thread stops it/.test(r.out) && !/Q634/.test(r.out), r.out)
@@ -382,13 +390,21 @@ try {
     helloCount = 2
     r = await run(sc, slArgs, fakeCall(github()).call)
     T('CK19 another process on the same Slack app: Q635 at start, not "watching", lock given back',
-      r.code === 1 && /Q635 /.test(r.out) && !/is watching/.test(r.out) && lockGone(), r.out.slice(0, 300))
+      r.code === 2 && /Q635 /.test(r.out) && !/is watching/.test(r.out) && lockGone(), r.out.slice(0, 300))
     helloCount = 1
     deadSocket = true
     r = await run(sc, slArgs, fakeCall(github()).call)
     T('CK20 Socket Mode that cannot connect: one coded line, no stack, not "watching", lock given back',
       r.code === 1 && /^Q63\d /m.test(r.out) && !/\n\s+at /.test(r.out) && !/is watching/.test(r.out) && lockGone(), r.out.slice(0, 300))
     deadSocket = false
+    // Slack not reached at all (a machine that booted before its network was up): that is no verdict
+    // on the token, and a service must try again -- not be told to reinstall an app that is fine.
+    const slackApi = process.env.HIVE_SLACK_API
+    process.env.HIVE_SLACK_API = 'http://127.0.0.1:9/api'
+    r = await run(sc, slArgs, fakeCall(github()).call)
+    T('CK21 Slack unreachable at start: exit 1 (try again), and it does not say the token was rejected',
+      r.code === 1 && /^Q63\d /m.test(r.out) && !/rejected|reinstall/i.test(r.out) && lockGone(), r.out.slice(-300))
+    process.env.HIVE_SLACK_API = slackApi
     delete process.env.HIVE_SLACK_START_RETRY_MS
     privateChannel = false
     scopes = 'chat:write,channels:read,groups:read'
@@ -449,7 +465,7 @@ try {
   const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
   fs.writeFileSync(path.join(app, '.git', 'hivecode', 'watcher.lock'), JSON.stringify({ pid: sleeper.pid, at: 'earlier' }))
   r = await run(app, ['start', '--once'], fakeCall(github()).call)
-  T('CW1 a second watcher on the same clone is refused, naming the first', r.code === 1 && new RegExp(`Q605 a watcher is already running for this repo \\(process ${sleeper.pid}`).test(r.out), r.out)
+  T('CW1 a second watcher on the same clone is refused, naming the first', r.code === 2 && new RegExp(`Q605 a watcher is already running for this repo \\(process ${sleeper.pid}`).test(r.out), r.out)
   sleeper.kill()
   await new Promise((res) => sleeper.on('exit', res))
   r = await run(app, ['start', '--once'], fakeCall(github()).call)
@@ -458,7 +474,7 @@ try {
   console.log('\n# a repository too big for the public relay')
   const big = repo(path.join(tmp, 'big'), 'https://github.com/acme/app.git', 5001)
   r = await run(big, ['start', '--agent', NODE, '--once'], fakeCall(github()).call)
-  T('CB1 refused on the public relay, with both ways out', r.code === 1 && /Q608 acme\/app has 5001 files/.test(r.out) && /npx hivecode-relay/.test(r.out) && /--allow-large/.test(r.out), r.out)
+  T('CB1 refused on the public relay, with both ways out', r.code === 2 && /Q608 acme\/app has 5001 files/.test(r.out) && /npx hivecode-relay/.test(r.out) && /--allow-large/.test(r.out), r.out)
   r = await run(big, ['start', '--agent', NODE, '--once', '--relay', 'wss://relay.example.com'], fakeCall(github()).call)
   T('CB2 fine on your own relay', r.code === 0)
 

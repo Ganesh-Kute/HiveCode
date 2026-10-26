@@ -37,6 +37,13 @@ export { scrub, makeNotifier } // the same webhook rules for every integration (
 const coded = (code, msg, extra = {}) => Object.assign(new Error(`${code} ${msg}`), { code, ...extra })
 // Ours, already worded for the user. Node's own errors have a .code too (ECONNREFUSED): not these.
 const isQ = (e) => /^Q\d{3}$/.test(String((e && e.code) || ''))
+// HOW `github start` EXITS, for whatever restarts it (systemd, launchd, Task Scheduler):
+//   0 stopped cleanly   1 AGAIN: could not reach GitHub or Slack, or crashed -- try again later
+//   2 FIX: a person must change something (login, permission, flag, token, a copy already running)
+// Restarting a FIX every 30 s helps nobody; not restarting an AGAIN leaves a machine that booted
+// before its network came up with no watcher until someone looks. So what is unclear is AGAIN.
+export const EXIT_AGAIN = 1
+export const EXIT_FIX = 2
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
@@ -1661,15 +1668,15 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const ri = rest.indexOf('--repo')
   const cwd = ri !== -1 && rest[ri + 1] ? path.resolve(rest[ri + 1]) : here
   if (ri !== -1) rest.splice(ri, 2)
-  if (sub !== 'start' && sub !== 'status') { logErr(USAGE); return 2 }
+  if (sub !== 'start' && sub !== 'status') { logErr(USAGE); return EXIT_FIX }
   const top = git(cwd, ['rev-parse', '--show-toplevel'])
-  if (top.code !== 0) { logErr(`Q601 ${cwd} is not inside a git repository. Run this in your clone of the repo.`); return 1 }
+  if (top.code !== 0) { logErr(`Q601 ${cwd} is not inside a git repository. Run this in your clone of the repo.`); return EXIT_FIX }
   const root = path.resolve(top.out)
   // Some people keep their whole home folder under git. Run anywhere inside it, outside a project,
   // and the "repository" is their home: say that, rather than a puzzling "origin (none)".
   if (sub === 'start' && root.toLowerCase() === path.resolve(os.homedir()).toLowerCase()) {
     logErr(`Q601 ${cwd} is inside the git repository that is your home folder (${root}), not a project's clone. Run this in your clone of the repo.`)
-    return 1
+    return EXIT_FIX
   }
   const gitDir = path.resolve(root, git(root, ['rev-parse', '--git-common-dir']).out)
   const file = statePath(gitDir)
@@ -1685,13 +1692,13 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const saved = loadState(file, () => {}, { peek: true }).config || {}
   const f = { ...saved.flags, ...flags(rest) }
   const opt = (k) => (k in NUM ? Number(f[k] || NUM[k]) : f[k])
-  for (const k of Object.keys(NUM)) if (!(Number(opt(k)) > 0)) { logErr(`Q602 --${k} must be a positive number`); return 2 }
+  for (const k of Object.keys(NUM)) if (!(Number(opt(k)) > 0)) { logErr(`Q602 --${k} must be a positive number`); return EXIT_FIX }
 
   const origin = git(root, ['remote', 'get-url', 'origin'])
   const id = parseRepo(origin.out)
   // A remote URL can carry a token (https://x-access-token:<token>@host/...): never quote that part.
   const shown = String(origin.out || '').replace(/\/\/[^/@\s]+@/, '//')
-  if (!id) { logErr(`Q601 origin (${shown || 'none'}) is not a github.com repository.`); return 1 }
+  if (!id) { logErr(`Q601 origin (${shown || 'none'}) is not a github.com repository.`); return EXIT_FIX }
   const gh = makeGitHub({ call, ...id })
   let info
   let me = null
@@ -1704,18 +1711,21 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     logErr(/not installed/.test(e.message) && !e.status ? 'Q600 GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run: gh auth login'
       : e.status === 404 ? `Q601 GitHub has no repository ${id.owner}/${id.repo} that ${(me && me.login) || 'the account gh uses'} can see (HTTP 404). Check origin (${shown}); a private repo needs an account with access to it (gh auth status shows which one gh uses).`
         : isQ(e) ? e.message : `Q603 ${e.message}`)
-    return 1
+    // GitHub not reached (no answer that is not gh's own login text), or busy (5xx, rate limit):
+    // try again. Any answer that refuses -- a login, a 404, a 403 -- needs a person.
+    const busy = !/not installed/.test(e.message) && (e.code === 'Q604' || (e.code !== 'Q600' && (!e.status || e.status >= 500)))
+    return busy ? EXIT_AGAIN : EXIT_FIX
   }
-  if (info.permissions && info.permissions.push === false) { logErr(`Q601 the GitHub account gh is logged in as cannot push to ${id.owner}/${id.repo}.`); return 1 }
+  if (info.permissions && info.permissions.push === false) { logErr(`Q601 the GitHub account gh is logged in as cannot push to ${id.owner}/${id.repo}.`); return EXIT_FIX }
   const agent = opt('agent')
-  if (!agent) { logErr(`Q602 say which agent runs the work, with --agent "<command>".\n\n${USAGE}`); return 2 }
-  if (!commandExists(agent)) { logErr(`Q602 "${String(agent).split(/\s+/)[0]}" is not installed here (not on PATH).`); return 1 }
+  if (!agent) { logErr(`Q602 say which agent runs the work, with --agent "<command>".\n\n${USAGE}`); return EXIT_FIX }
+  if (!commandExists(agent)) { logErr(`Q602 "${String(agent).split(/\s+/)[0]}" is not installed here (not on PATH).`); return EXIT_FIX }
   const testerCmd = opt('tester') || ''
-  if (testerCmd && !commandExists(testerCmd)) { logErr(`Q602 "${String(testerCmd).split(/\s+/)[0]}" (the --tester) is not installed here (not on PATH).`); return 1 }
+  if (testerCmd && !commandExists(testerCmd)) { logErr(`Q602 "${String(testerCmd).split(/\s+/)[0]}" (the --tester) is not installed here (not on PATH).`); return EXIT_FIX }
   if (!f['skip-agent-check']) {
     for (const cmd of [...new Set([agent, testerCmd].filter(Boolean))]) {
       const ac = agentCanUseHivecode(cmd, { cwd: root })
-      if (!ac.ok) { logErr(ac.error); return 1 }
+      if (!ac.ok) { logErr(ac.error); return EXIT_FIX }
       log(ac.note || ac.warn)
     }
   }
@@ -1733,22 +1743,22 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const allowRaw = String(opt('slack-allow') || '').trim()
   if (allowRaw) {
     const flag = `--slack-allow${whence('slack-allow')}`
-    if (!slackChannel) { logErr(`Q634 ${flag} names who may reply "retry" in an issue's Slack thread, and there are no threads without --slack-channel <channel id>.`); return 1 }
+    if (!slackChannel) { logErr(`Q634 ${flag} names who may reply "retry" in an issue's Slack thread, and there are no threads without --slack-channel <channel id>.`); return EXIT_FIX }
     const notIds = allowRaw.split(',').map((s) => s.trim()).filter((s) => s && !/^[UW][A-Z0-9]{2,}$/.test(s))
-    if (notIds.length) { logErr(`Q634 ${flag} takes Slack member ids like U012AB3CD, not ${notIds.join(', ')}. In Slack, open the person's profile, click More, then Copy member ID.`); return 1 }
-    if (!process.env.SLACK_APP_TOKEN) { logErr(`Q634 ${flag} needs SLACK_APP_TOKEN too: without it the watcher posts to Slack but never reads replies, so nobody could retry from there. Set SLACK_APP_TOKEN to your app's xapp-... app-level token (docs/SLACK_SETUP.md), or drop --slack-allow.`); return 1 }
+    if (notIds.length) { logErr(`Q634 ${flag} takes Slack member ids like U012AB3CD, not ${notIds.join(', ')}. In Slack, open the person's profile, click More, then Copy member ID.`); return EXIT_FIX }
+    if (!process.env.SLACK_APP_TOKEN) { logErr(`Q634 ${flag} needs SLACK_APP_TOKEN too: without it the watcher posts to Slack but never reads replies, so nobody could retry from there. Set SLACK_APP_TOKEN to your app's xapp-... app-level token (docs/SLACK_SETUP.md), or drop --slack-allow.`); return EXIT_FIX }
   }
   let slack = null
   let slackIn = null
   if (slackChannel) {
     const token = process.env.SLACK_BOT_TOKEN || ''
-    if (!token) { logErr(`Q633 --slack-channel${whence('slack-channel')} needs the bot token in the environment: set SLACK_BOT_TOKEN to the xoxb-... token of your Slack app (docs/SLACK_SETUP.md).`); return 1 }
+    if (!token) { logErr(`Q633 --slack-channel${whence('slack-channel')} needs the bot token in the environment: set SLACK_BOT_TOKEN to the xoxb-... token of your Slack app (docs/SLACK_SETUP.md).`); return EXIT_FIX }
     let mod
-    try { mod = await import('./hive-slack.js') } catch (e) { logErr(`Q633 could not load the Slack bridge (hive-slack.js): ${e.message}`); return 1 }
-    if (typeof mod.makeSlackThreader !== 'function') { logErr('Q633 this Hivecode cannot post Slack threads yet (hive-slack.js has no makeSlackThreader).'); return 1 }
+    try { mod = await import('./hive-slack.js') } catch (e) { logErr(`Q633 could not load the Slack bridge (hive-slack.js): ${e.message}`); return EXIT_FIX }
+    if (typeof mod.makeSlackThreader !== 'function') { logErr('Q633 this Hivecode cannot post Slack threads yet (hive-slack.js has no makeSlackThreader).'); return EXIT_FIX }
     // Token and channel checked against Slack itself (auth.test, conversations.info): both are reads.
     const pf = await mod.preflightSlack({ token, channel: slackChannel })
-    if (!pf || !pf.ok) { logErr(`${(pf && pf.error) || `Q633 Slack refused ${slackChannel}`}${whence('slack-channel') ? ` That is --slack-channel ${slackChannel}${whence('slack-channel')}.` : ''}`); return 1 }
+    if (!pf || !pf.ok) { logErr(`${(pf && pf.error) || `Q633 Slack refused ${slackChannel}`}${whence('slack-channel') ? ` That is --slack-channel ${slackChannel}${whence('slack-channel')}.` : ''}`); return pf && pf.transient ? EXIT_AGAIN : EXIT_FIX }
     slack = (threads) => mod.makeSlackThreader({ token, channel: slackChannel, threads, room: '', link: '' })
     log(`Slack: each issue's progress goes to its own thread in #${pf.channelName}, posted by @${pf.botUser}.`)
     // REPLIES FROM SLACK, with SLACK_APP_TOKEN (Socket Mode: no public URL). `stop` or `retry` in an
@@ -1758,7 +1768,7 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     if (appToken) {
       if (typeof mod.makeSlackActorCheck !== 'function' || typeof mod.connectSocketMode !== 'function' || typeof mod.checkInboundScopes !== 'function') {
         logErr('Q634 this Hivecode cannot take replies from Slack yet (hive-slack.js has no makeSlackActorCheck). Unset SLACK_APP_TOKEN to post progress only.')
-        return 1
+        return EXIT_FIX
       }
       // Replies need scopes the default manifest does not ask for. Without users:read every stop is
       // "unverified" and every retry refused; without the channel's history scope Slack never sends
@@ -1766,12 +1776,12 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
       if (pf.scopes == null) log('Slack did not say which scopes the bot token has. If a "stop" in a thread does nothing, reinstall the app from slack-app-manifest-inbound.json.')
       else {
         const sc = mod.checkInboundScopes({ scopes: pf.scopes, isPrivate: pf.isPrivate, channel: slackChannel })
-        if (!sc.ok) { logErr(sc.error); return 1 }
+        if (!sc.ok) { logErr(sc.error); return EXIT_FIX }
       }
       const sm = await mod.preflightSocketMode({ appToken })
-      if (!sm || !sm.ok) { logErr((sm && sm.error) || 'Q634 Slack refused SLACK_APP_TOKEN'); return 1 }
+      if (!sm || !sm.ok) { logErr((sm && sm.error) || 'Q634 Slack refused SLACK_APP_TOKEN'); return sm && sm.transient ? EXIT_AGAIN : EXIT_FIX }
       // Without the workspace id, users from OTHER workspaces (Slack Connect) cannot be told apart.
-      if (!pf.teamId) { logErr('Q634 Slack did not say which workspace the bot is in, so replies from outside it could not be refused. Replies stay off: unset SLACK_APP_TOKEN, or reinstall the app.'); return 1 }
+      if (!pf.teamId) { logErr('Q634 Slack did not say which workspace the bot is in, so replies from outside it could not be refused. Replies stay off: unset SLACK_APP_TOKEN, or reinstall the app.'); return EXIT_FIX }
       const allow = String(opt('slack-allow') || '').split(',').map((s) => s.trim()).filter(Boolean)
       slackIn = {
         appToken, allow, connect: mod.connectSocketMode, check: mod.makeSlackActorCheck({ token, teamId: pf.teamId || '', allowFlag: '--slack-allow' }),
@@ -1804,7 +1814,7 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const tracked = git(root, ['ls-files', '-z']).out.split('\0').filter(Boolean).length
   if (tracked > LARGE && relay === PUBLIC_DEFAULT_RELAY && !f['allow-large']) {
     logErr(`Q608 ${id.owner}/${id.repo} has ${tracked} files, and every run puts the whole branch in a room. That is too much for the public relay: run your own (npx hivecode-relay) and pass --relay <url>, or pass --allow-large.`)
-    return 1
+    return EXIT_FIX
   }
   if (info.private && relay === PUBLIC_DEFAULT_RELAY) {
     log(`\nNOTE: ${id.owner}/${id.repo} is private, and rooms will run on the public Hivecode relay. Room ids are random and never posted on GitHub, but anyone who learns one can read that room's files. For private code, run your own relay (npx hivecode-relay) and pass --relay.\n`)
@@ -1827,13 +1837,13 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     const res = await w.tick()
     // A list that could not be read is not an empty list: "no labelled issues" would send them
     // looking in the wrong place.
-    if (!res || !res.ok) { logErr(`Dry run stopped: could not read the labelled issues from GitHub${res && res.failed ? ` (${res.failed})` : ''}. Nothing was written.`); return 1 }
+    if (!res || !res.ok) { logErr(`Dry run stopped: could not read the labelled issues from GitHub${res && res.failed ? ` (${res.failed})` : ''}. Nothing was written.`); return EXIT_AGAIN }
     log(res.labelled ? `Dry run done: ${res.labelled} open issue(s) labelled "${label}". Nothing was written.` : `Dry run done: no open issue is labelled "${label}". Nothing was written.`)
     return 0
   }
 
   const releaseLock = (() => { try { return takeLock(path.join(gitDir, 'hivecode', 'watcher.lock')) } catch (e) { logErr(e.message); return null } })()
-  if (!releaseLock) return 1
+  if (!releaseLock) return EXIT_FIX
 
   const state = loadState(file, log)
   state.config = { owner: id.owner, repo: id.repo, flags: { ...f, once: undefined } }
@@ -1859,7 +1869,9 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     } catch (e) {
       logErr(isQ(e) ? e.message : `Q634 Slack replies could not start (Socket Mode): ${oneLine(String((e && e.message) || e), 200)}. Check SLACK_APP_TOKEN and that this machine can reach Slack, or unset SLACK_APP_TOKEN to post progress only.`)
       releaseLock()
-      return 1
+      // Another process on the app (Q635), or Slack answering no (a revoked token): a person.
+      // Slack not reached, or Socket Mode not opening in its retry window: try again.
+      return e && (e.code === 'Q635' || e.slackError) ? EXIT_FIX : EXIT_AGAIN
     }
   }
   log(`Hivecode is watching ${id.owner}/${id.repo} for issues labelled "${label}". Ctrl+C stops it.`)

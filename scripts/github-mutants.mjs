@@ -68,7 +68,7 @@ const MUTANTS = [
   { t: 'cli', id: 'allow-any-name', expect: 'CK13', find: "s && !/^[UW][A-Z0-9]{2,}$/.test(s)", to: "s && false" },
   { t: 'cli', id: 'allow-whence-silent', expect: 'CK14', find: "k in typed || !(k in (saved.flags || {}))", to: "true" },
   // Replies turned on with a token that cannot receive them: started green, and "stop" never arrived.
-  { t: 'cli', id: 'inbound-scopes-unchecked', expect: 'CK16', find: 'if (!sc.ok) { logErr(sc.error); return 1 }', to: 'if (false) { logErr(sc.error); return 1 }' },
+  { t: 'cli', id: 'inbound-scopes-unchecked', expect: 'CK16', find: 'if (!sc.ok) { logErr(sc.error); return EXIT_FIX }', to: 'if (false) { logErr(sc.error); return EXIT_FIX }' },
   // An agent that cannot use Hivecode, started anyway: every run paid for and failed.
   { t: 'cli', id: 'agent-no-mcp-passes', expect: 'CA1', find: 'if (r.status !== 0 && /No MCP server named/i.test(out)) {', to: 'if (false) {' },
   { t: 'cli', id: 'agent-mcp-failing-passes', expect: 'CA3', find: 'if (/fail|error|disconnected/i.test(status)) {', to: 'if (false) {' },
@@ -85,8 +85,13 @@ const MUTANTS = [
   // (No mutant for the isQ() wrapper beside it: hive-slack.js now codes every start error, so the
   // wrapper is a backstop for an older hive-slack.js and no test here can tell it apart.)
   { t: 'cli', id: 'socket-uncaught', expect: 'no', find: '    } catch (e) {\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start', to: '    } catch (e) {\n      throw e\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start' },
+  // How `github start` exits, for whatever restarts it: 1 = try again, 2 = a person must act.
+  { t: 'cli', id: 'busy-is-fix', expect: 'CL4f', find: '    return busy ? EXIT_AGAIN : EXIT_FIX', to: '    return EXIT_FIX' },
+  { t: 'cli', id: 'refusal-is-again', expect: 'CL4h', find: '    return busy ? EXIT_AGAIN : EXIT_FIX', to: '    return EXIT_AGAIN' },
+  { t: 'cli', id: 'q635-is-again', expect: 'CK19', find: "      return e && (e.code === 'Q635' || e.slackError) ? EXIT_FIX : EXIT_AGAIN", to: '      return EXIT_AGAIN' },
+  { t: 'cli', id: 'slack-unreachable-is-fix', expect: 'CK21', find: 'return pf && pf.transient ? EXIT_AGAIN : EXIT_FIX }', to: 'return EXIT_FIX }' },
   { t: 'cli', id: 'watching-before-slack', expect: 'CK19', find: '  w.recover()\n  let inbound = null\n', to: "  w.recover()\n  log('Hivecode is watching (before Slack answered)')\n  let inbound = null\n" },
-  { t: 'cli', id: 'socket-lock-kept', expect: 'CK19', find: '      releaseLock()\n      return 1\n    }\n  }\n  log(`Hivecode is watching', to: '      return 1\n    }\n  }\n  log(`Hivecode is watching' },
+  { t: 'cli', id: 'socket-lock-kept', expect: 'CK19', find: '      releaseLock()\n      // Another process on the app (Q635)', to: '      // Another process on the app (Q635)' },
   { t: 'cli', id: 'origin-token-shown', expect: 'CL2b', find: "const shown = String(origin.out || '').replace(/\\/\\/[^/@\\s]+@/, '//')", to: "const shown = String(origin.out || '')" },
   { t: 'cli', id: 'help-is-error', expect: 'CT4', find: "rest.includes('-h')) { log(USAGE); return 0 }", to: "rest.includes('-h')) { logErr(USAGE); return 2 }" },
   { t: 'cli', id: 'reply-retry-as-stop', expect: 'CK8', find: "check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)", to: "check.mayAct(actor, 'stop', allow)" },
