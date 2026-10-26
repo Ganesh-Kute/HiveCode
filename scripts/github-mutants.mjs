@@ -61,6 +61,8 @@ const MUTANTS = [
   { t: 'cli', id: 'allow-no-channel', expect: 'CK12', find: "if (!slackChannel) { logErr(`Q634 ${flag}", to: "if (false) { logErr(`Q634 ${flag}" },
   { t: 'cli', id: 'allow-any-name', expect: 'CK13', find: "s && !/^[UW][A-Z0-9]{2,}$/.test(s)", to: "s && false" },
   { t: 'cli', id: 'allow-whence-silent', expect: 'CK14', find: "k in typed || !(k in (saved.flags || {}))", to: "true" },
+  // Replies turned on with a token that cannot receive them: started green, and "stop" never arrived.
+  { t: 'cli', id: 'inbound-scopes-unchecked', expect: 'CK16', find: 'if (!sc.ok) { logErr(sc.error); return 1 }', to: 'if (false) { logErr(sc.error); return 1 }' },
   { t: 'cli', id: 'reply-retry-as-stop', expect: 'CK8', find: "check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)", to: "check.mayAct(actor, 'stop', allow)" },
   { t: 'cli', id: 'reply-note-first', expect: 'CK10', find: '    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:', to: "    if (may.unverified) w.slackNote({ threadTs: ev.thread_ts, text: 'stopped; I could not confirm who you are' })\n    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:" },
   { t: 'cli', id: 'dry-saves', expect: 'CD4', find: 'const save = () => { if (!dry) saveState(file, state) }', to: 'const save = () => { saveState(file, state) }' },

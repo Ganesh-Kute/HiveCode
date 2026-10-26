@@ -91,6 +91,7 @@ command path acts on it, and GitHub keeps who asked.
 | A reply in a thread the watcher does not own | Ignored. |
 | `--slack-allow` without `SLACK_APP_TOKEN` | Start refuses (Q634) and says to set it. Without it the replies are never read, so nobody could retry from Slack, while the start looked fine. |
 | `--slack-allow` without `--slack-channel` | Start refuses (Q634): there are no threads to reply in. |
+| `SLACK_APP_TOKEN` set, but the bot token lacks `users:read` or the channel's history scope (`channels:history`, or `groups:history` for a private channel) | Start refuses (Q634), names the missing scopes, and says to reinstall the app from `slack-app-manifest-inbound.json`. Without the history scope Slack never sends the replies, so a `stop` would silently do nothing; without `users:read` every stop is "unverified" and every retry refused. Slack reports a token's scopes on every answer; if it does not, start says so and goes on. |
 | `--slack-allow ganesh` or `@ganesh` (a name, not a member id) | Start refuses (Q634) and says where the id is: profile, More, Copy member ID. Slack sends ids like `U012AB3CD`, so a name would never match and every retry would be refused. |
 | A `--slack-allow` (or `--slack-channel`) saved by the last start, refused now | The error says it was saved by the last start, and that passing it empty (`--slack-allow ""`) drops it. Every flag is saved and used again by the next start. |
 

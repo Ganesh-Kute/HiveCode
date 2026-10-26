@@ -211,14 +211,18 @@ try {
     // Slack, faked over real HTTP: the bridge's own preflight (auth.test, conversations.info) runs.
     const http = await import('http')
     let mode = 'ok'
+    // Slack says which scopes a token has in this header, on every Web API answer.
+    let scopes = 'chat:write,channels:read,groups:read'
+    let privateChannel = false
     const srv = http.createServer((req, res) => {
       req.resume()
       req.on('end', () => {
         const m = req.url.replace(/^\/api\//, '')
-        const out = m === 'auth.test' ? (mode === 'badtoken' ? { ok: false, error: 'invalid_auth' } : { ok: true, user: 'hivecode', user_id: 'U1', team: 'Acme' })
-          : m === 'conversations.info' ? { ok: true, channel: { id: 'C1', name: 'eng', is_member: mode !== 'notmember' } }
-            : { ok: false, error: 'unknown_method' }
-        res.writeHead(200, { 'content-type': 'application/json' })
+        const out = m === 'auth.test' ? (mode === 'badtoken' ? { ok: false, error: 'invalid_auth' } : { ok: true, user: 'hivecode', user_id: 'U1', team: 'Acme', team_id: 'T1' })
+          : m === 'conversations.info' ? { ok: true, channel: { id: 'C1', name: 'eng', is_member: mode !== 'notmember', is_private: privateChannel } }
+            : m === 'apps.connections.open' ? { ok: true, url: 'ws://127.0.0.1:9/nobody-listens' }
+              : { ok: false, error: 'unknown_method' }
+        res.writeHead(200, { 'content-type': 'application/json', 'x-oauth-scopes': scopes })
         res.end(JSON.stringify(out))
       })
     })
@@ -262,6 +266,25 @@ try {
     T('CK14 a --slack-allow saved by the last start says so, and how to drop it', r.code === 1 && /Q634 /.test(r.out) && /last start/.test(r.out) && /--slack-allow ""/.test(r.out) && fs.readFileSync(slState, 'utf8') === savedText, r.out)
     r = await run(sl, [...slArgs, '--slack-allow', ''], fakeCall(github()).call)
     T('CK15 --slack-allow "" drops it, and the watcher starts', r.code === 0 && /watching acme\/app/.test(r.out) && !/Q634/.test(r.out), r.out)
+
+    // Replies need scopes the default manifest does not ask for. Without them the start looked
+    // fine: a "stop" in the thread never arrived (no history scope, so Slack sends no message
+    // events), or every stop was "unverified" and every retry refused (no users:read).
+    process.env.SLACK_APP_TOKEN = 'xapp-test-not-real'
+    const sc = repo(path.join(tmp, 'slack-scopes'), 'https://github.com/acme/app.git')
+    const nothingInSc = () => !fs.existsSync(path.join(sc, '.git', 'hivecode'))
+    r = await run(sc, slArgs, fakeCall(github()).call)
+    T('CK16 replies on, token without users:read and channels:history: refused, naming the inbound manifest', r.code === 1 && /Q634 .*missing required inbound scope\(s\): users:read, channels:history\./.test(r.out) && /slack-app-manifest-inbound\.json/.test(r.out) && nothingInSc(), r.out)
+    privateChannel = true
+    scopes = 'chat:write,channels:read,groups:read,users:read,channels:history'
+    r = await run(sc, slArgs, fakeCall(github()).call)
+    T('CK17 a private channel needs groups:history, and that is what it says is missing', r.code === 1 && /Q634 .*missing required inbound scope\(s\): groups:history\./.test(r.out) && nothingInSc(), r.out)
+    scopes = 'chat:write,channels:read,groups:read,users:read,channels:history,groups:history'
+    r = await run(sc, slArgs, fakeCall(github()).call)
+    T('CK18 with the inbound scopes it starts, and says who may stop and retry', r.code === 0 && /`stop` in an issue's thread stops it/.test(r.out) && !/Q634/.test(r.out), r.out)
+    privateChannel = false
+    scopes = 'chat:write,channels:read,groups:read'
+    delete process.env.SLACK_APP_TOKEN
     delete process.env.SLACK_BOT_TOKEN
     delete process.env.HIVE_SLACK_API
     srv.close()

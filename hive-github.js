@@ -1686,9 +1686,17 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     // room bridge's own rules: stop for full members of the workspace, retry only for --slack-allow.
     const appToken = process.env.SLACK_APP_TOKEN || ''
     if (appToken) {
-      if (typeof mod.makeSlackActorCheck !== 'function' || typeof mod.connectSocketMode !== 'function') {
+      if (typeof mod.makeSlackActorCheck !== 'function' || typeof mod.connectSocketMode !== 'function' || typeof mod.checkInboundScopes !== 'function') {
         logErr('Q634 this Hivecode cannot take replies from Slack yet (hive-slack.js has no makeSlackActorCheck). Unset SLACK_APP_TOKEN to post progress only.')
         return 1
+      }
+      // Replies need scopes the default manifest does not ask for. Without users:read every stop is
+      // "unverified" and every retry refused; without the channel's history scope Slack never sends
+      // the replies at all. Both used to start green. One rule, in hive-slack.js, for every caller.
+      if (pf.scopes == null) log('Slack did not say which scopes the bot token has. If a "stop" in a thread does nothing, reinstall the app from slack-app-manifest-inbound.json.')
+      else {
+        const sc = mod.checkInboundScopes({ scopes: pf.scopes, isPrivate: pf.isPrivate, channel: slackChannel })
+        if (!sc.ok) { logErr(sc.error); return 1 }
       }
       const sm = await mod.preflightSocketMode({ appToken })
       if (!sm || !sm.ok) { logErr((sm && sm.error) || 'Q634 Slack refused SLACK_APP_TOKEN'); return 1 }
