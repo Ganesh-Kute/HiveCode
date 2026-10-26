@@ -31,6 +31,7 @@ function makeTempRepo() {
   execSync('git config user.email "test@hivecode.dev"', { cwd: dir, stdio: 'ignore' })
   execSync('git config user.name "Test"', { cwd: dir, stdio: 'ignore' })
 
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture', type: 'module' }, null, 2))
   fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true })
   fs.mkdirSync(path.join(dir, 'public'), { recursive: true })
 
@@ -64,12 +65,15 @@ export const s = 1
 function runCheck(dir) {
   const res = spawnSync(process.execPath, [path.join(dir, 'scripts', 'check-deploy.mjs')], {
     cwd: dir,
-    encoding: 'utf8'
+    encoding: 'utf8',
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(dir) }
   })
+  const stderr = res.stderr || ''
+  T('check-deploy did not crash with SyntaxError', !stderr.includes('SyntaxError'), stderr ? stderr.split('\n')[0] : '')
   return {
     code: res.status,
     stdout: res.stdout || '',
-    stderr: res.stderr || ''
+    stderr
   }
 }
 
@@ -158,17 +162,26 @@ export const s = 1
 
 // 6. Non-git directory
 {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'check-deploy-nogit-'))
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'check-deploy-nogit-'))
+  const dir = path.join(base, 'child')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture', type: 'module' }, null, 2))
   fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true })
   fs.copyFileSync(path.join(ROOT, 'scripts', 'check-deploy.mjs'), path.join(dir, 'scripts', 'check-deploy.mjs'))
   fs.copyFileSync(path.join(ROOT, 'relay-static.js'), path.join(dir, 'relay-static.js'))
   fs.writeFileSync(path.join(dir, 'server.js'), `export const s = 1\n`)
 
-  const r = runCheck(dir)
-  T('exits 0 with skip message in non-git directory', r.code === 0, `exit ${r.code}`)
-  T('stdout contains skip notice', r.stdout.includes('skipped: working copy is not its own git repository checkout'))
+  const res = spawnSync(process.execPath, [path.join(dir, 'scripts', 'check-deploy.mjs')], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: base }
+  })
+  const stderr = res.stderr || ''
+  T('non-git check-deploy did not crash with SyntaxError', !stderr.includes('SyntaxError'))
+  T('exits 0 with skip message in non-git directory', res.status === 0, `exit ${res.status}`)
+  T('stdout contains skip notice', (res.stdout || '').includes('skipped: working copy is not its own git repository checkout'))
 
-  fs.rmSync(dir, { recursive: true, force: true })
+  fs.rmSync(base, { recursive: true, force: true })
 }
 
 if (failed > 0) {
