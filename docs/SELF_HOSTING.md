@@ -183,7 +183,7 @@ A human client shows the same thing in the join banner: `relay: <url>  [VERDICT]
 teammate says they are in the room and your relay's count did not move, they are in
 *a* room — just not on your relay.
 
-You can prove the whole path on your own machine in about a minute:
+You can prove the whole path on your own machine in about a minute, from a clone of the repo:
 
 ```bash
 node tests/self-host-test.mjs
@@ -200,7 +200,7 @@ relay. It is the evidence behind every claim on this page.
 | Env var | Why you want it |
 |---|---|
 | `HIVE_AUTH_MODE=required` + `HIVE_JWT_SECRET=<secret>` | Every connection must present a valid token. This is your invite-only control. `npx hivecode-relay --secret <secret>` sets both. Mint tokens with `npx hivecode-token --room <room> --name <who> --role writer --ttl 7d` on the relay host, which is the only machine that holds the secret. See [RBAC.md](RBAC.md). |
-| `HIVE_PERSIST_DIR=/var/data/hive` | **Important.** Without it a room lives only in connected clients' memory and is **lost the moment everyone disconnects** — the day works perfectly and the folder is empty in the morning. `npx hivecode-relay` turns this on by default; `node server.js` does not. |
+| `HIVE_PERSIST_DIR=/var/data/hive` | **Important.** Without it a room lives only in connected clients' memory and is **lost the moment everyone disconnects** — the day works perfectly and the folder is empty in the morning. `npx hivecode-relay` turns this on by default; running the relay from a clone of the repo (`node server.js`) does not. |
 | `HIVE_SEATS=<n>` | Per-room connection budget (8 per seat). It does **not** raise the whole-relay total — that is `HIVE_MAX_CONNS_TOTAL`. The free-tier ceiling is 8 per room, which is **not** 8 people — see below. |
 | `HIVE_AUDIT_FILE=./audit.log` | One line per admit and reject. This is your evidence of who connected and when. |
 | `HIVE_RELAY_MUX=off` | Turns off one-socket-per-participant mode. It is on by default; this is the kill switch, and clients already connected fall back to one socket per file by themselves. |

@@ -1926,9 +1926,19 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // `notify "<link>"`: a person hears on Slack or Discord when an agent is waiting on them
   // (hive-notify.js). `slack start "<link>" --channel <id>` or `slack check --channel <id>`:
   // threads per task in Slack and end-to-end setup check (hive-slack.js).
-  const modPath = process.argv[2] === 'github' ? './hive-github.js' : process.argv[2] === 'slack' ? './hive-slack.js' : './hive-notify.js'
-  const mod = await import(modPath)
-  process.exit(await mod.main(process.argv.slice(3)))
+  // `slack agent "<link>" --channel <id>`: Slack assistant panel and 1:1 DMs (hive-slack-agent.js).
+  // `slack mcp-server "<link>" --port <port>`: Streamable HTTP MCP server for Slackbot (hive-mcp-http.js).
+  if (process.argv[2] === 'slack' && process.argv[3] === 'agent') {
+    const mod = await import('./hive-slack-agent.js')
+    process.exit(await mod.main(process.argv.slice(4)))
+  } else if (process.argv[2] === 'slack' && process.argv[3] === 'mcp-server') {
+    const mod = await import('./hive-mcp-http.js')
+    process.exit(await mod.main(process.argv.slice(4)))
+  } else {
+    const modPath = process.argv[2] === 'github' ? './hive-github.js' : process.argv[2] === 'slack' ? './hive-slack.js' : './hive-notify.js'
+    const mod = await import(modPath)
+    process.exit(await mod.main(process.argv.slice(3)))
+  }
 } else if (isEntryPoint) {
   const transport = new StdioServerTransport()
   // STDIN CLOSING IS THE AGENT APP SAYING GOODBYE -- the MCP spec's stdio shutdown. Leave the

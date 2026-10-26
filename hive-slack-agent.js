@@ -24,6 +24,7 @@
 // person to test it would find out. It stops the NEXT thing, reliably, and that is what makes
 // it safe to walk away.
 
+import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
 import {
   makeQueue,
@@ -291,55 +292,91 @@ export async function preflightSlackAgent({
 }
 
 // ---- main -------------------------------------------------------------------------------
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
-  const argv = process.argv.slice(2)
+export const USAGE = `usage:
+  SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack agent "<relay|room>" --channel <id> [--name <name>] [--allow <U123,U456>]`
+
+export async function main(argv = process.argv.slice(2), {
+  log = console.log,
+  logErr = console.error,
+  env = process.env,
+  fetchImpl = fetch,
+  WebSocketImpl = WebSocket,
+} = {}) {
+  if (argv.includes('--help') || argv.includes('-h') || argv.includes('help')) {
+    log(USAGE)
+    return 0
+  }
   const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || '') }
   const LINK = argv.find((a) => !a.startsWith('--')) || ''
   const CHANNEL = flag('channel')
-  const TOKEN = process.env.SLACK_BOT_TOKEN || ''
-  const APP_TOKEN = process.env.SLACK_APP_TOKEN || ''
+  const TOKEN = env.SLACK_BOT_TOKEN || ''
+  const APP_TOKEN = env.SLACK_APP_TOKEN || ''
   if (!LINK || !CHANNEL || !TOKEN || !APP_TOKEN) {
-    console.error('usage: SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… node hive-slack-agent.js "<relay|room>" --channel <id>')
-    process.exit(2)
+    logErr(USAGE)
+    return 2
   }
   const allowIdx = argv.indexOf('--allow')
-  const allowSource = allowIdx !== -1 ? '--allow' : (process.env.SLACK_ALLOW ? 'SLACK_ALLOW' : '--allow')
-  const rawAllow = allowIdx !== -1 ? (argv[allowIdx + 1] || '') : (process.env.SLACK_ALLOW || '')
+  const allowSource = allowIdx !== -1 ? '--allow' : (env.SLACK_ALLOW ? 'SLACK_ALLOW' : '--allow')
+  const rawAllow = allowIdx !== -1 ? (argv[allowIdx + 1] || '') : (env.SLACK_ALLOW || '')
   const allowParsed = parseSlackAllow(rawAllow, allowSource)
   if (!allowParsed.ok) {
-    console.error(allowParsed.error)
-    process.exit(1)
+    logErr(allowParsed.error)
+    return 1
   }
-  const pre = await preflightSlackAgent({ token: TOKEN, appToken: APP_TOKEN, channel: CHANNEL })
+  const pre = await preflightSlackAgent({ token: TOKEN, appToken: APP_TOKEN, channel: CHANNEL, fetchImpl })
   if (!pre.ok) {
-    console.error(pre.error)
-    process.exit(1)
+    logErr(pre.error)
+    return 1
   }
   const { relay, room } = parseLink(LINK)
   const hive = startSync({
-    relay, room, dir: (process.env.TEMP || '.') + '/hive-agent-' + room,
-    name: flag('name', 'Hivecode'), kind: 'human', token: process.env.HIVE_TOKEN || '', syncFiles: false, log: () => {},
+    relay, room, dir: (env.TEMP || '.') + '/hive-agent-' + room,
+    name: flag('name', 'Hivecode'), kind: 'human', token: env.HIVE_TOKEN || '', syncFiles: false, log: () => {},
   })
   const agent = makeAgent({
-    hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN),
+    hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN, fetchImpl),
     teamId: pre.teamId, botUserId: pre.botUserId, allow: allowParsed.ids,
   })
+  let sm
   try {
-    await connectSocketMode({
+    sm = await connectSocketMode({
       appToken: APP_TOKEN,
       initialUrl: pre.url,
+      fetchImpl,
+      WebSocketImpl,
+      logErr,
       onEvent: (ev) => agent.onEvent(ev),
       onMultiConnection: (n) => {
         slackPost('chat.postMessage', {
           channel: CHANNEL,
           text: `:warning: Another process connected to Slack Socket Mode with this app token (${n} active connections). Slack distributes incoming events across connections, so messages or "stop" commands may go to the other process. Check for another terminal running hivecode-mcp slack start, github start --slack-allow, or hive-slack-agent.`,
-        }, TOKEN).catch(() => {})
+        }, TOKEN, fetchImpl).catch(() => {})
       },
     })
   } catch (e) {
-    console.error(e.message)
+    logErr(e.message)
     try { hive.stop() } catch { }
-    process.exit(1)
+    return 1
   }
-  console.log(`READY: [hive-slack-agent] ${room} -> ${CHANNEL} (Socket Mode connected) — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}`)
+  log(`READY: [hive-slack-agent] ${room} -> ${CHANNEL} (Socket Mode connected) — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}`)
+
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (code = 0) => {
+      if (done) return
+      done = true
+      process.removeListener('SIGINT', onSignal)
+      process.removeListener('SIGTERM', onSignal)
+      try { if (sm && sm.stop) sm.stop() } catch { }
+      try { hive.stop() } catch { }
+      resolve(code)
+    }
+    const onSignal = () => finish(0)
+    process.once('SIGINT', onSignal)
+    process.once('SIGTERM', onSignal)
+  })
+}
+
+if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+  main().then((code) => { if (code !== 0) process.exit(code) })
 }

@@ -485,61 +485,92 @@ export function resolveConfig(argv = process.argv.slice(2), env = process.env) {
 }
 
 // ---- main -------------------------------------------------------------------------------
-// `process.argv[1] &&` is not defensive noise: without it this module THROWS on import in any
-// host that has no script path -- a worker thread, a REPL, `node --eval`. hive-linear.js:288
-// already guards it; this file did not, so importing it crashed rather than simply not running
-// main. Found while reviewing HIV-P7; pre-existing, not caused by it.
-if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
-  const cfg = resolveConfig(process.argv.slice(2), process.env)
+export const USAGE = `usage:
+  SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack mcp-server "<relay|room>" [--port 8790] [--auth slack|none] [--allow <U123,U456>] [--trust-proxy]`
+
+export async function main(argv = process.argv.slice(2), {
+  log = console.log,
+  logErr = console.error,
+  env = process.env,
+  fetchImpl = fetch,
+} = {}) {
+  if (argv.includes('--help') || argv.includes('-h') || argv.includes('help')) {
+    log(USAGE)
+    return 0
+  }
+  const cfg = resolveConfig(argv, env)
   if (!cfg.link) {
-    console.error('usage: node hive-mcp-http.js "<relay|room>" --port 8790 [--auth slack|none] [--allow <U123,U456>] [--trust-proxy]')
-    process.exit(2)
+    logErr(USAGE)
+    return 2
   }
   // Fail closed. Starting in `slack` mode without a secret would silently serve an OPEN control
   // plane for a room -- anybody who found the URL could stop every agent in it.
   if (cfg.auth === 'slack' && !cfg.secret) {
-    console.error('Q510 --auth slack needs SLACK_SIGNING_SECRET. Use --auth none only on localhost.')
-    process.exit(2)
+    logErr('Q510 --auth slack needs SLACK_SIGNING_SECRET. Use --auth none only on localhost.')
+    return 2
   }
   if (cfg.auth === 'slack' && !cfg.token) {
-    console.error('Q630 --auth slack needs SLACK_BOT_TOKEN. Set SLACK_BOT_TOKEN=xoxb-… in your environment (docs/SLACK_SETUP.md).')
-    process.exit(2)
+    logErr('Q630 --auth slack needs SLACK_BOT_TOKEN. Set SLACK_BOT_TOKEN=xoxb-… in your environment (docs/SLACK_SETUP.md).')
+    return 2
   }
   let resolvedTeamId = cfg.teamId
   if (cfg.auth === 'slack') {
-    const pf = await preflightMcpSlack({ token: cfg.token, teamId: cfg.teamId })
+    const pf = await preflightMcpSlack({ token: cfg.token, teamId: cfg.teamId, fetchImpl })
     if (!pf.ok) {
-      console.error(pf.error)
-      process.exit(1)
+      logErr(pf.error)
+      return 1
     }
     resolvedTeamId = pf.teamId
   }
   const hive = startSync({
     relay: cfg.relay,
     room: cfg.room,
-    dir: (process.env.TEMP || '.') + '/hive-mcp-http-' + cfg.room,
+    dir: (env.TEMP || '.') + '/hive-mcp-http-' + cfg.room,
     name: cfg.name,
     kind: 'human',
     token: cfg.hiveToken,
     syncFiles: false,
     log: () => {},
   })
-  serve({
-    hive,
-    room: cfg.room,
-    port: cfg.port,
-    auth: cfg.auth,
-    signingSecret: cfg.secret,
-    allow: cfg.allow,
-    token: cfg.token,
-    teamId: resolvedTeamId,
-    trustProxy: cfg.trustProxy,
-  }).then(() => {
-    console.log(`[hive-mcp-http] room ${cfg.room} on :${cfg.port}/  auth=${cfg.auth}`)
-    if (cfg.auth === 'none') console.log('  auth=none: do NOT expose this beyond localhost.')
-  }).catch((e) => {
-    console.error((e && e.message) || String(e))
+  let server
+  try {
+    server = await serve({
+      hive,
+      room: cfg.room,
+      port: cfg.port,
+      auth: cfg.auth,
+      signingSecret: cfg.secret,
+      allow: cfg.allow,
+      token: cfg.token,
+      teamId: resolvedTeamId,
+      trustProxy: cfg.trustProxy,
+    })
+    log(`[hive-mcp-http] room ${cfg.room} on :${cfg.port}/  auth=${cfg.auth}`)
+    if (cfg.auth === 'none') log('  auth=none: do NOT expose this beyond localhost.')
+  } catch (e) {
+    logErr((e && e.message) || String(e))
     try { hive.stop() } catch {}
-    process.exit(1)
+    return 1
+  }
+
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (code = 0) => {
+      if (done) return
+      done = true
+      process.removeListener('SIGINT', onSignal)
+      process.removeListener('SIGTERM', onSignal)
+      try { server.close() } catch {}
+      try { hive.stop() } catch {}
+      resolve(code)
+    }
+    const onSignal = () => finish(0)
+    process.once('SIGINT', onSignal)
+    process.once('SIGTERM', onSignal)
+    server.on('close', () => finish(0))
   })
+}
+
+if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+  main().then((code) => { if (code !== 0) process.exit(code) })
 }

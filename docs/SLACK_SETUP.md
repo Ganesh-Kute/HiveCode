@@ -256,6 +256,20 @@ Paste the contents of [`slack-app-manifest-inbound.json`](../slack-app-manifest-
     - Running `SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack check --channel D0123456789 --agent` verifies those scopes, posts a check message (`checkTs`), and calls `agents.sessions.setStatus({ status: 'processing', channel_id, thread_ts: checkTs })`. Per Slack's [`agent_session_stopped` docs](https://docs.slack.dev/reference/events/agent_session_stopped), if your app is not subscribed to `agent_session_stopped`, Slack returns a `missing_agent_session_stopped_event_subscription` warning (checked in both top-level `warning` and `response_metadata.warnings[]`) and renders a non-interactive spinner instead of the stop button; `slack check --agent` catches that warning (as well as `feature_disabled` and `thread_ts_required`) and refuses with `Q634`. On every exit path (pass, fail, timeout, or `Ctrl+C`), `slack check --agent` clears the session status back to `active` in a `finally` block so the DM is never left spinning.
     - *(Note: `features.assistant_view` and `suggested_prompts` control the top-bar split-view UI in Slack and cannot be probed via a Web API read call; installing from `slack-app-manifest-agent.json` configures them declaratively.)*
 
+**Starting the Agent Surface (`slack agent`):**
+
+macOS / Linux (bash, zsh):
+```bash
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack agent "wss://hivecode-relay.onrender.com|room-abc123" --channel D0123456789 --allow U012ABCDEF
+```
+
+Windows (PowerShell):
+```powershell
+$env:SLACK_BOT_TOKEN="xoxb-…"
+$env:SLACK_APP_TOKEN="xapp-…"
+npx -y hivecode-mcp@latest slack agent "wss://hivecode-relay.onrender.com|room-abc123" --channel D0123456789 --allow U012ABCDEF
+```
+
 <details>
 <summary><strong>Optional Paid-Plan AI Agent Surface Manifest (<code>slack-app-manifest-agent.json</code>)</strong></summary>
 
@@ -362,14 +376,14 @@ If you connect Slackbot's remote MCP client over Streamable HTTP (`hive-mcp-http
 
 **macOS / Linux (bash, zsh):**
 ```bash
-SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… node hive-mcp-http.js "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
+SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack mcp-server "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
 ```
 
 **Windows (PowerShell):**
 ```powershell
 $env:SLACK_SIGNING_SECRET="…"
 $env:SLACK_BOT_TOKEN="xoxb-…"
-node hive-mcp-http.js "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
+npx -y hivecode-mcp@latest slack mcp-server "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
 ```
 
 **What a First-Time User Sees Step by Step (`hive-mcp-http.js`):**

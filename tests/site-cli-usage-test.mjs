@@ -306,5 +306,73 @@ for (const { lineNum, text } of qLines) {
 }
 T('P7 Quoted Q-code error messages in docs/QUICKSTART.md match shipped source', qDriftErrors.length === 0, qDriftErrors.join('; '))
 
+// P7b: Guard that no shipped doc tells a user to run `node <file>.js` for an unshipped file
+const shippedMdFiles = pkgJson.files
+  .filter(f => f.endsWith('.md') && f !== 'HIVE_RULES.md')
+const unshippedNodeErrors = []
+
+for (const docFile of shippedMdFiles) {
+  const docPath = path.join(ROOT, docFile)
+  if (!fs.existsSync(docPath)) continue
+  const content = fs.readFileSync(docPath, 'utf8')
+  const lines = content.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const nodeMatches = line.matchAll(/\bnode\s+([a-zA-Z0-9_./-]+\.(?:m?js|cjs))\b/g)
+    for (const nm of nodeMatches) {
+      const scriptFile = nm[1].replace(/^\.\//, '')
+      const isShipped = pkgJson.files.some(f => f === scriptFile || f.endsWith('/' + scriptFile))
+      const context = lines.slice(Math.max(0, i - 4), Math.min(lines.length, i + 3)).join(' ')
+      const isCloneContext = /clone of the repo|local checkout|repo root/i.test(context)
+      if (!isShipped && !isCloneContext) {
+        unshippedNodeErrors.push(`${docFile}:${i + 1} tells user to run "node ${scriptFile}", but "${scriptFile}" is NOT in package.json files[]`)
+      }
+    }
+  }
+}
+T('P7b No shipped doc tells user to run unshipped node script', unshippedNodeErrors.length === 0, unshippedNodeErrors.join('; '))
+
+// P8: docs/TROUBLESHOOTING.md covers every printable Q-code in shipped source, and no obsolete codes
+const troubleshootingPath = path.join(ROOT, 'docs', 'TROUBLESHOOTING.md')
+T('vacuity guard: docs/TROUBLESHOOTING.md exists on disk', fs.existsSync(troubleshootingPath))
+
+const shippedJsFiles = pkgJson.files.filter(f => f.endsWith('.js') || f.endsWith('.cjs'))
+const codeToFiles = new Map()
+
+for (const f of shippedJsFiles) {
+  const abs = path.join(ROOT, f)
+  if (!fs.existsSync(abs)) continue
+  let src = fs.readFileSync(abs, 'utf8')
+  src = src.replace(/\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length))
+  src = src.replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length))
+  for (const m of src.matchAll(/\b(Q\d{3})\b/g)) {
+    const code = m[1]
+    if (!codeToFiles.has(code)) codeToFiles.set(code, new Set())
+    codeToFiles.get(code).add(f)
+  }
+}
+
+const expectedQCodes = Array.from(codeToFiles.keys()).sort()
+
+let p8Errors = []
+if (fs.existsSync(troubleshootingPath)) {
+  const tsContent = fs.readFileSync(troubleshootingPath, 'utf8')
+  const docCodes = new Set()
+  for (const m of tsContent.matchAll(/\|\s*`?(Q\d{3})`?\s*\|/g)) {
+    docCodes.add(m[1])
+  }
+  const missingInDoc = expectedQCodes.filter(c => !docCodes.has(c))
+  if (missingInDoc.length > 0) {
+    p8Errors.push(`Missing from docs/TROUBLESHOOTING.md: ${missingInDoc.join(', ')}`)
+  }
+  const obsoleteInDoc = Array.from(docCodes).filter(c => !codeToFiles.has(c))
+  if (obsoleteInDoc.length > 0) {
+    p8Errors.push(`Documented but not in shipped source: ${obsoleteInDoc.join(', ')}`)
+  }
+} else {
+  p8Errors.push('docs/TROUBLESHOOTING.md does not exist')
+}
+T(`P8 docs/TROUBLESHOOTING.md covers all ${expectedQCodes.length} shipped Q-codes with zero drift`, p8Errors.length === 0, p8Errors.join('; '))
+
 console.log(failed ? `\n${failed} FAILED` : '\nall passed')
 process.exit(failed ? 1 : 0)

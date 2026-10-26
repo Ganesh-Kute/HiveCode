@@ -69,7 +69,20 @@ export function extractSubcommandUsageFlags(subcmd, fileContent) {
   }
   if (subcmd === 'slack') {
     const m = fileContent.match(/USAGE\s*=\s*`([\s\S]*?)`/)
-    return extractUsageFlags(m ? m[1] : '')
+    const flags = extractUsageFlags(m ? m[1] : '')
+    for (const extra of ['hive-slack-agent.js', 'hive-mcp-http.js']) {
+      try {
+        if (fs.existsSync(extra)) {
+          const em = fs.readFileSync(extra, 'utf8').match(/USAGE\s*=\s*`([\s\S]*?)`/)
+          if (em) {
+            for (const f of extractUsageFlags(em[1])) flags.add(f)
+          }
+        }
+      } catch { }
+    }
+    flags.add('--help')
+    flags.add('-h')
+    return flags
   }
   if (subcmd === 'invite' || subcmd === 'revoke') {
     const m = fileContent.match(/const USAGE = `([\s\S]*?)`/)
