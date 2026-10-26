@@ -47,7 +47,10 @@ export function extractSubcommandUsageFlags(subcmd, fileContent) {
   if (!fileContent) return new Set()
   if (subcmd === 'github') {
     const m = fileContent.match(/const USAGE = `([\s\S]*?)`/)
-    return extractUsageFlags(m ? m[1] : '')
+    const flags = extractUsageFlags(m ? m[1] : '')
+    flags.add('--help')
+    flags.add('-h')
+    return flags
   }
   if (subcmd === 'branch' || subcmd === 'pr') {
     const m = fileContent.match(/USAGE = `([\s\S]*?)`/)

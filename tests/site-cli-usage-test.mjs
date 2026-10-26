@@ -274,5 +274,37 @@ if (!fs.existsSync(rootInboundPath)) {
 }
 T('P6b Slack inbound manifest in docs.html matches slack-app-manifest-inbound.json', inboundMatches, inboundDiff)
 
+// P7: Guard against drift of quoted Q-codes in docs/QUICKSTART.md
+// Asserts that every `Q\d{3} ...` line quoted in docs/QUICKSTART.md has its fixed text
+// somewhere in the shipped source files (package.json files[]).
+const pkgJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
+const shippedCorpus = pkgJson.files
+  .filter(f => f.endsWith('.js') || f.endsWith('.cjs'))
+  .map(f => fs.readFileSync(path.join(ROOT, f), 'utf8'))
+  .join('\n')
+
+const quickstartLines = fs.readFileSync(path.join(ROOT, 'docs', 'QUICKSTART.md'), 'utf8').split('\n')
+const qLines = []
+for (let i = 0; i < quickstartLines.length; i++) {
+  const line = quickstartLines[i]
+  const m = line.match(/`\s*(Q\d{3}\b[^`]+)`/)
+  if (m) {
+    qLines.push({ lineNum: i + 1, text: m[1].trim() })
+  }
+}
+
+let qDriftErrors = []
+for (const { lineNum, text } of qLines) {
+  const segments = text.split(/<[^>]+>/)
+    .map(s => s.replace(/^Q\d{3}\s*/, '').replace(/^[-(`\s]+|[-)`\s]+$/g, '').trim())
+    .filter(s => s.length > 5)
+  for (const seg of segments) {
+    if (!shippedCorpus.includes(seg)) {
+      qDriftErrors.push(`line ${lineNum}: "${seg}" not found in shipped source`)
+    }
+  }
+}
+T('P7 Quoted Q-code error messages in docs/QUICKSTART.md match shipped source', qDriftErrors.length === 0, qDriftErrors.join('; '))
+
 console.log(failed ? `\n${failed} FAILED` : '\nall passed')
 process.exit(failed ? 1 : 0)
