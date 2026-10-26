@@ -39,6 +39,7 @@ import * as meter from './usage-meter.js'
 import { MUX_PREFIX, MUX_VERSION } from './hive-mux-proto.js'
 import { VERSION, BUILD } from './hive-version.js'
 import { serveMux } from './relay-mux.js'
+import { STATIC, staticFile } from './relay-static.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
 // library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
@@ -1179,39 +1180,11 @@ const server = http.createServer((req, res) => {
   // Static pages: the relay doubles as the website + the browser control room, so
   // one deploy serves everything. Map a small allowlist of paths to public/ files.
   if (req.method === 'GET') {
-    // Keep this in step with what public/index.html actually references — the relay
-    // serves the site too, so a missing entry here means the page loads on this host with
-    // no script and no images while looking fine on Vercel.
-    const STATIC = {
-      '/': 'index.html', '/index.html': 'index.html',
-      '/control': 'control.html', '/control.html': 'control.html',
-      // The live architecture map. Same CRDT bundle as /control, so it must be served from the
-      // same origin -- a page that loads hive-crdt.js from anywhere else gets two Yjs instances
-      // and goes silently deaf.
-      '/map': 'map.html', '/map.html': 'map.html',
-      // Licence recovery. The page calls Vercel's /api/license directly (CORS is open for
-      // exactly this), so it works served from here even though this host has no such route.
-      '/recover': 'recover.html', '/recover.html': 'recover.html',
-      '/app.js': 'app.js',
-      // The control room's CRDT bundle. Without this entry /control loads and then cannot
-      // sync at all on this host, while working fine on Vercel.
-      '/hive-crdt.js': 'hive-crdt.js',
-      '/hive-time.js': '../hive-time.js',
-      '/favicon.ico': 'favicon.ico',
-      '/favicon-32.png': 'favicon-32.png',
-      '/apple-touch-icon.png': 'apple-touch-icon.png',
-      '/mark-64.png': 'mark-64.png',
-      '/mark.jpg': 'mark.jpg',
-      '/mark-wide.jpg': 'mark-wide.jpg',
-      '/hivecode-logo.png': 'hivecode-logo.png',
-      '/hivecode-icr-demo.mp4': 'hivecode-icr-demo.mp4',
-      '/Hivecode___ICR.mp4': 'Hivecode___ICR.mp4'
-    }
     const TYPES = { '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.js': 'text/javascript; charset=utf-8' }
     const file = STATIC[(req.url || '').split('?')[0]]
     if (file) {
       try {
-        const filePath = file.startsWith('../') ? path.join(__dirname, file.slice(3)) : path.join(__dirname, 'public', file)
+        const filePath = staticFile(file, __dirname)
         const body = fs.readFileSync(filePath)
         const ext = file.slice(file.lastIndexOf('.'))
         // HTML is the app shell — keep it fresh (60s) so deploys land fast; static

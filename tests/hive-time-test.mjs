@@ -66,7 +66,8 @@ T('control.html no longer defines inline ago()', !/const\s+ago\s*=\s*\(t\)\s*=>/
 // 7. Relay HTTP serving contract (GET /hive-time.js returns 200 with text/javascript)
 // Import and run server listener check
 const serverJs = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8')
-T('server.js STATIC allowlist includes /hive-time.js', /['"]\/hive-time\.js['"]\s*:\s*['"]\.\.\/hive-time\.js['"]/.test(serverJs))
+const relayStaticJs = fs.existsSync(path.join(ROOT, 'relay-static.js')) ? fs.readFileSync(path.join(ROOT, 'relay-static.js'), 'utf8') : ''
+T('server.js STATIC allowlist includes /hive-time.js', /['"]\/hive-time\.js['"]\s*:\s*['"]\.\.\/hive-time\.js['"]/.test(serverJs) || /['"]\/hive-time\.js['"]\s*:\s*['"]\.\.\/hive-time\.js['"]/.test(relayStaticJs))
 
 // Test real HTTP fetch against an ephemeral server instance simulating the relay route
 const TYPES = { '.js': 'text/javascript; charset=utf-8' }

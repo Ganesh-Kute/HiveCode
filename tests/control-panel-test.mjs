@@ -29,6 +29,7 @@ const section = (s) => console.log('\n# ' + s)
 
 const panel = read('public/control.html')
 const server = read('server.js')
+const relayStatic = read('relay-static.js')
 const vign = read('.vercelignore')
 
 section('one Yjs, chosen at build time')
@@ -54,7 +55,7 @@ section('one Yjs, chosen at build time')
 section('the bundle actually reaches both deploy targets')
 {
   // The relay serves the site as well as the websocket, from a hand-maintained allowlist.
-  T('the relay serves /hive-crdt.js', /'\/hive-crdt\.js':\s*'hive-crdt\.js'/.test(server))
+  T('the relay serves /hive-crdt.js', /'\/hive-crdt\.js':\s*'hive-crdt\.js'/.test(server) || /'\/hive-crdt\.js':\s*'hive-crdt\.js'/.test(relayStatic))
   T('...and knows the .js content type', /'\.js':\s*'text\/javascript/.test(server))
   // Vercel: `*.html` IS a blanket exclude with a re-include list, and every page that was
   // missing from it answered 404 in production. If a `*.js` rule is ever added, the bundle
