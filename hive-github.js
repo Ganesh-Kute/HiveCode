@@ -461,6 +461,35 @@ export function commandExists(command) {
   return r.status === 0
 }
 
+/** CAN THIS AGENT USE HIVECODE? Every run starts with the agent calling hive_join. An agent without
+ *  the hivecode MCP server cannot, so the run ends "the agent never joined its room" -- after the
+ *  user has paid for it. Asked once at start, read-only, of the agents we know how to ask; any other
+ *  is said to be unchecked, never passed. -> { ok, error } or { ok, note } or { ok, warn } */
+export function agentCanUseHivecode(command, { cwd, timeoutMs = Number(process.env.HIVE_AGENT_CHECK_TIMEOUT_MS) || 60000 } = {}) {
+  const s = String(command || '')
+  const first = s.trim().match(/^"([^"]+)"|^(\S+)/)
+  const prog = first ? (first[1] || first[2]) : ''
+  const name = path.basename(prog).toLowerCase().replace(/\.(cmd|exe|bat|ps1)$/, '')
+  // In -p mode only the listed tools may run: without mcp__hivecode the hive tools are denied.
+  if (/--allowed-?tools\b/i.test(s) && !/\bmcp__hivecode/.test(s)) {
+    return { ok: false, error: `Q602 the agent command passes --allowedTools without mcp__hivecode, so it may not call hive_join and every run would fail after spending tokens. Add mcp__hivecode to its --allowedTools.` }
+  }
+  if (name !== 'claude') return { ok: true, warn: `Not checked for ${name || 'this agent'}: make sure it has the hivecode MCP server (npx -y hivecode-mcp@latest setup), or every run fails after spending tokens.` }
+  const quoted = /\s/.test(prog) ? `"${prog}"` : prog
+  const r = spawnSync(`${quoted} mcp get hivecode`, { cwd, shell: true, encoding: 'utf8', windowsHide: true, timeout: timeoutMs })
+  const out = `${r.stdout || ''}\n${r.stderr || ''}`
+  if (r.error || r.signal) return { ok: true, warn: `Could not check whether claude has the hivecode MCP server (claude mcp get hivecode did not answer in ${Math.round(timeoutMs / 1000)} s). If runs end "the agent never joined its room", run: npx -y hivecode-mcp@latest setup` }
+  if (r.status !== 0 && /No MCP server named/i.test(out)) {
+    return { ok: false, error: 'Q602 claude has no hivecode MCP server, so it cannot join a room: every run would fail after spending tokens. Run: npx -y hivecode-mcp@latest setup (or --skip-agent-check if it is set up under another name).' }
+  }
+  if (r.status !== 0) return { ok: true, warn: `Could not check whether claude has the hivecode MCP server: claude mcp get hivecode said ${oneLine(out, 200) || `exit ${r.status}`}` }
+  const status = (out.match(/^\s*Status:\s*(.+)$/m) || [])[1] || ''
+  if (/fail|error|disconnected/i.test(status)) {
+    return { ok: false, error: `Q602 claude's hivecode MCP server is configured but not working (Status: ${status.trim()}), so it cannot join a room. Run: npx -y hivecode-mcp@latest setup` }
+  }
+  return { ok: true, note: `claude can use Hivecode (its hivecode MCP server${status ? `: ${status.replace(/^\W+/, '').trim()}` : ' is configured'}).` }
+}
+
 // ---- git -----------------------------------------------------------------------------------------
 
 // NO PROMPTS. A watcher runs with nobody at the keyboard: a git that asks for a password (or a
@@ -1553,7 +1582,7 @@ export function describe(state, { owner = '', repo = '' } = {}) {
 // ---- CLI -----------------------------------------------------------------------------------------
 
 const NUM = { every: 60, 'max-parallel': 1, 'max-minutes': 40, 'max-runs': 6, 'max-runs-per-day': 20 }
-const SWITCHES = new Set(['allow-workflow-changes', 'allow-large', 'once', 'yes', 'dry-run'])
+const SWITCHES = new Set(['allow-workflow-changes', 'allow-large', 'once', 'yes', 'dry-run', 'skip-agent-check'])
 const LARGE = 5000
 
 function flags(argv) {
@@ -1588,6 +1617,7 @@ options (saved for the next start):
   --slack-channel <id>        one Slack thread per issue (the bot token comes from SLACK_BOT_TOKEN)
   --slack-allow <ids>         Slack member ids (U…, comma-separated) who may reply "retry" in an issue's thread;
                               needs SLACK_APP_TOKEN, with which any full member may reply "stop" there
+  --skip-agent-check          do not ask the agent CLI whether it has the hivecode MCP server
   --every <seconds>           how often to ask GitHub (default 60)
   --max-parallel <n>          runs at once (default 1)
   --max-minutes <n>           per run (default 40)
@@ -1649,6 +1679,13 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   if (!commandExists(agent)) { logErr(`Q602 "${String(agent).split(/\s+/)[0]}" is not installed here (not on PATH).`); return 1 }
   const testerCmd = opt('tester') || ''
   if (testerCmd && !commandExists(testerCmd)) { logErr(`Q602 "${String(testerCmd).split(/\s+/)[0]}" (the --tester) is not installed here (not on PATH).`); return 1 }
+  if (!f['skip-agent-check']) {
+    for (const cmd of [...new Set([agent, testerCmd].filter(Boolean))]) {
+      const ac = agentCanUseHivecode(cmd, { cwd: root })
+      if (!ac.ok) { logErr(ac.error); return 1 }
+      log(ac.note || ac.warn)
+    }
+  }
   const label = opt('label') || LABEL
 
   // SLACK: one thread per issue. The token is read from the environment only: as a flag it would land

@@ -206,6 +206,60 @@ try {
     T('CS9 a real start moves an unreadable state file aside, and says where', r.code === 0 && fs.readdirSync(path.dirname(badFile)).some((x) => /^github\.json\.unreadable-/.test(x)) && /Q606 .*It was moved to/.test(r.out), r.out)
   }
 
+  console.log('\n# the agent must be able to use Hivecode, or every run is paid for and fails')
+  {
+    // A fake `claude` first on PATH: answers `claude mcp get hivecode` the way the real one does.
+    const bin = path.join(tmp, 'fakebin')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'fake-claude.mjs'), [
+      "const mode = process.env.FAKE_CLAUDE_MODE || 'ok'",
+      "const a = process.argv.slice(2).join(' ')",
+      "if (a !== 'mcp get hivecode') { console.log('fake claude: ' + a); process.exit(0) }",
+      "if (mode === 'missing') { console.error('No MCP server named \"hivecode\". Configured servers: memory'); process.exit(1) }",
+      "if (mode === 'failed') { console.log('hivecode:\\n  Scope: User config\\n  Status: \\u2718 Failed to connect\\n  Type: stdio'); process.exit(0) }",
+      "if (mode === 'hang') { setTimeout(() => process.exit(0), 20000) }",
+      "else { console.log('hivecode:\\n  Scope: User config\\n  Status: \\u2714 Connected\\n  Type: stdio'); process.exit(0) }",
+    ].join('\n'))
+    fs.writeFileSync(path.join(bin, 'claude.cmd'), `@"${process.execPath}" "%~dp0fake-claude.mjs" %*\r\n`)
+    fs.writeFileSync(path.join(bin, 'claude'), `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/fake-claude.mjs" "$@"\n`, { mode: 0o755 })
+    const was = { PATH: process.env.PATH, Path: process.env.Path }
+    const withBin = `${bin}${path.delimiter}${process.env.PATH || process.env.Path || ''}`
+    process.env.PATH = withBin
+    if (was.Path !== undefined) process.env.Path = withBin
+    const ag = repo(path.join(tmp, 'agentcheck'), 'https://github.com/acme/app.git')
+    const nothingInAg = () => !fs.existsSync(path.join(ag, '.git', 'hivecode'))
+    const CL = 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode'
+    process.env.FAKE_CLAUDE_MODE = 'missing'
+    r = await run(ag, ['start', '--once', '--agent', CL], fakeCall(github()).call)
+    T('CA1 claude without the hivecode MCP server: refused before any run is paid for, with the fix', r.code === 1 && /Q602 .*claude has no hivecode MCP server/.test(r.out) && /npx -y hivecode-mcp@latest setup/.test(r.out) && nothingInAg(), r.out)
+    r = await run(ag, ['start', '--dry-run', '--agent', CL], fakeCall(github()).call)
+    T('CA2 a dry run says so too', r.code === 1 && /Q602 .*claude has no hivecode MCP server/.test(r.out) && nothingInAg(), r.out)
+    process.env.FAKE_CLAUDE_MODE = 'failed'
+    r = await run(ag, ['start', '--once', '--agent', CL], fakeCall(github()).call)
+    T('CA3 configured but not connecting: refused, quoting the status', r.code === 1 && /Q602 .*hivecode MCP server .*not working/.test(r.out) && /Failed to connect/.test(r.out) && nothingInAg(), r.out)
+    process.env.FAKE_CLAUDE_MODE = 'ok'
+    r = await run(ag, ['start', '--once', '--agent', 'claude -p --allowedTools Bash Edit Write'], fakeCall(github()).call)
+    T('CA4 --allowedTools without mcp__hivecode: refused (in -p mode the hive tools would be denied)', r.code === 1 && /Q602 .*--allowedTools .*mcp__hivecode/.test(r.out) && nothingInAg(), r.out)
+    r = await run(ag, ['start', '--once', '--agent', CL], fakeCall(github()).call)
+    T('CA5 connected: it says so, and starts', r.code === 0 && /claude can use Hivecode/.test(r.out) && /watching acme\/app/.test(r.out), r.out)
+    process.env.FAKE_CLAUDE_MODE = 'hang'
+    process.env.HIVE_AGENT_CHECK_TIMEOUT_MS = '1500'
+    const ag2 = repo(path.join(tmp, 'agentcheck-hang'), 'https://github.com/acme/app.git')
+    r = await run(ag2, ['start', '--once', '--agent', CL], fakeCall(github()).call)
+    T('CA6 claude does not answer: "could not check" is said, never a silent pass, and it starts', r.code === 0 && /could not check/i.test(r.out) && !/claude can use Hivecode/.test(r.out), r.out)
+    delete process.env.HIVE_AGENT_CHECK_TIMEOUT_MS
+    process.env.FAKE_CLAUDE_MODE = 'missing'
+    const ag3 = repo(path.join(tmp, 'agentcheck-skip'), 'https://github.com/acme/app.git')
+    r = await run(ag3, ['start', '--once', '--skip-agent-check', '--agent', CL], fakeCall(github()).call)
+    T('CA7 --skip-agent-check skips it', r.code === 0 && !/Q602/.test(r.out) && /watching acme\/app/.test(r.out), r.out)
+    const ag4 = repo(path.join(tmp, 'agentcheck-other'), 'https://github.com/acme/app.git')
+    r = await run(ag4, ['start', '--once', '--agent', NODE], fakeCall(github()).call)
+    T('CA8 an agent we cannot ask: it says it did not check, never a silent pass', r.code === 0 && /not checked for node/i.test(r.out), r.out)
+    delete process.env.FAKE_CLAUDE_MODE
+    process.env.PATH = was.PATH
+    if (was.Path !== undefined) process.env.Path = was.Path
+  }
+
   console.log('\n# --slack-channel: checked against Slack before any work starts')
   {
     // Slack, faked over real HTTP: the bridge's own preflight (auth.test, conversations.info) runs.

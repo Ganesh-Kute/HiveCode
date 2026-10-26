@@ -63,6 +63,11 @@ const MUTANTS = [
   { t: 'cli', id: 'allow-whence-silent', expect: 'CK14', find: "k in typed || !(k in (saved.flags || {}))", to: "true" },
   // Replies turned on with a token that cannot receive them: started green, and "stop" never arrived.
   { t: 'cli', id: 'inbound-scopes-unchecked', expect: 'CK16', find: 'if (!sc.ok) { logErr(sc.error); return 1 }', to: 'if (false) { logErr(sc.error); return 1 }' },
+  // An agent that cannot use Hivecode, started anyway: every run paid for and failed.
+  { t: 'cli', id: 'agent-no-mcp-passes', expect: 'CA1', find: 'if (r.status !== 0 && /No MCP server named/i.test(out)) {', to: 'if (false) {' },
+  { t: 'cli', id: 'agent-mcp-failing-passes', expect: 'CA3', find: 'if (/fail|error|disconnected/i.test(status)) {', to: 'if (false) {' },
+  { t: 'cli', id: 'agent-allowed-tools-unchecked', expect: 'CA4', find: 'if (/--allowed-?tools\\b/i.test(s) && ', to: 'if (false && ' },
+  { t: 'cli', id: 'agent-unchecked-silent', expect: 'CA8', find: 'log(ac.note || ac.warn)', to: 'if (ac.note) log(ac.note)' },
   { t: 'cli', id: 'reply-retry-as-stop', expect: 'CK8', find: "check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)", to: "check.mayAct(actor, 'stop', allow)" },
   { t: 'cli', id: 'reply-note-first', expect: 'CK10', find: '    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:', to: "    if (may.unverified) w.slackNote({ threadTs: ev.thread_ts, text: 'stopped; I could not confirm who you are' })\n    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:" },
   { t: 'cli', id: 'dry-saves', expect: 'CD4', find: 'const save = () => { if (!dry) saveState(file, state) }', to: 'const save = () => { saveState(file, state) }' },

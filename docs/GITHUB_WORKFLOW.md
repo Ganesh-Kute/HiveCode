@@ -216,6 +216,9 @@ Each row below says what the user sees.
 | what goes wrong | what we do |
 |---|---|
 | The agent CLI isn't installed | `start` refuses. |
+| The agent is `claude` and has no `hivecode` MCP server (`setup` never ran on this machine), or has one that does not connect | `start` (and `--dry-run`) refuses (Q602) with `npx -y hivecode-mcp@latest setup`, after asking `claude mcp get hivecode`, which is read-only and spends no tokens. Without it the first run fails only after the user has paid for it. `claude` not answering in 60 s is said ("could not check"), never passed. `--skip-agent-check` is for a server set up under another name. |
+| The agent command passes `--allowedTools` without `mcp__hivecode` | `start` refuses (Q602): in `-p` mode the hive tools would be denied, the same paid-for failure. |
+| Any other agent CLI (Codex, Gemini) | `start` says it did not check it, never that it passed. |
 | Logged out, usage limit, bad API key | The run fails fast. We retry once, after 15 minutes. A second failure in a row sends the issue to needs-human, with the agent's last lines in the comment and the notification. We never retry in a tight loop. |
 | Codex refuses to start outside a git repository | A room's folder is deliberately not a git checkout. Its command needs `--skip-git-repo-check` (see "Which agents"). |
 | The agent never joins its room (Hivecode isn't set up for that agent CLI) | Said as exactly that, with the setup command. Never reported as "no changes". |
