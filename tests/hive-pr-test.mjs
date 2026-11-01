@@ -58,6 +58,19 @@ console.log('\n# grouping logic')
   const bad = authorsOf(rs, (r) => r.name !== 'AgentA')
   T('an UNVERIFIED receipt is not evidence of authorship', bad.last.name === 'AgentB')
 
+  // A control-room revert puts Ada's older version back without a receipt. The newest receipt is
+  // Ben's, for the code he was just reverted out of; the room holds Ada's (antigravity-3, 1 Nov).
+  const { contentHash } = await import('../substrate.js')
+  const ADA = 'export const LIMIT = 100 // Ada\n', BEN = 'export const LIMIT = 999 // Ben\n'
+  const rv = [
+    { author: 'idA', name: 'Ada', at: 100, contentHash: contentHash(ADA) },
+    { author: 'idB', name: 'Ben', at: 200, contentHash: contentHash(BEN) },
+  ]
+  T('after a revert, the room\'s content is credited to whoever wrote THAT content', authorsOf(rv, () => true, ADA).last.name === 'Ada', authorsOf(rv, () => true, ADA).last.name)
+  T('...and to the newest author when the room holds the newest content', authorsOf(rv, () => true, BEN).last.name === 'Ben')
+  T('...and content no receipt matches still falls back to the newest', authorsOf(rv, () => true, 'unsigned\n').last.name === 'Ben')
+  T('...and the reverted agent is not kept as a co-author of what the room holds', authorsOf(rv, () => true, ADA).contributors.every((c) => c.name !== 'Ben'))
+
   const groups = planCommits([
     { rel: 'b.js', last: { author: 'idB', name: 'AgentB' }, contributors: [{ author: 'idB', name: 'AgentB' }], first: 200 },
     { rel: 'a.js', last: { author: 'idA', name: 'AgentA' }, contributors: [{ author: 'idA', name: 'AgentA' }, { author: 'idB', name: 'AgentB' }], first: 100 },

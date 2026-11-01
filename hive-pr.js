@@ -37,6 +37,7 @@ import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync, parseLink } from './sync.js'
 import { accountFor, verdict, explain, DIVERGED } from './hive-pr-staleness.js'
+import { contentHash } from './substrate.js'
 
 const argv = process.argv.slice(2)
 const [LINK = '', NAME = 'hive-pr'] = argv.filter((a) => !a.startsWith('--'))
@@ -76,12 +77,22 @@ function gitRaw(args, opts = {}) {
 
 /** The authors of a file, newest-landed first, from VERIFIED receipts only.
  *  An unverifiable receipt is not evidence of authorship, so it is dropped rather than trusted. */
-export function authorsOf(receipts, verify) {
+// `roomText`, when given: the author of what the room HOLDS, not of the newest receipt. After a
+// control-room revert the room holds an older version, restored without a receipt, so "newest" named
+// the reverted agent as the author of the code it had just been reverted out of (antigravity-3, 1 Nov).
+export function authorsOf(receipts, verify, roomText) {
   const ok = receipts.filter((r) => r && r.author && (!verify || verify(r)))
   if (!ok.length) return { last: null, contributors: [], first: 0 }
-  const last = ok[ok.length - 1]
+  // Receipts newer than the one the room holds are work that was reverted out: not co-authors either.
+  // Content no receipt matches (a merge, or a revert to a merged state) keeps the old rule, newest
+  // lander, a known limit until merged states are stamped into the ledger (antigravity-3, 1 Nov).
+  const want = typeof roomText === 'string' ? contentHash(roomText) : null
+  let idx = -1
+  if (want) for (let i = ok.length - 1; i >= 0; i--) if (ok[i].contentHash === want) { idx = i; break }
+  const held = idx >= 0 ? ok.slice(0, idx + 1) : ok
+  const last = held[held.length - 1]
   const seen = new Map()
-  for (const r of ok) if (!seen.has(r.author)) seen.set(r.author, { author: r.author, name: r.name || 'agent', at: r.at || 0 })
+  for (const r of held) if (!seen.has(r.author)) seen.set(r.author, { author: r.author, name: r.name || 'agent', at: r.at || 0 })
   return {
     last: { author: last.author, name: last.name || 'agent', at: last.at || 0 },
     contributors: [...seen.values()],
@@ -206,7 +217,9 @@ if (isMain) {
       const receipts = hive.provenanceOf(rel) || []
       const audit = hive.verifyProvenanceOf(rel) || { bad: [] }
       const badIdx = new Set((audit.bad || []).map((b) => b.i))
-      const a = authorsOf(receipts, (r) => !badIdx.has(receipts.indexOf(r)))
+      let roomText = null
+      try { roomText = fs.readFileSync(path.join(dir, rel), 'utf8') } catch { }
+      const a = authorsOf(receipts, (r) => !badIdx.has(receipts.indexOf(r)), roomText)
       files.push({ rel, abs: path.join(dir, rel), ...a })
     }
 

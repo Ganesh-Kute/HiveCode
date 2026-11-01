@@ -569,10 +569,15 @@ export async function landBranch({ cwd, branch, dry = false, push = false, pr = 
       const c = git(tmp, noHooks(['commit', '-q', '-m', msg, '--author', 'hivecode-room <room@agents.hivecode.local>']))
       if (c.code !== 0) throw coded('Q563', `could not commit the room's deletions: ${c.err || c.out}`)
     }
-    if (nothingChanged && !deletions.length) { log(`nothing to land yet: no agent has changed a file in the room for ${name}.`); return { ok: true, landed: 0 } }
-
-    const newTip = revParse(root, `refs/heads/${temp}`)
-    if (!newTip || newTip === tip) { log(`nothing to land: ${name} already has everything the room holds.`); return { ok: true, landed: 0 } }
+    // NOTHING NEW TO LAND IS NOT "DONE" WHEN A PUSH OR A PR WAS ASKED FOR. The usual sequence is a
+    // plain `pr` to look, then `pr --pr`; the second run lands nothing, and returning here skipped
+    // the push and the PR while printing success (1 Nov 2026). Push and open what is already there.
+    let nothingNew = false
+    if (nothingChanged && !deletions.length) { log(`nothing to land yet: no agent has changed a file in the room for ${name}.`); nothingNew = true }
+    const newTip = nothingNew ? tip : revParse(root, `refs/heads/${temp}`)
+    if (!nothingNew && (!newTip || newTip === tip)) { log(`nothing to land: ${name} already has everything the room holds.`); nothingNew = true }
+    if (nothingNew && !push && !pr) return { ok: true, landed: 0 }
+    if (nothingNew) return finish('')
 
     // Move the branch. Checked out somewhere: only a clean fast-forward of that checkout, which is
     // what `git pull` would do; with local changes it is refused, because moving the branch under a
@@ -590,21 +595,27 @@ export async function landBranch({ cwd, branch, dry = false, push = false, pr = 
     }
     const made = git(root, ['log', '--format=  %h  %an  %s', `${tip}..${newTip}`]).out
     log(`\nlanded on ${name}:\n${made}`)
+    return finish(made)
 
-    if (push) {
-      const p = git(root, ['push', '-u', 'origin', name])
-      if (p.code !== 0) throw coded('Q573', `the work landed on ${name} locally, but the push failed: ${p.err}`)
-      log(`pushed ${name}`)
+    // `made` is '' when nothing new landed this run: the push and the PR are of what is already on
+    // the branch, and the PR body lists the branch's commits since its base instead.
+    function finish(made) {
+      if (push) {
+        const p = git(root, ['push', '-u', 'origin', name])
+        if (p.code !== 0) throw coded('Q573', `the work ${made ? 'landed' : 'is'} on ${name} locally, but the push failed: ${p.err}`)
+        log(`pushed ${name}`)
+      }
+      if (pr) {
+        const into = base || b.from
+        if (!into) throw coded('Q574', `the work is on ${name}, but there is no branch to open the PR into; pass --base <branch>.`)
+        const listed = made || git(root, ['log', '--format=  %h  %an  %s', `${into}..${name}`]).out
+        const body = [`Opened by Hivecode from the room bound to \`${name}\`.`, '', 'Each commit carries its agent as the git author and the signed author id as a `Hivecode-Author` trailer.', '', '```', listed, '```'].join('\n')
+        const g = spawnSync('gh', ['pr', 'create', '--base', into, '--head', name, '--title', title || `Hivecode: ${name}`, '--body', body], { cwd: root, encoding: 'utf8', windowsHide: true })
+        if (g.status !== 0) throw coded('Q574', `the work is on ${name}, but gh pr create failed: ${(g.stderr || (g.error && g.error.message) || '').toString().trim()}`)
+        log((g.stdout || '').trim())
+      }
+      return { ok: true, landed: made ? made.split('\n').filter(Boolean).length : 0, tip: made ? newTip : tip, deletions }
     }
-    if (pr) {
-      const into = base || b.from
-      if (!into) throw coded('Q574', `the work landed on ${name}, but there is no branch to open the PR into; pass --base <branch>.`)
-      const body = [`Opened by Hivecode from the room bound to \`${name}\`.`, '', 'Each commit carries its agent as the git author and the signed author id as a `Hivecode-Author` trailer.', '', '```', made, '```'].join('\n')
-      const g = spawnSync('gh', ['pr', 'create', '--base', into, '--head', name, '--title', title || `Hivecode: ${name}`, '--body', body], { cwd: root, encoding: 'utf8', windowsHide: true })
-      if (g.status !== 0) throw coded('Q574', `the work landed on ${name}, but gh pr create failed: ${(g.stderr || (g.error && g.error.message) || '').toString().trim()}`)
-      log((g.stdout || '').trim())
-    }
-    return { ok: true, landed: made.split('\n').filter(Boolean).length, tip: newTip, deletions }
   } finally {
     cleanup()
   }

@@ -212,6 +212,15 @@ This is refused rather than fixed for you because renaming silently is worse: if
   // A BRANCH ROOM (hive-branch.js): the link comes from the repo's git config, and the folder is
   // this participant's own, marked so git refuses to run in it. Resolved and refused BEFORE the old
   // session is torn down, for the same reason as the name check above.
+  // SINGLE IDENTITY PER MCP PROCESS (Q637). Some host apps (Antigravity, Cursor, Claude Desktop)
+  // run ONE shared MCP server process across all their agent windows and tabs. A second join with a
+  // different name while a session is live would silently usurp the first session, breaking chat
+  // identity and authorship attribution. Refused FIRST, before anything below touches the disk: the
+  // branch path marks the folder as not-a-checkout, and a refusal that has already written there is
+  // not "nothing was joined" (antigravity-3, 1 Nov).
+  if (session && session.name !== name) {
+    return `Q637 This Hivecode server is already in use by '${session.name}' in ${session.room} (${session.dir}). If you are a different agent, you are sharing one MCP server with it. Do not leave or rejoin; tell your person: add a second server entry (for example 'hivecode-2') in your app's MCP config and restart the app (docs/JOIN_WITH_AGENT.md). If you ARE '${session.name}' and mean to switch, join again with the name '${session.name}'.\n\nNothing was joined and your current session is untouched.`
+  }
   let branchCtx = null
   if (branch) {
     const untouched = '\n\nNothing was joined and your current session is untouched.'

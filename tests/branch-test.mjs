@@ -236,6 +236,16 @@ try {
     HOOKS.every((h) => fs.existsSync(path.join(hookDir, h))) && own.code !== 0 && /the developer hook ran/.test(own.err) && g(project, 'config', '--get', 'core.hooksPath').code !== 0, own.err.slice(0, 120))
   for (const h of HOOKS) fs.rmSync(path.join(hookDir, h))
 
+  // THE SECOND RUN IS THE ONE THAT PUSHES. Measured 1 Nov 2026 (antigravity-3): the branch output
+  // suggests `pr <name>` to look first, then `--pr` to push and open the PR. After a plain `pr` has
+  // landed everything, `pr --push` found nothing new to land and returned 0 BEFORE pushing: success
+  // printed, nothing pushed. A local bare origin, so nothing leaves this machine.
+  const origin = path.join(tmp, 'origin.git')
+  g(tmp, 'init', '-q', '--bare', origin)
+  g(project, 'remote', 'add', 'origin', origin)
+  const e5c = await cli(project, 'pr', 'feat', '--push')
+  T('E5c pr --push after a plain pr really pushes: the origin has the branch at its tip', e5c.code === 0 && g(origin, 'rev-parse', 'feat').out === g(project, 'rev-parse', 'feat').out, e5c.out.split('\n').slice(-2).join(' | '))
+
   const wtFeat = path.join(tmp, 'feat-wt')
   g(project, 'worktree', 'add', '-q', wtFeat, 'feat')
   fs.writeFileSync(path.join(dirA, 'app.js'), 'export const answer = 43\n')

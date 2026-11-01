@@ -62,7 +62,9 @@ fs.mkdirSync(chromeDir, { recursive: true })
 console.log(`Starting local relay on port ${PORT}...`)
 const relayProc = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off' },
+  // queue: the hosted relay's mode. A walk on a relay that enforces nothing cannot see what a
+  // claim does to a restore.
+  env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off', HIVE_ENFORCE_CLAIMS: 'queue' },
   stdio: ['ignore', 'pipe', 'pipe']
 })
 let relayOut = ''
@@ -93,6 +95,9 @@ await sleep(1000)
 fs.writeFileSync(path.join(agentDir, 'app.js'), 'console.log("version 1 - original");\n')
 fs.writeFileSync(path.join(agentDir, 'config.json'), '{"port": 8080, "env": "dev"}\n')
 
+// As agents run it: hive-mcp.js turns signed provenance and the fork gate on by default.
+process.env.HIVE_PROVENANCE = 'on'
+process.env.HIVE_FORK_GATE = 'on'
 const agentSync = startSync({
   relay: RELAY_URL,
   room: ROOM,
@@ -116,6 +121,20 @@ agentSync.captureSnapshot('config.json', '{"port": 8080, "env": "dev"}\n', 'Dev'
 agentSync.edit('config.json', '{"port": 9090, "env": "prod"}\n', 'port change')
 agentSync.captureSnapshot('config.json', '{"port": 9090, "env": "prod"}\n', 'Alice-AI', { force: true, kind: 'auto', label: 'port change' })
 await sleep(1200)
+
+// A file whose restore points the ENGINE makes, with none made by hand: Dev creates it, Alice-AI
+// edits it, and the engine snapshots the state just before her edit, attributed to her. The two
+// files above carry hand-made points holding the state AFTER her edit, so a revert of them restores
+// what is already there; only this one exercises a revert that has to write.
+fs.writeFileSync(path.join(hostDir, 'limits.js'), 'export const RATE = 100\n')
+await sleep(3000)
+agentSync.claim('limits.js', 'raise the limit')
+fs.writeFileSync(path.join(agentDir, 'limits.js'), 'export const RATE = 250 // Alice\n')
+await sleep(3000)
+// She is STILL HOLDING it when the human reverts her, as Ben was on 30 Oct: the agent being reverted
+// is usually the one mid-work. On the hosted relay (queue) a write into a held file waits for the
+// release, and the control room's short-lived connection closed before that.
+await sleep(1000)
 
 hostSync.say('Welcome to the room!', { by: 'Dev' })
 agentSync.say('Alice-AI online. Ready.', { by: 'Alice-AI' })
@@ -380,9 +399,23 @@ try {
 
   T('revert confirmation names file count and exact files',
     dialogEvents.length > 0 &&
-    /Revert Alice-AI's changes to 2 files: app\.js, config\.json\?[\s\S]*Each goes back to before Alice-AI's first edit\. Their current versions are saved first\./.test(dialogEvents[0].message),
+    /Revert Alice-AI's changes to 3 files: [a-z.]+, [a-z.]+, [a-z.]+\?[\s\S]*Each goes back to before Alice-AI's first edit\. Their current versions are saved first\./.test(dialogEvents[0].message) &&
+    ['app.js', 'config.json', 'limits.js'].every((f) => dialogEvents[0].message.includes(f)),
     dialogEvents[0] ? dialogEvents[0].message : 'no dialog')
   T('chat announces revert across files', s7.hasRevertChat, s7.lastChat)
+
+  // THE FILES, NOT THE MESSAGE. Measured 30 Oct 2026: the room said "reverted Ben's changes across
+  // 1 file(s)" and both folders still held Ben's edit 15 s later. Every check above reads the page;
+  // none read a file.
+  console.log('\n# Step 7b: the revert really reverted the files')
+  await sleep(4000)
+  const limAgent = fs.readFileSync(path.join(agentDir, 'limits.js'), 'utf8')
+  const limHost = fs.readFileSync(path.join(hostDir, 'limits.js'), 'utf8')
+  T('Step 7b: limits.js is back to before Alice-AI\'s edit in her folder', limAgent === 'export const RATE = 100\n', JSON.stringify(limAgent))
+  T('Step 7b: ...and in the host\'s folder', limHost === 'export const RATE = 100\n', JSON.stringify(limHost))
+  // A file already at its restore point was not reverted by anyone, and must not be counted as if it was.
+  const s7b = await evalJS(`(() => [...document.querySelectorAll('#chat .cmsg .ctxt')].map(m => m.textContent.trim()).filter(m => m.includes("reverted Alice-AI's changes")).pop() || '')()`)
+  T('Step 7b: the revert message counts only files that changed', !/across 3 file/.test(s7b), s7b)
 
   // ─── STEP 8: SECRET GATE IN CONTROL ROOM CHAT ────────────────────────────
   console.log('\n# Step 8: Secret gate in Control Room chat send box')

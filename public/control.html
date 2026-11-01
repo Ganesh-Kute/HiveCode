@@ -756,10 +756,28 @@ async function openFileDoc(file){
   await new Promise((res)=>{let d=false;const f=()=>{if(d)return;d=true;res()};fp.on('sync',(s)=>s&&f());setTimeout(f,6000)})
   return{fdoc,fp,text:fdoc.getText('content'),snap:fdoc.getMap('snap')}
 }
-async function restoreCore(id,file){
+// Who holds a file right now (a live claim), or ''.
+function holderOf(file){
+  try{const c=window._h.doc.getMap('claims').get(file);if(!c||!c.by)return'';const ttl=c.ttl||600000;return Date.now()-(c.at||0)<ttl?c.by:''}catch{return''}
+}
+// A RESTORE IS DONE WHEN THE ROOM HAS IT, NOT WHEN THIS PAGE WROTE IT. Measured 30 Oct 2026: the agent
+// being reverted still held the file, the relay (queue mode) held the write until a release, and this
+// page's short-lived connection closed first, so the write was dropped. The room was told "restored"
+// and "reverted across 1 file(s)" and both folders kept the agent's edit. Now: a claim held by the
+// agent being reverted is released first (that is the human overriding it); one held by anybody else
+// refuses this file and says who; and success is announced only after a fresh read shows the content.
+async function restoreCore(id,file,{releaseFrom=''}={}){
+  const holder=holderOf(file)
+  if(holder&&holder!==me){
+    if(!releaseFrom||holder!==releaseFrom)return{error:'held',by:holder}
+    try{window._h.doc.getMap('claims').delete(file)}catch{}
+    await new Promise((r)=>setTimeout(r,800)) // the release has to reach the relay before the write does
+    if(holderOf(file)===holder)return{error:'held',by:holder}
+  }
   const h=await openFileDoc(file)
+  let entry,wrote=false
   try{
-    const entry=h.snap.get(id)
+    entry=h.snap.get(id)
     if(!entry||entry.content==null)return{error:'gone'}
     const cur=h.text.toString()
     if(cur===entry.content)return{ok:true,unchanged:true}
@@ -767,15 +785,27 @@ async function restoreCore(id,file){
     // save the CURRENT state first (so this restore is itself undoable), then write the old content back
     h.fdoc.transact(()=>{h.snap.set(rid,{id:rid,file,by:me,at,ts:now,content:cur,churn:'',kind:'restore',label:'before restore to '+entry.at});h.text.delete(0,h.text.length);h.text.insert(0,entry.content)})
     window._h.history.set(rid,{id:rid,file,by:me,at,ts:now,churn:'',kind:'restore',label:'before restore to '+entry.at})
-    window._h.chat.push([{by:me,kind:meKind,at,text:`↩ ${me} restored ${file} to ${entry.at}${entry.by&&entry.by!==me?` (state before ${entry.by}'s edit)`:''}.`}])
+    wrote=true
     await new Promise((r)=>setTimeout(r,900)) // let the change flush to the relay before disconnecting
-    return{ok:true}
   }finally{try{h.fp.destroy();h.fdoc.destroy()}catch{}}
+  if(!wrote)return{error:'gone'}
+  // Read it back over a NEW connection: only the relay's copy counts.
+  let landed=false
+  for(let i=0;i<3&&!landed;i++){
+    const v=await openFileDoc(file)
+    try{landed=v.text.toString()===entry.content}finally{try{v.fp.destroy();v.fdoc.destroy()}catch{}}
+    if(!landed)await new Promise((r)=>setTimeout(r,1200))
+  }
+  if(!landed)return{error:'not-landed'}
+  window._h.chat.push([{by:me,kind:meKind,at:tstr(),text:`↩ ${me} restored ${file} to ${entry.at}${entry.by&&entry.by!==me?` (state before ${entry.by}'s edit)`:''}.`}])
+  return{ok:true}
 }
 async function restoreSnap(id,file){
   if(!confirm(`Restore ${file} to this point?\n\nThe current version is saved first, so you can undo this.`))return
   const r=await restoreCore(id,file)
-  if(r&&r.error)alert('That restore point is no longer available (it may have aged out).')
+  if(r&&r.error==='held')alert(`${file} is held by ${r.by}, so a restore would be dropped. Ask ${r.by} to release it (or pause them), then restore.`)
+  else if(r&&r.error==='not-landed')alert(`The restore of ${file} did not reach the room, so nothing changed. Try again in a moment.`)
+  else if(r&&r.error)alert('That restore point is no longer available (it may have aged out).')
 }
 
 // ── Substrate provenance ────────────────────────────────────────────────────
@@ -851,8 +881,19 @@ async function revertAgent(who){
   const flist=files.slice(0,5).join(', ')+(files.length>5?` and ${files.length-5} more`:'')
   const fcount=files.length===1?'1 file':`${files.length} files`
   if(!confirm(`Revert ${who}'s changes to ${fcount}: ${flist}?\n\nEach goes back to before ${who}'s first edit. Their current versions are saved first.`))return
-  let n=0;for(const [file,m] of earliest){const r=await restoreCore(m.id,file);if(r&&r.ok)n++}
-  window._h.chat.push([{by:me,kind:meKind,at:tstr(),text:`⏮ ${me} reverted ${who}'s changes across ${n} file(s).`}])
+  // Count what really happened: a file already at its restore point was not reverted by anyone.
+  const done=[],same=[],failed=[]
+  for(const [file,m] of earliest){
+    const r=await restoreCore(m.id,file,{releaseFrom:who})
+    if(r&&r.ok&&!r.unchanged)done.push(file)
+    else if(r&&r.ok)same.push(file)
+    else failed.push(file+(r&&r.error==='held'?` (held by ${r.by})`:r&&r.error==='not-landed'?' (did not reach the room)':' (restore point gone)'))
+  }
+  const parts=[`⏮ ${me} reverted ${who}'s changes in ${done.length} file(s)${done.length?': '+done.join(', '):''}.`]
+  if(same.length)parts.push(`Already at that point: ${same.join(', ')}.`)
+  if(failed.length)parts.push(`NOT reverted: ${failed.join(', ')}.`)
+  window._h.chat.push([{by:me,kind:meKind,at:tstr(),text:parts.join(' ')}])
+  if(failed.length)alert(`Not reverted: ${failed.join(', ')}.`)
 }
 
 $('send').addEventListener('click',sendChat)

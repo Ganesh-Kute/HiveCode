@@ -803,7 +803,18 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (hasConflictMarkers(disk)) return false      // half-edited conflict block — not an authored state
     if (!SHARE_SECRETS && newSecrets(disk, fe.text.toString()).length) return false // the ledger is shared: a key stays out of it
     stampIntent(relPath, base, disk)                // into the provenance DAG NOW — clobber-proof
+    // What this edit was made against, kept as a short HISTORY, not just the last one: a second edit
+    // while the first is still held would otherwise record the first (which the room never had) as
+    // the base, and a rejoin merging against it reverts the first edit. The rejoin picks the newest
+    // base the room's receipts prove it held.
+    const hist = capturedFrom.get(relPath) || []
+    if (hist[hist.length - 1] !== base) hist.push(base)
+    // Drop from the middle, never the oldest: while the room is refusing every write, the oldest is
+    // the only base the room actually held (antigravity-3: nine saves while held evicted it).
+    while (hist.length > FROM_KEEP) hist.splice(1, 1)
+    capturedFrom.set(relPath, hist)
     shadow.set(relPath, disk)                       // the captured state is the new baseline
+    saveShadowSoon()
     return true
   }
   // Build ONE clean N-way conflict block from a common parent and N divergent versions:
@@ -1686,6 +1697,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // Per-file pre-serialized JSON fragments: relPath -> '"path": "content"'.
   // Assembled into v:1 JSON in saveShadow() without re-stringifying all files, cutting save CPU by ~6.6x.
   const shadowFragments = new Map()
+  // relPath -> the bases our recent captured edits were made against, oldest first. Saved with the
+  // shadow, because the shadow alone cannot tell "the room has this" from "we sent it and it never
+  // arrived".
+  const FROM_KEEP = 8
+  const capturedFrom = new Map()
+  const priorFrom = new Map()
+  const keptUnsent = new Map() // relPath -> file mtime when an unsent edit was kept; frozen until saved again
   const origShadowSet = shadow.set.bind(shadow)
   const origShadowDelete = shadow.delete.bind(shadow)
   shadow.set = (k, v) => {
@@ -2088,6 +2106,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (const [k, v] of Object.entries(o.files || {})) {
         if (typeof k === 'string' && typeof v === 'string' && isSafeRelPath(k)) priorShadow.set(k, v)
       }
+      // Carried forward, not just read: an edit re-sent after a rejoin can be lost the same way
+      // again, and the next rejoin needs the same base.
+      for (const [k, v] of Object.entries(o.from || {})) {
+        const hist = (Array.isArray(v) ? v : [v]).filter((s) => typeof s === 'string').slice(-FROM_KEEP)
+        if (typeof k === 'string' && hist.length && isSafeRelPath(k)) { priorFrom.set(k, hist); capturedFrom.set(k, hist.slice()) }
+      }
       log(`[hive] recovered ${priorShadow.size} file ancestor(s) from the previous session`)
     } catch { /* absent or unreadable: no ancestor, same as before this existed */ }
   }
@@ -2105,7 +2129,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // { v: 1, room, files }, preserving the atomic write-then-rename.
       const parts = []
       for (const frag of shadowFragments.values()) parts.push(frag)
-      const payload = `{"v":1,"room":${JSON.stringify(room)},"files":{${parts.join(',')}}}`
+      const from = []
+      for (const [k, v] of capturedFrom) {
+        const hist = v.filter((s) => typeof s === 'string' && s.length <= MAX_BYTES)
+        if (hist.length) from.push(JSON.stringify(k) + ':' + JSON.stringify(hist))
+      }
+      const payload = `{"v":1,"room":${JSON.stringify(room)},"files":{${parts.join(',')}},"from":{${from.join(',')}}}`
       fs.writeFileSync(tmp, payload)
       fs.renameSync(tmp, path.join(ROOT, SHADOW_FILE))
     } catch (e) {
@@ -2121,6 +2150,24 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // the bases point at roomText, so the next normal edit merges against the room's copy. One function
   // for all three race paths -- first contact, a dead heat, and a dead heat the peer already resolved
   // -- so their recovery and their announcement cannot drift apart.
+  // An edit the room never received, and we no longer know what it was made against: re-sending
+  // it as a diff over the room's copy could revert someone else's change, so it is not sent. It is
+  // kept on disk and in the file's history, and said out loud, because the alternative was silence.
+  // Not "save it again": the base is now the disk, so an unchanged save is a no-op and sends nothing
+  // (Antigravity, 1 Nov). hive_edit writes the copy into the room outright. Both copies go into the
+  // file's history so the two can be compared before choosing.
+  function keepUnsent(relPath, disk, roomText) {
+    captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local edit that never reached the room (kept)' })
+    if (typeof roomText === 'string' && roomText !== disk) captureSnapshot(relPath, roomText, name, { force: true, kind: 'manual', label: 'room copy when the local edit was kept' })
+    bases.set(relPath, disk); forkBases.set(relPath, disk)
+    let mt = 0; try { mt = fs.statSync(path.join(ROOT, relPath)).mtimeMs } catch { }
+    keptUnsent.set(relPath, mt)
+    try {
+      say(`⚠ ${relPath}: ${name}'s last edit never reached the room — it was held while someone else had the file, and ${name}'s connection dropped. ` +
+        `The room's copy was NOT applied over it: it is kept on disk, and both copies are in the file's history. Nothing more syncs for this file until ` +
+        `${name} saves it again; that save sends it as it is, replacing the room's copy. Claim ${relPath} first.`)
+    } catch { }
+  }
   function refuseCreationRace(relPath, why, disk, roomText) {
     conflicted.add(relPath)
     captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local draft preserved (creation-race refused)' })
@@ -2338,6 +2385,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
+    // A KEPT UNSENT EDIT IS FROZEN until its author saves the file again. Merging it against the
+    // room in either direction would decide something nobody decided: the room's next change would
+    // be written over it, and an unchanged save merged against itself pulled the room's old copy over
+    // it (antigravity-3, 1 Nov). The next save is the decision: it sends the file as it is.
+    if (keptUnsent.has(relPath)) {
+      if (origin !== 'local') return
+      let mt = 0; try { mt = fs.statSync(full).mtimeMs } catch { }
+      if (mt === keptUnsent.get(relPath)) return
+      keptUnsent.delete(relPath)
+      const rt = fe.text.toString()
+      captureSnapshot(relPath, rt, name, { force: true, kind: 'manual', label: 'room copy replaced by a kept edit' })
+      bases.set(relPath, rt); forkBases.set(relPath, rt); shadow.set(relPath, rt)
+      try { say(`↻ ${relPath}: ${name} saved the kept copy again, so it now replaces the room's copy (the room's copy is in the file's history).`) } catch { }
+      // fall through: merged against the room's copy, ours goes out whole and signed like any edit
+    }
     // Before anything below can publish this disk's content, merge it, or stamp it into the ledger:
     // a key on disk that the room does not have holds the whole file here (heldForSecret).
     {
@@ -2581,7 +2643,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // this room, we DO have a common ancestor and the adopt below is simply wrong: the
       // local copy may be newer than the room's (edited while disconnected, or the room
       // came back stale). This is the data-loss case that was seen live.
-      const anc = priorShadow.get(relPath)
+      let anc = priorShadow.get(relPath)
+      // ...unless the room never got it. Capturing a local edit moves the ancestor to the edited
+      // bytes BEFORE the relay accepts them. A write held behind someone else's claim
+      // (HIVE_ENFORCE_CLAIMS=queue) is discarded when its writer disconnects, so on rejoin
+      // disk === ancestor while the room still has the old copy, and adopting it deleted the edit
+      // from the room AND from disk, silently (26 Oct). Signed receipts say whether the room ever
+      // held these bytes; with none (provenance off) the old behaviour stands. When it never did,
+      // the real ancestor is what the edit was made against, and the merge below re-sends it.
+      let unsent = false
+      const rcpts = fe.ledger ? fe.ledger.toArray() : []
+      if (anc !== undefined && disk !== null && disk === anc &&
+          accountFor({ rel: relPath, branchText: disk, roomText: docText, receipts: rcpts }).state === DIVERGED) {
+        unsent = true
+        // The newest base the room provably held. An older true ancestor merges safely; a newer
+        // one the room never had (an earlier held edit) would read our own edit as the room
+        // deleting it.
+        const hist = priorFrom.get(relPath) || []
+        let from
+        for (let i = hist.length - 1; i >= 0 && from === undefined; i--) {
+          const st = accountFor({ rel: relPath, branchText: hist[i], roomText: docText, receipts: rcpts }).state
+          if (st === DESCENDS || st === IDENTICAL) from = hist[i]
+        }
+        if (from === undefined || from === disk) { keepUnsent(relPath, disk, docText); return }
+        anc = from
+      }
       if (anc !== undefined && disk !== null) {
         if (disk === anc) {
           // Local is exactly what we last wrote — nobody touched it while we were away, so
@@ -2599,7 +2685,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (rj.conflict) conflicted.add(relPath)
         bases.set(relPath, rj.text); forkBases.set(relPath, rj.text); shadow.set(relPath, rj.text)
         if (!inManifest(relPath)) queueManifestSet(relPath)
-        try { say(`⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`) } catch { }
+        try {
+          say(unsent
+            ? `⚠ ${relPath}: ${name}'s last edit never reached the room — it was held while someone else had the file, and ${name}'s connection dropped. ` +
+              `It has been sent again, merged with the room's copy${rj.conflict ? ', and CONFLICT markers need resolving' : ''}; if the file is still claimed, it waits for the release. Pre-merge local copy is in the file's history.`
+            : `⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`)
+        } catch { }
         return
       }
       // Genuinely no ancestor (a clone-then-join, or joining with an existing checkout).
@@ -2717,6 +2808,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       } else {
         res = icrMerge3(fork, disk, docText, relPath)
         reAdded = !res.conflict && res.text !== disk // we restored remote lines a stale write had dropped
+        // OPEN (1 Nov 2026): a clean handover onto the same lines still shows markers. Four rounds of
+        // rules that decided it from the texts (a claim-time fork, who-holds-it, line counts, shared
+        // tokens) each silently deleted someone's work in a case antigravity-3 then built: from the
+        // four texts, "B replaced A's change" and "B wrote from a copy that predates it" can be
+        // identical. Markers lose nothing; a wrong guess does. The sound fix needs the agent to say
+        // which version it edited (hive_edit carrying its base), so nothing here guesses.
       }
     } else {
       res = icrMerge3(base, disk, docText, relPath) // incoming remote change merged into our working copy

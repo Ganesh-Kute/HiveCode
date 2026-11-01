@@ -372,7 +372,7 @@ function writeBlockReason(conn) {
     if (state.get(`${who}_status`) === 'LOCKED' || state.get(`${who}_locked`) === 'true') return { reason: 'DCO-locked', permanent: false }
     const claim = baseDoc.getMap('claims').get(filePath)
     const live = claim && (!claim.ttl || (claim.at || 0) + claim.ttl > Date.now())
-    if (live && claim.by && claim.by !== who) return { reason: `held by ${claim.by}`, permanent: false }
+    if (live && claim.by && claim.by !== who) return { reason: `held by ${claim.by}`, permanent: false, holder: claim.by, until: claim.ttl ? (claim.at || 0) + claim.ttl : 0 }
   } catch { return null }
   return null
 }
@@ -416,14 +416,14 @@ function installWriteGate(conn) {
           // TEMPORARILY without corrupting the history -- and it is also the better promise:
           // being stopped for a minute costs the agent nothing once you let it go.
           const mode = block.paused ? 'queue' : ENFORCE_CLAIMS
-          if (mode === 'block') return // drop the write
+          if (mode === 'block') { refusedNotice(conn, block); return } // drop the write
           // A PERMANENT block is never queued. Queueing exists so a legitimate write that
           // arrived early is not lost; a write to an unwritable path is not early, it is
           // wrong, and replaying it when the queue flushes would land exactly the damage the
           // flag exists to prevent. Drop it even in queue mode, and say so in the audit.
           if (mode === 'queue') {
-            if (block.permanent) { audit('write-dropped-permanent', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason }); return }
-            queueWrite(conn, data, rest); return // hold + replay later
+            if (block.permanent) { audit('write-dropped-permanent', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason }); refusedNotice(conn, block); return }
+            queueWrite(conn, data, rest, block); return // hold + replay later
           }
           // 'warn' falls through (allowed, logged only)
         }
@@ -433,11 +433,51 @@ function installWriteGate(conn) {
   }
 }
 
+// A HELD OR REFUSED WRITE IS SAID IN THE ROOM. It used to be known only to this process's audit
+// log: the writer's own client said "synced" while its edit sat here, the claim holder never heard
+// someone was waiting, and on 26 Oct 2026 an agent wrote into another's claimed files for fifteen
+// minutes with the first sign being the wrong name on a commit. Names are @-mentioned so the
+// writer (and the holder) are woken, not just logged. Said once per hold, not once per keystroke.
+function heldSay(conn, text) {
+  try {
+    const bd = getYDoc(baseRoomOf(conn._hive.room))
+    if (bd) bd.getArray('chat').push([{ by: 'relay', kind: 'system', at: new Date().toTimeString().slice(0, 8), text }])
+  } catch { /* a notice is never worth failing a write over; the audit line is still written */ }
+}
+const whyHeld = (block) => (block.holder ? `@${block.holder} holds it` : block.reason)
+
+// A dropped write (block mode, or a path the room has ruled unwritable) is said once per file per
+// connection: the writer keeps editing a copy the room will never take, so it has to be told.
+function refusedNotice(conn, block) {
+  const file = pathOf(conn._hive.room)
+  if (!conn._refusedSaid) conn._refusedSaid = new Set()
+  if (conn._refusedSaid.has(file)) return
+  conn._refusedSaid.add(file)
+  heldSay(conn, `⛔ @${conn._hive.identity.name}: your edit to ${file} was refused (${whyHeld(block)}). The room does not have it; your folder does.`)
+}
+
+// When the hold is a claim with a ttl, its expiry changes no map, so nothing would ever call
+// flushQueue: the edit was held forever. Wake up when it is due instead.
+function armExpiry(conn, block) {
+  if (conn._wqTimer) { clearTimeout(conn._wqTimer); conn._wqTimer = null }
+  if (!block || !block.until) return
+  conn._wqTimer = setTimeout(() => { conn._wqTimer = null; flushQueue(conn) }, Math.max(0, block.until - Date.now()) + 250)
+  if (conn._wqTimer.unref) conn._wqTimer.unref()
+}
+
 // Buffer a blocked write and start watching for the block to clear.
-function queueWrite(conn, data, rest) {
+function queueWrite(conn, data, rest, block = {}) {
   if (!conn._wq) { conn._wq = []; attachFlush(conn) }
-  if (conn._wq.length >= QUEUE_CAP) { audit('write-queue-overflow', { room: conn._hive.room, who: conn._hive.identity.name, cap: QUEUE_CAP }); return } // safety valve: drop past the cap
+  const who = conn._hive.identity.name
+  const file = pathOf(conn._hive.room)
+  if (conn._wq.length >= QUEUE_CAP) {
+    audit('write-queue-overflow', { room: conn._hive.room, who, cap: QUEUE_CAP }) // safety valve: drop past the cap
+    if (!conn._wqOverflowSaid) { conn._wqOverflowSaid = true; heldSay(conn, `⚠ @${who}: more than ${QUEUE_CAP} edits to ${file} were held, and the ones past that were DROPPED. Your folder still has them.`) }
+    return
+  }
   conn._wq.push({ data, rest })
+  if (conn._wq.length === 1) heldSay(conn, `⏸ @${who}: your edit to ${file} is held: ${whyHeld(block)}. It lands by itself when that clears; keep your copy until then.`)
+  armExpiry(conn, block)
 }
 
 // Observe the base doc's claims + swarm_state; when either changes, try to flush.
@@ -451,16 +491,34 @@ function attachFlush(conn) {
   const onChange = () => flushQueue(conn)
   claims.observe(onChange); state.observe(onChange); controls.observe(onChange)
   conn._wgDetach = () => { try { claims.unobserve(onChange); state.unobserve(onChange); controls.unobserve(onChange) } catch {} }
-  conn.on('close', () => { if (conn._wgDetach) conn._wgDetach() })
+  if (conn._wqCloseHooked) return
+  conn._wqCloseHooked = true
+  conn.on('close', () => {
+    if (conn._wgDetach) conn._wgDetach()
+    if (conn._wqTimer) { clearTimeout(conn._wqTimer); conn._wqTimer = null }
+    // Held edits live only on this connection; when it goes, the room never gets them.
+    if (conn._wq && conn._wq.length) {
+      const who = conn._hive.identity.name
+      audit('write-queue-discarded', { room: conn._hive.room, who, count: conn._wq.length })
+      heldSay(conn, `⚠ @${who} left before ${pathOf(conn._hive.room)} was free: ${conn._wq.length} held edit(s) were NOT applied to the room. ${who}'s own folder still has them.`)
+      conn._wq = []
+    }
+  })
 }
 
 // If the connection is no longer blocked, replay its held writes in order.
 function flushQueue(conn) {
   if (!conn._wq || !conn._wq.length) return
-  if (writeBlockReason(conn)) return // still blocked — keep holding
-  const q = conn._wq; conn._wq = []
-  audit('write-queue-flush', { room: conn._hive.room, who: conn._hive.identity.name, count: q.length })
+  const block = writeBlockReason(conn)
+  if (block) { armExpiry(conn, block); return } // still blocked (a renewed claim moves its expiry) — keep holding
+  if (conn._wqTimer) { clearTimeout(conn._wqTimer); conn._wqTimer = null }
+  // null, not []: the observers are detached below, so the NEXT hold on this connection must
+  // attach them again. Left as [] (truthy), a second hold was never flushed by a release.
+  const q = conn._wq; conn._wq = null
+  const who = conn._hive.identity.name
+  audit('write-queue-flush', { room: conn._hive.room, who, count: q.length })
   for (const { data, rest } of q) { try { conn._wgHandler(data, ...rest) } catch {} }
+  heldSay(conn, `▶ ${who}'s held edit(s) to ${pathOf(conn._hive.room)} landed (${q.length}).`)
   if (conn._wgDetach) conn._wgDetach()
 }
 
