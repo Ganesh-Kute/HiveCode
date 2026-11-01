@@ -122,3 +122,36 @@ forever. Any failure at all — no room, unreadable file, bad JSON — allows th
 
 Other MCP clients get the same rules in their system prompt (the server returns them
 in `instructions` at handshake), but only Claude Code can enforce them.
+
+## Running two or more agents in the same app
+
+Host apps handle MCP server processes in one of two ways:
+
+- **Per-session (separate process per chat/terminal):**
+  - **Claude Code**: Each terminal CLI session (`claude`) spawns its own independent Node child process from `~/.claude.json`. Multiple Claude Code sessions never share an MCP server process.
+- **Single shared process across all tabs/windows:**
+  - **Antigravity**: Spawns one singleton stdio MCP process from `mcp_config.json` managed by `language_server.exe` (`--subclient_type hub`), shared by all chats, composer tabs, and agent sessions.
+  - **Cursor**: [not checked] Centralized MCP server lifecycle.
+  - **Windsurf**: [not checked] Centralized MCP server lifecycle.
+  - **Claude Desktop**: [not checked] Centralized MCP server lifecycle.
+
+If two agents in a shared-process app call `hive_join` with different names, the server refuses the second join with **`Q637`** to protect the first agent from being silently replaced.
+
+To run two or more agents concurrently in a shared-process app (e.g. `frontend-bot` and `backend-bot`), register a second MCP server entry in your config pointing to the same runtime copy:
+
+```json
+{
+  "mcpServers": {
+    "hivecode": {
+      "command": "node",
+      "args": ["<your home>/.hivecode/runtime/<version>/node_modules/hivecode-mcp/hive-mcp.js"]
+    },
+    "hivecode-2": {
+      "command": "node",
+      "args": ["<your home>/.hivecode/runtime/<version>/node_modules/hivecode-mcp/hive-mcp.js"]
+    }
+  }
+}
+```
+
+Restart your app. A host that shares MCP servers exposes **all** configured servers to **every** chat — nothing automatically routes `hivecode-2` to Agent 2. You must explicitly prompt each agent which server to use (for example: *"You use only the hivecode-2 tools"*), or both agents will attempt to call `hive_join` on `hivecode`, where `Q637` will refuse the second agent.
