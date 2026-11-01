@@ -259,13 +259,14 @@ export function verifyEntry(entry, { timeoutMs = 20000 } = {}) {
  * ~/.hivecode/runtime/<version> -- the npx cache is not a place to point a config at, because
  * npm prunes it and the config would break months later with nothing to connect it to setup.
  */
-export function installRuntime(home = os.homedir(), here = fileURLToPath(import.meta.url)) {
+export function installRuntime(home = os.homedir(), here = fileURLToPath(import.meta.url), { log } = {}) {
   const pkgDir = path.dirname(here)
   const nm = path.dirname(pkgDir)
   if (path.basename(nm) !== 'node_modules') return { mode: 'checkout', js: path.join(pkgDir, 'hive-mcp.js') }
   const dest = path.join(home, '.hivecode', 'runtime', VERSION)
   const js = path.join(dest, 'node_modules', 'hivecode-mcp', 'hive-mcp.js')
   if (fs.existsSync(js)) return { mode: 'installed', js, dir: dest, reused: true }
+  if (log) log(`  installing runtime under ${dest} (first run can take ~25s on Windows)...`)
   // ONLY the dependency closure is copied, never the whole node_modules around us: that would
   // be every global package on a machine where hivecode-mcp was installed with `npm i -g`.
   const closure = new Set()
@@ -379,7 +380,7 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
   if (!nv.ok) { log(`  note    "${name}" cannot be a room name (${nv.error.split('.')[0]}); using "${nv.suggested}".`); name = nv.suggested }
 
   let runtime
-  try { runtime = o.dryRun ? { mode: 'dry-run', js: path.join(home, '.hivecode', 'runtime', VERSION, 'node_modules', 'hivecode-mcp', 'hive-mcp.js') } : installRuntime(home) }
+  try { runtime = o.dryRun ? { mode: 'dry-run', js: path.join(home, '.hivecode', 'runtime', VERSION, 'node_modules', 'hivecode-mcp', 'hive-mcp.js') } : installRuntime(home, undefined, { log }) }
   catch (e) { log(`  FAILED  could not install the runtime under ${path.join(home, '.hivecode')}: ${e.message}`); return 1 }
   log(`  runtime   ${runtime.js}`)
   log(`  node      ${process.execPath}\n`)
@@ -547,6 +548,7 @@ export async function main(argv = [], { home = os.homedir(), log = console.log }
       }
     }
     log(`\n  Its files go in ${path.join(home, 'hivecode', '<room>', name)} unless you name a folder.`)
+    log(`  Two agents on one machine: open two Claude Code terminals, or pair two apps (GUI editors share one MCP process across tabs).`)
     // With a link, the room itself: its relay's Control Room with the link in the hash, so a person
     // never pastes wss:// into an address bar. Without one, the panel they paste a link into.
     const panel = (link && controlUrl(link)) || `${(process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY).replace(/^ws/, 'http').replace(/\/+$/, '')}/control`

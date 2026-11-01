@@ -160,7 +160,7 @@ const spanCheck = validateHtml(spanWrappedFakeHtml)
 T('P3 validator catches flag inside/after <span> tags', !spanCheck.ok && spanCheck.errors.some(e => e.includes('--fake-span-flag')))
 
 // P4: Public site pages check
-const targetPages = ['index.html', 'docs.html'].filter(f => fs.existsSync(path.join(PUBLIC, f)))
+const targetPages = ['index.html', 'start.html', 'docs.html'].filter(f => fs.existsSync(path.join(PUBLIC, f)))
 let totalCommands = 0
 let totalFlags = 0
 const siteErrors = []
