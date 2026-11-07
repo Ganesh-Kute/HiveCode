@@ -265,7 +265,22 @@ export class HiveSocket extends SocketShape {
     this._origin = origin
     const mode = transportMode()
     const pick = mode !== 'auto' ? mode : (decided.get(origin) || 'ws')
-    this._attach(pick === 'poll' ? new PollSocket(url, protocols) : new WS(url, protocols), pick)
+    this._attach(pick === 'poll' ? new PollSocket(url, protocols) : this._makeWS(url, protocols), pick)
+  }
+  /**
+   * A WebSocket that remembers whether a refusal came from the RELAY (it marks its own with
+   * X-Hive-Relay) or from something in the way. Antigravity's review, 7 Nov: without this, a bad token
+   * or a full room printed "this network refused a WebSocket" and opened a poll session to be refused
+   * again. The error and close that follow are the ones ws itself would emit.
+   */
+  _makeWS(url, protocols) {
+    const ws = new WS(url, protocols)
+    ws.on('unexpected-response', (req, res) => {
+      this._relayRefused = !!(res.headers && res.headers['x-hive-relay'])
+      res.resume()
+      req.destroy(new Error(`Unexpected server response: ${res.statusCode}`))
+    })
+    return ws
   }
   get binaryType() { return this._bt }
   set binaryType(v) { this._bt = v; if (this._inner) this._inner.binaryType = v }
@@ -298,9 +313,14 @@ export class HiveSocket extends SocketShape {
   async _fallBackOrFail(closeEv) {
     const early = this._early
     const status = statusOf(early)
-    const networkInTheWay = status != null || proxyConfigured()
-    if (networkInTheWay && this._origin && !this._closedByUser && await offersPoll(this._origin)) {
-      if (this._closedByUser) return
+    const networkInTheWay = !this._relayRefused && (status != null || proxyConfigured())
+    let offers = false
+    if (networkInTheWay && this._origin && !this._closedByUser) {
+      this._probing = true
+      try { offers = await offersPoll(this._origin) } finally { this._probing = false }
+    }
+    if (this._closedByUser) return // close() already settled it (below)
+    if (offers) {
       if (!reported.has(this._origin)) {
         reported.add(this._origin)
         console.error(`[hivecode] this network refused a WebSocket to ${this._origin}${status ? ` (HTTP ${status})` : ''}; using HTTPS long-poll instead. Everything works the same, a little slower.`)
@@ -313,12 +333,20 @@ export class HiveSocket extends SocketShape {
     fire(this, 'close', closeEv)
   }
   send(data) { return this._inner.send(data) }
-  close(code, reason) {
+  close(code = 1000, reason = '') {
     this._closedByUser = true
-    if (this.readyState === CONNECTING && !this._inner) { this.readyState = CLOSED; return }
+    if (this._probing || (this.readyState === CONNECTING && !this._inner)) {
+      // Mid-switch the WebSocket is already gone and no poll socket exists yet: settle it here,
+      // once, as a WebSocket closed while connecting would.
+      if (this.readyState === CLOSED) return
+      this.readyState = CLOSED
+      setImmediate(() => fire(this, 'close', { type: 'close', code, reason, wasClean: true, target: this }))
+      return
+    }
     try { this._inner.close(code, reason) } catch { }
   }
   terminate() {
+    if (this._probing) return this.close(1006, 'terminated')
     this._closedByUser = true
     try { this._inner.terminate ? this._inner.terminate() : this._inner.close() } catch { }
   }

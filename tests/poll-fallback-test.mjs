@@ -11,6 +11,7 @@ import os from 'os'
 import path from 'path'
 import net from 'net'
 import http from 'http'
+import crypto from 'crypto'
 import { spawn } from 'child_process'
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
@@ -63,7 +64,17 @@ function startProxy(relayPort, faults = {}) {
       })()
     })
   })
-  server.on('upgrade', (req, socket) => { seen.push(`UPGRADE ${req.url.split('?')[0]}`); socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nWebSocket upgrades are not allowed') })
+  server.on('upgrade', (req, socket, head) => {
+    seen.push(`UPGRADE ${req.url.split('?')[0]}`)
+    if (!faults.passUpgrades) return socket.end('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nWebSocket upgrades are not allowed')
+    // Pass-through: the upgrade reaches the relay, so the RELAY's own answer comes back.
+    const up = net.connect(relayPort, '127.0.0.1', () => {
+      up.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n` + Object.entries(req.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') + '\r\n\r\n')
+      if (head && head.length) up.write(head)
+      socket.pipe(up); up.pipe(socket)
+    })
+    up.on('error', () => socket.destroy()); socket.on('error', () => up.destroy())
+  })
   return new Promise((r) => server.listen(0, () => r({ port: server.address().port, seen, server, faults: () => ({ droppedRecv, duplicatedSend }) })))
 }
 
@@ -143,6 +154,38 @@ try {
   const t4 = await arrives(F.dir, 'e.js', 'export const e = 1\n')
   ok('C4 HIVE_TRANSPORT=http: two clients on long-poll with no proxy at all still sync', t4 !== null, `${t4} ms`)
   delete process.env.HIVE_TRANSPORT
+
+  console.log('\n# D. the relay\'s own refusal, and closing mid-switch (Antigravity\'s review)')
+  const RP4 = await free()
+  await startRelay(RP4, { HIVE_AUTH_MODE: 'required', HIVE_JWT_SECRET: crypto.randomBytes(24).toString('hex') })
+  const proxyE = await startProxy(RP4, { passUpgrades: true })
+  const said = []
+  const origErr = console.error
+  console.error = (...a) => { said.push(a.join(' ')); origErr(...a) }
+  const G = startSync({ relay: `ws://127.0.0.1:${proxyE.port}`, room: room + '-g', dir: dirOf('Gus'), name: 'Gus', kind: 'ai', log: () => { } })
+  clients.push(G)
+  await sleep(6000)
+  console.error = origErr
+  const upg = proxyE.seen.filter((l) => l.startsWith('UPGRADE')).length, pq = proxyE.seen.filter((l) => l.includes('/_hive_poll/')).length
+  ok('D1 the relay refusing an upgrade itself (no token): no long-poll session is tried', upg > 0 && pq === 0, `${upg} upgrades, ${pq} poll requests`)
+  ok('D2 ...and nothing claims the network refused WebSockets', !said.some((l) => /this network refused/.test(l)))
+  if (T) {
+    const RP5 = await free()
+    await startRelay(RP5)
+    const proxyF = await startProxy(RP5)
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (u, o) => new Promise((r) => setTimeout(r, 1500)).then(() => realFetch(u, o)) // a slow /health
+    const closes = []
+    const sock = new T.HiveSocket(`ws://127.0.0.1:${proxyF.port}/${room}-h`)
+    sock.onclose = (ev) => closes.push(ev)
+    const t0 = Date.now()
+    while (!sock._probing && Date.now() - t0 < 5000) await sleep(10)
+    const probing = !!sock._probing
+    sock.close()
+    await sleep(2500)
+    globalThis.fetch = realFetch
+    ok('D3 close() while it checks /health: CLOSED at once, one close event, no poll session opened', probing && sock.readyState === 3 && closes.length === 1 && !proxyF.seen.some((l) => l.includes('/_hive_poll/open')), `probing=${probing} readyState=${sock.readyState} closes=${closes.length}`)
+  }
 } catch (e) {
   ok('no exception', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {

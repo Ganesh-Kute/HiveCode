@@ -68,6 +68,7 @@ class Session {
     this.nextOut = 1
     this.nextIn = 1          // client -> relay: the next frame number expected
     this.inbox = []          // frames received while paused, in order
+    this.inBytes = 0
     this.sendWaiters = []    // send requests answered only once their frames have drained
     this.waiter = null       // the held recv: { res, timer }
     this.paused = false
@@ -94,6 +95,7 @@ class Session {
     const { res, timer } = this.waiter
     this.waiter = null
     clearTimeout(timer)
+    this.touch()
     this.respondFrames(res)
   }
   respondFrames(res) {
@@ -133,16 +135,20 @@ class Session {
         return this.end(`a gap in the client's messages (expected ${this.nextIn}, got ${seq})`)
       }
       this.inbox.push(Buffer.from(frames[i]))
+      this.inBytes += frames[i].length
       this.nextIn++
     }
     this.sendWaiters.push(res)
+    // Bounded like the frames waiting FOR the client (Antigravity's review): a client pipelining sends
+    // while paused is closed, never buffered without limit. It resyncs on reconnect.
+    if (this.inBytes > this.maxQueueBytes) return this.end('Q432 kept sending past a paused read; it will reconnect and resync', 1013)
     this.drainIn()
   }
   drainIn() {
-    while (!this.ended && !this.paused && this.inbox.length) this.conn.emit('message', this.inbox.shift(), true)
+    while (!this.ended && !this.paused && this.inbox.length) { const b = this.inbox.shift(); this.inBytes -= b.length; this.conn.emit('message', b, true) }
     if (!this.paused && !this.inbox.length) {
       const waiting = this.sendWaiters; this.sendWaiters = []
-      for (const res of waiting) { res.writeHead(204, { 'cache-control': 'no-store' }); res.end() }
+      for (const res of waiting) empty(res)
     }
   }
   end(reason, code = 1000) {
@@ -155,7 +161,7 @@ class Session {
     if (this.waiter) { const { res, timer } = this.waiter; this.waiter = null; clearTimeout(timer); gone(res, why) }
     for (const res of this.sendWaiters) gone(res, why)
     this.sendWaiters = []
-    this.out = []; this.outBytes = 0; this.inbox = []
+    this.out = []; this.outBytes = 0; this.inbox = []; this.inBytes = 0
     this.onEnd(this, reason)
     setImmediate(() => this.conn.emit('close', this.endCode, Buffer.from(this.endReason).subarray(0, 120)))
   }
@@ -239,7 +245,7 @@ export function makePollHandler({ admit, track = () => { }, audit = () => { }, h
       if (op === 'send') {
         const first = Number(req.headers['x-hive-seq'])
         if (!Number.isInteger(first) || first < 1) return json(res, 400, { error: 'x-hive-seq' })
-        const body = await readBody(req, maxFrameBytes + 65536)
+        const body = await readBody(req, Math.max(maxFrameBytes, 4 * 1048576) + 65536) // a batch, not one frame: frames are capped per frame by the gates
         let frames
         try { frames = unpackFrames(body) } catch { return json(res, 400, { error: 'malformed frames' }) }
         return s.send(res, first, frames)
@@ -247,7 +253,7 @@ export function makePollHandler({ admit, track = () => { }, audit = () => { }, h
       if (op === 'close') {
         await readBody(req, 1024)
         s.end('the client closed')
-        res.writeHead(204, { 'cache-control': 'no-store' }); return res.end()
+        return empty(res)
       }
       return json(res, 404, { error: 'unknown' })
     } catch (e) {
