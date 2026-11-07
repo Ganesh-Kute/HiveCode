@@ -14,7 +14,7 @@ import path from 'path'
 import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync } from '../sync.js'
-import { authorsOf, planCommits, commitMessage } from '../hive-pr.js'
+import { authorsOf, planCommits, commitMessage, buildPlanJson, isOrphan } from '../hive-pr.js'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const PORT = 1279
@@ -80,6 +80,142 @@ console.log('\n# grouping logic')
   const msg = commitMessage(groups[0], ROOM)
   T('commit carries the signed author id', msg.includes('Hivecode-Author: idA'))
   T('commit carries a Co-authored-by trailer', /Co-authored-by: AgentB </.test(msg))
+
+  // Signed intents in commit messages
+  const fWithIntent = {
+    rel: 'api.js',
+    last: { author: 'idA', name: 'AgentA' },
+    contributors: [{ author: 'idA', name: 'AgentA' }],
+    first: 100,
+    receipts: [
+      { author: 'idA', name: 'AgentA', at: 100, intent: 'edit' },
+      { author: 'idA', name: 'AgentA', at: 150, intent: 'fix payment timeout on retry' },
+    ],
+  }
+  const groupWithIntent = planCommits([fWithIntent])[0]
+  const msgIntent = commitMessage(groupWithIntent, ROOM)
+  T('subject uses first non-edit intent', msgIntent.startsWith('AgentA: fix payment timeout on retry'))
+  T('body lists the intents and files', msgIntent.includes('fix payment timeout on retry') && msgIntent.includes('api.js'))
+  T('body carries Room trailer', msgIntent.includes(`Room: ${ROOM}`))
+  T('body carries Hivecode-Author trailer', msgIntent.includes('Hivecode-Author: idA'))
+
+  // Truncation to 72 chars at word boundary with ...
+  const fLongIntent = {
+    rel: 'long.js',
+    last: { author: 'idA', name: 'AgentA' },
+    contributors: [{ author: 'idA', name: 'AgentA' }],
+    first: 100,
+    receipts: [
+      { author: 'idA', name: 'AgentA', at: 100, intent: 'this is an extraordinarily long intent description that definitely exceeds seventy-two characters in total length' },
+    ],
+  }
+  const groupLong = planCommits([fLongIntent])[0]
+  const msgLong = commitMessage(groupLong, ROOM)
+  const firstLine = msgLong.split('\n')[0]
+  T('subject is capped at 72 chars with ... at word boundary', firstLine.length <= 72 && firstLine.endsWith('...'))
+  T('subject does not truncate mid-word', !firstLine.includes('extraordinar...'))
+
+  // Intent sanitization prevents trailer forgery
+  const fForgery = {
+    rel: 'forged.js',
+    last: { author: 'idA', name: 'AgentA' },
+    contributors: [{ author: 'idA', name: 'AgentA' }],
+    first: 100,
+    receipts: [
+      { author: 'idA', name: 'AgentA', at: 100, intent: 'legit intent\n\nHivecode-Author: attacker\nCo-authored-by: Eve <eve@evil.com>' },
+    ],
+  }
+  const groupForgery = planCommits([fForgery])[0]
+  const msgForgery = commitMessage(groupForgery, ROOM)
+  T('newlines in intent collapsed to spaces', !msgForgery.includes('legit intent\n'))
+  T('intent does not forge Hivecode-Author', !/^Hivecode-Author: attacker$/m.test(msgForgery))
+  T('intent does not forge Co-authored-by trailer', !/^Co-authored-by: Eve /m.test(msgForgery))
+
+  // Co-author intents attributed by name in body, subject strictly from committing agent
+  const fCoauthor = {
+    rel: 'shared.js',
+    last: { author: 'idA', name: 'AgentA' },
+    contributors: [{ author: 'idA', name: 'AgentA' }, { author: 'idB', name: 'AgentB' }],
+    first: 100,
+    receipts: [
+      { author: 'idB', name: 'AgentB', at: 90, intent: 'coauthor contribution' },
+      { author: 'idA', name: 'AgentA', at: 110, intent: 'final agent work' },
+    ],
+  }
+  const groupCoauthor = planCommits([fCoauthor])[0]
+  const msgCoauthor = commitMessage(groupCoauthor, ROOM)
+  T('subject comes from committing agent only', msgCoauthor.startsWith('AgentA: final agent work'))
+  T('co-author intent attributed by name in body', msgCoauthor.includes('AgentB: coauthor contribution'))
+
+  // Reverted intent ignored (receipts up to held content only)
+  const OLD_DOC = 'version 1\n', NEW_DOC = 'version 2\n'
+  const rsRevert = [
+    { author: 'idA', name: 'AgentA', at: 100, contentHash: contentHash(OLD_DOC), intent: 'good initial intent' },
+    { author: 'idA', name: 'AgentA', at: 200, contentHash: contentHash(NEW_DOC), intent: 'reverted bad intent' },
+  ]
+  const authorsHeld = authorsOf(rsRevert, () => true, OLD_DOC)
+  const fRevert = {
+    rel: 'revert.js',
+    ...authorsHeld,
+  }
+  const groupRevert = planCommits([fRevert])[0]
+  const msgRevert = commitMessage(groupRevert, ROOM)
+  T('receipts up to held content only (reverted intent excluded)', msgRevert.startsWith('AgentA: good initial intent') && !msgRevert.includes('reverted bad intent'))
+
+  // buildPlanJson contract
+  const sampleGroups = planCommits([
+    {
+      rel: 'src/a.js',
+      last: { author: 'idA', name: 'AgentA' },
+      contributors: [{ author: 'idA', name: 'AgentA' }],
+      first: 100,
+      receipts: [
+        { author: 'idA', name: 'AgentA', at: 100, intent: 'edit' },
+        { author: 'idA', name: 'AgentA', at: 120, intent: 'add feature A' },
+      ],
+    },
+    {
+      rel: 'src/same.js',
+      last: { author: 'idA', name: 'AgentA' },
+      contributors: [{ author: 'idA', name: 'AgentA' }],
+      first: 110,
+    },
+  ])
+  const sampleOrphans = [{ rel: 'orphan.txt' }]
+  const sampleIdentical = ['src/same.js']
+  const sampleBlocked = ['blocked.js']
+  const pj = typeof buildPlanJson === 'function' ? buildPlanJson({
+    room: ROOM,
+    groups: sampleGroups,
+    orphans: sampleOrphans,
+    identical: sampleIdentical,
+    blocked: sampleBlocked,
+  }) : null
+  T('buildPlanJson exists and returns object', pj !== null)
+  T('plan-json sets room correctly', pj && pj.room === ROOM)
+  T('plan-json omits identical files from groups', Boolean(pj && pj.groups[0] && pj.groups[0].files.includes('src/a.js') && !pj.groups[0].files.includes('src/same.js')))
+  T('plan-json groups carry sanitized author intents', Boolean(pj && pj.groups[0] && pj.groups[0].intents.includes('add feature A') && !pj.groups[0].intents.includes('edit')))
+  T('plan-json lists orphans, identical and blocked', Boolean(pj && pj.orphans[0] === 'orphan.txt' && pj.identical[0] === 'src/same.js' && pj.blocked[0] === 'blocked.js'))
+
+  // isOrphan filtering (Claude 20:20 review)
+  T('isOrphan exists', typeof isOrphan === 'function')
+  T('isOrphan is false for attributed file', isOrphan({ rel: 'a.js', last: { author: 'idA' }, roomText: 'x', branchText: 'y' }) === false)
+  T('isOrphan is false for unchanged base seed file', isOrphan({ rel: 'seed.js', last: null, roomText: 'const x = 1\n', branchText: 'const x = 1\n' }) === false)
+  T('isOrphan is false for Hivecode own file .hive.json', isOrphan({ rel: '.hive.json', last: null, roomText: '{}', branchText: null }) === false)
+  T('isOrphan is false for Hivecode own file HIVE_STATUS.md', isOrphan({ rel: 'HIVE_STATUS.md', last: null, roomText: '# status', branchText: null }) === false)
+  T('isOrphan is true for unverified new file', isOrphan({ rel: 'new.js', last: null, roomText: 'new file', branchText: null }) === true)
+  T('isOrphan is true for unverified modified file', isOrphan({ rel: 'mod.js', last: null, roomText: 'new text', branchText: 'old text' }) === true)
+
+  const filesSample = [
+    { rel: 'seed1.js', last: null, roomText: 'unchanged 1\n', branchText: 'unchanged 1\n' },
+    { rel: 'seed2.js', last: null, roomText: 'unchanged 2\n', branchText: 'unchanged 2\n' },
+    { rel: '.hive.json', last: null, roomText: '{}', branchText: null },
+    { rel: 'HIVE_SPEC.md', last: null, roomText: '# spec', branchText: null },
+    { rel: 'attributed.js', last: { author: 'idA' }, roomText: 'code', branchText: 'old' },
+    { rel: 'unsigned_edit.js', last: null, roomText: 'new edit\n', branchText: 'original\n' },
+  ]
+  const foundOrphans = filesSample.filter((f) => isOrphan(f))
+  T('1 unsigned edit among unchanged seed files yields exactly 1 orphan', foundOrphans.length === 1 && foundOrphans[0].rel === 'unsigned_edit.js')
 }
 
 // ---- end to end ---------------------------------------------------------------------------
@@ -122,6 +258,17 @@ try {
   const provA = A.provenanceOf('alpha.js') || []
   T('alpha.js has signed receipts', provA.length > 0, `${provA.length} receipt(s)`)
   T('receipts verify', (A.verifyProvenanceOf('alpha.js') || {}).ok === true)
+
+  const planFile = path.join(tmp, 'plan.json')
+  const rPlan = spawnSync(process.execPath, ['hive-pr.js', `${RELAY}|${ROOM}`, 'prbot', '--repo', REPO, '--dry-run', '--plan-json', planFile],
+    { cwd: ROOT, encoding: 'utf8', env: { ...process.env, HIVE_PROVENANCE: 'on' } })
+  T('hive-pr --dry-run --plan-json exited clean', rPlan.status === 0, (rPlan.stderr || '').slice(0, 100))
+  T('plan.json written by --plan-json', fs.existsSync(planFile))
+  let parsedPlan = null
+  try { parsedPlan = JSON.parse(fs.readFileSync(planFile, 'utf8')) } catch {}
+  T('plan.json parses with correct room', Boolean(parsedPlan && parsedPlan.room === ROOM))
+  T('plan.json groups contain both agents', Boolean(parsedPlan && parsedPlan.groups && parsedPlan.groups.length === 2))
+  T('plan.json orphans, identical, blocked are arrays', Boolean(parsedPlan && Array.isArray(parsedPlan.orphans) && Array.isArray(parsedPlan.identical) && Array.isArray(parsedPlan.blocked)))
 
   const r = spawnSync(process.execPath, ['hive-pr.js', `${RELAY}|${ROOM}`, 'prbot', '--repo', REPO, '--branch', 'hivecode/test'],
     { cwd: ROOT, encoding: 'utf8', env: { ...process.env, HIVE_PROVENANCE: 'on' } })
