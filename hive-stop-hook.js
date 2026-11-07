@@ -261,7 +261,7 @@ async function main() {
     let listening = null, listenLine = ''
     if (how && cfg.relay && cfg.room && !session.authed && !cfg.token) {
       listening = isArmed({ name: session.name, room: cfg.room, session: String(hook.session_id || hook.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || '') })
-      listenLine = listenOrder(how, listenCommand({ relay: cfg.relay, room: cfg.room, name: session.name }))
+      listenLine = listenOrder(how, listenCommand({ relay: cfg.relay, room: cfg.room, name: session.name, app: APP }))
     }
 
     const d = decide({

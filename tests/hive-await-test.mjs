@@ -47,8 +47,10 @@ const relay = await new Promise((res) => {
 })
 
 // One listener process. Resolves with { code, out, running } -- `running` true if it had not exited by `ms`.
-function listen(name, idleMin, ms, { lnk = link, env = { TEMP: tmp, TMPDIR: tmp }, cwd = ROOT } = {}) {
-  const child = spawn(process.execPath, [path.join(ROOT, 'hive-await.js'), lnk, name, String(idleMin)],
+function listen(name, idleMin, ms, { lnk = link, env = { TEMP: tmp, TMPDIR: tmp }, cwd = ROOT, app = '' } = {}) {
+  const args = [path.join(ROOT, 'hive-await.js'), lnk, name, String(idleMin)]
+  if (app) args.push(app)
+  const child = spawn(process.execPath, args,
     { cwd, env: { ...process.env, ...env } })
   let out = '', err = ''
   child.stdout.on('data', (d) => { out += d })
@@ -128,7 +130,8 @@ try {
   // agent had to remember it after every wake. Now the listener records that it is running, and the
   // Stop hook and the MCP server check that before a turn ends. A false "running" here is a deaf
   // agent that nobody knows is deaf, so the "no" cases matter as much as the "yes".
-  const { isArmed, armedFile, awaitDir } = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-listen.js`)
+  const { isArmed, armedFile, awaitDir, listenCommand } = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-listen.js`)
+  const ACT = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-activity.js`)
   const env3 = { TEMP: tmp, TMPDIR: tmp }
   const room3 = 'aw-' + crypto.randomBytes(5).toString('hex')
   const link3 = `ws://localhost:${PORT}|${room3}`
@@ -137,17 +140,34 @@ try {
 
   console.log('# a running listener says so, and stops saying so when it ends')
   {
-    const L = listen('Wren', 1, 15000, { lnk: link3, env: { ...env3, CLAUDE_CODE_SESSION_ID: 'sess-A' } })
+    const L = listen('Wren', 1, 15000, { lnk: link3, env: { ...env3, CLAUDE_CODE_SESSION_ID: 'sess-A', ANTIGRAVITY_CONVERSATION_ID: '', ANTIGRAVITY_AGENT: '' } })
     await L.ready
     await sleep(300)
     T('A1 while it waits, the agent is armed', isArmed({ name: 'Wren', room: room3 }, { env: env3 }))
     T('A2 ...for the session that started it', isArmed({ name: 'Wren', room: room3, session: 'sess-A' }, { env: env3 }))
     T('A3 ...and NOT for another session: its exit wakes the session that started it', !isArmed({ name: 'Wren', room: room3, session: 'sess-B' }, { env: env3 }))
+    const wrenMem = P3.members().find((m) => m.name === 'Wren')
+    const wrenDesc = wrenMem ? ACT.describe(null, { present: true, listener: !!wrenMem.listener, app: wrenMem.app }) : null
+    T('A3a while it waits alone (no MCP server), awareness carries its app so the room knows it can wake', !!wrenMem && /claude-code/i.test(wrenMem.app || '') && !!wrenDesc && wrenDesc.reachable === true, JSON.stringify({ wrenMem, wrenDesc }))
     P3.say('@Wren ping one')
     const r = await L.result()
     const next = String((r.parsed && r.parsed.next) || '')
     T('A4 a wake carries the exact command to listen again, on the wake itself', !r.running && next.includes('hive-await.js') && next.includes(link3) && next.includes('"Wren"'), JSON.stringify(r.parsed || {}).slice(0, 300))
     T('A5 once it has exited, the agent is no longer armed', !isArmed({ name: 'Wren', room: room3 }, { env: env3 }) && !fs.existsSync(armedFile('Wren', room3, env3)))
+  }
+  {
+    const cmd = listenCommand({ relay: `ws://localhost:${PORT}`, room: room3, name: 'Wren', app: 'antigravity-client' })
+    T('A6 listenCommand passes the app when known', cmd.includes('"antigravity-client"'), cmd)
+    const L = listen('Wren', 1, 15000, { lnk: link3, app: 'antigravity-client', env: { ...env3, CLAUDE_CODE_SESSION_ID: '', ANTIGRAVITY_CONVERSATION_ID: '', ANTIGRAVITY_AGENT: '' } })
+    await L.ready
+    await sleep(300)
+    const wrenMem = P3.members().find((m) => m.name === 'Wren')
+    const wrenLine = wrenMem ? ACT.line('Wren', null, { present: true, listener: !!wrenMem.listener, app: wrenMem.app }) : ''
+    T('A7 a listener started with an explicit app arg reports Reachable in hive_members, not "not woken by it"', !!wrenMem && wrenMem.app === 'antigravity-client' && /Reachable\.$/.test(wrenLine) && !/not woken by it/i.test(wrenLine), wrenLine)
+    P3.say('@Wren ping app')
+    const r = await L.result()
+    const next = String((r.parsed && r.parsed.next) || '')
+    T('A8 ...and the restart command on wake preserves that app arg', !r.running && next.includes('"antigravity-client"'), next)
   }
 
   console.log('# two listeners for one agent: the newest wins, so one message wakes it once')
