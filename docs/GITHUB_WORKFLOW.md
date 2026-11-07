@@ -164,6 +164,66 @@ Notifications are optional: one Slack or Discord webhook URL. They are sent when
 
 Nothing is sent for each comment.
 
+## Room mode: multi-agent issues in a shared room
+
+Room Mode hands labelled issues directly to agents already collaborating in a shared room bound to a branch.
+Rather than spinning up isolated single-agent runs, the room's agents claim files, build, and review each other concurrently.
+When work is complete and reviewed, Hivecode runs the project tests and opens or updates a single pull request.
+
+### Setup
+
+1. **Bind a room to a branch:**
+   ```bash
+   npx -y hivecode-mcp@latest branch <branch-name>
+   ```
+   This creates or binds a branch room on the relay and prints its join link (`wss://...|room-...`).
+
+2. **Agents join the room:**
+   Connect your agents (Claude Code, Codex, Antigravity, or human developers) into the room using `hive_join` or the room link. Each agent gets its own workspace folder and display name.
+
+3. **Start the room watcher:**
+   ```bash
+   npx -y hivecode-mcp@latest github start --room "<room link>" [--fallback-agent "<command>"] [--ack-minutes 10]
+   ```
+   The watcher polls GitHub for labelled issues and manages task dispatch and landings for that room.
+
+### What the person sees on GitHub
+
+Every event is posted in order on the issue or the pull request. Room identifiers and relay URLs are never posted on GitHub.
+
+| event | where | what you see |
+|---|---|---|
+| Issue labelled `hivecode` | Issue comment | `Sent to room for branch <name>. In the room now: <agents>` (lists active agents and humans separately; skips passive bots). |
+| Tests fail during landing | Issue comment | `tests failed, sent back to the room (attempt 1 of 2)`. The failing test output is posted as a task into the room. Unchanged code is not re-tested. |
+| Work complete and reviewed | Pull request opened | PR titled after the issue (`<Title> (#1)`), body with `Closes #1`, summary of changed files, test verification (`Tests: npm test passed on <sha>, the exact commit pushed`), and one commit per author. |
+| Issue updated with PR | Issue comment | `landed as PR #N` linking the pull request. |
+| PR review feedback | PR comment & Room task | Comments on the PR become a single room task naming the blamed author (`Sent 1 review comment to the agents`). When fixed and reviewed, fixes are pushed to the same PR (`fixes pushed`). |
+| Unresponsive or stuck | Issue comment & Label | If `--max-minutes` passes or retries exhaust (`--max-runs`), the issue is labelled `hivecode:needs-human` with the last room transcript lines. |
+
+### `/hivecode stop` and `/hivecode retry`
+
+- **/hivecode stop:** A comment starting with `/hivecode stop` on the issue or PR stops work immediately. It works mid-work: the room is notified, the active task is withdrawn, and nothing lands. A stop from someone who cannot push, or from before the run started, is ignored.
+- **/hivecode retry:** A comment starting with `/hivecode retry` re-queues the issue. The watcher increments the attempt number and posts a new task (`Issue #12 (attempt 2): <title>`), matching the updated attempt so the room receives the retry cleanly without duplicate task suppression.
+
+### Fallback agent and token cost
+
+- **Opt-in only:** `--fallback-agent "<command>"` is strictly opt-in. Unattended agents never run unless explicitly configured.
+- **Reachability & engagement gate:** If reachable agents are present in the room when an issue arrives, no fallback starts before `--ack-minutes` (default 10). If any agent engages (claims a file or chats intent), fallback is prevented. If 0 reachable agents exist at post time, fallback spawns immediately.
+- **Budget caps:** Fallback runs are counted against `--max-runs-per-day` (default 20 across the repo) and run at most once per issue. When the daily limit is reached, no fallback spawns, and an issue comment notes that the limit was reached.
+
+### The review rule and lone-agent waiver
+
+- **Non-writer review required:** A task marked done will not land until a non-writer agent submits a passing review (`hive_review({ files, verdict: 'pass' })`). Reviews authored by contributors to the current held files are ignored.
+- **Lone-agent waiver:** If only one agent is present in the room and no second agent arrives before `--ack-minutes` (default 10), Hivecode waives the second-agent requirement and lands the PR.
+- **PR waiver notice:** The PR body explicitly states: `"not reviewed by a second agent"`, making the single-agent status transparent to human reviewers on GitHub. A `VERDICT: FAIL` review is never waived.
+
+### Known limits
+
+- **One issue at a time:** The watcher processes one issue at a time per room; subsequent labelled issues queue and wait for the active PR to be merged or closed.
+- **One open PR:** The room maintains at most one open PR at a time to keep branch history and CRDT file states consistent.
+- **Squash-merge history:** When PRs are squash-merged on GitHub, git commits are condensed to one, but GitHub preserves individual contributor names as `Co-authored-by:` trailers.
+- **Antigravity multi-window MCP session sharing:** In Antigravity IDE, multiple windows on the same machine share a single background MCP server process. Parallel agents must use separate workspace folders and distinct agent names (e.g. `antigravity-2`, `antigravity-4`) or standalone sessions to avoid `.hive-mcp-session.json` identity collisions.
+
 ## Why `gh` and not a GitHub App, for now
 
 - **With `gh`, nothing new is exposed.**

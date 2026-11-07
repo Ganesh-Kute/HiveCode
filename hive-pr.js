@@ -53,6 +53,7 @@ const DRY = has('dry-run')
 const DO_PUSH = has('push') || has('pr')
 const DO_PR = has('pr')
 const ONLY = flag('only') ? flag('only').split(',').map((s) => s.trim()).filter(Boolean) : null
+const PLAN_JSON = flag('plan-json')
 
 function die(code, msg) { console.error(`${code} ${msg}`); process.exit(1) }
 
@@ -75,30 +76,8 @@ function gitRaw(args, opts = {}) {
   return { code: r.status, out: r.stdout == null ? '' : r.stdout, err: (r.stderr || '').trim() }
 }
 
-/** The authors of a file, newest-landed first, from VERIFIED receipts only.
- *  An unverifiable receipt is not evidence of authorship, so it is dropped rather than trusted. */
-// `roomText`, when given: the author of what the room HOLDS, not of the newest receipt. After a
-// control-room revert the room holds an older version, restored without a receipt, so "newest" named
-// the reverted agent as the author of the code it had just been reverted out of (antigravity-3, 1 Nov).
-export function authorsOf(receipts, verify, roomText) {
-  const ok = receipts.filter((r) => r && r.author && (!verify || verify(r)))
-  if (!ok.length) return { last: null, contributors: [], first: 0 }
-  // Receipts newer than the one the room holds are work that was reverted out: not co-authors either.
-  // Content no receipt matches (a merge, or a revert to a merged state) keeps the old rule, newest
-  // lander, a known limit until merged states are stamped into the ledger (antigravity-3, 1 Nov).
-  const want = typeof roomText === 'string' ? contentHash(roomText) : null
-  let idx = -1
-  if (want) for (let i = ok.length - 1; i >= 0; i--) if (ok[i].contentHash === want) { idx = i; break }
-  const held = idx >= 0 ? ok.slice(0, idx + 1) : ok
-  const last = held[held.length - 1]
-  const seen = new Map()
-  for (const r of held) if (!seen.has(r.author)) seen.set(r.author, { author: r.author, name: r.name || 'agent', at: r.at || 0 })
-  return {
-    last: { author: last.author, name: last.name || 'agent', at: last.at || 0 },
-    contributors: [...seen.values()],
-    first: Math.min(...ok.map((r) => r.at || 0)),
-  }
-}
+import { authorsOf } from './hive-authors.js'
+export { authorsOf }
 
 const mailOf = (name) => `${String(name).toLowerCase().replace(/[^a-z0-9._-]+/g, '-') || 'agent'}@agents.hivecode.local`
 
@@ -107,22 +86,165 @@ export function planCommits(files) {
   const groups = new Map()
   for (const f of files) {
     if (!f.last) continue
-    const g = groups.get(f.last.author) || { author: f.last.author, name: f.last.name, at: f.first, files: [], others: new Map() }
+    const g = groups.get(f.last.author) || { author: f.last.author, name: f.last.name, at: f.first, files: [], others: new Map(), receipts: [] }
     g.files.push(f)
     g.at = Math.min(g.at, f.first)
+    if (Array.isArray(f.receipts)) g.receipts.push(...f.receipts)
     for (const c of f.contributors) if (c.author !== f.last.author) g.others.set(c.author, c)
     groups.set(f.last.author, g)
   }
   return [...groups.values()]
-    .map((g) => ({ ...g, others: [...g.others.values()] }))
-    .sort((a, b) => a.at - b.at || a.name.localeCompare(b.name))
+  .map((g) => ({ ...g, others: [...g.others.values()] }))
+  .sort((a, b) => a.at - b.at || a.name.localeCompare(b.name))
+}
+
+export function sanitizeIntent(raw) {
+  if (typeof raw !== 'string') return ''
+  // Collapse newlines and control characters to single spaces, and cap each at 200 chars
+  const clean = raw.replace(/[\x00-\x1f\x7f-\x9f\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!clean) return ''
+  return clean.length > 200 ? clean.slice(0, 200).trim() : clean
+}
+
+export function truncateSubject(agent, intent, max = 72) {
+  const prefix = `${agent}: `
+  const full = `${prefix}${intent}`
+  if (full.length <= max) return full
+  const available = max - prefix.length - 3 // space for '...'
+  if (available <= 0) return full.slice(0, max)
+  const sliced = intent.slice(0, available)
+  const lastSpace = sliced.lastIndexOf(' ')
+  const cut = (lastSpace > 0) ? sliced.slice(0, lastSpace) : sliced
+  return `${prefix}${cut}...`
+}
+
+export function buildPlanJson({ room, groups = [], orphans = [], identical = [], blocked = [], hashes = {} }) {
+  const skip = new Set(identical)
+  return {
+    room,
+    groups: groups.map((g) => {
+      const gFiles = (g.files || []).map((f) => (typeof f === 'string' ? f : f.rel)).filter((rel) => !skip.has(rel))
+      const allReceipts = []
+      if (Array.isArray(g.receipts)) allReceipts.push(...g.receipts)
+      for (const f of g.files || []) {
+        if (f && Array.isArray(f.receipts)) allReceipts.push(...f.receipts)
+      }
+      const seen = new Set()
+      const intents = []
+      for (const r of allReceipts) {
+        if (!r || typeof r.intent !== 'string') continue
+        const clean = sanitizeIntent(r.intent)
+        if (!clean || clean.toLowerCase() === 'edit') continue
+        if (!r.author || r.author === g.author) {
+          if (!seen.has(clean)) {
+            seen.add(clean)
+            intents.push(clean)
+          }
+        }
+      }
+      return {
+        name: g.name,
+        author: g.author,
+        files: gFiles,
+        intents,
+      }
+    }),
+    orphans: orphans.map((o) => (typeof o === 'string' ? o : o.rel)),
+    identical: [...identical],
+    blocked: [...blocked],
+    // The room's content hash of every file a group would write, as this mirror read it: what a
+    // hive_review must match, and how a watcher tells a changed room from a re-run of the same one.
+    hashes: Object.fromEntries(Object.entries(hashes || {}).filter(([rel]) => !skip.has(rel))),
+  }
+}
+
+export const OWN_FILES = new Set(['.hive.json', '.hive-shadow.json', '.hive-shadow.json.tmp', '.hive-lock.json', '.hive-id.json', '.hive-mcp-session.json', '.hive-stop-hook.json'])
+export const isOwnFile = (rel) => {
+  const b = path.basename(rel)
+  return OWN_FILES.has(b) || /^HIVE_[A-Z0-9_]+\.md$/i.test(b) || b.startsWith('.hive')
+}
+
+export function isOrphan({ rel, last, roomText, branchText }) {
+  if (last) return false
+  if (isOwnFile(rel)) return false
+  if (branchText !== null && branchText !== undefined && branchText === roomText) return false
+  return true
 }
 
 export function commitMessage(g, room) {
   const list = g.files.map((f) => f.rel).sort()
-  const head = list.length === 1 ? `${g.name}: ${list[0]}` : `${g.name}: ${list.length} files`
-  const lines = [head, '', ...list.map((x) => `  - ${x}`), '', `Room: ${room}`, `Hivecode-Author: ${g.author}`]
-  for (const o of g.others) lines.push(`Co-authored-by: ${o.name} <${mailOf(o.name)}>`)
+
+  // Collect receipts up to held content across files in the group
+  const allReceipts = []
+  if (Array.isArray(g.receipts)) allReceipts.push(...g.receipts)
+  for (const f of g.files) {
+    if (Array.isArray(f.receipts)) allReceipts.push(...f.receipts)
+  }
+
+  // Deduplicate and filter non-edit intents for the committing author
+  const seenAuthorIntents = new Set()
+  const authorIntents = []
+
+  // Deduplicate and filter non-edit intents for co-authors
+  const seenCoauthorIntents = new Set()
+  const coauthorIntents = []
+
+  const othersMap = new Map((g.others || []).map((o) => [o.author, o.name]))
+
+  for (const r of allReceipts) {
+    if (!r || typeof r.intent !== 'string') continue
+    const clean = sanitizeIntent(r.intent)
+    if (!clean || clean.toLowerCase() === 'edit') continue
+
+    if (!r.author || r.author === g.author) {
+      if (!seenAuthorIntents.has(clean)) {
+        seenAuthorIntents.add(clean)
+        authorIntents.push(clean)
+      }
+    } else {
+      const coauthorName = r.name || othersMap.get(r.author) || 'co-author'
+      const key = `${coauthorName}: ${clean}`
+      if (!seenCoauthorIntents.has(key)) {
+        seenCoauthorIntents.add(key)
+        coauthorIntents.push({ name: coauthorName, intent: clean })
+      }
+    }
+  }
+
+  // Subject: "<agent>: <first non-edit intent>" up to 72 chars, fallback to today's message
+  let head
+  if (authorIntents.length > 0) {
+    head = truncateSubject(g.name, authorIntents[0], 72)
+  } else {
+    head = list.length === 1 ? `${g.name}: ${list[0]}` : `${g.name}: ${list.length} files`
+  }
+
+  // Body: lists intents and files if non-edit intents exist, fallback to today's message
+  const lines = [head, '']
+  if (authorIntents.length > 0 || coauthorIntents.length > 0) {
+    lines.push('Intents:')
+    for (const intent of authorIntents) {
+      lines.push(`  - ${intent}`)
+    }
+    for (const ci of coauthorIntents) {
+      lines.push(`  - ${ci.name}: ${ci.intent}`)
+    }
+    lines.push('')
+    lines.push('Files:')
+    for (const f of list) {
+      lines.push(`  - ${f}`)
+    }
+  } else {
+    for (const f of list) {
+      lines.push(`  - ${f}`)
+    }
+  }
+  lines.push('')
+  lines.push(`Room: ${room}`)
+  lines.push(`Hivecode-Author: ${g.author}`)
+  for (const o of g.others) {
+    lines.push(`Co-authored-by: ${o.name} <${mailOf(o.name)}>`)
+  }
   return lines.join('\n')
 }
 
@@ -223,8 +345,21 @@ if (isMain) {
       files.push({ rel, abs: path.join(dir, rel), ...a })
     }
 
-    const attributed = files.filter((f) => f.last)
-    const orphans = files.filter((f) => !f.last)
+    const base = flag('base') || git(['rev-parse', '--abbrev-ref', 'HEAD']).out || 'HEAD'
+    const attributed = []
+    const orphans = []
+    for (const f of files) {
+      if (f.last) {
+        attributed.push(f)
+      } else {
+        const sha = git(['rev-parse', `${base}:${f.rel}`])
+        const branchText = sha.code === 0 ? gitRaw(['cat-file', 'blob', sha.out]).out : null
+        const roomText = fs.readFileSync(f.abs, 'utf8')
+        if (isOrphan({ rel: f.rel, last: f.last, roomText, branchText })) {
+          orphans.push(f)
+        }
+      }
+    }
     const groups = planCommits(attributed)
 
     console.log(`room ${room}: ${files.length} files, ${attributed.length} attributed, ${groups.length} agent(s)`)
@@ -233,11 +368,6 @@ if (isMain) {
       for (const f of g.files) console.log(`      ${f.rel}`)
     }
     if (orphans.length) console.log(`  (${orphans.length} file(s) with no verified receipt -- not committed: ${orphans.map((o) => o.rel).join(', ')})`)
-
-    if (DRY) { console.log('\n--dry-run: nothing written'); return finish(0) }
-    if (!groups.length) { console.error('Q501 nothing attributed to commit'); return finish(1) }
-
-    const base = flag('base') || git(['rev-parse', '--abbrev-ref', 'HEAD']).out || 'HEAD'
 
     // ── HIV-28: DO NOT WRITE OVER A BRANCH CHANGE WE CANNOT ACCOUNT FOR ──────────────────
     //
@@ -264,7 +394,39 @@ if (isMain) {
     const v = verdict(decisions)
     if (v.identical.length) console.log(`  (${v.identical.length} file(s) already identical on ${base} -- nothing to write)`)
 
+    function writePlanJson() {
+      if (!PLAN_JSON) return
+      const identicalRels = (v && v.identical) ? v.identical.map((d) => d.rel) : []
+      const blockedRels = (v && v.blocked) ? v.blocked.map((d) => d.rel) : []
+      const plan = buildPlanJson({
+        room,
+        groups,
+        orphans,
+        identical: identicalRels,
+        blocked: blockedRels,
+        hashes: Object.fromEntries(groups.flatMap((g) => g.files || []).map((x) => { try { return [x.rel, contentHash(fs.readFileSync(x.abs, 'utf8'))] } catch { return null } }).filter(Boolean)),
+      })
+      try {
+        fs.mkdirSync(path.dirname(path.resolve(PLAN_JSON)), { recursive: true })
+        fs.writeFileSync(PLAN_JSON, JSON.stringify(plan, null, 2), 'utf8')
+      } catch (err) {
+        console.error(`warning: could not write --plan-json to ${PLAN_JSON}: ${err.message}`)
+      }
+    }
+
+    if (DRY) {
+      writePlanJson()
+      console.log('\n--dry-run: nothing written')
+      return finish(0)
+    }
+    if (!groups.length) {
+      writePlanJson()
+      console.error('Q501 nothing attributed to commit')
+      return finish(1)
+    }
+
     if (!v.ok) {
+      writePlanJson()
       const lastTouch = (rel) => git(['log', '-1', '--format=%h %an %ad %s', '--date=short', base, '--', rel]).out
       console.error('')
       console.error(explain(v.blocked, lastTouch))
@@ -337,6 +499,7 @@ if (isMain) {
       if (r.status !== 0) { console.error(`Q505 gh pr create failed: ${(r.stderr || '').trim()}`); return finish(1) }
       console.log((r.stdout || '').trim())
     }
+    writePlanJson()
     finish(0)
   }
 

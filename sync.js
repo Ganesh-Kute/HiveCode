@@ -31,6 +31,7 @@ import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } fro
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
+import { authorsOf } from './hive-authors.js'
 // `languageFor` belongs in this list and was missing: reconcile() calls it on the
 // clean-rewrite path, so a local whole-file rewrite of a supported file threw
 // ReferenceError and killed the sync process outright. Nothing caught it -- the client
@@ -584,6 +585,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const claims = doc.getMap('claims')
   const swarmState = doc.getMap('swarm_state')
   const swarmSchema = doc.getMap('swarm_schema')
+  const reviews = doc.getMap('reviews') // relPath -> Array of { by, at, verdict: 'pass'|'fail', note, hash }
   // ATTESTATION LEDGER — path -> { <peerName>: { bytes, lines, at } }.
   //
   // The one thing a four-agent build could not do without a human relaying numbers by hand: tell
@@ -3198,18 +3200,51 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // So agents coordinate among themselves, but a human can never make an agent
   // act without that agent's owner approving it.
   const newId = () => 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+
+  const getMemberNames = () => {
+    const names = new Set()
+    if (provider && provider.awareness) {
+      for (const s of provider.awareness.getStates().values()) {
+        const u = s && s.user
+        if (u && u.name) names.add(u.name)
+      }
+    }
+    // Union with durable activity map (non-gone keys)
+    try {
+      const act = doc.getMap('activity')
+      if (act) {
+        for (const [k, v] of act.entries()) {
+          if (v && !v.gone && k) names.add(k)
+        }
+      }
+    } catch { }
+    // Union with recent chat senders
+    try {
+      const chatArr = doc.getArray('chat')
+      if (chatArr) {
+        for (const msg of chatArr.toArray()) {
+          if (msg && msg.by) names.add(msg.by)
+        }
+      }
+    } catch { }
+    names.add(name)
+    return [...names]
+  }
+
   function assign(to, text) {
     if (!to || !text) return null
+    const normTo = String(to).trim() === '@all' ? 'all' : String(to).trim()
     const id = newId()
-    const ownerOf = owners.get(to)
+    const ownerOf = owners.get(normTo)
     // auto-accept when it's AI->AI coordination, the target has no owner to ask,
-    // or the asker IS the target's owner. Otherwise it needs owner approval.
-    const auto = kind === 'ai' || !ownerOf || name === ownerOf
+    // or the asker IS the target's owner, or an @all task.
+    const auto = kind === 'ai' || !ownerOf || name === ownerOf || normTo === 'all'
     const status = auto ? 'accepted' : 'pending'
     const decidedBy = auto ? (kind === 'ai' ? `${name} (AI coordination)` : name) : null
-    tasks.set(id, { id, to, by: name, byKind: kind, text: String(text), status, decidedBy, at: fmtTime() })
-    if (auto) say(`@${to}: ${text}  (task ${id} — ${kind === 'ai' ? 'AI coordination, proceeding' : 'from owner, proceeding'})`)
-    else say(`@${to}: ${text}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
+    const membersAt = getMemberNames()
+    tasks.set(id, { id, to: normTo, by: name, byKind: kind, text: String(text), status, decidedBy, at: fmtTime(), membersAt, createdAt: Date.now() })
+    if (auto) say(`@${normTo}: ${text}  (task ${id} — ${kind === 'ai' ? 'AI coordination, proceeding' : 'from owner, proceeding'})`)
+    else say(`@${normTo}: ${text}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
     return id
   }
   // A decision is about a task that is WAITING for one. Approving an accepted or done task used to
@@ -3228,19 +3263,182 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     say(`${accept ? `@${t.to} ` : ''}task ${id} ${accept ? 'APPROVED' : 'denied'} by ${by}: "${t.text}"`)
     return { ok: true }
   }
-  // Only the ASSIGNEE finishes a task, and only work it was cleared to do. Before 29 Sep 2026 anyone
-  // could mark anyone's task done -- including one still PENDING its owner's approval, or DENIED --
-  // so "done" could mean the owner said no and the room was told otherwise. Done twice is done.
+  // Only the ASSIGNEE finishes a task, and only work it was cleared to do.
+  // For @all tasks (Claude addition iii), any member can complete it provided they
+  // were in the room when the task was created, or hold a claim / signed receipt / review on the work.
   function complete(id, note = '') {
     const t = tasks.get(id); if (!t) return { error: 'no such task' }
-    if (t.to !== name) return { error: `task ${id} is ${t.to}'s -- only ${t.to} can complete it` }
+    const isAll = t.to === 'all' || t.to === '@all'
+    if (!isAll && t.to !== name) return { error: `task ${id} is ${t.to}'s -- only ${t.to} can complete it` }
     if (t.status === 'done') return { ok: true, already: true }
     if (t.status !== 'accepted') return { error: `task ${id} is ${t.status}: only accepted work can be completed${t.status === 'pending' ? ` (it is waiting for ${owners.get(t.to) || 'its owner'} to approve)` : ''}` }
-    tasks.set(id, { ...t, status: 'done', decidedBy: t.decidedBy })
+
+    if (isAll) {
+      const wasPresent = Array.isArray(t.membersAt) ? t.membersAt.includes(name) : (t.by === name)
+      const hasClaim = coordinator ? coordinator.board().some((c) => c && c.by === name) : false
+      let hasReceipt = false
+      for (const e of fileDocs.values()) {
+        if (e && e.ledger) {
+          const rs = e.ledger.toArray()
+          if (rs.some((r) => r && (r.name === name || (identity && r.author === identity.id)))) {
+            hasReceipt = true
+            break
+          }
+        }
+      }
+      let hasReview = false
+      try {
+        for (const r of getReviews('')) {
+          if (r && r.by === name) { hasReview = true; break }
+        }
+        if (!hasReview) {
+          for (const [k, r] of reviews.entries()) {
+            if (r && r.by === name) { hasReview = true; break }
+          }
+        }
+      } catch { }
+      if (!wasPresent && !hasClaim && !hasReceipt && !hasReview) {
+        return { error: 'Refused: completing an @all task requires having been in the room when it was created, or having a claim/receipt/review on the work' }
+      }
+    }
+
+    tasks.set(id, { ...t, status: 'done', completedBy: name, decidedBy: t.decidedBy })
     say(`task ${id} done by ${name}${note ? ': ' + note : ''}`)
     return { ok: true }
   }
-  const myTasks = () => [...tasks.values()].filter((t) => t.to === name)
+  const myTasks = () => [...tasks.values()].filter((t) => t.to === name || t.to === 'all' || t.to === '@all')
+
+  /**
+   * Room review: record a non-writer review verdict on files in the room.
+   * Stored in Y.Map 'reviews' as an append-only list per file: [{ by, at, verdict, note, hash }].
+   */
+  async function review(files, verdict, note = '') {
+    if (!Array.isArray(files) || files.length === 0) {
+      return { error: 'files must be a non-empty array' }
+    }
+    const v = String(verdict || '').toLowerCase()
+    if (v !== 'pass' && v !== 'fail') {
+      return { error: "verdict must be 'pass' or 'fail'" }
+    }
+
+    // 1. Validate manifest presence (Claude addition i)
+    for (const rel of files) {
+      if (!inManifest(rel)) {
+        return { error: `Refused: ${rel} is not in room manifest` }
+      }
+    }
+
+    // Ensure all target files are synced
+    for (const rel of files) {
+      const fe = openFile(rel)
+      if (!fe.synced && fe.provider) {
+        await new Promise((res) => {
+          const t = setTimeout(res, 3000)
+          fe.provider.on('sync', (isSynced) => {
+            if (isSynced) {
+              clearTimeout(t)
+              res()
+            }
+          })
+        })
+      }
+      if (!fe.synced) {
+        return { error: `Refused: ${rel} has not finished syncing yet` }
+      }
+    }
+
+    // 2. Validate non-contributor status
+    for (const rel of files) {
+      const fe = openFile(rel)
+      const curText = fe.text ? fe.text.toString() : ''
+      const rs = fe.ledger ? fe.ledger.toArray() : []
+      const authors = authorsOf(rs, verifyReceipt, curText)
+      const isContributor = authors.contributors.some(
+        (c) => c && (c.name === name || (identity && c.author === identity.id))
+      )
+      const head = fe.head ? fe.head.get('cur') : null
+      const isHeadLander = head && head.by === name && head.hash === contentHash(curText)
+      const boardEntry = board.get(rel)
+      const isBoardAuthor = boardEntry && boardEntry.by === name
+      const claimEntry = coordinator.sense(rel)
+      const isClaimant = claimEntry && claimEntry.by === name
+      if (isContributor || isHeadLander || isBoardAuthor || isClaimant) {
+        return { error: `Refused: @${name} contributed to ${rel}'s held content; review must come from a non-contributor` }
+      }
+    }
+
+    // 3. Record review on each file
+    const stamp = fmtTime()
+    for (const rel of files) {
+      const fe = openFile(rel)
+      const curText = fe.text ? fe.text.toString() : ''
+      const h = contentHash(curText)
+      const entry = {
+        file: rel,
+        by: name,
+        at: stamp,
+        ts: Date.now(),
+        verdict: v,
+        note: String(note || ''),
+        hash: h,
+      }
+      // ONLY per-review key to prevent concurrent clobbers under LWW
+      reviews.set(`${rel}::${entry.ts}::${newId()}`, entry)
+    }
+
+    say(`review ${v.toUpperCase()} on ${files.join(', ')} by ${name}${note ? ': ' + note : ''}`)
+    return { ok: true, files, verdict: v }
+  }
+
+  function getReviews(relPath) {
+    const mapEntries = []
+    const prefix = relPath ? relPath + '::' : ''
+    for (const [k, r] of reviews.entries()) {
+      if (relPath && k === relPath && Array.isArray(r)) {
+        for (const item of r) if (item && typeof item === 'object') mapEntries.push(item)
+      } else if (r && (!relPath || r.file === relPath || k.startsWith(prefix))) {
+        mapEntries.push(r)
+      }
+    }
+    const seen = new Set()
+    const unique = []
+    for (const r of mapEntries) {
+      const key = `${r.file}|${r.by}|${r.ts}|${r.hash}|${r.verdict}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        unique.push(r)
+      }
+    }
+    return unique.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+  }
+
+  function getReviewStatus(relPath) {
+    const fe = openFile(relPath)
+    const curText = fe.text ? fe.text.toString() : ''
+    const curHash = contentHash(curText)
+    const all = getReviews(relPath)
+
+    // Ignore reviews authored by contributors to the current held content
+    const rs = fe.ledger ? fe.ledger.toArray() : []
+    const authors = authorsOf(rs, verifyReceipt, curText)
+    const contributorNames = new Set(authors.contributors.map((c) => c.name).filter(Boolean))
+    const head = fe.head ? fe.head.get('cur') : null
+    if (head && head.by && head.hash === curHash) contributorNames.add(head.by)
+
+    const validReviews = all.filter((r) => r && !contributorNames.has(r.by))
+    const matching = validReviews.filter((r) => r.hash === curHash)
+    if (!matching.length) {
+      return { verdict: 'unreviewed', hash: curHash, stale: validReviews.length > 0, reviews: validReviews }
+    }
+    let lastFail = -1
+    let lastPass = -1
+    for (let i = 0; i < matching.length; i++) {
+      if (matching[i].verdict === 'fail') lastFail = i
+      if (matching[i].verdict === 'pass') lastPass = i
+    }
+    const finalVerdict = (lastPass > lastFail) ? 'pass' : 'fail'
+    return { verdict: finalVerdict, hash: curHash, stale: false, reviews: matching }
+  }
 
   // --- mission control: pause / resume / steer an agent ---
   // A human (or an owner) can PAUSE an agent: it should finish its current step,
@@ -4584,6 +4782,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     forkInfo,            // the active fork on a file as a resolvable object (base + versions + signed intents), or null
     resolveFork,         // propose the reconciled file; ICR-validated (parse + dangling) before it lands, refused otherwise
     edit: editFile,      // first-class authored write: intent + transition stamped race-free, then normal reconcile
+    // --- non-writer review & approval ---
+    review,
+    reviews: getReviews,
+    reviewStatus: getReviewStatus,
     // --- convergent substrate: provenance (I1) ---
     identity: () => identity ? { id: identity.id, name: identity.name, pk: identity.pk } : null, // never exposes the private key
     provenanceOf: (relPath) => { const e = fileDocs.get(relPath); return e && e.ledger ? e.ledger.toArray() : [] }, // signed receipts for a file
