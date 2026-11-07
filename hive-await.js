@@ -165,16 +165,34 @@ if (process.env.HIVE_AWAIT_KEEP_ALIVE !== '1' && PARENT > 1 && !parentGone()) {
   }, Number(process.env.HIVE_AWAIT_PARENT_CHECK_MS) || 15000).unref()
 }
 
+// A REBUILT ROOM MUST NOT LEAVE THE LISTENER DEAF (7 Nov 2026, found by antigravity-2). A relay
+// that restarts without its rooms (every deploy on Render's free plan) starts chat again from zero,
+// but the cursor on disk still said, say, 300: scanning from 300 of a 3-message chat found nothing,
+// so the agent showed LISTENING and no mention woke it until the idle timeout, which then moved the
+// cursor past everything it had missed. So the cursor records which room it was counted in (its
+// first message) and is ignored when that differs, or when it points past the end -- the rule the
+// room's cursor above and the MCP's catch-up already follow. Chat is never trimmed, so within one
+// room the first message never changes. An older cursor file without `head` is only clamped.
+// (tests/await-rebuilt-room-test.mjs)
 const cursorFile = path.join(dir, `.await-cursor-${room}.json`)
-const readCursor = () => { try { return Number(JSON.parse(fs.readFileSync(cursorFile, 'utf8')).at) || 0 } catch { return 0 } }
-const writeCursor = (n) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ at: n }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
+const headOf = (msgs) => { const m = msgs[0]; return m ? `${m.by}|${m.at}|${String(m.text || '').slice(0, 80)}` : '' }
+const readCursor = (msgs) => {
+  try {
+    const c = JSON.parse(fs.readFileSync(cursorFile, 'utf8'))
+    const at = Number(c.at) || 0
+    if (at > msgs.length) return 0
+    if (typeof c.head === 'string' && c.head && c.head !== headOf(msgs)) return 0
+    return at
+  } catch { return 0 }
+}
+const writeCursor = (n, msgs) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ at: n, head: headOf(msgs) }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
 
 function check() {
   if (superseded()) return // the newer listener delivers it; consuming it here would hide it from that one
   const msgs = chat.toArray()
   let lastMine = -1
   for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].by === NAME) { lastMine = i; break } }
-  const from = Math.max(readCursor(), lastMine + 1, roomCursor(msgs.length))
+  const from = Math.max(readCursor(msgs), lastMine + 1, roomCursor(msgs.length))
   const hits = []
   for (let i = from; i < msgs.length; i++) {
     const m = msgs[i]
@@ -183,7 +201,7 @@ function check() {
   // Advance past everything READ, not just everything matched — an unaddressed message I have
   // already seen must not be re-scanned on the next call either.
   if (hits.length) {
-    writeCursor(msgs.length)
+    writeCursor(msgs.length, msgs)
     publish(msgs.length)
     // THE ORDER TO START AGAIN RIDES ON EVERY WAKE. It used to be said once, on the agent's first
     // quiet hive_wait, and an agent had to remember it after every wake; agents forget (4 Oct 2026).
@@ -205,7 +223,7 @@ hive.provider.on('sync', (s) => {
 // An idle timeout also advances the cursor. Without this, a quiet window followed by a loud one
 // would re-deliver everything that arrived during the quiet window too.
 setTimeout(() => {
-  try { writeCursor(chat.length) } catch {}
+  try { writeCursor(chat.length, chat.toArray()) } catch {}
   publish(chat.length) // nothing in the window named us, so nothing in it is mail the MCP should raise
   finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again in the background to keep listening: ${AGAIN}` }, 1500)
 }, Number(IDLE_MIN) * 60 * 1000)
