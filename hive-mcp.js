@@ -36,6 +36,7 @@ import { startUpdateCheck, updateNotice } from './hive-update.js'
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
+import { transportFor } from './hive-transport.js'
 import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { newPersonalRoom, saveRoomKey, loadRoomKey, hostToken, main as roomKeyMain } from './hive-room-key.js'
 import { isSecuredRoom } from './token.js'
@@ -1799,6 +1800,8 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           unread: mailbox().peek(chatArray()).unreadCount,
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
+          // 'ws', or 'poll' where this network refuses WebSockets (HTTPS long-poll: same rooms, same rules).
+          transport: conn ? transportFor(s.relay) : null,
           ...(conn && conn.folderLost ? { folderLost: conn.folderLost } : {}),
           ...(conn && conn.unsharedFiles && conn.unsharedFiles.length ? { unshared: conn.unsharedFiles } : {}),
           ...(conn && conn.unwritable && conn.unwritable.length ? { unwritable: { files: conn.unwritable.map((u) => `${u.path} (${u.code})`), meaning: 'read-only or locked in your folder, so your copy is older than the room\'s; each is written as soon as it can be' } } : {}),

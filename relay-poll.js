@@ -50,7 +50,7 @@ export class PollConn extends EventEmitter {
   }
   pause() { this._session.paused = true }
   resume() { this._session.paused = false; this._session.drainIn() }
-  close(_code, reason) { this._session.end(reason || 'closed by the relay') }
+  close(code, reason) { this._session.end(reason || 'closed by the relay', code) }
   terminate() { this._session.end('terminated by the relay') }
 }
 
@@ -104,7 +104,7 @@ class Session {
       frames.push(f.buf); bytes += f.buf.length
     }
     const body = packFrames(frames)
-    res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', 'x-hive-seq': String(this.out[0].seq), 'x-hive-count': String(frames.length), 'content-length': body.length })
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no', 'x-hive-seq': String(this.out[0].seq), 'x-hive-count': String(frames.length), 'content-length': body.length })
     res.end(body)
   }
   recv(res, ack, hold) {
@@ -145,16 +145,19 @@ class Session {
       for (const res of waiting) { res.writeHead(204, { 'cache-control': 'no-store' }); res.end() }
     }
   }
-  end(reason) {
+  end(reason, code = 1000) {
     if (this.ended) return
     this.ended = true
+    this.endCode = Number(code) || 1000
+    this.endReason = String(reason || '')
     this.conn.readyState = CLOSED
-    if (this.waiter) { const { res, timer } = this.waiter; this.waiter = null; clearTimeout(timer); gone(res) }
-    for (const res of this.sendWaiters) gone(res)
+    const why = { code: this.endCode, reason: this.endReason.slice(0, 200) }
+    if (this.waiter) { const { res, timer } = this.waiter; this.waiter = null; clearTimeout(timer); gone(res, why) }
+    for (const res of this.sendWaiters) gone(res, why)
     this.sendWaiters = []
     this.out = []; this.outBytes = 0; this.inbox = []
     this.onEnd(this, reason)
-    setImmediate(() => this.conn.emit('close', 1000, Buffer.from(String(reason || '')).subarray(0, 120)))
+    setImmediate(() => this.conn.emit('close', this.endCode, Buffer.from(this.endReason).subarray(0, 120)))
   }
 }
 
@@ -165,7 +168,8 @@ function json(res, code, obj) {
   res.end(body)
 }
 function empty(res) { if (!res.headersSent) { res.writeHead(204, { 'cache-control': 'no-store' }); res.end() } }
-function gone(res) { json(res, 404, { gone: true }) }
+// Gone, with WHY when the relay knows it (a revoked token, a deleted room): the client says that, not "gone".
+function gone(res, why) { json(res, 404, { gone: true, ...(why || {}) }) }
 
 function readBody(req, max) {
   return new Promise((resolve, reject) => {
@@ -185,14 +189,17 @@ function readBody(req, max) {
  * The poll endpoint. `admit(req)` is server.js's admitUpgrade: it resolves to { accept(conn) } or
  * to { line } -- the exact status line an upgrade would have been refused with.
  */
-export function makePollHandler({ admit, audit = () => { }, holdMs = 20000, idleMs = 45000, maxSessions = 4096, maxFrameBytes = 16 * 1048576, maxQueueBytes = 64 * 1048576 } = {}) {
+export function makePollHandler({ admit, track = () => { }, audit = () => { }, holdMs = 20000, idleMs = 45000, maxSessions = 4096, maxFrameBytes = 16 * 1048576, maxQueueBytes = 64 * 1048576 } = {}) {
   const sessions = new Map()
+  // Ended sessions for two minutes, so a client's next request learns WHY it ended.
+  const ended = new Map()
   const reaper = setInterval(() => {
     const now = Date.now()
     for (const s of sessions.values()) if (!s.waiter && now - s.lastSeen > idleMs) s.end('idle: the client stopped polling')
+    for (const [id, e] of ended) if (now - e.at > 120000) ended.delete(id)
   }, 5000)
   reaper.unref()
-  const onEnd = (s, reason) => { sessions.delete(s.id); audit('poll-close', { reason: String(reason || '').slice(0, 160) }) }
+  const onEnd = (s, reason) => { sessions.delete(s.id); ended.set(s.id, { code: s.endCode, reason: String(reason || '').slice(0, 200), at: Date.now() }); audit('poll-close', { reason: String(reason || '').slice(0, 160) }) }
 
   async function handle(req, res) {
     if (req.method !== 'POST') return json(res, 405, { error: 'POST only' })
@@ -216,12 +223,15 @@ export function makePollHandler({ admit, audit = () => { }, holdMs = 20000, idle
         const s = new Session(id, { holdMs, idleMs, maxQueueBytes, maxResponseBytes: 4 * 1048576, onEnd })
         sessions.set(id, s)
         audit('poll-open', {})
+        // In wss.clients like any socket, so whatever walks the live connections (revoking a token,
+        // closing a deleted room) reaches this one too.
+        track(s.conn)
         a.accept(s.conn)
         return json(res, 200, { sid: id, holdMs, idleMs, v: POLL_VERSION })
       }
       const [sid, op] = rest.split('/')
       const s = sessions.get(sid)
-      if (!s) return gone(res)
+      if (!s) { const e = ended.get(sid); return gone(res, e && { code: e.code, reason: e.reason }) }
       if (op === 'recv') {
         await readBody(req, 1024)
         return s.recv(res, Number(req.headers['x-hive-ack']) || 0, Number(req.headers['x-hive-hold']) || holdMs)

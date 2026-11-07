@@ -147,12 +147,20 @@ export class PollSocket extends SocketShape {
     fire(this, 'error', { type: 'error', message, error, status, target: this })
     fire(this, 'close', { type: 'close', code: 1006, reason: message, wasClean: false, target: this })
   }
-  _lost(reason) {
+  _lost(reason, code = 1006) {
     if (this.readyState === CLOSED) return
     this.readyState = CLOSED
     if (this._sid) this._req('close', undefined, {}, 5000).catch(() => { })
-    fire(this, 'close', { type: 'close', code: 1006, reason, wasClean: false, target: this })
+    fire(this, 'close', { type: 'close', code, reason, wasClean: false, target: this })
   }
+  /** The relay ended the session: say why, when it said (a revoked token, a deleted room). */
+  async _gone(r) {
+    let j = null
+    try { j = await r.json() } catch { }
+    return this._lost((j && j.reason) || 'the relay ended this session', (j && Number(j.code)) || 1006)
+  }
+  /** Bytes not yet accepted by the relay, the in-flight batch included (as a WebSocket counts them). */
+  get bufferedAmount() { let n = 0; for (const b of this._outbox) n += b.length; return n }
   /** A request failed. Keep trying for 45 s (the relay keeps the session that long), then give up. */
   async _trouble(e, startedAt) {
     const now = Date.now()
@@ -171,7 +179,7 @@ export class PollSocket extends SocketShape {
       try { r = await this._req('recv', undefined, { 'x-hive-ack': String(this._ack), 'x-hive-hold': String(this._hold) }, this._hold + 15000) }
       catch (e) { if (!(await this._trouble(e, started))) return; continue }
       if (this.readyState !== OPEN) return
-      if (r.status === 404 || r.status === 410) { r.body && r.arrayBuffer().catch(() => { }); return this._lost('the relay ended this session') }
+      if (r.status === 404 || r.status === 410) return this._gone(r)
       if (r.status === 204) { this._ok(); continue }
       if (r.status !== 200) { await r.arrayBuffer().catch(() => { }); if (!(await this._trouble(new Error(`HTTP ${r.status}`), started))) return; continue }
       let frames, first
@@ -213,9 +221,9 @@ export class PollSocket extends SocketShape {
           let r
           try { r = await this._req('send', body, { 'content-type': 'application/octet-stream', 'x-hive-seq': String(first) }, 60000) }
           catch (e) { if (!(await this._trouble(e, 0))) return; continue } // the same numbers again: never applied twice
+          if (r.status === 404 || r.status === 410) return this._gone(r)
           await r.arrayBuffer().catch(() => { })
           if (r.status === 204 || r.status === 200) break
-          if (r.status === 404 || r.status === 410) return this._lost('the relay ended this session')
           if (r.status === 409) return this._lost("the relay saw a gap in this client's messages")
           if (r.status === 400 || r.status === 413) return this._lost(`the relay refused a message (HTTP ${r.status})`)
           if (!(await this._trouble(new Error(`HTTP ${r.status}`), started))) return
@@ -262,6 +270,7 @@ export class HiveSocket extends SocketShape {
   get binaryType() { return this._bt }
   set binaryType(v) { this._bt = v; if (this._inner) this._inner.binaryType = v }
   get transport() { return this._kind }
+  get bufferedAmount() { return (this._inner && this._inner.bufferedAmount) || 0 }
   _attach(inner, kind) {
     this._inner = inner
     this._kind = kind

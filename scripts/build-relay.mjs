@@ -322,6 +322,9 @@ try {
   // One socket per participant: a staged relay that silently lost relay-mux.js would still pass
   // every check above, and every client would quietly fall back to a socket per file.
   check('it offers one socket per participant (mux in /health)', h.mux === 1, `mux=${h.mux}`)
+  // HTTPS long-poll: a staged relay that lost relay-poll.js would leave every agent behind a
+  // WebSocket-refusing proxy (Antigravity's cloud VMs) unable to join, with nothing else failing.
+  check('it offers HTTPS long-poll (poll in /health)', h.poll === 1, `poll=${h.poll}`)
   const page = await fetch(`http://127.0.0.1:${PORT}/`)
   check('/ serves the relay landing page', page.status === 200)
   const ctl = await fetch(`http://127.0.0.1:${PORT}/control`)

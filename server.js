@@ -1640,7 +1640,7 @@ server.on('upgrade', async (req, socket, head) => {
 // HTTPS LONG-POLL, for networks that pass HTTPS but refuse every WebSocket upgrade (Antigravity's
 // cloud VMs, 7 Nov 2026; many company proxies). Same admission, same accept path, same gates.
 const RELAY_POLL = !/^(off|0|false)$/i.test(process.env.HIVE_RELAY_POLL || '')
-const poll = makePollHandler({ admit: admitUpgrade, audit, maxFrameBytes: LIMITS.maxFrameBytes || 16 * 1048576 })
+const poll = makePollHandler({ admit: admitUpgrade, audit, track: (conn) => { wss.clients.add(conn); conn.once('close', () => wss.clients.delete(conn)) }, maxFrameBytes: LIMITS.maxFrameBytes || 16 * 1048576 })
 
 wss.on('connection', (conn, req) => {
   const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'
