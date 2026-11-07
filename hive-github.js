@@ -1632,7 +1632,16 @@ function flags(argv) {
 
 const USAGE = `usage:
   npx -y hivecode-mcp@latest github start --agent "<agent command>" [options]
+  npx -y hivecode-mcp@latest github start --room "<room link>" [--fallback-agent "<command>"] [--ack-minutes 10]
+  npx -y hivecode-mcp@latest github start --branch <name> [--fallback-agent "<command>"] [--ack-minutes 10]
   npx -y hivecode-mcp@latest github status
+
+--room: hand each labelled issue to the agents ALREADY in that room (a room bound to a branch of
+this repo: npx -y hivecode-mcp@latest branch <name>). They split it, build it and review each other;
+Hivecode runs the tests and opens one pull request. One issue at a time.
+  --branch <name>               bind or use the room for this branch, and run room mode
+  --fallback-agent "<command>"  if nobody in the room takes an issue, start this agent in the room
+                                (opt-in: it spends that agent's tokens; capped by --max-runs-per-day)
 
 The agent command reads its task on stdin. For Claude Code:
   --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"
@@ -1686,6 +1695,16 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   if (sub === 'status') {
     const s = loadState(file, log, { peek: true })
     log(describe(s, s.config || {}))
+    // ROOM MODE keeps its own state (room-<room>.json, never github.json): describe each one, so
+    // "why isn't it picking up my issue?" has an answer here too.
+    try {
+      const dir = path.join(gitDir, 'hivecode')
+      const rooms = fs.existsSync(dir) ? fs.readdirSync(dir).filter((x) => /^room-.+\.json$/.test(x)) : []
+      if (rooms.length) {
+        const RW = await import('./hive-room-watcher.js')
+        for (const x of rooms) log(`\n${RW.describeRoomState(RW.loadRoomState(path.join(dir, x)))}`)
+      }
+    } catch (e) { log(`(room mode state could not be read: ${e.message})`) }
     return 0
   }
 
@@ -1719,6 +1738,27 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     return busy ? EXIT_AGAIN : EXIT_FIX
   }
   if (info.permissions && info.permissions.push === false) { logErr(`Q601 the GitHub account gh is logged in as cannot push to ${id.owner}/${id.repo}.`); return EXIT_FIX }
+  // ROOM MODE: issues go to the agents ALREADY in a room (hive-room-watcher.js), and no agent of ours
+  // runs unless --fallback-agent asks for one. Everything below this line is the other mode.
+  if (opt('room') || ('branch' in f)) {
+    if (f['dry-run']) { logErr('Q602 --dry-run does not work with --room yet. Use: npx -y hivecode-mcp@latest github status'); return EXIT_FIX }
+    let roomLink = opt('room')
+    if (!roomLink && ('branch' in f)) {
+      const branchName = String(opt('branch') || '').trim()
+      if (!branchName || branchName === 'true') { logErr('Q602 say which branch to watch, with --branch <name>.'); return EXIT_FIX }
+      const HB = await import('./hive-branch.js')
+      try {
+        const bound = await HB.bindBranch({ cwd: root, branch: branchName, relay: opt('relay') || '', log })
+        roomLink = bound.link
+        f['room'] = roomLink
+      } catch (e) {
+        logErr(isQ(e) ? e.message : `Q603 ${e.message}`)
+        return EXIT_FIX
+      }
+    }
+    const RW = await import('./hive-room-watcher.js')
+    return RW.runRoomMode({ f, opt, gh, id, info, root, gitDir, label: opt('label') || LABEL, log, logErr })
+  }
   const agent = opt('agent')
   if (!agent) { logErr(`Q602 say which agent runs the work, with --agent "<command>".\n\n${USAGE}`); return EXIT_FIX }
   if (!commandExists(agent)) { logErr(`Q602 "${String(agent).split(/\s+/)[0]}" is not installed here (not on PATH).`); return EXIT_FIX }

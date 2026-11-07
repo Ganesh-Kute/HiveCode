@@ -31,7 +31,6 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { spawnSync } from 'child_process'
-import { fileURLToPath } from 'url'
 import ignore from 'ignore'
 import { startSync, parseLink, ALWAYS_IGNORE, SKIP } from './sync.js'
 import { PUBLIC_DEFAULT_RELAY, currentRelayFor } from './hive-privacy.js'
@@ -40,6 +39,10 @@ import { validateMemberName, suggestMemberName } from './hive-mailbox.js'
 import { isSafeRelPath } from './token.js'
 
 const TEXT_MAX = 1_000_000 // sync.js MAX_BYTES: a larger file never crosses the relay
+
+// For hive-land.js, the one landing path. Declared below; exported here so the landing reads the
+// binding, the branch and the room with exactly the rules this module binds and seeds with.
+export { projectRoot, validBranch, revParse, coded, safeSegment, isOwnFile, git as gitIn, waitFor }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const coded = (code, msg) => Object.assign(new Error(`${code} ${msg}`), { code })
 
@@ -327,6 +330,13 @@ async function seedRoom({ root, branch, commit, link, you, log }) {
       throw coded('Q566', `a fresh joiner did not receive the whole branch: ${missing.length} of ${expected.size} files are missing or different (first: ${missing.slice(0, 5).join(', ')}). Nothing was bound; agents would have built on a partial tree.`)
     }
     const short = commit.slice(0, 7)
+    // Who holds this room's repo, for display only: an agent on another machine asked to open a PR
+    // is told whom to ask. Never a path; what lands is decided on the landing machine alone.
+    try { const R = await import('./hive-repos.js'); R.writeRepoHolder(seeder.doc, { branch, holder: you, host: os.hostname() }) } catch { /* display only */ }
+    // THE COMMIT THE ROOM STARTS FROM, for a teammate's `--join`: without it their clone cannot tell
+    // a file the room deleted from one added to the branch later, and landing from there skipped the
+    // room's deletions -- and the Q572 guard -- without a word (antigravity, 5 Nov 2026).
+    try { seeder.doc.getMap('seed').set('commit', commit); seeder.doc.getMap('seed').set('branch', branch) } catch { /* older relay docs */ }
     seeder.say(`Room for git branch \`${branch}\` @ ${short}, seeded by ${you} with ${expected.size} file(s). Work here lands on \`${branch}\` as one commit per agent via \`npx -y hivecode-mcp@latest pr ${branch}\`. Room folders are not git checkouts on purpose: edit files, do not commit.`)
     await sleep(600) // let the announcement leave before the socket closes
     return { dir, count: expected.size, total: files.length }
@@ -354,6 +364,25 @@ async function roomPaths(link, you) {
   }
 }
 const roomFileCount = async (link, you) => { const p = await roomPaths(link, you); return p ? p.size : null }
+
+/** The commit the room was seeded from, as its seeder recorded it ({ commit, branch }), or null. */
+async function roomSeed(link, you) {
+  const { relay, room } = parseLink(link)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-peek-'))
+  const peek = startSync({ relay, room, dir, name: `${you}-peek`, kind: 'ai', passive: true, syncFiles: false, log: () => {} })
+  try {
+    let synced = false
+    peek.provider.on('sync', (s) => { if (s) synced = true })
+    if (!(await waitFor(() => synced, 15000))) return null
+    await sleep(300)
+    const m = peek.doc.getMap('seed')
+    const commit = m.get('commit')
+    return typeof commit === 'string' && /^[0-9a-f]{40}$/i.test(commit) ? { commit, branch: String(m.get('branch') || '') } : null
+  } finally {
+    try { peek.stop() } catch { }
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { }
+  }
+}
 
 /** The branch a PR from `name` goes into: the checkout's current branch, else origin's default. */
 function defaultBase(root, name) {
@@ -383,6 +412,15 @@ export function removeRoomFolder(dir, room) {
   fs.rmSync(abs, { recursive: true, force: true })
 }
 
+const projectRootOrNull = (cwd) => { try { return projectRoot(cwd) } catch { return null } }
+
+// THIS MACHINE'S RECORD OF WHICH REPO HOLDS WHICH ROOM (hive-repos.js), so an agent that joined by
+// link -- not by branch -- can still land from here with hive_pr. Imported late: hive-repos imports
+// this module. Best effort: a registry that cannot be written never fails a bind, and hive_pr then
+// says exactly that the room is not bound on this machine (Q583), with the command that fixes it.
+async function registerLocal(root, branch, link) {
+  try { const R = await import('./hive-repos.js'); return !!R.registerRepo({ root, branch, link }) } catch { return false }
+}
 function youFrom(root, given) {
   const raw = given || git(root, ['config', 'user.name']).out || os.userInfo().username || 'dev'
   return validateMemberName(raw).ok ? raw : suggestMemberName(raw)
@@ -403,14 +441,17 @@ export async function bindBranch({ cwd, branch, from = '', relay = '', you = '',
     const { relay: jr, room } = parseLink(join)
     if (!jr || !room) throw coded('Q567', `"${join}" is not a room link (it looks like wss://relay|room-...).`)
     if (existing && existing.link !== join) throw coded('Q567', `branch "${name}" is already bound to a different room here (${existing.link}). Remove it with: git config --remove-section "hivecode.${name}"`)
-    writeBinding(root, name, { room: join })
-    return { root, branch: name, link: join, you: me, joined: true }
+    const seed = await roomSeed(join, me)
+    writeBinding(root, name, { room: join, base: seed && seed.commit ? seed.commit : '' })
+    await registerLocal(root, name, join)
+    return { root, branch: name, link: join, you: me, joined: true, base: seed && seed.commit ? seed.commit : '' }
   }
 
   if (existing && !reseed) {
     const n = await roomFileCount(existing.link, me)
     // Empty is only news when the seed was not: a branch with nothing a room can carry seeds nothing.
     const lost = n === 0 && Number(existing.files || 1) > 0
+    await registerLocal(root, name, existing.link) // a binding made before the registry existed gets its entry
     return { root, branch: name, link: existing.link, you: me, from: existing.from, existing: true, roomFiles: n, lost }
   }
 
@@ -459,166 +500,27 @@ export async function bindBranch({ cwd, branch, from = '', relay = '', you = '',
     throw e
   }
   writeBinding(root, name, { room: link, from: fromName, base: tip, seed: seeded.dir, files: String(seeded.count) })
+  await registerLocal(root, name, link)
   return { root, branch: name, link, you: me, from: fromName, commit: tip, created, reseeded: reseed, files: seeded.count, total: seeded.total, seedDir: seeded.dir }
 }
 
 // ---- landing: the room's work becomes commits on the branch ---------------------------------
 
-const HIVE_PR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'hive-pr.js')
-const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-
 /**
- * THE ROOM'S DELETIONS, which hive-pr does not land: it copies the files a room holds, so a file an
- * agent deleted would simply stay on the branch, in a PR that looks complete. A room bound to a
- * branch starts as the whole branch, so "on the branch but no longer in the room" is a deletion --
- * but only when the room provably held THAT version of the file. For each such path:
- *   - last changed on the branch by a landing from this room (its commit says "Room: <id>") -> delete
- *   - unchanged since the seed commit                                                  -> delete
- *   - in the seed, but changed on the branch since by someone else                     -> REFUSE (Q572):
- *     deleting it would erase a change the room never saw
- *   - not in the seed and not landed from this room: added to the branch outside the room -> keep
- */
-async function roomDeletions({ root, link, base, tip }) {
-  if (!base) return []
-  const paths = await roomPaths(link, 'hive-land')
-  if (!paths) throw coded('Q565', `could not reach the relay to read the room's file list, so its deletions cannot be accounted for. Nothing was changed.`)
-  const room = parseLink(link).room
-  const atTip = treeFiles(root, tip)
-  const carries = roomCarries(atTip)
-  const baseSha = new Map(treeFiles(root, base).map((f) => [f.rel, f.sha]))
-  const gone = [], diverged = []
-  for (const f of atTip) {
-    if (!carries(f) || paths.has(f.rel)) continue
-    const last = git(root, ['log', '-1', '--format=%B', tip, '--', f.rel]).out
-    if (new RegExp(`^Room: ${reEsc(room)}$`, 'm').test(last)) gone.push(f.rel)
-    else if (baseSha.get(f.rel) === f.sha) gone.push(f.rel)
-    else if (baseSha.has(f.rel)) diverged.push(f.rel)
-  }
-  if (diverged.length) {
-    const who = (rel) => git(root, ['log', '-1', '--format=%h %an %ad %s', '--date=short', tip, '--', rel]).out
-    throw coded('Q572', `the room deleted ${diverged.length} file(s) that were changed on the branch since it was seeded, by a change the room never saw:\n${diverged.map((r) => `  ${r}   last changed by: ${who(r)}`).join('\n')}\nDeleting them would erase that change. Nothing was changed. Restore the file in the room (or delete it on the branch yourself), then run pr again.`)
-  }
-  return gone
-}
-
-function worktreesOn(root, branch) {
-  const r = git(root, ['worktree', 'list', '--porcelain'])
-  const out = []
-  let cur = null
-  for (const line of r.out.split('\n')) {
-    if (line.startsWith('worktree ')) cur = line.slice(9)
-    else if (line === `branch refs/heads/${branch}` && cur) out.push(path.resolve(cur))
-  }
-  return out
-}
-
-/**
- * `pr <name>`: land the room's work on the bound branch as one commit per agent.
+ * `pr <name>` used to land here. Landing now has ONE path, hive-land.js landAndOpen, shared by the
+ * `pr` command, the hive_pr tool and the GitHub watcher: every check (claims, an empty room, workflow
+ * files, keys, tests, origin ahead, the lock) protects all three. Two copies of the landing had
+ * already drifted once (the deletion accounting lived only here).
  *
- * hive-pr writes the commits (attribution and the staleness check are all its own), but it runs in
- * a TEMPORARY WORKTREE detached at the branch tip, because hive-pr switches the checkout it is given
- * and the developer's must never be switched. The branch then moves by compare-and-swap from the tip
- * the worktree was cut from, so a commit that reached the branch meanwhile is refused, never lost.
+ * landBranch keeps its old contract for the watcher, which still runs its own workflow, key and test
+ * checks after landing, and whose agent has exited by the time it lands (so its claims are moot):
+ * { ok:true, landed, tip, deletions } | { ok:false, code } with the reason on logErr.
  */
 export async function landBranch({ cwd, branch, dry = false, push = false, pr = false, base = '', force = '', only = '', title = '', log = console.log, logErr = console.error }) {
-  const root = projectRoot(cwd)
-  const name = validBranch(root, branch)
-  const b = readBinding(root, name)
-  if (!b) throw coded('Q562', `branch "${name}" has no Hivecode room here. Create one with: npx -y hivecode-mcp@latest branch ${name}`)
-  const tip = revParse(root, `refs/heads/${name}`)
-  if (!tip) throw coded('Q563', `branch "${name}" does not exist in ${root}. Fetch it first: git fetch origin ${name}:${name}`)
-
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-land-'))
-  const temp = `hivecode-land/${safeSegment(name)}-${process.pid}-${Date.now()}`
-  const cleanup = () => {
-    git(root, ['worktree', 'remove', '--force', tmp])
-    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { }
-    git(root, ['worktree', 'prune'])
-    if (revParse(root, `refs/heads/${temp}`)) git(root, ['branch', '-D', temp])
-  }
-  const wt = git(root, noHooks(['worktree', 'add', '--detach', tmp, tip]))
-  if (wt.code !== 0) { cleanup(); throw coded('Q563', `could not make a temporary worktree: ${wt.err}`) }
-
-  try {
-    // Accounted for BEFORE anything is written, so a refusal (Q572) leaves the branch as it was.
-    const deletions = await roomDeletions({ root, link: b.link, base: b.base, tip })
-
-    const args = [HIVE_PR, b.link, 'hive-pr', '--repo', tmp, '--branch', temp, '--base', 'HEAD']
-    if (dry) args.push('--dry-run')
-    if (force) args.push('--force', force)
-    if (only) args.push('--only', only)
-    const r = spawnSync(process.execPath, args, { cwd: tmp, encoding: 'utf8', env: noHooksEnv({ ...process.env, HIVE_PROVENANCE: 'on' }), maxBuffer: 64 * 1024 * 1024, windowsHide: true })
-    if (r.stdout) log(r.stdout.replace(/\s+$/, ''))
-    // Q501 is hive-pr saying no file in the room carries an agent's receipt: nothing was changed or
-    // added. For a branch room that is an answer, not a failure -- and deletions may still land.
-    const nothingChanged = r.status !== 0 && /^Q501 /m.test(r.stderr || '')
-    if (r.stderr && !nothingChanged) logErr(r.stderr.replace(/\s+$/, ''))
-    if (r.status !== 0 && !nothingChanged) return { ok: false, code: r.status || 1 }
-    if (dry) {
-      if (deletions.length) log(`would delete ${deletions.length} file(s) the room deleted: ${deletions.join(', ')}`)
-      return { ok: true, dry: true, deletions }
-    }
-
-    if (deletions.length) {
-      // hive-pr left the temporary worktree on its branch when it committed; when it had nothing to
-      // commit it never made one, so make it here, at the same tip.
-      if (!revParse(root, `refs/heads/${temp}`)) git(tmp, noHooks(['checkout', '-q', '-b', temp]))
-      const rm = git(tmp, ['rm', '-q', '--', ...deletions])
-      if (rm.code !== 0) throw coded('Q563', `could not stage the room's deletions: ${rm.err}`)
-      const msg = [`Room: delete ${deletions.length === 1 ? deletions[0] : `${deletions.length} files`}`, '', ...deletions.map((d) => `  - ${d}`), '', `Room: ${parseLink(b.link).room}`].join('\n')
-      const c = git(tmp, noHooks(['commit', '-q', '-m', msg, '--author', 'hivecode-room <room@agents.hivecode.local>']))
-      if (c.code !== 0) throw coded('Q563', `could not commit the room's deletions: ${c.err || c.out}`)
-    }
-    // NOTHING NEW TO LAND IS NOT "DONE" WHEN A PUSH OR A PR WAS ASKED FOR. The usual sequence is a
-    // plain `pr` to look, then `pr --pr`; the second run lands nothing, and returning here skipped
-    // the push and the PR while printing success (1 Nov 2026). Push and open what is already there.
-    let nothingNew = false
-    if (nothingChanged && !deletions.length) { log(`nothing to land yet: no agent has changed a file in the room for ${name}.`); nothingNew = true }
-    const newTip = nothingNew ? tip : revParse(root, `refs/heads/${temp}`)
-    if (!nothingNew && (!newTip || newTip === tip)) { log(`nothing to land: ${name} already has everything the room holds.`); nothingNew = true }
-    if (nothingNew && !push && !pr) return { ok: true, landed: 0 }
-    if (nothingNew) return finish('')
-
-    // Move the branch. Checked out somewhere: only a clean fast-forward of that checkout, which is
-    // what `git pull` would do; with local changes it is refused, because moving the branch under a
-    // dirty checkout makes its edits look like reversals of the landed work.
-    const on = worktreesOn(root, name).filter((p) => p !== path.resolve(tmp))
-    if (on.length) {
-      const where = on[0]
-      const dirty = git(where, ['status', '--porcelain', '--untracked-files=no'])
-      if (dirty.out) throw coded('Q571', `${name} is checked out in ${where} with uncommitted changes. Commit or stash them there (or switch that checkout to another branch), then run pr again. Nothing was changed.`)
-      const ff = git(where, ['merge', '--ff-only', '--quiet', newTip])
-      if (ff.code !== 0) throw coded('Q570', `could not fast-forward ${name} in ${where}: ${ff.err || 'git refused'}. Nothing was changed; if the branch moved there, run pr again.`)
-    } else {
-      const cas = git(root, ['update-ref', '-m', 'hivecode: land room work', `refs/heads/${name}`, newTip, tip])
-      if (cas.code !== 0) throw coded('Q570', `${name} moved while this was landing (it is no longer ${tip.slice(0, 7)}). Nothing was changed; run pr again so the new commits are accounted for.`)
-    }
-    const made = git(root, ['log', '--format=  %h  %an  %s', `${tip}..${newTip}`]).out
-    log(`\nlanded on ${name}:\n${made}`)
-    return finish(made)
-
-    // `made` is '' when nothing new landed this run: the push and the PR are of what is already on
-    // the branch, and the PR body lists the branch's commits since its base instead.
-    function finish(made) {
-      if (push) {
-        const p = git(root, ['push', '-u', 'origin', name])
-        if (p.code !== 0) throw coded('Q573', `the work ${made ? 'landed' : 'is'} on ${name} locally, but the push failed: ${p.err}`)
-        log(`pushed ${name}`)
-      }
-      if (pr) {
-        const into = base || b.from
-        if (!into) throw coded('Q574', `the work is on ${name}, but there is no branch to open the PR into; pass --base <branch>.`)
-        const listed = made || git(root, ['log', '--format=  %h  %an  %s', `${into}..${name}`]).out
-        const body = [`Opened by Hivecode from the room bound to \`${name}\`.`, '', 'Each commit carries its agent as the git author and the signed author id as a `Hivecode-Author` trailer.', '', '```', listed, '```'].join('\n')
-        const g = spawnSync('gh', ['pr', 'create', '--base', into, '--head', name, '--title', title || `Hivecode: ${name}`, '--body', body], { cwd: root, encoding: 'utf8', windowsHide: true })
-        if (g.status !== 0) throw coded('Q574', `the work is on ${name}, but gh pr create failed: ${(g.stderr || (g.error && g.error.message) || '').toString().trim()}`)
-        log((g.stdout || '').trim())
-      }
-      return { ok: true, landed: made ? made.split('\n').filter(Boolean).length : 0, tip: made ? newTip : tip, deletions }
-    }
-  } finally {
-    cleanup()
-  }
+  const { landAndOpen } = await import('./hive-land.js')
+  const r = await landAndOpen({ cwd, branch, dry: !!dry, push, pr, base, force, only, title, log, logErr, claims: false, checks: false, by: 'the Hivecode GitHub watcher' })
+  if (!r.ok) { logErr(r.why); return { ok: false, code: 1, refused: r.code } }
+  return r.dry ? { ok: true, dry: true, deletions: r.deletions } : { ok: true, landed: r.landed, tip: r.tip, deletions: r.deletions }
 }
 
 // ---- CLI ----------------------------------------------------------------------------------
@@ -630,7 +532,7 @@ function flags(argv) {
     const a = argv[i]
     if (!a.startsWith('--')) { pos.push(a); continue }
     const k = a.slice(2)
-    if (['dry-run', 'push', 'pr', 'reseed'].includes(k)) f[k] = true
+    if (['dry-run', 'push', 'pr', 'reseed', 'allow-workflow-changes', 'allow-mass-delete', 'save'].includes(k)) f[k] = true
     else f[k] = argv[++i] || ''
   }
   return { pos, f }
@@ -640,7 +542,8 @@ const USAGE = `usage:
   npx -y hivecode-mcp@latest branch <name> [--from <ref>] [--name <you>] [--relay <url>]
   npx -y hivecode-mcp@latest branch <name> --join "<link>"
   npx -y hivecode-mcp@latest branch <name> --reseed
-  npx -y hivecode-mcp@latest pr <name> [--dry-run] [--push] [--pr] [--base <branch>] [--force "<reason>"]`
+  npx -y hivecode-mcp@latest pr <name> [--dry-run] [--push] [--pr] [--base <branch>] [--test "<command>" [--test-copy <file,...>] [--test-setup "<cmd>"] [--save]] [--test-minutes <n>]
+                                       [--allow-workflow-changes] [--allow-mass-delete] [--title "<t>"] [--force "<reason>"]`
 
 /** `argv` starts at the subcommand: ['branch', 'fix-x', ...] or ['pr', 'fix-x', ...]. Returns an exit code. */
 export async function main(argv, { cwd = process.cwd(), log = console.log, logErr = console.error } = {}) {
@@ -650,8 +553,26 @@ export async function main(argv, { cwd = process.cwd(), log = console.log, logEr
   if (!name || (cmd !== 'branch' && cmd !== 'pr')) { logErr(USAGE); return 2 }
   try {
     if (cmd === 'pr') {
-      const r = await landBranch({ cwd, branch: name, dry: !!f['dry-run'], push: !!(f.push || f.pr), pr: !!f.pr, base: f.base || '', force: f.force || '', only: f.only || '', title: f.title || '', log, logErr })
-      return r.ok ? 0 : r.code || 1
+      const { landAndOpen, testCommandFor, saveTestCommand } = await import('./hive-land.js')
+      let test = f.test || ''
+      // --test-copy a,b  and  --test-setup "<cmd>": what the tests need beyond git (see hive-land.js).
+      const testCopy = 'test-copy' in f ? String(f['test-copy'] || '').split(',').map((s) => s.trim()).filter(Boolean) : undefined
+      const testSetup = 'test-setup' in f ? String(f['test-setup'] || '') : undefined
+      if (f.save) {
+        if (!test) { logErr(`--save keeps a test command: pass it with --test "<command>"`); return 2 }
+        saveTestCommand(cwd, name, test, { copy: testCopy ?? null, setup: testSetup ?? null })
+        log(`saved: landing ${name} now runs ${testSetup ? `\`${testSetup}\`, then ` : ''}\`${test}\` first${testCopy && testCopy.length ? `, with ${testCopy.join(', ')} copied in` : ''}, from any caller (pr, hive_pr, room mode). Change it the same way.`)
+      }
+      // No --test: the command saved for this branch, if any. (The project's own `npm test` is the
+      // hive_pr tool's fallback; here the developer is present, so nothing runs they did not choose.)
+      if (!test) { const t = testCommandFor(cwd, name); if (t.from === 'saved') { test = t.command; log(`tests: \`${test}\` (saved for ${name})`) } }
+      const r = await landAndOpen({
+        cwd, branch: name, dry: !!f['dry-run'], push: !!(f.push || f.pr), pr: !!f.pr, base: f.base || '', force: f.force || '', only: f.only || '', title: f.title || '',
+        test, testMinutes: Number(f['test-minutes']) || 0, testCopy, testSetup, allowWorkflowChanges: !!f['allow-workflow-changes'], allowMassDelete: !!f['allow-mass-delete'],
+        by: youFrom(projectRootOrNull(cwd) || cwd, ''), log, logErr,
+      })
+      if (!r.ok) { logErr(r.why); return 1 }
+      return 0
     }
     const r = await bindBranch({ cwd, branch: name, from: f.from || '', relay: f.relay || '', you: f.name || '', join: f.join || '', reseed: !!f.reseed })
     const agentLine = `Use hive_join with branch "${r.branch}", repo "${r.root.replace(/\\/g, '/')}", as a name of your own (each agent picks a different one)`
