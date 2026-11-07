@@ -397,9 +397,7 @@ try {
           fs.readFileSync(path.join(vmAgent.syncDir, 'from-ws.js'), 'utf8') === 'export const fromWs = 99\n',
     10000
   )
-  // Chat and files travel on separate long-poll sessions, so the file landing does not mean the
-  // mention has: measured 116-127 ms later on Claude's machine. Wait for it without marking it read.
-  if (wsFileOnVm) await waitUntil(async () => /please review from-ws.js/.test(await vmAgent.call('hive_check', { peek: true })), 10000, 100)
+  if (wsFileOnVm) await waitUntil(async () => /please review from-ws\.js/.test(await vmAgent.call('hive_check', { peek: true })), 10000, 100)
   const checkOut = await vmAgent.call('hive_check', {})
 
   T(
