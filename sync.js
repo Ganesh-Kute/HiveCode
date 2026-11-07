@@ -22,7 +22,7 @@ import crypto from 'crypto'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
-import { WebSocket } from 'ws'
+import { HiveSocket, transportFor } from './hive-transport.js' // a WebSocket, or HTTPS long-poll where WebSockets are refused
 import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
@@ -1121,7 +1121,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (name) wsParams.name = String(name).slice(0, 48)
   if (kind) wsParams.kind = kind
   if (passive) wsParams.passive = 'true'
-  const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
+  // HiveSocket: a WebSocket where the network allows one, HTTPS long-poll where it refuses the upgrade
+  // (Antigravity's cloud VMs, many company proxies). Same bytes, same relay gates, either way.
+  const wsOpts = { WebSocketPolyfill: HiveSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
   // ONE SOCKET PER PARTICIPANT. When the relay offers it (it says so in /health), file docs stop
   // costing a socket each: they ride one physical socket as channels, and the relay admits each
   // one through the same gates a per-file socket passes. Against a relay that does not offer it,

@@ -37,6 +37,8 @@ import * as meter from './usage-meter.js'
 // ONE SOCKET PER PARTICIPANT: the wire format and the session that serves it. Static imports, so
 // scripts/build-relay.mjs puts both in the published relay.
 import { MUX_PREFIX, MUX_VERSION } from './hive-mux-proto.js'
+import { POLL_PREFIX, POLL_VERSION } from './hive-poll-proto.js'
+import { makePollHandler } from './relay-poll.js'
 import { VERSION, BUILD } from './hive-version.js'
 import { serveMux } from './relay-mux.js'
 import { STATIC, staticFile } from './relay-static.js'
@@ -1105,6 +1107,11 @@ if (PERSIST_DIR) {
 }
 
 const server = http.createServer((req, res) => {
+  // A room connection carried over HTTPS requests (relay-poll.js), for networks that refuse upgrades.
+  if (req.url && req.url.startsWith(POLL_PREFIX)) {
+    if (!RELAY_POLL) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('long-poll is off on this relay') }
+    return poll.handle(req, res)
+  }
   // Remote Model Context Protocol (MCP) Streamable HTTP & SSE endpoint for cloud AI agents
   try {
     if (isMcpRequest(req)) {
@@ -1139,6 +1146,8 @@ const server = http.createServer((req, res) => {
       // Clients read this to decide whether to carry all their files on one socket (mux) or open
       // one socket per file. An absent field is what every older relay answers: "one per file".
       mux: RELAY_MUX ? MUX_VERSION : 0,
+      // HTTPS long-poll for networks that refuse WebSocket upgrades. Clients read this, never guess.
+      poll: RELAY_POLL ? POLL_VERSION : 0,
       rooms: s.rooms,
       docsTracked: s.docsTracked,
       largestDocBytes: s.largestDocBytes,
@@ -1365,7 +1374,9 @@ function parseUpgrade(url) {
 }
 
 function refuseUpgrade(socket, line) {
-  socket.write(`HTTP/1.1 ${line}\r\nConnection: close\r\n\r\n`)
+  // X-Hive-Relay says the RELAY refused, not a proxy in the way: a client must not answer the relay's
+  // own refusal by trying another transport.
+  socket.write(`HTTP/1.1 ${line}\r\nX-Hive-Relay: 1\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
 
@@ -1552,27 +1563,27 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
 // ONE SOCKET PER PARTICIPANT. The physical socket is authorized as the BASE room -- the same
 // grant the client's base-room connection already uses -- and occupies one slot of the total.
 // Every file it then opens goes through gateRoom and acceptConnection above, per file.
-async function upgradeMux(req, socket, head, q) {
-  if (!RELAY_MUX) return refuseUpgrade(socket, '404 Not Found')
+async function admitMux(req, q) {
+  if (!RELAY_MUX) return { line: '404 Not Found' }
   const baseRoom = q.room.slice(MUX_PREFIX.length)
-  if (!baseRoom || baseRoomOf(baseRoom) !== baseRoom || pathOf(baseRoom)) return refuseUpgrade(socket, '400 Bad Request')
+  if (!baseRoom || baseRoomOf(baseRoom) !== baseRoom || pathOf(baseRoom)) return { line: '400 Bad Request' }
   const t = await resolveTier(q.room, q.license)
-  if (!t.ok) return refuseUpgrade(socket, t.line)
+  if (!t.ok) return { line: t.line }
   let auth
   try { auth = authorize(baseRoom, q.token, q.declaredName, q.declaredKind) }
   catch (e) { auth = { ok: false, code: 401, reason: 'authorization error' }; console.error('[relay] authorize threw:', e && e.message) }
   if (!auth.ok) {
     audit('reject', { room: q.room, reason: auth.reason })
     const code = auth.code || 401
-    return refuseUpgrade(socket, `${code} ${code === 403 ? 'Forbidden' : code === 503 ? 'Service Unavailable' : 'Unauthorized'}`)
+    return { line: `${code} ${code === 403 ? 'Forbidden' : code === 503 ? 'Service Unavailable' : 'Unauthorized'}` }
   }
   const key = MUX_KEY(baseRoom)
   const full = admitConnection(key, t.tier)
   if (full) {
     audit('reject-capacity', { room: q.room, identity: auth.identity.name, reason: full.reason })
-    return refuseUpgrade(socket, `${full.code} ${full.reason}`)
+    return { line: `${full.code} ${full.reason}` }
   }
-  wss.handleUpgrade(req, socket, head, (ws) => {
+  return { accept: (ws) => {
     noteConnectionOpened(key)
     const openedAt = Date.now()
     ws._hiveGrant = { base: baseRoom, jti: auth.identity && auth.identity.jti } // what a revoke matches on
@@ -1603,20 +1614,33 @@ async function upgradeMux(req, socket, head, q) {
         audit('mux-disconnect', { baseRoom, identity: auth.identity, heldMs: Date.now() - openedAt })
       },
     })
-  })
+  } }
+}
+
+// THE ONE ADMISSION DECISION for a connection, whatever carries it: a WebSocket upgrade below, or an
+// HTTPS long-poll session (relay-poll.js) for networks that refuse upgrades. Resolves to { line }, the
+// status line to refuse with, or { accept(conn) }. Both carriers call it, so a check added here
+// protects both, and neither can be the way around the other.
+async function admitUpgrade(req) {
+  const q = parseUpgrade(req.url)
+  if (q.room.startsWith(MUX_PREFIX)) return admitMux(req, q)
+  const t = await resolveTier(q.room, q.license)
+  if (!t.ok) return { line: t.line }
+  const g = gateRoom(q.room, { token: q.token, declaredName: q.declaredName, declaredKind: q.declaredKind, tier: t.tier, committerLimit: t.committerLimit, channel: false })
+  if (!g.ok) return { line: g.line }
+  return { accept: (conn) => acceptConnection(conn, req, q.room, { auth: g.auth, tier: t.tier, license: q.license, agentId: g.agentId, channel: false }) }
 }
 
 server.on('upgrade', async (req, socket, head) => {
-  const q = parseUpgrade(req.url)
-  if (q.room.startsWith(MUX_PREFIX)) return upgradeMux(req, socket, head, q)
-  const t = await resolveTier(q.room, q.license)
-  if (!t.ok) return refuseUpgrade(socket, t.line)
-  const g = gateRoom(q.room, { token: q.token, declaredName: q.declaredName, declaredKind: q.declaredKind, tier: t.tier, committerLimit: t.committerLimit, channel: false })
-  if (!g.ok) return refuseUpgrade(socket, g.line)
-  wss.handleUpgrade(req, socket, head, (conn) => {
-    acceptConnection(conn, req, q.room, { auth: g.auth, tier: t.tier, license: q.license, agentId: g.agentId, channel: false })
-  })
+  const a = await admitUpgrade(req)
+  if (!a.accept) return refuseUpgrade(socket, a.line)
+  wss.handleUpgrade(req, socket, head, (conn) => a.accept(conn))
 })
+
+// HTTPS LONG-POLL, for networks that pass HTTPS but refuse every WebSocket upgrade (Antigravity's
+// cloud VMs, 7 Nov 2026; many company proxies). Same admission, same accept path, same gates.
+const RELAY_POLL = !/^(off|0|false)$/i.test(process.env.HIVE_RELAY_POLL || '')
+const poll = makePollHandler({ admit: admitUpgrade, audit, maxFrameBytes: LIMITS.maxFrameBytes || 16 * 1048576 })
 
 wss.on('connection', (conn, req) => {
   const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'
