@@ -1577,7 +1577,9 @@ export function makeWatcher(o) {
  *  `retry`, does anything. Who may is `check` (hive-slack.js's rules, shared with the room bridge). */
 export function makeSlackReplyHandler({ w, check, allow = [], channel }) {
   return async (ev) => {
-    if (!ev || ev.type !== 'message' || ev.subtype || ev.bot_id || ev.channel !== channel || !ev.thread_ts) return { ignored: true }
+    // thread_broadcast and file_share are a person talking; other subtypes are not (a copy of
+    // hive-slack.js PERSON_SUBTYPES: this module loads hive-slack.js lazily).
+    if (!ev || ev.type !== 'message' || (ev.subtype && ev.subtype !== 'thread_broadcast' && ev.subtype !== 'file_share') || ev.bot_id || ev.channel !== channel || !ev.thread_ts) return { ignored: true }
     const m = String(ev.text || '').trim().match(/^(stop|retry)\b/i)
     if (!m) return { ignored: true }
     const action = m[1].toLowerCase()

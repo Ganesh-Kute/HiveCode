@@ -39,6 +39,7 @@ import {
   preflightSocketMode,
   connectSocketMode,
   parseSlackAllow,
+  notFromAPerson,
 } from './hive-slack.js'
 
 export { stopAll, resumeAll, resolveName, route }
@@ -219,7 +220,7 @@ export function makeAgent({
   /** The one entry point for Slack events. Only a message in the configured channel or in a DM, or
    *  the native stop button, does anything; everything else is ignored before any actor lookup. */
   async function onEvent(ev) {
-    if (!ev || ev.bot_id || ev.subtype || (botUserId && ev.user === botUserId)) return { ignored: 'bot_or_subtype' }
+    if (notFromAPerson(ev) || (botUserId && ev.user === botUserId)) return { ignored: 'bot_or_subtype' }
     const targetChannel = ev.channel || channel
     const isDm = ev.channel_type === 'im' || (typeof targetChannel === 'string' && targetChannel.startsWith('D'))
     const here = targetChannel === channel || isDm

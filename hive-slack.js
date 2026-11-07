@@ -41,6 +41,14 @@ export const USAGE = `usage:
   SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack mcp-server "<relay|room>" [--port 8790] [--auth slack|none] [--allow <U123,U456>] [--trust-proxy]
 `
 
+// A person's message can carry a subtype: thread_broadcast ("Also send to channel" on a thread
+// reply) and file_share (a reply with a file). Every other subtype is not a person saying something
+// new: edits, deletions, joins, bot messages. Dropping every subtype silently ignored a "stop" sent
+// with "Also send to channel" (found by antigravity-4, 7 Nov 2026). hive-github.js keeps a copy
+// (it loads this module lazily); tests/hive-slack-test.mjs 10a and github-cli-test CK9b pin both.
+export const PERSON_SUBTYPES = new Set(['thread_broadcast', 'file_share'])
+export const notFromAPerson = (ev) => Boolean(!ev || ev.bot_id || (ev.subtype && !PERSON_SUBTYPES.has(ev.subtype)))
+
 export const NON_RETRYABLE = new Set([
   'invalid_auth',
   'token_revoked',
@@ -1174,7 +1182,7 @@ export function makeBridge({
    *  - RESUME and thread replies into the room require `ev.user` to be in `--allow U123,U456`. */
   async function onInboundEvent(ev) {
     if (!ev) return { ok: false, ignored: 'empty' }
-    if (ev.bot_id || ev.subtype || (botUserId && ev.user === botUserId)) {
+    if (notFromAPerson(ev) || (botUserId && ev.user === botUserId)) {
       return { ok: false, ignored: 'bot_or_subtype' }
     }
     if (ev.channel && channel && ev.channel !== channel) {
@@ -1528,8 +1536,7 @@ export async function runSlackCheck({
         if (
           ev &&
           (ev.type === 'message' || (agent && ev.type === 'agent_session_stopped')) &&
-          !ev.bot_id &&
-          !ev.subtype &&
+          !notFromAPerson(ev) &&
           ev.user &&
           ev.user !== botUserId &&
           (!ev.channel || ev.channel === channel) &&

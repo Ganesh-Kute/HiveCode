@@ -890,6 +890,22 @@ try {
   T('userCache expires after 10 minutes: a member demoted to guest is re-checked and refused',
     agent.isPaused() === false)
 
+  // 10a. "Also send to channel" marks a thread reply subtype thread_broadcast, and a reply with a
+  // file is file_share: both are a person talking. The filter dropped every subtype, so a stop sent
+  // either way was silently ignored (found by antigravity-4, 7 Nov 2026).
+  for (const subtype of ['thread_broadcast', 'file_share']) {
+    await bridge.onInboundEvent({ type: 'message', subtype, channel: 'C-TEST', thread_ts: ts, user: 'U_OWNER', text: 'stop AgentA' })
+    await sleep(450)
+    T(`a "stop" sent as ${subtype} stops the agent`, agent.isPaused() === true)
+    await bridge.onInboundEvent({ type: 'message', channel: 'C-TEST', thread_ts: ts, user: 'U_OWNER', text: 'resume AgentA' })
+    await sleep(450)
+  }
+  for (const subtype of ['message_changed', 'message_deleted', 'channel_join', 'bot_message']) {
+    await bridge.onInboundEvent({ type: 'message', subtype, channel: 'C-TEST', thread_ts: ts, user: 'U_OWNER', text: 'stop AgentA' })
+  }
+  await sleep(450)
+  T('...while an edit, a deletion, a join or a bot message saying "stop" is still ignored', agent.isPaused() === false)
+
   // 10b. THE ROOM'S OWN EVENTS REACH SLACK. docs/SLACK_SETUP.md Section 4 says `slack start` shows
   // task-open and task-done in the channel and gate pass/fail inside a thread. Until now only the
   // test ever called emit() with those: `slack start` itself watched the chat and nothing else, so

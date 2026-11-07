@@ -473,6 +473,12 @@ try {
     notes.length = 0
     for (const e of [ev('UMEM', 'stop', { bot_id: 'B1' }), ev('UMEM', 'stop', { channel: 'C2' }), { type: 'message', channel: 'C1', user: 'UMEM', text: 'stop' }, ev('UMEM', 'please have a look'), ev('UMEM', 'stop', { subtype: 'message_changed' })]) await h(e)
     T('CK9 a bot, another channel, a message outside a thread, other words and edits do nothing', calls.length === 0 && notes.length === 0, notes.join(' | '))
+    // "Also send to channel" marks a thread reply subtype thread_broadcast, and a reply with a file
+    // is file_share: both are a person talking. Every subtype used to be dropped (found by antigravity-4).
+    for (const subtype of ['thread_broadcast', 'file_share']) await h(ev('UMEM', 'stop', { subtype }))
+    T('CK9b "stop" replied with "Also send to channel" (thread_broadcast) or with a file (file_share) still stops', calls.length === 2 && calls.every((c) => c.action === 'stop'), JSON.stringify(calls))
+    calls.length = 0
+    notes.length = 0
     lookupDown = true
     order.length = 0
     await h(ev('UNEW', 'stop'))
