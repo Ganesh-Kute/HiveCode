@@ -186,6 +186,35 @@ try {
     globalThis.fetch = realFetch
     ok('D3 close() while it checks /health: CLOSED at once, one close event, no poll session opened', probing && sock.readyState === 3 && closes.length === 1 && !proxyF.seen.some((l) => l.includes('/_hive_poll/open')), `probing=${probing} readyState=${sock.readyState} closes=${closes.length}`)
   }
+
+  // Every Render deploy restarts the relay, and the free plan restarts it with no rooms. A 24/7 agent
+  // behind the proxy must come back by itself, and what it wrote while the relay was down must arrive.
+  console.log('\n# E. the relay restarts (every deploy does): the agent behind the proxy comes back')
+  const RP6 = await free()
+  let r6 = await startRelay(RP6)
+  const proxyG = await startProxy(RP6)
+  const H = join(`ws://localhost:${RP6}`, room + '-r', 'Hal')
+  await sleep(1500)
+  const I = join(`ws://127.0.0.1:${proxyG.port}`, room + '-r', 'Ivy')
+  await sleep(2500)
+  fs.writeFileSync(path.join(H.dir, 'r.js'), 'export const r = 1\n')
+  const t5 = await arrives(I.dir, 'r.js', 'export const r = 1\n')
+  const opens0 = proxyG.seen.filter((l) => l.includes('/_hive_poll/open')).length
+  const exited = new Promise((r) => r6.once('exit', r))
+  r6.kill()
+  await exited
+  await sleep(1000)
+  fs.writeFileSync(path.join(I.dir, 'r.js'), 'export const r = 2\n') // written while the relay is down
+  await sleep(4000)
+  r6 = await startRelay(RP6)
+  const t6 = await arrives(H.dir, 'r.js', 'export const r = 2\n', 90000)
+  ok('E1 a file written behind the proxy while the relay was down arrives once it is back', t5 !== null && t6 !== null, `${t6} ms after the restart`)
+  // A new file, not r.js again: a sequential same-line edit right after a restart hits the open
+  // false-conflict bug on plain WebSockets too (measured 7 Nov), which is not what E2 is about.
+  fs.writeFileSync(path.join(H.dir, 's.js'), 'export const s = 1\n')
+  const t7 = await arrives(I.dir, 's.js', 'export const s = 1\n', 30000)
+  const opens1 = proxyG.seen.filter((l) => l.includes('/_hive_poll/open')).length
+  ok('E2 ...and edits reach the agent behind the proxy again, over a new long-poll session', t7 !== null && opens1 > opens0, `${t7} ms, poll opens ${opens0} -> ${opens1}`)
 } catch (e) {
   ok('no exception', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {
