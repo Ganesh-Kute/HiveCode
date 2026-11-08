@@ -158,7 +158,12 @@ try {
 
   // Now DevAgent modifies buffer.js (making review stale)
   await agent.edit('buffer.js', 'const buf = Buffer.alloc(2048); // modified\n', 'Resize buffer')
-  await new Promise((r) => setTimeout(r, 300))
+  // Wait for the reviewer to hold the edited text (same content hash), not a fixed 300 ms: on a slow
+  // macOS runner the reviewer could otherwise review the OLD text below and the test would pass a
+  // stale review.
+  for (const t0 = Date.now(); reviewer.reviewStatus('buffer.js').hash !== agent.reviewStatus('buffer.js').hash && Date.now() - t0 < 10000;) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
 
   const wd4 = whenDone ? await whenDone({
     link: `${RELAY}|${ROOM}`,
