@@ -328,19 +328,43 @@ try {
     const { WebSocketServer } = await import('ws')
     let helloCount = 1
     let deadSocket = false
+    let refuseUpgrade = false
+    const slackMsgs = []
     const sockSrv = http.createServer()
-    const sockWss = new WebSocketServer({ server: sockSrv })
+    const sockWss = new WebSocketServer({ noServer: true })
+    sockSrv.on('upgrade', (req, sock, head) => {
+      if (refuseUpgrade) { sock.end('HTTP/1.1 403 WebSocket upgrades are not allowed\r\nContent-Length: 0\r\n\r\n'); return }
+      sockWss.handleUpgrade(req, sock, head, (ws) => sockWss.emit('connection', ws, req))
+    })
     sockWss.on('connection', (ws) => { try { ws.send(JSON.stringify({ type: 'hello', num_connections: helloCount, connection_info: { app_id: 'A1' } })) } catch { } })
     await new Promise((res) => sockSrv.listen(0, '127.0.0.1', res))
     const sockUrl = () => (deadSocket ? 'ws://127.0.0.1:9/nobody-listens' : `ws://127.0.0.1:${sockSrv.address().port}/`)
     const srv = http.createServer((req, res) => {
-      req.resume()
+      let raw = ''
+      req.on('data', (c) => { raw += c })
       req.on('end', () => {
         const m = req.url.replace(/^\/api\//, '')
+        let body = {}
+        try { body = JSON.parse(raw || '{}') } catch { }
         const out = m === 'auth.test' ? (mode === 'badtoken' ? { ok: false, error: 'invalid_auth' } : { ok: true, user: 'hivecode', user_id: 'U1', team: 'Acme', team_id: 'T1' })
           : m === 'conversations.info' ? { ok: true, channel: { id: 'C1', name: 'eng', is_member: mode !== 'notmember', is_private: privateChannel } }
             : m === 'apps.connections.open' ? { ok: true, url: sockUrl() }
-              : { ok: false, error: 'unknown_method' }
+              : m === 'conversations.history' ? {
+                ok: true,
+                messages: slackMsgs.filter((x) => !x.thread_ts || x.thread_ts === x.ts).map((x) => {
+                  const reps = slackMsgs.filter((r) => r.thread_ts === x.ts && r.ts !== x.ts)
+                  return reps.length ? { ...x, reply_count: reps.length, latest_reply: reps[reps.length - 1].ts, thread_ts: x.ts } : x
+                }).reverse(),
+                has_more: false,
+              }
+                : m === 'conversations.replies' ? {
+                  ok: true,
+                  messages: slackMsgs.filter((x) => x.ts === body.ts || (x.thread_ts === body.ts && Number(x.ts) >= Number(body.oldest || 0))),
+                  has_more: false,
+                }
+                  : m === 'users.info' ? { ok: true, user: { id: body.user || 'UMEM', name: 'member', team_id: 'T1' } }
+                    : m === 'chat.postMessage' ? { ok: true, ts: '1700000300.000300' }
+                      : { ok: false, error: 'unknown_method' }
         res.writeHead(200, { 'content-type': 'application/json', 'x-oauth-scopes': scopes })
         res.end(JSON.stringify(out))
       })
@@ -419,6 +443,31 @@ try {
     T('CK20 Socket Mode that cannot connect: one coded line, no stack, not "watching", lock given back',
       r.code === 1 && /^Q63\d /m.test(r.out) && !/\n\s+at /.test(r.out) && !/is watching/.test(r.out) && lockGone(), r.out.slice(0, 300))
     deadSocket = false
+    // A network that refuses WebSocket upgrades with HTTP 403 (Antigravity's cloud VMs): github start
+    // falls back to reading the issue threads over HTTPS (makeSlackPoller) instead of exiting 1.
+    refuseUpgrade = true
+    const nowSec = Math.floor(Date.now() / 1000)
+    const rootTs = `${nowSec - 20}.000100`
+    const replyTs = `${nowSec - 5}.000200`
+    slackMsgs.push({ type: 'message', ts: rootTs, user: 'U1', text: 'issue #7' })
+    const sp = repo(path.join(tmp, 'slack-poll'), 'https://github.com/acme/app.git')
+    r = await run(sp, [...slArgs, '--slack-allow', 'UOWN'], fakeCall(github()).call)
+    T('CK20b a network that refuses Socket Mode\'s WebSocket (HTTP 403) falls back to reading replies over HTTPS and starts',
+      r.code === 0 && /Slack replies are read over HTTPS.*HTTP 403/.test(r.out) && /watching acme\/app/.test(r.out) && !/Q634/.test(r.out), r.out.slice(0, 300))
+    const spStateFile = path.join(sp, '.git', 'hivecode', 'github.json')
+    const spState = fs.existsSync(spStateFile) ? JSON.parse(fs.readFileSync(spStateFile, 'utf8')) : { version: 1, issues: {}, day: {}, config: {} }
+    spState.issues['7'] = { status: 'waiting', since: Date.now(), issue: { title: 'Bug', body: '' }, runs: 0, allowedRuns: 6, failures: 0, queue: [], seen: { ic: 0, pc: 0, rc: 0, rv: 0 }, cmdSeen: [] }
+    spState.slack = { 'issue-7': rootTs }
+    fs.mkdirSync(path.dirname(spStateFile), { recursive: true })
+    fs.writeFileSync(spStateFile, JSON.stringify(spState))
+    slackMsgs.push({ type: 'message', ts: replyTs, thread_ts: rootTs, user: 'UMEM', text: 'stop' })
+    const ghPoll = fakeCall(github({ 'POST repos/acme/app/issues/7/comments': (b) => ok({ id: 99, body: b && b.body }, 201) }))
+    r = await run(sp, [...slArgs, '--slack-allow', 'UOWN'], ghPoll.call)
+    T('CK20c over HTTPS polling, a "stop" reply in an issue\'s thread posts /hivecode stop on GitHub',
+      r.code === 0 && ghPoll.calls.some((c) => c.method === 'POST' && c.path === 'repos/acme/app/issues/7/comments' && /\/hivecode stop[\s\S]*@member/.test(String((c.body && c.body.body) || ''))),
+      JSON.stringify(ghPoll.calls.filter((c) => c.method === 'POST')))
+    refuseUpgrade = false
+    slackMsgs.length = 0
     // Slack not reached at all (a machine that booted before its network was up): that is no verdict
     // on the token, and a service must try again -- not be told to reinstall an app that is fine.
     const slackApi = process.env.HIVE_SLACK_API

@@ -1799,13 +1799,14 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   }
   // --slack-allow THAT CANNOT WORK IS REFUSED, not ignored. Each case below used to start green and
   // then never let anyone retry from Slack: the replies were never read, or no id could ever match.
+  const slackInbound = String(process.env.HIVE_SLACK_INBOUND || 'auto').toLowerCase()
   const allowRaw = String(opt('slack-allow') || '').trim()
   if (allowRaw) {
     const flag = `--slack-allow${whence('slack-allow')}`
     if (!slackChannel) { logErr(`Q634 ${flag} names who may reply "retry" in an issue's Slack thread, and there are no threads without --slack-channel <channel id>.`); return EXIT_FIX }
     const notIds = allowRaw.split(',').map((s) => s.trim()).filter((s) => s && !/^[UW][A-Z0-9]{2,}$/.test(s))
     if (notIds.length) { logErr(`Q634 ${flag} takes Slack member ids like U012AB3CD, not ${notIds.join(', ')}. In Slack, open the person's profile, click More, then Copy member ID.`); return EXIT_FIX }
-    if (!process.env.SLACK_APP_TOKEN) { logErr(`Q634 ${flag} needs SLACK_APP_TOKEN too: without it the watcher posts to Slack but never reads replies, so nobody could retry from there. Set SLACK_APP_TOKEN to your app's xapp-... app-level token (docs/SLACK_SETUP.md), or drop --slack-allow.`); return EXIT_FIX }
+    if (!process.env.SLACK_APP_TOKEN && slackInbound !== 'poll') { logErr(`Q634 ${flag} needs SLACK_APP_TOKEN too: without it the watcher posts to Slack but never reads replies, so nobody could retry from there. Set SLACK_APP_TOKEN to your app's xapp-... app-level token (docs/SLACK_SETUP.md), or drop --slack-allow.`); return EXIT_FIX }
   }
   let slack = null
   let slackIn = null
@@ -1824,7 +1825,7 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
     // issue's thread acts as the same command on GitHub. Who may is hive-slack.js's call, with the
     // room bridge's own rules: stop for full members of the workspace, retry only for --slack-allow.
     const appToken = process.env.SLACK_APP_TOKEN || ''
-    if (appToken) {
+    if (appToken || slackInbound === 'poll') {
       if (typeof mod.makeSlackActorCheck !== 'function' || typeof mod.connectSocketMode !== 'function' || typeof mod.checkInboundScopes !== 'function') {
         logErr('Q634 this Hivecode cannot take replies from Slack yet (hive-slack.js has no makeSlackActorCheck). Unset SLACK_APP_TOKEN to post progress only.')
         return EXIT_FIX
@@ -1837,13 +1838,21 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
         const sc = mod.checkInboundScopes({ scopes: pf.scopes, isPrivate: pf.isPrivate, channel: slackChannel })
         if (!sc.ok) { logErr(sc.error); return EXIT_FIX }
       }
-      const sm = await mod.preflightSocketMode({ appToken })
-      if (!sm || !sm.ok) { logErr((sm && sm.error) || 'Q634 Slack refused SLACK_APP_TOKEN'); return sm && sm.transient ? EXIT_AGAIN : EXIT_FIX }
+      if (slackInbound !== 'poll') {
+        const sm = await mod.preflightSocketMode({ appToken })
+        if (!sm || !sm.ok) { logErr((sm && sm.error) || 'Q634 Slack refused SLACK_APP_TOKEN'); return sm && sm.transient ? EXIT_AGAIN : EXIT_FIX }
+      }
       // Without the workspace id, users from OTHER workspaces (Slack Connect) cannot be told apart.
       if (!pf.teamId) { logErr('Q634 Slack did not say which workspace the bot is in, so replies from outside it could not be refused. Replies stay off: unset SLACK_APP_TOKEN, or reinstall the app.'); return EXIT_FIX }
       const allow = String(opt('slack-allow') || '').split(',').map((s) => s.trim()).filter(Boolean)
+      const pollMs = Math.max(50, Number(process.env.HIVE_SLACK_POLL_MS) || mod.INBOUND_DEFAULT_POLL_MS || 3000)
       slackIn = {
-        appToken, allow, connect: mod.connectSocketMode, check: mod.makeSlackActorCheck({ token, teamId: pf.teamId || '', allowFlag: '--slack-allow' }),
+        appToken, token, allow, inbound: slackInbound, pollMs, isPrivate: pf.isPrivate,
+        connect: mod.connectSocketMode,
+        makePoller: mod.makeSlackPoller,
+        stateFile: mod.slackInboundStateFile,
+        checkScopes: mod.checkInboundScopes,
+        check: mod.makeSlackActorCheck({ token, teamId: pf.teamId || '', allowFlag: '--slack-allow' }),
         tell: (text) => Promise.resolve().then(() => mod.slackPost('chat.postMessage', { channel: slackChannel, text }, token)).catch(() => {}),
       }
       log(`Slack: \`stop\` in an issue's thread stops it; \`retry\` ${allow.length ? `works for ${allow.join(', ')}` : 'is off until --slack-allow names who may'}.`)
@@ -1913,24 +1922,71 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   w.recover()
   let inbound = null
   if (slackIn) {
+    const onEvent = makeSlackReplyHandler({ w, check: slackIn.check, allow: slackIn.allow, channel: slackChannel })
+    const startPolling = async (why) => {
+      const stateDir = process.env.HIVE_SLACK_STATE_DIR || path.join(gitDir, 'hivecode')
+      const threads = {
+        get: (k) => w.state.slack[k],
+        set: (k, v) => { w.state.slack[k] = v; w.save() },
+        entries: () => Object.entries(w.state.slack || {}),
+      }
+      const poller = slackIn.makePoller({
+        token: slackIn.token,
+        channel: slackChannel,
+        threads,
+        isSettled: (key) => { const m = /^issue-(\d+)$/.exec(key); return !(m && w.state.issues[m[1]]) },
+        diskFile: slackIn.stateFile(stateDir, `${id.owner}-${id.repo}`, slackChannel),
+        me: watcherOpts.name,
+        pollMs: slackIn.pollMs,
+        catchUpMs: Number(process.env.HIVE_SLACK_CATCHUP_MS) || 30 * 60 * 1000,
+        onEvent,
+        logErr,
+      })
+      try {
+        await poller.tick()
+      } catch (e) {
+        if (e && e.code === 'missing_scope') {
+          const sc = slackIn.checkScopes({ scopes: [], isPrivate: slackIn.isPrivate, channel: slackChannel })
+          logErr(sc.ok ? `Q634 ${e.message}` : sc.error)
+          return null
+        }
+        logErr(`[hivecode] Slack polling could not start (${(e && e.message) || e}); retrying in the background.`)
+      }
+      poller.start()
+      const every = slackIn.pollMs >= 1000 ? `${Math.round(slackIn.pollMs / 100) / 10} s` : `${slackIn.pollMs} ms`
+      logErr(`[hivecode] Slack replies are read over HTTPS every ${every} (${why}). A "stop" from Slack takes up to that long to arrive.`)
+      return poller
+    }
     // Replies are connected BEFORE it says it is watching. A start that cannot read them -- another
     // process on the same Slack app (Q635: Slack splits events between them, so a "stop" could go
     // there), or no Socket Mode at all -- says so once, gives the lock back, and stops. It used to
-    // print "watching" and then die on the exception.
-    try {
-      inbound = await slackIn.connect({
-        appToken: slackIn.appToken,
-        logErr,
-        onError: (e) => say(`Slack replies: ${oneLine(String((e && e.message) || e), 200)}`),
-        onMultiConnection: (n) => slackIn.tell(`:warning: ${n} processes are now connected with this Slack app, and Slack gives each reply to only one of them: a \`stop\` in an issue's thread may not reach this watcher. Stop the other one ("github start --slack-allow", "slack start" or hive-slack-agent on the same app).`),
-        onEvent: makeSlackReplyHandler({ w, check: slackIn.check, allow: slackIn.allow, channel: slackChannel }),
-      })
-    } catch (e) {
-      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start (Socket Mode): ${oneLine(String((e && e.message) || e), 200)}. Check SLACK_APP_TOKEN and that this machine can reach Slack, or unset SLACK_APP_TOKEN to post progress only.`)
-      releaseLock()
-      // Another process on the app (Q635), or Slack answering no (a revoked token): a person.
-      // Slack not reached, or Socket Mode not opening in its retry window: try again.
-      return e && (e.code === 'Q635' || e.slackError) ? EXIT_FIX : EXIT_AGAIN
+    // print "watching" and then die on the exception. When this network refuses the WebSocket upgrade
+    // (HTTP 403 on Antigravity's VMs), it reads the issue threads over HTTPS instead.
+    if (slackIn.inbound === 'poll') {
+      inbound = await startPolling('HIVE_SLACK_INBOUND=poll')
+      if (!inbound) { releaseLock(); return EXIT_FIX }
+    } else {
+      try {
+        inbound = await slackIn.connect({
+          appToken: slackIn.appToken,
+          logErr,
+          failFastOnRefusal: slackIn.inbound === 'auto',
+          onError: (e) => say(`Slack replies: ${oneLine(String((e && e.message) || e), 200)}`),
+          onMultiConnection: (n) => slackIn.tell(`:warning: ${n} processes are now connected with this Slack app, and Slack gives each reply to only one of them: a \`stop\` in an issue's thread may not reach this watcher. Stop the other one ("github start --slack-allow", "slack start" or hive-slack-agent on the same app).`),
+          onEvent,
+        })
+      } catch (e) {
+        if (e && e.wsRefused && slackIn.inbound === 'auto' && typeof slackIn.makePoller === 'function') {
+          inbound = await startPolling(`this network refused a WebSocket to Slack (HTTP ${e.wsRefused})`)
+          if (!inbound) { releaseLock(); return EXIT_FIX }
+        } else {
+          logErr(isQ(e) ? e.message : `Q634 Slack replies could not start (Socket Mode): ${oneLine(String((e && e.message) || e), 200)}. Check SLACK_APP_TOKEN and that this machine can reach Slack, or unset SLACK_APP_TOKEN to post progress only.`)
+          releaseLock()
+          // Another process on the app (Q635), or Slack answering no (a revoked token): a person.
+          // Slack not reached, or Socket Mode not opening in its retry window: try again.
+          return e && (e.code === 'Q635' || e.slackError) ? EXIT_FIX : EXIT_AGAIN
+        }
+      }
     }
   }
   log(`Hivecode is watching ${id.owner}/${id.repo} for issues labelled "${label}". Ctrl+C stops it.`)
