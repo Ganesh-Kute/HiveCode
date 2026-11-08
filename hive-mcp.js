@@ -344,6 +344,13 @@ was not written. Fix the relay and call hive_join again.`
     // Only when nothing refused us with a code do we query /health to infer whether it was capacity.
     if (refusedCode) {
       const explanation = RH.explainStatus(refusedCode, relay, { hasToken: !!useToken })
+      // The relay ANSWERED and said no, so this session will never come up as it is: drop it. Kept,
+      // it went on holding this MCP server under the refused name, and the retry -- under another
+      // name, with the token the message told them to get -- was refused as Q637 "this server is
+      // already in use by '<refused name>'", sending them off to edit their MCP config for nothing.
+      try { hive.stop() } catch { }
+      session = null
+      forgetSession()
       return [
         `NOT JOINED -- the relay refused the connection (${refusedCode}): ${explanation}`,
         `room: ${room}`,
