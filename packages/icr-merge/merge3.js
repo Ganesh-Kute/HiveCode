@@ -147,15 +147,17 @@ function diff3Lines(b, mine, theirs) {
 
 //   merge3(base, mine, theirs) -> { text, conflict }
 export function merge3(base, mine, theirs) {
-  if (mine === theirs) return { text: mine, conflict: false }
-  if (base === theirs) return { text: mine, conflict: false }  // only I changed
-  if (base === mine) return { text: theirs, conflict: false }  // only they changed
-  const b = base.split('\n')
-  const d3 = diff3Lines(b, mine.split('\n'), theirs.split('\n'))
+  const norm = (s) => (s || '').replace(/\r\n/g, '\n')
+  const nm = norm(mine), nt = norm(theirs), nb = norm(base)
+  if (nm === nt) return { text: nt, conflict: false }
+  if (nb === nt) return { text: nm, conflict: false }  // only I changed
+  if (nb === nm) return { text: nt, conflict: false }  // only they changed
+  const b = nb.split('\n')
+  const d3 = diff3Lines(b, nm.split('\n'), nt.split('\n'))
   if (d3) return { text: d3.lines.join('\n'), conflict: d3.conflict }
   // Past diff3's work bound (two sides that share almost nothing): one range per side.
-  const mr = changedRange(b, mine.split('\n'))
-  const tr = changedRange(b, theirs.split('\n'))
+  const mr = changedRange(b, nm.split('\n'))
+  const tr = changedRange(b, nt.split('\n'))
   if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
     const out = b.slice()
     for (const e of [mr, tr].sort((x, y) => y.startBase - x.startBase)) {
@@ -168,6 +170,10 @@ export function merge3(base, mine, theirs) {
   const end = Math.max(mr.endBase, tr.endBase)
   const mineBlock = [...b.slice(start, mr.startBase), ...mr.newLines, ...b.slice(mr.endBase, end)]
   const theirsBlock = [...b.slice(start, tr.startBase), ...tr.newLines, ...b.slice(tr.endBase, end)]
+  if (mineBlock.length === theirsBlock.length && mineBlock.every((l, k) => l === theirsBlock[k])) {
+    const out = [...b.slice(0, start), ...theirsBlock, ...b.slice(end)]
+    return { text: out.join('\n'), conflict: false }
+  }
   const out = [
     ...b.slice(0, start),
     '<<<<<<< local (yours)',

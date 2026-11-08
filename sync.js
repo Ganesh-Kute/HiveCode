@@ -799,7 +799,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!FORK_GATE || !identity) return false
     const fe = fileDocs.get(relPath); if (!fe || !fe.synced || !fe.ledger) return false
     if (SKIP.has(relPath) || isIgnored(relPath)) return false
-    let disk = null; try { disk = fs.readFileSync(path.join(ROOT, relPath), 'utf8') } catch { return false }
+    let disk = null; try { disk = readDiskText(path.join(ROOT, relPath)) } catch { return false }
     const base = shadow.get(relPath)
     if (base == null || disk === base) return false // no baseline yet, or nothing new on disk
     if (hasConflictMarkers(disk)) return false      // half-edited conflict block — not an authored state
@@ -929,7 +929,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (captureLocal(relPath)) { detectFork(relPath); return } // it grew the fork; detectFork re-renders with it included
     const rec = forkRecord(fe); if (!rec) return
     const block = forkBlock(fe, rec); if (!block) return
-    let disk = null; try { disk = fs.readFileSync(path.join(ROOT, relPath), 'utf8') } catch { }
+    let disk = null; try { disk = readDiskText(path.join(ROOT, relPath)) } catch { }
     forkBases.set(relPath, block) // this peer has now SEEN the markers — a later clean edit from here is a resolution
     if (disk === block) return
     writeToDisk(relPath, block)
@@ -1052,7 +1052,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!canWrite(relPath)) return { error: `${relPath} is read-only for you` }
     if (intent) myIntents.set(relPath, String(intent)) // my declared WHY — what my receipt will sign
     const full = path.join(ROOT, relPath)
-    try { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, content) }
+    // An authored write keeps this disk's ending for the file, like every engine write (readText).
+    try { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, crlfSet().has(relPath) ? toLF(content).replace(/\n/g, '\r\n') : content) }
     catch (e) { return { error: 'write failed: ' + e.message } }
     // Deliberately NOT via writeToDisk (which records engine writes in `shadow`):
     // this write is AUTHORED, so disk-vs-shadow divergence is exactly what captureLocal
@@ -1061,7 +1062,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     reconcile(relPath, 'local')
     const fe = fileDocs.get(relPath)
     const landed = fe && fe.synced ? fe.text.toString() : content
-    let disk = content; try { disk = fs.readFileSync(full, 'utf8') } catch { }
+    let disk = content; try { disk = readDiskText(full) } catch { }
     // A new file's doc has not synced yet when this returns, so the gate in reconcile has not run:
     // judge the content here too, or the answer would be "syncing to every peer" for a file that
     // the gate is about to hold.
@@ -1770,15 +1771,38 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     return acc
   }
 
+  // LINE ENDINGS ARE NOT CONTENT (8 Nov 2026). Git for Windows ships core.autocrlf=true, so a
+  // Windows checkout of an LF repo holds the same text with CRLF on every line (measured on the dev
+  // PC: sync.js 4,992 CRs on disk, 0 in git). Compared byte for byte, two founders who cloned the
+  // same repo disagree on EVERY line: a CRLF copy over the room's LF copy put a whole file in
+  // conflict markers on every peer (both sides byte-identical), and a quieter version flipped each
+  // peer's files to the other's endings, so git showed every line changed
+  // (tests/eol-mixed-peers-test.mjs). So: the room holds LF only. readText() is the one way the
+  // engine reads a text file, and it hands back LF while remembering how THIS disk ended that file;
+  // writeToDisk() writes it back in that ending. A lone CR is content and is never touched. A file
+  // new to this disk is written LF, as git stores it.
+  // (Function declarations and a lazily made set: readText is hoisted and may run before this line.)
+  var crlfFiles // relPaths whose copy on THIS disk uses CRLF
+  function crlfSet() { return crlfFiles || (crlfFiles = new Set()) }
+  function toLF(s) { return typeof s === 'string' && s.indexOf('\r\n') !== -1 ? s.replace(/\r\n/g, '\n') : s }
+  function noteEol(relPath, raw) {
+    const crlf = (raw.match(/\r\n/g) || []).length
+    if (crlf && crlf * 2 >= (raw.match(/\n/g) || []).length) crlfSet().add(relPath)
+    else crlfSet().delete(relPath)
+  }
   function readText(full) {
     try {
       const st = fs.statSync(full)
       if (st.size > MAX_BYTES) return null
       const buf = fs.readFileSync(full)
       if (buf.includes(0)) return null
-      return buf.toString('utf8')
+      const raw = buf.toString('utf8')
+      noteEol(path.relative(ROOT, full).split(path.sep).join('/'), raw)
+      return toLF(raw)
     } catch { return null }
   }
+  // A direct read of a text file, for the few places that need one: same LF view as readText.
+  function readDiskText(full) { return toLF(fs.readFileSync(full, 'utf8')) }
   // BRANCH ROOMS CARRY TEXT ONLY, BY DESIGN (hive-branch.js roomCarries): binaries are filled into
   // each folder from git, and `pr` reads a carried file missing from the room as DELETED. Binary sync
   // pushed every git-filled image into the room (tests/branch-test A6: 5 files where the seed put 4),
@@ -2045,6 +2069,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (folderLost) return
     ensureExactDiskCasing(relPath)
     const full = path.join(ROOT, relPath)
+    // The room holds LF (readText). This disk gets the ending it already used for this file.
+    content = toLF(content)
+    const bytes = crlfSet().has(relPath) && typeof content === 'string' ? content.replace(/\n/g, '\r\n') : content
     try {
       // Only for a path a scan already found unshared. Every remote edit lands through here, so
       // checking every file would read each one in full before writing it -- double the disk work
@@ -2069,14 +2096,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         fs.mkdirSync(dir, { recursive: true })
         ensuredDirs.add(dir)
       }
-      try { fs.writeFileSync(full, content) } catch (e) {
+      try { fs.writeFileSync(full, bytes) } catch (e) {
         // The cache only skips mkdir; it must never lose a write. A folder someone deleted or renamed
         // since we made it is simply made again.
         if (e.code !== 'ENOENT') throw e
         ensuredDirs.delete(dir)
         fs.mkdirSync(dir, { recursive: true })
         ensuredDirs.add(dir)
-        fs.writeFileSync(full, content)
+        fs.writeFileSync(full, bytes)
       }
     } catch (e) {
       // The disk still holds the OLD content. Callers record the new content as this file's base and
@@ -4553,13 +4580,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
       if (fs.existsSync(full)) {
         try {
-          diskContent = fs.readFileSync(full, 'utf8')
+          const rawDisk = fs.readFileSync(full, 'utf8')
+          // The hash is of the text (LF), the room's form: a Windows and a Mac copy of the same file
+          // must attest as the same content. The byte count is this disk's, and a stated count may be
+          // either this disk's or the LF form (what a peer on the other OS measured).
+          diskContent = toLF(rawDisk)
           measuredHash = contentHash(diskContent)
-          measuredBytes = Buffer.byteLength(diskContent, 'utf8')
+          measuredBytes = Buffer.byteLength(rawDisk, 'utf8')
           const normalized = diskContent.endsWith('\n') ? diskContent.slice(0, -1) : diskContent
           measuredLines = diskContent.length === 0 ? 0 : normalized.split(/\r?\n/).length
           const statedBytes = Number(bytes)
-          if (Number.isFinite(statedBytes) && statedBytes > 0 && statedBytes !== measuredBytes) {
+          if (Number.isFinite(statedBytes) && statedBytes > 0 && statedBytes !== measuredBytes && statedBytes !== Buffer.byteLength(diskContent, 'utf8')) {
             mismatch = { stated: statedBytes, measured: measuredBytes }
           }
         } catch {

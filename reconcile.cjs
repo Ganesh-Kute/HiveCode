@@ -250,24 +250,27 @@ function summarizeChange(base, next) {
 
 // 3-way merge for the sync layer (disk <-> shared doc)
 function merge3(base, mine, theirs) {
-  if (mine === theirs) return { text: mine, conflict: false }
-  if (base === theirs) return { text: mine, conflict: false }
-  if (base === mine) return { text: theirs, conflict: false }
+  const norm = (s) => (s || '').replace(/\r\n/g, '\n')
+  const nm0 = norm(mine), nt0 = norm(theirs), nb0 = norm(base)
+  if (nm0 === nt0) return { text: nt0, conflict: false }
+  if (nb0 === nt0) return { text: nm0, conflict: false }
+  if (nb0 === nm0) return { text: nt0, conflict: false }
 
   const cleanBase = hasConflictMarkers(base) ? stripConflictMarkers(base, 'local') : (base || '')
   const cleanMine = hasConflictMarkers(mine) ? stripConflictMarkers(mine, 'local') : (mine || '')
   const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, 'theirs') : (theirs || '')
 
-  if (cleanMine === cleanTheirs) return { text: cleanMine, conflict: false }
-  if (cleanBase === cleanTheirs) return { text: cleanMine, conflict: false }
-  if (cleanBase === cleanMine) return { text: cleanTheirs, conflict: false }
+  const nm = norm(cleanMine), nt = norm(cleanTheirs), nb = norm(cleanBase)
+  if (nm === nt) return { text: nt, conflict: false }
+  if (nb === nt) return { text: nm, conflict: false }
+  if (nb === nm) return { text: nt, conflict: false }
 
-  const b = cleanBase.split('\n')
-  const d3 = diff3Lines(b, cleanMine.split('\n'), cleanTheirs.split('\n'))
+  const b = nb.split('\n')
+  const d3 = diff3Lines(b, nm.split('\n'), nt.split('\n'))
   if (d3) return { text: d3.lines.join('\n'), conflict: d3.conflict }
   // Past diff3's work bound (two sides that share almost nothing): one range per side.
-  const mr = changedRange(b, cleanMine.split('\n'))
-  const tr = changedRange(b, cleanTheirs.split('\n'))
+  const mr = changedRange(b, nm.split('\n'))
+  const tr = changedRange(b, nt.split('\n'))
   if (mr.endBase <= tr.startBase || tr.endBase <= mr.startBase) {
     const out = b.slice()
     for (const e of [mr, tr].sort((x, y) => y.startBase - x.startBase)) {
@@ -279,6 +282,10 @@ function merge3(base, mine, theirs) {
   const end = Math.max(mr.endBase, tr.endBase)
   const mineBlock = [...b.slice(start, mr.startBase), ...mr.newLines, ...b.slice(mr.endBase, end)]
   const theirsBlock = [...b.slice(start, tr.startBase), ...tr.newLines, ...b.slice(tr.endBase, end)]
+  if (mineBlock.length === theirsBlock.length && mineBlock.every((l, k) => l === theirsBlock[k])) {
+    const out = [...b.slice(0, start), ...theirsBlock, ...b.slice(end)]
+    return { text: out.join('\n'), conflict: false }
+  }
   const out = [
     ...b.slice(0, start),
     '<<<<<<< local (yours)',
