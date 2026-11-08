@@ -59,6 +59,18 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
+      # Slack (8 Nov 2026): the bridge, the agent panel, and replies read over HTTPS when a network
+      # refuses Slack's WebSocket (Antigravity's VM). Fake Slack + the real relay, no Slack account.
+      - name: Slack bridge, HTTPS reply polling
+        if: always()
+        run: |
+          fail=0
+          for t in hive-slack-test.mjs hive-slack-agent-test.mjs slack-poll-inbound-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
       # Room mode and the one landing path (5 Nov 2026), written and run only on Windows until now:
       # temporary git worktrees, the landing lock, tests run on the exact commit and stopped as a
       # process group, the watcher's state under .git/hivecode, hive_pr and hive_review over MCP.

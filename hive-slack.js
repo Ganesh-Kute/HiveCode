@@ -25,6 +25,9 @@
 //   Q635  multiple concurrent Socket Mode processes on same app token
 //   Q636  Slack API unreachable (network, DNS, timeout; token not rejected)
 
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
 import { scrub } from './hive-webhook.js'
@@ -501,6 +504,10 @@ export async function connectSocketMode({
   startRetryMs = Number(process.env.HIVE_SLACK_START_RETRY_MS) || 60000,
   startRetryDelayMs = 1000,
   timer = setTimeout,
+  // true: an upgrade answered with an HTTP status (a proxy that refuses WebSockets, like the
+  // "403 WebSocket upgrades are not allowed" on Antigravity's VMs) throws at once with
+  // err.wsRefused = <status>, instead of retrying for startRetryMs, so the caller can poll.
+  failFastOnRefusal = false,
 } = {}) {
   let ws = null
   let stopped = false
@@ -817,6 +824,15 @@ export async function connectSocketMode({
       try { sock.removeAllListeners && sock.removeAllListeners() } catch { }
       try { sock.close() } catch { }
       try { sock.terminate && sock.terminate() } catch { }
+    }
+    const refused = refusedUpgradeStatus(lastWhy)
+    if (failFastOnRefusal && refused) {
+      halted = true
+      stopped = true
+      const err = new Error(`Q634 Socket Mode refused: this network answered the WebSocket upgrade with HTTP ${refused}`)
+      err.code = 'Q634'
+      err.wsRefused = refused
+      throw err
     }
 
     const elapsed = Date.now() - startTime
@@ -1324,8 +1340,306 @@ export function makeBridge({
   }
 
   const postChannel = (text) => queue.push({ channel, text })
+  // Inside the room's own thread when it has one, so a notice does not flood the channel.
+  const postRoomThread = (text) => {
+    const ts = threads.get(ROOM_THREAD_KEY)
+    queue.push(ts ? { channel, thread_ts: ts, text } : { channel, text })
+  }
 
-  return { emit, onChat, deliver, onInboundEvent, watchRoom, threads, queue, threader, postChannel }
+  return { emit, onChat, deliver, onInboundEvent, watchRoom, threads, queue, threader, postChannel, postRoomThread }
+}
+
+// ---- inbound over HTTPS polling ---------------------------------------------------------
+//
+// WHY (7 Nov 2026). Every inbound path (stop/resume, thread replies, `slack check`) used Socket
+// Mode, and Socket Mode is a WebSocket only (docs.slack.dev). Antigravity's 24/7 cloud VMs refuse
+// every WebSocket upgrade ("403 WebSocket upgrades are not allowed"), so a bridge there could post
+// to Slack and never hear it. This reads the same events over plain HTTPS: conversations.history
+// for the channel and conversations.replies for the threads the bridge tracks. Both are Tier 3
+// (50+/min), and Slack's limits are per method. The design and its failure list were argued in the
+// room by antigravity-2, antigravity-4 and Antigravity; tests/slack-poll-inbound-test.mjs is
+// antigravity-2's black-box suite for it.
+//   - history comes newest-first and its messages carry no `channel`: collect, restore, sort ascending.
+//   - replies always repeats the thread's root as messages[0]: skipped.
+//   - every ts is acted on once: a seen set in memory, on disk and in the room (two bridges).
+//     Two bridges first CLAIM a ts in the room and wait a beat, so only one delivers it.
+//   - a 30 s overlap re-reads late-indexed messages; the seen set makes that free.
+//   - 429: wait Retry-After. Nothing is marked seen until it was delivered: late, never lost.
+//   - the cursor is Slack server time. It lives in the room AND on disk, keyed (room, channel), not
+//     by pid: a relay wipe (every deploy on Render's free plan) loses the room's copy, never
+//     Slack's messages, so the bridge resumes from the disk copy.
+//   - a bridge that was off for days must not replay days-old commands: anything older than
+//     catchUpMs is not acted on, and the bridge says so once.
+//   - first attach anchors to Slack's newest message, not to this machine's clock, and never
+//     replays what was already in the channel.
+export const INBOUND_DEFAULT_POLL_MS = 3000
+
+/** The HTTP status a WebSocket upgrade was answered with ("Unexpected server response: 403"), or 0. */
+export function refusedUpgradeStatus(why) {
+  const m = /Unexpected server response: (\d{3})/.exec(String(why || ''))
+  return m ? Number(m[1]) : 0
+}
+
+const safeFilePart = (s) => String(s || '').replace(/[^\w.-]/g, '_')
+/** Where a bridge keeps its Slack cursor across restarts and relay wipes. Keyed by room and channel,
+ *  never by process id, so a restarted bridge finds what the last one left. */
+export function slackInboundStateFile(dir, room, channel) {
+  return path.join(dir || os.tmpdir(), `hive-slack-inbound-${safeFilePart(room)}-${safeFilePart(channel)}.json`)
+}
+const readStateFile = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) || {} } catch { return {} } }
+const writeStateFile = (f, obj) => {
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true })
+    const tmp = `${f}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(obj))
+    fs.renameSync(tmp, f)
+  } catch { /* a state file we cannot write must not stop the bridge; the room still has its copy */ }
+}
+const tsNum = (ts) => Number(ts) || 0
+
+/** Polls Slack over HTTPS and hands each new person message to onEvent, in order, once.
+ *  store: the room's slack_inbound map (shared by every bridge on this room).
+ *  threads: the bridge's slack_threads map (task id or __room__ -> thread ts).
+ *  isSettled(taskId): true when that task is done, so its thread is not polled. */
+export function makeSlackPoller({
+  token = '',
+  channel = '',
+  api = process.env.HIVE_SLACK_API || DEFAULT_API,
+  fetchImpl = fetch,
+  store = null,
+  threads = null,
+  isSettled = () => false,
+  diskFile = '',
+  me = 'SlackBridge',
+  onEvent = async () => {},
+  onSkipped = null,
+  logErr = console.error,
+  pollMs = INBOUND_DEFAULT_POLL_MS,
+  overlapSec = 30,
+  catchUpMs = 30 * 60 * 1000,
+  claimSettleMs = null,
+  takeOverMs = 10000,
+  threadRecheckMs = 30000,
+  now = () => Date.now(),
+  timer = setTimeout,
+} = {}) {
+  const call = (method, body) => slackPost(method, body, token, fetchImpl, api)
+  const settleMs = claimSettleMs != null ? claimSettleMs : Math.min(250, Math.max(20, Math.floor(pollMs / 2)))
+  const disk = diskFile ? readStateFile(diskFile) : {}
+  const seen = new Set((Array.isArray(disk.seen) ? disk.seen : []).map(String))
+  const claimSeenAt = new Map() // ts -> when this process first saw another bridge's claim on it
+  const lastPolled = new Map() // thread ts -> when this process last read its replies
+  const get = (k) => (store ? store.get(k) : undefined)
+  const set = (k, v) => { if (store) store.set(k, v) }
+  // The room's copy wins while it exists; the disk copy carries the bridge across a relay wipe.
+  let cursor = String(get('cursor') || disk.cursorTs || '')
+  let floor = String(get('floor') || disk.floorTs || '')
+  const threadSeenDisk = { ...(disk.threadSeen || {}) }
+  const threadSeen = (ts) => String(get(`t:${ts}`) || threadSeenDisk[ts] || '')
+  let agedTurn = 0
+  let started = false
+  let stopped = false
+  let loopTimer = null
+  let failures = 0
+  let ticks = 0
+
+  // A relay wipe empties slack_threads; put back the threads the last bridge knew (never the
+  // outbound chat cursor, which counts room chat, not Slack).
+  if (threads && disk.threads && typeof disk.threads === 'object') {
+    for (const [k, v] of Object.entries(disk.threads)) {
+      if (k !== CURSOR_KEY && v && !threads.get(k)) threads.set(k, String(v))
+    }
+  }
+
+  function tracked() {
+    const out = []
+    if (!threads) return out
+    for (const [key, ts] of threads.entries()) {
+      if (key === CURSOR_KEY || !ts) continue
+      if (key !== ROOM_THREAD_KEY && isSettled(key)) continue
+      out.push({ key, ts: String(ts) })
+    }
+    return out
+  }
+
+  function persist() {
+    // Only real changes go into the room: every set is an update every peer receives.
+    if (cursor && get('cursor') !== cursor) set('cursor', cursor)
+    if (floor && get('floor') !== floor) set('floor', floor)
+    const keepFrom = tsNum(cursor) - overlapSec * 4
+    if (store && typeof store.keys === 'function') {
+      for (const k of [...store.keys()]) {
+        if ((k.startsWith('s:') || k.startsWith('c:')) && tsNum(k.slice(2)) < keepFrom) store.delete(k)
+      }
+    }
+    if (!diskFile) return
+    const th = {}
+    if (threads) for (const [k, v] of threads.entries()) if (k !== CURSOR_KEY && v) th[k] = String(v)
+    writeStateFile(diskFile, {
+      cursorTs: cursor,
+      floorTs: floor,
+      threads: th,
+      threadSeen: threadSeenDisk,
+      seen: [...seen].filter((ts) => tsNum(ts) >= keepFrom).slice(-2000),
+      updatedAt: new Date(now()).toISOString(),
+    })
+  }
+
+  async function tick() {
+    ticks++
+    const nowSec = now() / 1000
+    // First attach: anchor to Slack's own newest message, never to this machine's clock, and act
+    // on nothing that was already there.
+    if (!cursor) {
+      const r = await call('conversations.history', { channel, limit: 1 })
+      const newest = (r.messages || [])[0]
+      cursor = newest ? String(newest.ts) : `${Math.floor(nowSec)}.000000`
+      floor = cursor
+      persist()
+      return { anchored: cursor, delivered: 0, skipped: 0 }
+    }
+    const before = cursor
+    const windowFrom = tsNum(cursor) - overlapSec
+
+    // 1. The channel: its newest page, paged back until it reaches the cursor (minus the overlap).
+    //    The same page tells us which tracked threads have new replies (latest_reply).
+    const top = []
+    let pageCursor = ''
+    for (let page = 0; page < 5; page++) {
+      const r = await call('conversations.history', { channel, limit: 100, ...(pageCursor ? { cursor: pageCursor } : {}) })
+      const msgs = r.messages || []
+      top.push(...msgs)
+      const oldestHere = msgs.length ? tsNum(msgs[msgs.length - 1].ts) : 0
+      pageCursor = (r.has_more && r.response_metadata && r.response_metadata.next_cursor) || ''
+      if (!pageCursor || oldestHere <= windowFrom) break
+    }
+    const roots = new Map()
+    for (const m of top) if (m && m.ts && m.reply_count) roots.set(String(m.ts), String(m.latest_reply || ''))
+
+    // 2. Tracked threads. A reply is not in the channel's history unless it was also sent to the
+    //    channel. A root on the page is read when its latest_reply moved (or every 30 s, for a
+    //    late-indexed reply); a root that scrolled off the page is read in turn, one per tick.
+    const toRead = []
+    const aged = []
+    for (const t of tracked()) {
+      if (roots.has(t.ts)) {
+        const latest = roots.get(t.ts)
+        if ((latest && tsNum(latest) > tsNum(threadSeen(t.ts))) || now() - (lastPolled.get(t.ts) || 0) > threadRecheckMs) toRead.push(t)
+      } else aged.push(t)
+    }
+    if (aged.length) toRead.push(aged[agedTurn++ % aged.length])
+    const replies = []
+    const threadHigh = new Map()
+    for (const t of toRead) {
+      const last = threadSeen(t.ts) || t.ts
+      const oldest = Math.max(tsNum(t.ts), tsNum(last) - overlapSec)
+      const r = await call('conversations.replies', { channel, ts: t.ts, oldest: String(oldest), inclusive: true, limit: 200 })
+      lastPolled.set(t.ts, now())
+      let high = last
+      for (const m of r.messages || []) {
+        if (!m || !m.ts || String(m.ts) === t.ts) continue // Slack repeats the thread's root first
+        replies.push({ ...m, thread_ts: m.thread_ts || t.ts })
+        if (tsNum(m.ts) > tsNum(high)) high = String(m.ts)
+      }
+      threadHigh.set(t.ts, high)
+    }
+
+    // 3. One list, oldest first, each ts once (a reply sent to the channel is in both), channel restored.
+    const byTs = new Map()
+    for (const m of [...top.filter((x) => x && x.ts && tsNum(x.ts) > windowFrom), ...replies]) {
+      const k = String(m.ts)
+      if (!byTs.has(k)) byTs.set(k, { ...m, channel })
+    }
+    const fresh = [...byTs.values()]
+      .filter((m) => !seen.has(String(m.ts)) && !get(`s:${m.ts}`) && (!floor || tsNum(m.ts) > tsNum(floor)))
+      .sort((a, b) => tsNum(a.ts) - tsNum(b.ts))
+    for (const m of [...byTs.values()]) if (get(`s:${m.ts}`)) seen.add(String(m.ts))
+
+    // 4. Too old to act on (the bridge was off): not delivered, counted, said once by the caller.
+    const tooOld = nowSec - catchUpMs / 1000
+    let skipped = 0
+    const live = []
+    for (const m of fresh) {
+      if (tsNum(m.ts) < tooOld) {
+        if (!notFromAPerson(m)) skipped++
+        seen.add(String(m.ts)); set(`s:${m.ts}`, 1)
+      } else live.push(m)
+    }
+
+    // 5. Two bridges on one room: claim, wait a beat for the other's claim to arrive, deliver
+    //    only what this bridge won. A claim whose owner never delivered is taken over later.
+    if (live.length && store) {
+      for (const m of live) if (!get(`c:${m.ts}`)) set(`c:${m.ts}`, me)
+      await new Promise((r) => timer(r, settleMs))
+    }
+    let delivered = 0
+    for (const m of live) {
+      const k = String(m.ts)
+      if (store && get(`s:${k}`)) { seen.add(k); continue }
+      const owner = store ? get(`c:${k}`) : me
+      if (owner && owner !== me) {
+        const first = claimSeenAt.get(k) || now()
+        claimSeenAt.set(k, first)
+        if (now() - first < takeOverMs) continue // the other bridge has it; look again next tick
+        set(`c:${k}`, me)
+      }
+      try { await onEvent(m) } catch (e) { try { logErr(`[hivecode] a Slack message could not be handled: ${e && e.message}`) } catch { } }
+      seen.add(k); set(`s:${k}`, 1); claimSeenAt.delete(k)
+      delivered++
+    }
+
+    // 6. Only now move the marks: the channel cursor and each thread's last-read reply.
+    for (const m of top) if (m && m.ts && tsNum(m.ts) > tsNum(cursor)) cursor = String(m.ts)
+    for (const [ts, high] of threadHigh) {
+      if (tsNum(high) > tsNum(threadSeen(ts))) { set(`t:${ts}`, high); threadSeenDisk[ts] = high }
+    }
+    persist()
+    if (skipped && onSkipped) {
+      try { await onSkipped({ count: skipped, since: before, catchUpMs }) } catch { }
+    }
+    return { delivered, skipped }
+  }
+
+  function schedule(delay) {
+    if (stopped) return
+    loopTimer = timer(async () => {
+      let next = pollMs
+      try {
+        await tick()
+        if (failures) { try { logErr('[hivecode] Slack polling recovered.') } catch { } }
+        failures = 0
+      } catch (e) {
+        if (e && (e.status === 429 || e.code === 'ratelimited')) {
+          next = Math.max(pollMs, Number(e.retryAfterMs) || 1000) // nothing was marked seen: late, not lost
+        } else {
+          failures++
+          next = Math.min(60000, pollMs * 2 ** Math.min(failures, 5))
+          if (failures === 1) {
+            const why = e && e.code === 'missing_scope'
+              ? `${e.message}. Reinstall your Slack app with slack-app-manifest-inbound.json (docs/SLACK_SETUP.md Section 5)`
+              : (e && e.message) || String(e)
+            try { logErr(`[hivecode] Slack polling failed (${why}); retrying.`) } catch { }
+          }
+        }
+      }
+      schedule(next)
+    }, delay)
+    if (loopTimer && typeof loopTimer.unref === 'function' && process.env.HIVE_SLACK_POLL_UNREF === '1') loopTimer.unref()
+  }
+
+  return {
+    tick,
+    /** Keep polling every pollMs. Two bridges on one room start out of phase (by name). */
+    start() {
+      if (started) return
+      started = true
+      let h = 0
+      for (const ch of String(me)) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+      schedule(pollMs + (h % Math.max(1, pollMs)))
+    },
+    stop() { stopped = true; if (loopTimer) clearTimeout(loopTimer) },
+    state: () => ({ cursor, floor, ticks, seen: seen.size }),
+  }
 }
 
 export async function runSlackCheck({
@@ -1342,6 +1656,8 @@ export async function runSlackCheck({
   WebSocketImpl = WebSocket,
   log = console.log,
   logErr = console.error,
+  inbound = 'auto',
+  pollMs = INBOUND_DEFAULT_POLL_MS,
 } = {}) {
   if (!token || !String(token).trim()) {
     logErr('Q630 SLACK_BOT_TOKEN is missing. Set SLACK_BOT_TOKEN=xoxb-… in your environment.')
@@ -1429,7 +1745,7 @@ export async function runSlackCheck({
       logErr(`Q630 SLACK_BOT_TOKEN is missing required outbound scope(s): ${outMissing.join(', ')}. Reinstall your Slack app from slack-app-manifest.json.`)
       return 1
     }
-    if (appToken) {
+    if (appToken || inbound === 'poll') {
       const inCheck = checkInboundScopes({ scopes, isPrivate, channel })
       if (!inCheck.ok) {
         logErr(inCheck.error)
@@ -1442,7 +1758,7 @@ export async function runSlackCheck({
   }
 
   // Outbound-only mode (when SLACK_APP_TOKEN is not set): verify outbound post + thread reply, never claim inbound replies work
-  if (!appToken || !String(appToken).trim()) {
+  if ((!appToken || !String(appToken).trim()) && inbound !== 'poll') {
     log(`This posts one message in #${channelName} (and one reply in its thread)`)
     try {
       const rootPost = await slackPost('chat.postMessage', { channel, text: 'Hivecode check: outbound posting works.' }, token, fetchImpl, api)
@@ -1458,7 +1774,14 @@ export async function runSlackCheck({
   }
 
   // 5. Socket Mode connect (must receive Slack's `hello` frame within helloTimeoutMs BEFORE we post the prompt)
-  const sm = await preflightSocketMode({ appToken, scopes: agent ? null : scopes, isPrivate, channel, api, fetchImpl })
+  // --inbound poll, or a network that refuses Socket Mode's WebSocket: the reply is read from the
+  // check thread over HTTPS instead (conversations.replies). The agent surface needs Socket Mode.
+  let pollInbound = inbound === 'poll'
+  if (pollInbound && agent) {
+    logErr('Q634 --agent needs Socket Mode (the native stop button is a Socket Mode event); --inbound poll cannot check it.')
+    return 1
+  }
+  const sm = pollInbound ? { ok: true, url: '' } : await preflightSocketMode({ appToken, scopes: agent ? null : scopes, isPrivate, channel, api, fetchImpl })
   if (!sm.ok) {
     logErr(sm.error)
     return 1
@@ -1480,7 +1803,7 @@ export async function runSlackCheck({
   let currentUrl = sm.url
   const startTime = Date.now()
 
-  while (true) {
+  while (!pollInbound) {
     if (!currentUrl) {
       try {
         const res = await slackPost('apps.connections.open', {}, appToken, fetchImpl, api)
@@ -1548,9 +1871,18 @@ export async function runSlackCheck({
       })
     })
 
+    const refused = res.error ? refusedUpgradeStatus(res.error.message) : 0
+    if (refused && inbound === 'auto' && !agent) {
+      closeSock()
+      pollInbound = true
+      logErr(`[hivecode] Slack replies are read over HTTPS every ${pollMs >= 1000 ? `${Math.round(pollMs / 100) / 10} s` : `${pollMs} ms`} (this network refused a WebSocket to Slack, HTTP ${refused}).`)
+      break
+    }
     if (res.timedOut || res.closed || res.error) {
       closeSock()
-      logErr('Q634 Socket Mode did not open (no hello frame received within timeout). Check SLACK_APP_TOKEN (connections:write) and network access to Slack.')
+      logErr(refused
+        ? `Q634 this network refused Socket Mode's WebSocket (HTTP ${refused}). Run slack check without --agent to read replies over HTTPS instead.`
+        : 'Q634 Socket Mode did not open (no hello frame received within timeout). Check SLACK_APP_TOKEN (connections:write) and network access to Slack.')
       return 1
     }
 
@@ -1573,7 +1905,27 @@ export async function runSlackCheck({
     return 1
   }
 
-  log('✓ Socket Mode: connected')
+  log(pollInbound ? '✓ inbound: replies are read over HTTPS (conversations.replies)' : '✓ Socket Mode: connected')
+  // Reading the check thread over HTTPS: any person's reply, not the bot's own posts.
+  const pollForReply = async () => {
+    const until = Date.now() + timeoutMs
+    while (Date.now() < until) {
+      let wait = pollMs
+      try {
+        const r = await slackPost('conversations.replies', { channel, ts: checkTs, limit: 100 }, token, fetchImpl, api)
+        if ((r.messages || []).some((m) => m && String(m.ts) !== checkTs && !notFromAPerson(m) && m.user && m.user !== botUserId)) return true
+      } catch (e) {
+        if (e && e.code === 'missing_scope') {
+          const sc = checkInboundScopes({ scopes: [], isPrivate, channel })
+          logErr(sc.ok ? `Q634 ${e.message}` : sc.error)
+          return false
+        }
+        if (e && e.retryAfterMs) wait = Math.max(pollMs, e.retryAfterMs)
+      }
+      await new Promise((r) => setTimeout(r, wait))
+    }
+    return false
+  }
 
   // 6. Real proof: post prompt and wait up to timeoutMs for any non-bot reply in that thread
   log(`This posts one message in #${channelName} (and one reply in its thread)`)
@@ -1631,7 +1983,7 @@ export async function runSlackCheck({
     }
 
     const arrived = await Promise.race([
-      replyPromise,
+      pollInbound ? pollForReply() : replyPromise,
       new Promise((resolve) => { waitTimer = setTimeout(() => resolve(false), timeoutMs) }),
     ])
     clearTimeout(waitTimer)
@@ -1681,9 +2033,13 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   let timeoutMs = Number(env.HIVE_SLACK_CHECK_TIMEOUT_MS) || 120000
   let helloTimeoutMs = Number(env.HIVE_SLACK_HELLO_TIMEOUT_MS) || 10000
   let startRetryMs = Number(env.HIVE_SLACK_START_RETRY_MS) || 60000
+  // auto: Socket Mode when SLACK_APP_TOKEN is set, HTTPS polling if the network refuses the
+  // WebSocket; poll: HTTPS polling only (needs no SLACK_APP_TOKEN); socket: Socket Mode only.
+  let inbound = String(env.HIVE_SLACK_INBOUND || 'auto').toLowerCase()
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if ((a === 'start' || a === 'check') && !LINK && i === 0) { mode = a; continue }
+    if (a === '--inbound') { inbound = String(argv[++i] || '').toLowerCase(); continue }
     if (a === '--help' || a === '-h') { log(USAGE.trim()); return 0 }
     if (a === '--dry-run') { dryRun = true; continue }
     if (a === '--agent') { agent = true; continue }
@@ -1696,14 +2052,21 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     if (a.startsWith('--')) { logErr(USAGE.trim()); return 2 }
     if (!LINK) LINK = a
   }
+  if (!['auto', 'poll', 'socket'].includes(inbound)) {
+    logErr(`Q630 --inbound must be auto, poll or socket (got "${inbound}").`)
+    return 2
+  }
   const TOKEN = env.SLACK_BOT_TOKEN || ''
   const APP_TOKEN = env.SLACK_APP_TOKEN || ''
+  const pollMs = Math.max(50, Number(env.HIVE_SLACK_POLL_MS) || INBOUND_DEFAULT_POLL_MS)
   if (mode === 'check') {
     return await runSlackCheck({
       token: TOKEN,
       appToken: APP_TOKEN,
       channel: CHANNEL,
       agent,
+      inbound,
+      pollMs,
       timeoutMs,
       helloTimeoutMs,
       startRetryMs,
@@ -1728,7 +2091,14 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     return 1
   }
   let sockPre = null
-  if (APP_TOKEN) {
+  if (inbound === 'poll') {
+    // Polling reads channel history with the bot token: it needs the inbound scopes, not an app token.
+    const sc = checkInboundScopes({ scopes: pre.scopes, isPrivate: pre.isPrivate, channel: CHANNEL })
+    if (!sc.ok) {
+      logErr(sc.error)
+      return 1
+    }
+  } else if (APP_TOKEN) {
     sockPre = await preflightSocketMode({
       appToken: APP_TOKEN,
       scopes: pre.scopes,
@@ -1747,12 +2117,20 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     return 2
   }
   if (dryRun) {
-    const mode = sockPre ? 'outbound + inbound Socket Mode' : 'outbound'
+    const mode = inbound === 'poll' ? 'outbound + inbound HTTPS polling' : sockPre ? 'outbound + inbound Socket Mode' : 'outbound'
     log(`DRY RUN OK: @${pre.botUser} is in #${pre.channelName} (${CHANNEL}) [${mode}] and ready to bridge ${room} — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}.`)
     return 0
   }
   const dir = (env.TEMP || process.env.TEMP || '.') + '/hive-slack-' + room + '-' + process.pid
-  const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: linkToken || env.HIVE_TOKEN || '', syncFiles: false, log: () => {} })
+  // NOT kind 'ai'. The bridge presses the stop button for the Slack people it has checked (a
+  // full workspace member may stop; resume needs --allow), and the relay's governor reverts any
+  // write to `controls` from an AI: "the party being stopped never gets the switch". As 'ai',
+  // every "stop" from Slack was undone by the relay while Slack and room chat both said
+  // "paused" (found 8 Nov 2026 by tests/slack-poll-inbound-test.mjs S4, the first test to run
+  // the bridge against the real server.js). hive-slack-agent.js already joins this way. The relay
+  // does not trust a declared 'human' (it records 'unknown', which may control on an open relay);
+  // a secured room still needs a maintainer or admin token for this.
+  const hive = startSync({ relay, room, dir, name: NAME, kind: 'human', token: linkToken || env.HIVE_TOKEN || '', syncFiles: false, log: () => {} })
   await new Promise((resolve) => {
     let done = false
     const finish = () => { if (!done) { done = true; resolve() } }
@@ -1777,8 +2155,51 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     botUserId: pre.botUserId || '',
     fetchImpl,
     post: (m) => slackPost('chat.postMessage', m, TOKEN, fetchImpl),
+    // Slack asks for about one message per second per channel; tests may go faster.
+    minGapMs: Math.max(0, Number(env.HIVE_SLACK_MIN_GAP_MS) || 1000),
   })
-  if (sockPre) {
+  // Inbound over HTTPS: --inbound poll, or a network that refused Socket Mode's WebSocket.
+  const startPolling = async (why) => {
+    const stateDir = env.HIVE_SLACK_STATE_DIR || env.TEMP || env.TMPDIR || os.tmpdir()
+    const tasks = hive.doc.getMap('tasks')
+    const poller = makeSlackPoller({
+      token: TOKEN,
+      channel: CHANNEL,
+      fetchImpl,
+      store: hive.doc.getMap('slack_inbound'),
+      threads: bridge.threads,
+      isSettled: (id) => { const t = tasks.get(id); return Boolean(t && t.status === 'done') },
+      diskFile: slackInboundStateFile(stateDir, room, CHANNEL),
+      me: NAME,
+      pollMs,
+      catchUpMs: Number(env.HIVE_SLACK_CATCHUP_MS) || 30 * 60 * 1000,
+      onEvent: (ev) => bridge.onInboundEvent(ev),
+      onSkipped: ({ count, since, catchUpMs }) => {
+        const mins = Math.round(catchUpMs / 60000)
+        const window = mins >= 1 ? `${mins} min` : `${Math.round(catchUpMs / 1000)} s`
+        const from = new Date(tsNum(since) * 1000).toISOString().slice(0, 16).replace('T', ' ')
+        const to = new Date().toISOString().slice(0, 16).replace('T', ' ')
+        bridge.postRoomThread(`:hourglass: Hivecode was offline from ${from} to ${to} UTC; ${count} Slack message${count === 1 ? '' : 's'} older than ${window} ${count === 1 ? 'was' : 'were'} not acted on. Send it again if it still matters.`)
+      },
+      logErr,
+    })
+    try {
+      await poller.tick() // anchors the cursor, or catches up; a missing scope is loud here
+    } catch (e) {
+      if (e && e.code === 'missing_scope') {
+        const sc = checkInboundScopes({ scopes: [], isPrivate: pre.isPrivate, channel: CHANNEL })
+        logErr(sc.ok ? `Q634 ${e.message}` : sc.error)
+        return null
+      }
+      logErr(`[hivecode] Slack polling could not start (${(e && e.message) || e}); retrying in the background.`)
+    }
+    poller.start()
+    logErr(`[hivecode] Slack replies are read over HTTPS every ${pollMs >= 1000 ? `${Math.round(pollMs / 100) / 10} s` : `${pollMs} ms`} (${why}). A "stop" from Slack takes up to that long to arrive.`)
+    return poller
+  }
+  if (inbound === 'poll') {
+    if (!(await startPolling('--inbound poll'))) { try { hive.stop() } catch { }; return 1 }
+  } else if (sockPre) {
     try {
       await connectSocketMode({
         appToken: APP_TOKEN,
@@ -1788,6 +2209,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
         logErr,
         helloTimeoutMs,
         startRetryMs,
+        failFastOnRefusal: inbound === 'auto',
         onEvent: (ev) => bridge.onInboundEvent(ev),
         onMultiConnection: (n) => {
           bridge.postChannel(
@@ -1796,9 +2218,14 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
         },
       })
     } catch (e) {
-      logErr(e.message)
-      try { hive.stop() } catch { }
-      return 1
+      if (e && e.wsRefused && inbound === 'auto') {
+        // The bot token reads history as long as the app has the inbound scopes it was installed with.
+        if (!(await startPolling(`this network refused a WebSocket to Slack (HTTP ${e.wsRefused})`))) { try { hive.stop() } catch { }; return 1 }
+      } else {
+        logErr(e.message)
+        try { hive.stop() } catch { }
+        return 1
+      }
     }
   }
   const chat = hive.doc.getArray('chat')
