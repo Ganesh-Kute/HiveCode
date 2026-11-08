@@ -6,6 +6,7 @@
 //   2. A notification that fails is logged and dropped, never retried in a loop and never a reason
 //      to stop: it is a courtesy, the work is the point.
 import { findSecrets } from './hive-secrets.js'
+import { relayFetch } from './hive-transport.js'
 
 /** Every key or token in `text` replaced. Run on everything that goes to GitHub or a webhook. */
 export function scrub(text) {
@@ -28,7 +29,7 @@ export function cleanError(e, url) {
 
 /** `send(text)` resolves true when the webhook took it. Slack wants {text}, Discord {content}; any
  *  other host gets Slack format ({text}). */
-export function makeNotifier(url, { fetchImpl = globalThis.fetch, log = () => {} } = {}) {
+export function makeNotifier(url, { fetchImpl = relayFetch, log = () => {} } = {}) {
   if (!url) return async () => false
   let host = ''
   try { host = new URL(url).hostname.toLowerCase() } catch { host = '' }

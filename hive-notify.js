@@ -26,6 +26,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 import { makeNotifier, scrub } from './hive-webhook.js'
+import { relayFetch } from './hive-transport.js'
 
 const oneLine = (s, n = 200) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t }
 const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -174,7 +175,7 @@ const USAGE = `usage:
   --title <text>    what to call the room in posts (default: the first characters of its id)
   --name <name>     the notifier's own name in the room (default Notifier)`
 
-export async function main(argv, { log = console.log, logErr = console.error, fetchImpl = globalThis.fetch, home = os.homedir(), now = () => Date.now(), once = false } = {}) {
+export async function main(argv, { log = console.log, logErr = console.error, fetchImpl = relayFetch, home = os.homedir(), now = () => Date.now(), once = false } = {}) {
   if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') { log(USAGE); return 0 }
   const SWITCHES = new Set(['dry-run', 'once'])
   const pos = []
