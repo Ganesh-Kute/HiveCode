@@ -37,8 +37,11 @@ import * as meter from './usage-meter.js'
 // ONE SOCKET PER PARTICIPANT: the wire format and the session that serves it. Static imports, so
 // scripts/build-relay.mjs puts both in the published relay.
 import { MUX_PREFIX, MUX_VERSION } from './hive-mux-proto.js'
+import { POLL_PREFIX, POLL_VERSION } from './hive-poll-proto.js'
+import { makePollHandler } from './relay-poll.js'
 import { VERSION, BUILD } from './hive-version.js'
 import { serveMux } from './relay-mux.js'
+import { STATIC, staticFile } from './relay-static.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
 // library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
@@ -371,7 +374,7 @@ function writeBlockReason(conn) {
     if (state.get(`${who}_status`) === 'LOCKED' || state.get(`${who}_locked`) === 'true') return { reason: 'DCO-locked', permanent: false }
     const claim = baseDoc.getMap('claims').get(filePath)
     const live = claim && (!claim.ttl || (claim.at || 0) + claim.ttl > Date.now())
-    if (live && claim.by && claim.by !== who) return { reason: `held by ${claim.by}`, permanent: false }
+    if (live && claim.by && claim.by !== who) return { reason: `held by ${claim.by}`, permanent: false, holder: claim.by, until: claim.ttl ? (claim.at || 0) + claim.ttl : 0 }
   } catch { return null }
   return null
 }
@@ -415,14 +418,14 @@ function installWriteGate(conn) {
           // TEMPORARILY without corrupting the history -- and it is also the better promise:
           // being stopped for a minute costs the agent nothing once you let it go.
           const mode = block.paused ? 'queue' : ENFORCE_CLAIMS
-          if (mode === 'block') return // drop the write
+          if (mode === 'block') { refusedNotice(conn, block); return } // drop the write
           // A PERMANENT block is never queued. Queueing exists so a legitimate write that
           // arrived early is not lost; a write to an unwritable path is not early, it is
           // wrong, and replaying it when the queue flushes would land exactly the damage the
           // flag exists to prevent. Drop it even in queue mode, and say so in the audit.
           if (mode === 'queue') {
-            if (block.permanent) { audit('write-dropped-permanent', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason }); return }
-            queueWrite(conn, data, rest); return // hold + replay later
+            if (block.permanent) { audit('write-dropped-permanent', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason }); refusedNotice(conn, block); return }
+            queueWrite(conn, data, rest, block); return // hold + replay later
           }
           // 'warn' falls through (allowed, logged only)
         }
@@ -432,11 +435,51 @@ function installWriteGate(conn) {
   }
 }
 
+// A HELD OR REFUSED WRITE IS SAID IN THE ROOM. It used to be known only to this process's audit
+// log: the writer's own client said "synced" while its edit sat here, the claim holder never heard
+// someone was waiting, and on 26 Oct 2026 an agent wrote into another's claimed files for fifteen
+// minutes with the first sign being the wrong name on a commit. Names are @-mentioned so the
+// writer (and the holder) are woken, not just logged. Said once per hold, not once per keystroke.
+function heldSay(conn, text) {
+  try {
+    const bd = getYDoc(baseRoomOf(conn._hive.room))
+    if (bd) bd.getArray('chat').push([{ by: 'relay', kind: 'system', at: new Date().toTimeString().slice(0, 8), text }])
+  } catch { /* a notice is never worth failing a write over; the audit line is still written */ }
+}
+const whyHeld = (block) => (block.holder ? `@${block.holder} holds it` : block.reason)
+
+// A dropped write (block mode, or a path the room has ruled unwritable) is said once per file per
+// connection: the writer keeps editing a copy the room will never take, so it has to be told.
+function refusedNotice(conn, block) {
+  const file = pathOf(conn._hive.room)
+  if (!conn._refusedSaid) conn._refusedSaid = new Set()
+  if (conn._refusedSaid.has(file)) return
+  conn._refusedSaid.add(file)
+  heldSay(conn, `⛔ @${conn._hive.identity.name}: your edit to ${file} was refused (${whyHeld(block)}). The room does not have it; your folder does.`)
+}
+
+// When the hold is a claim with a ttl, its expiry changes no map, so nothing would ever call
+// flushQueue: the edit was held forever. Wake up when it is due instead.
+function armExpiry(conn, block) {
+  if (conn._wqTimer) { clearTimeout(conn._wqTimer); conn._wqTimer = null }
+  if (!block || !block.until) return
+  conn._wqTimer = setTimeout(() => { conn._wqTimer = null; flushQueue(conn) }, Math.max(0, block.until - Date.now()) + 250)
+  if (conn._wqTimer.unref) conn._wqTimer.unref()
+}
+
 // Buffer a blocked write and start watching for the block to clear.
-function queueWrite(conn, data, rest) {
+function queueWrite(conn, data, rest, block = {}) {
   if (!conn._wq) { conn._wq = []; attachFlush(conn) }
-  if (conn._wq.length >= QUEUE_CAP) { audit('write-queue-overflow', { room: conn._hive.room, who: conn._hive.identity.name, cap: QUEUE_CAP }); return } // safety valve: drop past the cap
+  const who = conn._hive.identity.name
+  const file = pathOf(conn._hive.room)
+  if (conn._wq.length >= QUEUE_CAP) {
+    audit('write-queue-overflow', { room: conn._hive.room, who, cap: QUEUE_CAP }) // safety valve: drop past the cap
+    if (!conn._wqOverflowSaid) { conn._wqOverflowSaid = true; heldSay(conn, `⚠ @${who}: more than ${QUEUE_CAP} edits to ${file} were held, and the ones past that were DROPPED. Your folder still has them.`) }
+    return
+  }
   conn._wq.push({ data, rest })
+  if (conn._wq.length === 1) heldSay(conn, `⏸ @${who}: your edit to ${file} is held: ${whyHeld(block)}. It lands by itself when that clears; keep your copy until then.`)
+  armExpiry(conn, block)
 }
 
 // Observe the base doc's claims + swarm_state; when either changes, try to flush.
@@ -450,16 +493,34 @@ function attachFlush(conn) {
   const onChange = () => flushQueue(conn)
   claims.observe(onChange); state.observe(onChange); controls.observe(onChange)
   conn._wgDetach = () => { try { claims.unobserve(onChange); state.unobserve(onChange); controls.unobserve(onChange) } catch {} }
-  conn.on('close', () => { if (conn._wgDetach) conn._wgDetach() })
+  if (conn._wqCloseHooked) return
+  conn._wqCloseHooked = true
+  conn.on('close', () => {
+    if (conn._wgDetach) conn._wgDetach()
+    if (conn._wqTimer) { clearTimeout(conn._wqTimer); conn._wqTimer = null }
+    // Held edits live only on this connection; when it goes, the room never gets them.
+    if (conn._wq && conn._wq.length) {
+      const who = conn._hive.identity.name
+      audit('write-queue-discarded', { room: conn._hive.room, who, count: conn._wq.length })
+      heldSay(conn, `⚠ @${who} left before ${pathOf(conn._hive.room)} was free: ${conn._wq.length} held edit(s) were NOT applied to the room. ${who}'s own folder still has them.`)
+      conn._wq = []
+    }
+  })
 }
 
 // If the connection is no longer blocked, replay its held writes in order.
 function flushQueue(conn) {
   if (!conn._wq || !conn._wq.length) return
-  if (writeBlockReason(conn)) return // still blocked — keep holding
-  const q = conn._wq; conn._wq = []
-  audit('write-queue-flush', { room: conn._hive.room, who: conn._hive.identity.name, count: q.length })
+  const block = writeBlockReason(conn)
+  if (block) { armExpiry(conn, block); return } // still blocked (a renewed claim moves its expiry) — keep holding
+  if (conn._wqTimer) { clearTimeout(conn._wqTimer); conn._wqTimer = null }
+  // null, not []: the observers are detached below, so the NEXT hold on this connection must
+  // attach them again. Left as [] (truthy), a second hold was never flushed by a release.
+  const q = conn._wq; conn._wq = null
+  const who = conn._hive.identity.name
+  audit('write-queue-flush', { room: conn._hive.room, who, count: q.length })
   for (const { data, rest } of q) { try { conn._wgHandler(data, ...rest) } catch {} }
+  heldSay(conn, `▶ ${who}'s held edit(s) to ${pathOf(conn._hive.room)} landed (${q.length}).`)
   if (conn._wgDetach) conn._wgDetach()
 }
 
@@ -844,7 +905,8 @@ function scopeCheck(p, room) {
     // left at the scope's role so coordination — chat/board/tasks — still works.)
     if (role !== 'reader' && !writeAllowed(sc, filePath)) role = 'reader'
   }
-  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner }, role, path: filePath }
+  // jti rides along so a revoke can find and close the connections that token opened (handleRevoke).
+  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner, jti: p.jti }, role, path: filePath }
 }
 
 // A SELF-DECLARED NAME IS NOT A CREDENTIAL, AND IS NEVER TREATED AS ONE.
@@ -945,8 +1007,16 @@ async function handleRevoke(req, res) {
     if (!roomRevoked.has(base)) roomRevoked.set(base, new Set())
     roomRevoked.get(base).add(jti)
     persistRoomRevoked() // survive a relay restart
-    audit('revoke', { room: base, jti, by: v.payload.name })
-    return reply(200, { ok: true })
+    // TAKEN BACK MEANS GONE NOW (8 Oct 2026). Refusing the token only at its next connect left a
+    // removed guest reading every change for as long as its socket stayed up -- which, for an agent
+    // that never disconnects, is forever. Close what it has open; its reconnect is then refused above.
+    let dropped = 0
+    for (const c of wss.clients) {
+      const g = c._hiveGrant || (c._hive && c._hive.identity ? { base: baseRoomOf(c._hive.room), jti: c._hive.identity.jti } : null)
+      if (g && g.jti === jti && g.base === base) { try { c.close(4401, 'token revoked') } catch { /* already closing */ } dropped++ }
+    }
+    audit('revoke', { room: base, jti, by: v.payload.name, dropped })
+    return reply(200, { ok: true, dropped })
   } catch { return reply(400, { error: 'bad request' }) }
 }
 
@@ -1037,6 +1107,11 @@ if (PERSIST_DIR) {
 }
 
 const server = http.createServer((req, res) => {
+  // A room connection carried over HTTPS requests (relay-poll.js), for networks that refuse upgrades.
+  if (req.url && req.url.startsWith(POLL_PREFIX)) {
+    if (!RELAY_POLL) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('long-poll is off on this relay') }
+    return poll.handle(req, res)
+  }
   // Remote Model Context Protocol (MCP) Streamable HTTP & SSE endpoint for cloud AI agents
   try {
     if (isMcpRequest(req)) {
@@ -1052,7 +1127,10 @@ const server = http.createServer((req, res) => {
   // names, no document contents: it is unauthenticated on purpose, so it must leak nothing.
   if (req.url === '/health' || req.url === '/healthz') {
     const s = limitStats()
-    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    // Any page may read it: it leaks nothing by design (above), and the status page on the website
+    // (public/status.html) reads it from another origin. Without this, a browser hides the answer
+    // and that page can say only "reachable", never which build is up.
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' })
     return res.end(JSON.stringify({
       ok: true,
       // WHICH BUILD is answering. On 29 Sep 2026 a night of relay fixes had been pushed and the hosted
@@ -1068,6 +1146,8 @@ const server = http.createServer((req, res) => {
       // Clients read this to decide whether to carry all their files on one socket (mux) or open
       // one socket per file. An absent field is what every older relay answers: "one per file".
       mux: RELAY_MUX ? MUX_VERSION : 0,
+      // HTTPS long-poll for networks that refuse WebSocket upgrades. Clients read this, never guess.
+      poll: RELAY_POLL ? POLL_VERSION : 0,
       rooms: s.rooms,
       docsTracked: s.docsTracked,
       largestDocBytes: s.largestDocBytes,
@@ -1167,38 +1247,12 @@ const server = http.createServer((req, res) => {
   // Static pages: the relay doubles as the website + the browser control room, so
   // one deploy serves everything. Map a small allowlist of paths to public/ files.
   if (req.method === 'GET') {
-    // Keep this in step with what public/index.html actually references — the relay
-    // serves the site too, so a missing entry here means the page loads on this host with
-    // no script and no images while looking fine on Vercel.
-    const STATIC = {
-      '/': 'index.html', '/index.html': 'index.html',
-      '/control': 'control.html', '/control.html': 'control.html',
-      // The live architecture map. Same CRDT bundle as /control, so it must be served from the
-      // same origin -- a page that loads hive-crdt.js from anywhere else gets two Yjs instances
-      // and goes silently deaf.
-      '/map': 'map.html', '/map.html': 'map.html',
-      // Licence recovery. The page calls Vercel's /api/license directly (CORS is open for
-      // exactly this), so it works served from here even though this host has no such route.
-      '/recover': 'recover.html', '/recover.html': 'recover.html',
-      '/app.js': 'app.js',
-      // The control room's CRDT bundle. Without this entry /control loads and then cannot
-      // sync at all on this host, while working fine on Vercel.
-      '/hive-crdt.js': 'hive-crdt.js',
-      '/favicon.ico': 'favicon.ico',
-      '/favicon-32.png': 'favicon-32.png',
-      '/apple-touch-icon.png': 'apple-touch-icon.png',
-      '/mark-64.png': 'mark-64.png',
-      '/mark.jpg': 'mark.jpg',
-      '/mark-wide.jpg': 'mark-wide.jpg',
-      '/hivecode-logo.png': 'hivecode-logo.png',
-      '/hivecode-icr-demo.mp4': 'hivecode-icr-demo.mp4',
-      '/Hivecode___ICR.mp4': 'Hivecode___ICR.mp4'
-    }
     const TYPES = { '.html': 'text/html; charset=utf-8', '.ico': 'image/x-icon', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.js': 'text/javascript; charset=utf-8' }
     const file = STATIC[(req.url || '').split('?')[0]]
     if (file) {
       try {
-        const body = fs.readFileSync(path.join(__dirname, 'public', file))
+        const filePath = staticFile(file, __dirname)
+        const body = fs.readFileSync(filePath)
         const ext = file.slice(file.lastIndexOf('.'))
         // HTML is the app shell — keep it fresh (60s) so deploys land fast; static
         // image assets can cache longer.
@@ -1320,7 +1374,9 @@ function parseUpgrade(url) {
 }
 
 function refuseUpgrade(socket, line) {
-  socket.write(`HTTP/1.1 ${line}\r\nConnection: close\r\n\r\n`)
+  // X-Hive-Relay says the RELAY refused, not a proxy in the way: a client must not answer the relay's
+  // own refusal by trying another transport.
+  socket.write(`HTTP/1.1 ${line}\r\nX-Hive-Relay: 1\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
 
@@ -1507,29 +1563,30 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
 // ONE SOCKET PER PARTICIPANT. The physical socket is authorized as the BASE room -- the same
 // grant the client's base-room connection already uses -- and occupies one slot of the total.
 // Every file it then opens goes through gateRoom and acceptConnection above, per file.
-async function upgradeMux(req, socket, head, q) {
-  if (!RELAY_MUX) return refuseUpgrade(socket, '404 Not Found')
+async function admitMux(req, q) {
+  if (!RELAY_MUX) return { line: '404 Not Found' }
   const baseRoom = q.room.slice(MUX_PREFIX.length)
-  if (!baseRoom || baseRoomOf(baseRoom) !== baseRoom || pathOf(baseRoom)) return refuseUpgrade(socket, '400 Bad Request')
+  if (!baseRoom || baseRoomOf(baseRoom) !== baseRoom || pathOf(baseRoom)) return { line: '400 Bad Request' }
   const t = await resolveTier(q.room, q.license)
-  if (!t.ok) return refuseUpgrade(socket, t.line)
+  if (!t.ok) return { line: t.line }
   let auth
   try { auth = authorize(baseRoom, q.token, q.declaredName, q.declaredKind) }
   catch (e) { auth = { ok: false, code: 401, reason: 'authorization error' }; console.error('[relay] authorize threw:', e && e.message) }
   if (!auth.ok) {
     audit('reject', { room: q.room, reason: auth.reason })
     const code = auth.code || 401
-    return refuseUpgrade(socket, `${code} ${code === 403 ? 'Forbidden' : code === 503 ? 'Service Unavailable' : 'Unauthorized'}`)
+    return { line: `${code} ${code === 403 ? 'Forbidden' : code === 503 ? 'Service Unavailable' : 'Unauthorized'}` }
   }
   const key = MUX_KEY(baseRoom)
   const full = admitConnection(key, t.tier)
   if (full) {
     audit('reject-capacity', { room: q.room, identity: auth.identity.name, reason: full.reason })
-    return refuseUpgrade(socket, `${full.code} ${full.reason}`)
+    return { line: `${full.code} ${full.reason}` }
   }
-  wss.handleUpgrade(req, socket, head, (ws) => {
+  return { accept: (ws) => {
     noteConnectionOpened(key)
     const openedAt = Date.now()
+    ws._hiveGrant = { base: baseRoom, jti: auth.identity && auth.identity.jti } // what a revoke matches on
     audit('mux-connect', { baseRoom, identity: auth.identity })
     serveMux(ws, {
       baseRoom,
@@ -1557,20 +1614,33 @@ async function upgradeMux(req, socket, head, q) {
         audit('mux-disconnect', { baseRoom, identity: auth.identity, heldMs: Date.now() - openedAt })
       },
     })
-  })
+  } }
+}
+
+// THE ONE ADMISSION DECISION for a connection, whatever carries it: a WebSocket upgrade below, or an
+// HTTPS long-poll session (relay-poll.js) for networks that refuse upgrades. Resolves to { line }, the
+// status line to refuse with, or { accept(conn) }. Both carriers call it, so a check added here
+// protects both, and neither can be the way around the other.
+async function admitUpgrade(req) {
+  const q = parseUpgrade(req.url)
+  if (q.room.startsWith(MUX_PREFIX)) return admitMux(req, q)
+  const t = await resolveTier(q.room, q.license)
+  if (!t.ok) return { line: t.line }
+  const g = gateRoom(q.room, { token: q.token, declaredName: q.declaredName, declaredKind: q.declaredKind, tier: t.tier, committerLimit: t.committerLimit, channel: false })
+  if (!g.ok) return { line: g.line }
+  return { accept: (conn) => acceptConnection(conn, req, q.room, { auth: g.auth, tier: t.tier, license: q.license, agentId: g.agentId, channel: false }) }
 }
 
 server.on('upgrade', async (req, socket, head) => {
-  const q = parseUpgrade(req.url)
-  if (q.room.startsWith(MUX_PREFIX)) return upgradeMux(req, socket, head, q)
-  const t = await resolveTier(q.room, q.license)
-  if (!t.ok) return refuseUpgrade(socket, t.line)
-  const g = gateRoom(q.room, { token: q.token, declaredName: q.declaredName, declaredKind: q.declaredKind, tier: t.tier, committerLimit: t.committerLimit, channel: false })
-  if (!g.ok) return refuseUpgrade(socket, g.line)
-  wss.handleUpgrade(req, socket, head, (conn) => {
-    acceptConnection(conn, req, q.room, { auth: g.auth, tier: t.tier, license: q.license, agentId: g.agentId, channel: false })
-  })
+  const a = await admitUpgrade(req)
+  if (!a.accept) return refuseUpgrade(socket, a.line)
+  wss.handleUpgrade(req, socket, head, (conn) => a.accept(conn))
 })
+
+// HTTPS LONG-POLL, for networks that pass HTTPS but refuse every WebSocket upgrade (Antigravity's
+// cloud VMs, 7 Nov 2026; many company proxies). Same admission, same accept path, same gates.
+const RELAY_POLL = !/^(off|0|false)$/i.test(process.env.HIVE_RELAY_POLL || '')
+const poll = makePollHandler({ admit: admitUpgrade, audit, track: (conn) => { wss.clients.add(conn); conn.once('close', () => wss.clients.delete(conn)) }, maxFrameBytes: LIMITS.maxFrameBytes || 16 * 1048576 })
 
 wss.on('connection', (conn, req) => {
   const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'

@@ -1,0 +1,27 @@
+{
+  "display_information": {
+    "name": "Hivecode",
+    "description": "One Slack thread per task or GitHub issue for Hivecode rooms.",
+    "background_color": "#111318"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hivecode",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "channels:read",
+        "groups:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

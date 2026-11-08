@@ -105,6 +105,11 @@ census-*.json
 .claude/
 .vexp/
 .vscode/mcp.json
+# Claude Code starts whatever this file names on every machine that opens the repo, and inside the
+# repo it outranks the entry setup writes for the user. Ours launched C:/Users/G1/Desktop/N/hive-mcp.js,
+# so on a second PC the hivecode server failed with "Connection closed" (9 Oct 2026). Each machine
+# sets up its own: `npx -y hivecode-mcp@latest setup`. tests/portable-agent-config-test.mjs pins it.
+.mcp.json
 
 # Backups of files that have since changed. Keeping them public invites someone to read the
 # old version and report a bug that was fixed months ago.

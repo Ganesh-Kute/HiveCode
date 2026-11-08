@@ -39,7 +39,7 @@
         What we hold, why, and for how long. The short version: an email address and a licence
         record, and nothing else we could avoid.
       </p>
-      <p class="prose__updated">Last updated 28 July 2026</p>
+      <p class="prose__updated">Last updated 1 November 2026</p>
     </div>
 
     <div class="prose">
@@ -48,11 +48,13 @@
         <li><code>icr-merge</code> and <code>git-clash</code> run entirely on your machine. They make no network requests and send us nothing — including no telemetry, no usage counts and no error reports.</li>
         <li>Your signing identity for provenance is a keypair generated on your machine. The private key never leaves it, and there is no account database it could be registered against — author identity is the public key's own fingerprint.</li>
         <li>Files your <code>.gitignore</code> excludes are never synced, and neither are <code>.env</code> files, private keys, certificates or your local identity file, regardless of what your ignore rules say.</li>
+        <li>The GitHub watcher (<code>hivecode-mcp github</code>) runs on your machine and reaches GitHub through your own <code>gh</code> login. Your GitHub credentials never reach us. The issues, comments and CI logs it reads go to your agent on your machine, and into the room that agent works in.</li>
+        <li>Notifications go from your machine straight to the Slack or Discord webhook you give them. We never see that webhook, and a room's link is never put in a notification.</li>
       </ul>
 
       <h2>What we store</h2>
       <ul>
-        <li><b>Your email address and licence record</b> — plan, committer allowance, status, and the Razorpay payment or subscription id — held in Supabase so the relay can check whether a key is valid. This is the only personal data we keep.</li>
+        <li><b>Your email address and licence record</b> — plan, seat allowance, status, and the Razorpay payment or subscription id — held in Supabase so the relay can check whether a key is valid. This is the only personal account data we keep.</li>
         <li><b>Payment details are not ours.</b> Razorpay processes the payment and we never see your card. What we receive back is an identifier and an amount.</li>
       </ul>
       <p>
@@ -61,29 +63,44 @@
         longer needed for those obligations.
       </p>
 
-      <h2>What passes through the relay</h2>
+      <h2>What passes through and stays on the relay</h2>
       <p>
-        A room's participants exchange incremental document updates through the relay over an
-        encrypted connection (<code>wss://</code>). The relay's job is to forward those updates
-        and to keep a room in sync while people are connected. It does not hold a canonical copy
-        of your repository, and folder-scoped invitations mean an out-of-scope file is never sent
+        A room's participants exchange document updates through the relay over an encrypted
+        connection (<code>wss://</code>). On standard open rooms (<code>room-&hellip;</code>), the
+        room link itself is the capability: anyone who holds the link can read and write that
+        room's synced files and chat. On secured rooms (<code>hs_&hellip;</code>), access is gated
+        by signed tokens and folder-scoped invitations ensure an out-of-scope file is never sent
         to that participant at all.
       </p>
       <p>
-        The hosted relay writes a room's current state to disk so that a restart does not lose
-        work in progress. That state is deleted when you end the room. Server logs record
-        connection events: the room id, when a participant joined and left, how long they stayed, how many participants were in the room, and — if you chose to share it — the display name you set. Never file contents, never your IP address.
+        On the hosted relay, snapshots of a room's synced files, chat, tasks and claims are
+        written to the container's local disk (<code>.hive-relay-data</code>) so a room remains
+        accessible from the browser Control Room when editors close and survives a relay process
+        restart. The hosted relay runs on a plan whose container disk is wiped on a redeploy or
+        container replacement, and there is no self-serve room-delete command yet: when a
+        redeploy wipes the container, synced files come back from participants' own folders if
+        they rejoin, and chat and tasks return only if a still-running client reconnects.
       </p>
       <p>
-        Sharing your display name with the relay is a separate choice from showing it to the
-        people in your room, and you can switch it off: <b>Settings &rarr; Hivecode &rarr; Share
-        Name With Relay</b>. With it off, the relay records your connection as anonymous. It is
-        self-declared either way &mdash; the relay has no account system and never verifies who
-        you say you are.
+        Hivecode's application logs record connection and channel events: the room id, when a
+        participant joined and left, how long they stayed, how many participants were in the room,
+        sample synced relative file paths (up to three per multiplexed burst, or per file when
+        full audit logging is enabled), and the display name sent on connect. Hivecode's own
+        application logs never record file contents or client IP addresses (Render's edge proxy
+        terminates TLS under Render's standard platform request handling).
       </p>
       <p>
-        If none of that is acceptable for your code, run the relay yourself. It is the same
-        program, it is public, and then nothing about your work touches our infrastructure.
+        In the VS Code extension, sharing your display name with the relay can be switched off
+        under <b>Settings &rarr; Hivecode &rarr; Share Name With Relay</b> (with it off, the
+        extension connects anonymously). Agents connecting through <code>hivecode-mcp</code> send
+        their room display name so activity and limits remain attributable per agent. Names are
+        self-declared on open rooms — the relay has no user account system.
+      </p>
+      <p>
+        If none of that is acceptable for your code, run the relay yourself
+        (<code>npx hivecode-relay</code>) and pin your machine to it with
+        <code>HIVE_RELAY_PIN</code> or <code>HIVE_PRIVATE=1</code>. It is the same program, it is
+        public, and then nothing about your work touches our infrastructure.
       </p>
 
       <h2>Third parties we use</h2>
@@ -106,9 +123,12 @@
 
       <h2>Your rights</h2>
       <p>
-        Ask us what we hold about you, ask us to correct it, or ask us to delete it:
-        <a href="/contact">contact us</a> and a person will answer. If we ever suffer a breach
-        that affects your data, we will tell you.
+        Ask us what account or licence record we hold about you, ask us to correct it, or ask us
+        to delete it: <a href="/contact">contact us</a> and a person will answer. Room snapshots
+        on the hosted relay have no individual delete command today and are cleared when the relay
+        container is redeployed or replaced; for immediate local control over room storage and
+        deletion, run the relay on your own machine or network. If we ever suffer a breach that
+        affects your data, we will tell you.
       </p>
     </div>
   </div>
@@ -132,7 +152,7 @@
           <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
           <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
           <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
-          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">npm package</a></li>
         </ul>
       </div>
       <div class="foot__col">

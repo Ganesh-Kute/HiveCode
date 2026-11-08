@@ -22,7 +22,7 @@ import crypto from 'crypto'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
-import { WebSocket } from 'ws'
+import { HiveSocket, transportFor } from './hive-transport.js' // a WebSocket, or HTTPS long-poll where WebSockets are refused
 import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
@@ -31,6 +31,7 @@ import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } fro
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
+import { authorsOf } from './hive-authors.js'
 // `languageFor` belongs in this list and was missing: reconcile() calls it on the
 // clean-rewrite path, so a local whole-file rewrite of a supported file threw
 // ReferenceError and killed the sync process outright. Nothing caught it -- the client
@@ -38,10 +39,9 @@ import { genIdentity, authorChange, verifyReceipt, contentHash } from './substra
 // whole file is the most common thing an agent does, so this fired constantly.
 import { createRequire } from 'module'
 import { VERSION, VERSION_LABEL } from './hive-version.js' // which build this client is, carried in presence
-// GRM STAYS PRIVATE (29 Sep 2026). grm-link.cjs hands this room's history to a LOCAL GRM, so the room
-// has a memory -- and it is not in the published package: GRM never goes on the internet. A checkout
-// that has the file links the room; an npm install simply has no room-memory link, and nothing else
-// changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
+// ROOM MEMORY LINK (29 Sep 2026). An optional local add-on that is not in the published package. A
+// checkout that has the file links the room; an npm install simply has no room-memory link, and
+// nothing else changes. Loaded, not imported, because a static import of an unshipped file fails at boot.
 let grmLink = null
 try { grmLink = createRequire(import.meta.url)('./grm-link.cjs') } catch { /* not shipped: no room memory link */ }
 import { structuralMerge, supports, languageFor } from './icr.js' // validates a judged fork resolution before it may land (parse + dangling refs)
@@ -53,6 +53,7 @@ import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of th
 import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; which relay is this, and did anybody choose it
 import { newSecrets, describeSecret } from './hive-secrets.js' // a credential inside a file is held here, not sent to the room
 import * as OB from './hive-obligations.js'
+import { formatTime } from './hive-time.js'
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -82,6 +83,8 @@ export const ALWAYS_IGNORE = [
   // and read position into every other agent's folder, and a shared cursor means one agent
   // consuming another's unread mail.
   '.hive-mcp-session.json',
+  // The Stop hook's record of what it already held this agent's turn open for: per agent, like the session.
+  '.hive-stop-hook.json',
   // This client's record of what IT last wrote to each file — the common ancestor it uses
   // to tell an authored edit from its own write after a restart (see SHADOW_FILE). It is
   // per-client by definition: syncing it would hand every peer a false ancestor.
@@ -221,7 +224,7 @@ export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_
 // Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
 // here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
 // told the whole team about .hive-shadow.json, a file none of them had made.
-const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-mcp-session.json', '.hive-id.json'])
+const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-mcp-session.json', '.hive-stop-hook.json', '.hive-id.json'])
 
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the
@@ -312,7 +315,7 @@ it well enough to write it — say so in the room and ask. That is a complete an
 
 ## While you work
 4. ANNOUNCE first: post to chat what you are taking, e.g.
-   node hive-say.js <yourName> "taking auth.js: adding login validation"
+   call hive_say with "taking auth.js: adding login validation"
 5. PREFER SMALL PATCHES — grep to the spot, edit a few lines. Patches from
    different agents merge automatically with no conflict.
 6. AVOID full-file rewrites unless necessary. If you must rewrite, RE-READ the
@@ -399,7 +402,7 @@ export function resolveLicense(explicit) {
 /**
  * ONE CLIENT PER FOLDER. Refuses a second sync process on the same directory.
  *
- * Nothing prevented this before, and the identical mistake cost GRM most of a journal:
+ * Nothing prevented this before, and the identical mistake once cost another tool most of a journal:
  * nothing refused a second watcher on one graph, two processes appended concurrently, their
  * writes interleaved, and 99% of the journal became unreadable -- while the watermark went
  * on claiming the files were indexed. The failure is silent, and it is discovered much later
@@ -582,6 +585,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const claims = doc.getMap('claims')
   const swarmState = doc.getMap('swarm_state')
   const swarmSchema = doc.getMap('swarm_schema')
+  const reviews = doc.getMap('reviews') // relPath -> Array of { by, at, verdict: 'pass'|'fail', note, hash }
   // ATTESTATION LEDGER — path -> { <peerName>: { bytes, lines, at } }.
   //
   // The one thing a four-agent build could not do without a human relaying numbers by hand: tell
@@ -801,7 +805,18 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (hasConflictMarkers(disk)) return false      // half-edited conflict block — not an authored state
     if (!SHARE_SECRETS && newSecrets(disk, fe.text.toString()).length) return false // the ledger is shared: a key stays out of it
     stampIntent(relPath, base, disk)                // into the provenance DAG NOW — clobber-proof
+    // What this edit was made against, kept as a short HISTORY, not just the last one: a second edit
+    // while the first is still held would otherwise record the first (which the room never had) as
+    // the base, and a rejoin merging against it reverts the first edit. The rejoin picks the newest
+    // base the room's receipts prove it held.
+    const hist = capturedFrom.get(relPath) || []
+    if (hist[hist.length - 1] !== base) hist.push(base)
+    // Drop from the middle, never the oldest: while the room is refusing every write, the oldest is
+    // the only base the room actually held (antigravity-3: nine saves while held evicted it).
+    while (hist.length > FROM_KEEP) hist.splice(1, 1)
+    capturedFrom.set(relPath, hist)
     shadow.set(relPath, disk)                       // the captured state is the new baseline
+    saveShadowSoon()
     return true
   }
   // Build ONE clean N-way conflict block from a common parent and N divergent versions:
@@ -1106,7 +1121,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (name) wsParams.name = String(name).slice(0, 48)
   if (kind) wsParams.kind = kind
   if (passive) wsParams.passive = 'true'
-  const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
+  // HiveSocket: a WebSocket where the network allows one, HTTPS long-poll where it refuses the upgrade
+  // (Antigravity's cloud VMs, many company proxies). Same bytes, same relay gates, either way.
+  const wsOpts = { WebSocketPolyfill: HiveSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
   // ONE SOCKET PER PARTICIPANT. When the relay offers it (it says so in /health), file docs stop
   // costing a socket each: they ride one physical socket as channels, and the relay admits each
   // one through the same gates a per-file socket passes. Against a relay that does not offer it,
@@ -1684,6 +1701,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // Per-file pre-serialized JSON fragments: relPath -> '"path": "content"'.
   // Assembled into v:1 JSON in saveShadow() without re-stringifying all files, cutting save CPU by ~6.6x.
   const shadowFragments = new Map()
+  // relPath -> the bases our recent captured edits were made against, oldest first. Saved with the
+  // shadow, because the shadow alone cannot tell "the room has this" from "we sent it and it never
+  // arrived".
+  const FROM_KEEP = 8
+  const capturedFrom = new Map()
+  const priorFrom = new Map()
+  const keptUnsent = new Map() // relPath -> file mtime when an unsent edit was kept; frozen until saved again
   const origShadowSet = shadow.set.bind(shadow)
   const origShadowDelete = shadow.delete.bind(shadow)
   shadow.set = (k, v) => {
@@ -2086,6 +2110,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (const [k, v] of Object.entries(o.files || {})) {
         if (typeof k === 'string' && typeof v === 'string' && isSafeRelPath(k)) priorShadow.set(k, v)
       }
+      // Carried forward, not just read: an edit re-sent after a rejoin can be lost the same way
+      // again, and the next rejoin needs the same base.
+      for (const [k, v] of Object.entries(o.from || {})) {
+        const hist = (Array.isArray(v) ? v : [v]).filter((s) => typeof s === 'string').slice(-FROM_KEEP)
+        if (typeof k === 'string' && hist.length && isSafeRelPath(k)) { priorFrom.set(k, hist); capturedFrom.set(k, hist.slice()) }
+      }
       log(`[hive] recovered ${priorShadow.size} file ancestor(s) from the previous session`)
     } catch { /* absent or unreadable: no ancestor, same as before this existed */ }
   }
@@ -2103,7 +2133,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // { v: 1, room, files }, preserving the atomic write-then-rename.
       const parts = []
       for (const frag of shadowFragments.values()) parts.push(frag)
-      const payload = `{"v":1,"room":${JSON.stringify(room)},"files":{${parts.join(',')}}}`
+      const from = []
+      for (const [k, v] of capturedFrom) {
+        const hist = v.filter((s) => typeof s === 'string' && s.length <= MAX_BYTES)
+        if (hist.length) from.push(JSON.stringify(k) + ':' + JSON.stringify(hist))
+      }
+      const payload = `{"v":1,"room":${JSON.stringify(room)},"files":{${parts.join(',')}},"from":{${from.join(',')}}}`
       fs.writeFileSync(tmp, payload)
       fs.renameSync(tmp, path.join(ROOT, SHADOW_FILE))
     } catch (e) {
@@ -2119,6 +2154,24 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // the bases point at roomText, so the next normal edit merges against the room's copy. One function
   // for all three race paths -- first contact, a dead heat, and a dead heat the peer already resolved
   // -- so their recovery and their announcement cannot drift apart.
+  // An edit the room never received, and we no longer know what it was made against: re-sending
+  // it as a diff over the room's copy could revert someone else's change, so it is not sent. It is
+  // kept on disk and in the file's history, and said out loud, because the alternative was silence.
+  // Not "save it again": the base is now the disk, so an unchanged save is a no-op and sends nothing
+  // (Antigravity, 1 Nov). hive_edit writes the copy into the room outright. Both copies go into the
+  // file's history so the two can be compared before choosing.
+  function keepUnsent(relPath, disk, roomText) {
+    captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local edit that never reached the room (kept)' })
+    if (typeof roomText === 'string' && roomText !== disk) captureSnapshot(relPath, roomText, name, { force: true, kind: 'manual', label: 'room copy when the local edit was kept' })
+    bases.set(relPath, disk); forkBases.set(relPath, disk)
+    let mt = 0; try { mt = fs.statSync(path.join(ROOT, relPath)).mtimeMs } catch { }
+    keptUnsent.set(relPath, mt)
+    try {
+      say(`⚠ ${relPath}: ${name}'s last edit never reached the room — it was held while someone else had the file, and ${name}'s connection dropped. ` +
+        `The room's copy was NOT applied over it: it is kept on disk, and both copies are in the file's history. Nothing more syncs for this file until ` +
+        `${name} saves it again; that save sends it as it is, replacing the room's copy. Claim ${relPath} first.`)
+    } catch { }
+  }
   function refuseCreationRace(relPath, why, disk, roomText) {
     conflicted.add(relPath)
     captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local draft preserved (creation-race refused)' })
@@ -2336,6 +2389,21 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fe = fileDocs.get(relPath)
     if (!fe) { if (disk === null) return; openFile(relPath); return }
     if (!fe.synced) return
+    // A KEPT UNSENT EDIT IS FROZEN until its author saves the file again. Merging it against the
+    // room in either direction would decide something nobody decided: the room's next change would
+    // be written over it, and an unchanged save merged against itself pulled the room's old copy over
+    // it (antigravity-3, 1 Nov). The next save is the decision: it sends the file as it is.
+    if (keptUnsent.has(relPath)) {
+      if (origin !== 'local') return
+      let mt = 0; try { mt = fs.statSync(full).mtimeMs } catch { }
+      if (mt === keptUnsent.get(relPath)) return
+      keptUnsent.delete(relPath)
+      const rt = fe.text.toString()
+      captureSnapshot(relPath, rt, name, { force: true, kind: 'manual', label: 'room copy replaced by a kept edit' })
+      bases.set(relPath, rt); forkBases.set(relPath, rt); shadow.set(relPath, rt)
+      try { say(`↻ ${relPath}: ${name} saved the kept copy again, so it now replaces the room's copy (the room's copy is in the file's history).`) } catch { }
+      // fall through: merged against the room's copy, ours goes out whole and signed like any edit
+    }
     // Before anything below can publish this disk's content, merge it, or stamp it into the ledger:
     // a key on disk that the room does not have holds the whole file here (heldForSecret).
     {
@@ -2579,7 +2647,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // this room, we DO have a common ancestor and the adopt below is simply wrong: the
       // local copy may be newer than the room's (edited while disconnected, or the room
       // came back stale). This is the data-loss case that was seen live.
-      const anc = priorShadow.get(relPath)
+      let anc = priorShadow.get(relPath)
+      // ...unless the room never got it. Capturing a local edit moves the ancestor to the edited
+      // bytes BEFORE the relay accepts them. A write held behind someone else's claim
+      // (HIVE_ENFORCE_CLAIMS=queue) is discarded when its writer disconnects, so on rejoin
+      // disk === ancestor while the room still has the old copy, and adopting it deleted the edit
+      // from the room AND from disk, silently (26 Oct). Signed receipts say whether the room ever
+      // held these bytes; with none (provenance off) the old behaviour stands. When it never did,
+      // the real ancestor is what the edit was made against, and the merge below re-sends it.
+      let unsent = false
+      const rcpts = fe.ledger ? fe.ledger.toArray() : []
+      if (anc !== undefined && disk !== null && disk === anc &&
+          accountFor({ rel: relPath, branchText: disk, roomText: docText, receipts: rcpts }).state === DIVERGED) {
+        unsent = true
+        // The newest base the room provably held. An older true ancestor merges safely; a newer
+        // one the room never had (an earlier held edit) would read our own edit as the room
+        // deleting it.
+        const hist = priorFrom.get(relPath) || []
+        let from
+        for (let i = hist.length - 1; i >= 0 && from === undefined; i--) {
+          const st = accountFor({ rel: relPath, branchText: hist[i], roomText: docText, receipts: rcpts }).state
+          if (st === DESCENDS || st === IDENTICAL) from = hist[i]
+        }
+        if (from === undefined || from === disk) { keepUnsent(relPath, disk, docText); return }
+        anc = from
+      }
       if (anc !== undefined && disk !== null) {
         if (disk === anc) {
           // Local is exactly what we last wrote — nobody touched it while we were away, so
@@ -2597,7 +2689,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (rj.conflict) conflicted.add(relPath)
         bases.set(relPath, rj.text); forkBases.set(relPath, rj.text); shadow.set(relPath, rj.text)
         if (!inManifest(relPath)) queueManifestSet(relPath)
-        try { say(`⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`) } catch { }
+        try {
+          say(unsent
+            ? `⚠ ${relPath}: ${name}'s last edit never reached the room — it was held while someone else had the file, and ${name}'s connection dropped. ` +
+              `It has been sent again, merged with the room's copy${rj.conflict ? ', and CONFLICT markers need resolving' : ''}; if the file is still claimed, it waits for the release. Pre-merge local copy is in the file's history.`
+            : `⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`)
+        } catch { }
         return
       }
       // Genuinely no ancestor (a clone-then-join, or joining with an existing checkout).
@@ -2715,6 +2812,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       } else {
         res = icrMerge3(fork, disk, docText, relPath)
         reAdded = !res.conflict && res.text !== disk // we restored remote lines a stale write had dropped
+        // OPEN (1 Nov 2026): a clean handover onto the same lines still shows markers. Four rounds of
+        // rules that decided it from the texts (a claim-time fork, who-holds-it, line counts, shared
+        // tokens) each silently deleted someone's work in a case antigravity-3 then built: from the
+        // four texts, "B replaced A's change" and "B wrote from a copy that predates it" can be
+        // identical. Markers lose nothing; a wrong guess does. The sound fix needs the agent to say
+        // which version it edited (hive_edit carrying its base), so nothing here guesses.
       }
     } else {
       res = icrMerge3(base, disk, docText, relPath) // incoming remote change merged into our working copy
@@ -3058,10 +3161,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       '# and announce what you are about to do (e.g. "taking auth.js: add login").',
       '',
     ]
-    for (const m of chat.toArray()) out.push(`- ${m.at}  ${m.by} (${m.kind}): ${m.text}`)
+    for (const m of chat.toArray()) out.push(`- ${formatTime(m.at)}  ${m.by} (${m.kind}): ${m.text}`)
     writeToDisk(CHAT_FILE, out.join('\n') + '\n')
   }
-  // Hand the room's history to GRM whenever it changes, so this ROOM has a memory: an
+  // Hand the room's history to the memory add-on, when present, whenever it changes, so this ROOM has a memory: an
   // agent joining tomorrow can ask what was decided here last week, including in
   // conversations it was never present for.
   //
@@ -3099,18 +3202,51 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // So agents coordinate among themselves, but a human can never make an agent
   // act without that agent's owner approving it.
   const newId = () => 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+
+  const getMemberNames = () => {
+    const names = new Set()
+    if (provider && provider.awareness) {
+      for (const s of provider.awareness.getStates().values()) {
+        const u = s && s.user
+        if (u && u.name) names.add(u.name)
+      }
+    }
+    // Union with durable activity map (non-gone keys)
+    try {
+      const act = doc.getMap('activity')
+      if (act) {
+        for (const [k, v] of act.entries()) {
+          if (v && !v.gone && k) names.add(k)
+        }
+      }
+    } catch { }
+    // Union with recent chat senders
+    try {
+      const chatArr = doc.getArray('chat')
+      if (chatArr) {
+        for (const msg of chatArr.toArray()) {
+          if (msg && msg.by) names.add(msg.by)
+        }
+      }
+    } catch { }
+    names.add(name)
+    return [...names]
+  }
+
   function assign(to, text) {
     if (!to || !text) return null
+    const normTo = String(to).trim() === '@all' ? 'all' : String(to).trim()
     const id = newId()
-    const ownerOf = owners.get(to)
+    const ownerOf = owners.get(normTo)
     // auto-accept when it's AI->AI coordination, the target has no owner to ask,
-    // or the asker IS the target's owner. Otherwise it needs owner approval.
-    const auto = kind === 'ai' || !ownerOf || name === ownerOf
+    // or the asker IS the target's owner, or an @all task.
+    const auto = kind === 'ai' || !ownerOf || name === ownerOf || normTo === 'all'
     const status = auto ? 'accepted' : 'pending'
     const decidedBy = auto ? (kind === 'ai' ? `${name} (AI coordination)` : name) : null
-    tasks.set(id, { id, to, by: name, byKind: kind, text: String(text), status, decidedBy, at: fmtTime() })
-    if (auto) say(`@${to}: ${text}  (task ${id} — ${kind === 'ai' ? 'AI coordination, proceeding' : 'from owner, proceeding'})`)
-    else say(`@${to}: ${text}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
+    const membersAt = getMemberNames()
+    tasks.set(id, { id, to: normTo, by: name, byKind: kind, text: String(text), status, decidedBy, at: fmtTime(), membersAt, createdAt: Date.now() })
+    if (auto) say(`@${normTo}: ${text}  (task ${id} — ${kind === 'ai' ? 'AI coordination, proceeding' : 'from owner, proceeding'})`)
+    else say(`@${normTo}: ${text}  (task ${id} — ${ownerOf} must approve: do it or ignore?)`)
     return id
   }
   // A decision is about a task that is WAITING for one. Approving an accepted or done task used to
@@ -3129,19 +3265,182 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     say(`${accept ? `@${t.to} ` : ''}task ${id} ${accept ? 'APPROVED' : 'denied'} by ${by}: "${t.text}"`)
     return { ok: true }
   }
-  // Only the ASSIGNEE finishes a task, and only work it was cleared to do. Before 29 Sep 2026 anyone
-  // could mark anyone's task done -- including one still PENDING its owner's approval, or DENIED --
-  // so "done" could mean the owner said no and the room was told otherwise. Done twice is done.
+  // Only the ASSIGNEE finishes a task, and only work it was cleared to do.
+  // For @all tasks (Claude addition iii), any member can complete it provided they
+  // were in the room when the task was created, or hold a claim / signed receipt / review on the work.
   function complete(id, note = '') {
     const t = tasks.get(id); if (!t) return { error: 'no such task' }
-    if (t.to !== name) return { error: `task ${id} is ${t.to}'s -- only ${t.to} can complete it` }
+    const isAll = t.to === 'all' || t.to === '@all'
+    if (!isAll && t.to !== name) return { error: `task ${id} is ${t.to}'s -- only ${t.to} can complete it` }
     if (t.status === 'done') return { ok: true, already: true }
     if (t.status !== 'accepted') return { error: `task ${id} is ${t.status}: only accepted work can be completed${t.status === 'pending' ? ` (it is waiting for ${owners.get(t.to) || 'its owner'} to approve)` : ''}` }
-    tasks.set(id, { ...t, status: 'done', decidedBy: t.decidedBy })
+
+    if (isAll) {
+      const wasPresent = Array.isArray(t.membersAt) ? t.membersAt.includes(name) : (t.by === name)
+      const hasClaim = coordinator ? coordinator.board().some((c) => c && c.by === name) : false
+      let hasReceipt = false
+      for (const e of fileDocs.values()) {
+        if (e && e.ledger) {
+          const rs = e.ledger.toArray()
+          if (rs.some((r) => r && (r.name === name || (identity && r.author === identity.id)))) {
+            hasReceipt = true
+            break
+          }
+        }
+      }
+      let hasReview = false
+      try {
+        for (const r of getReviews('')) {
+          if (r && r.by === name) { hasReview = true; break }
+        }
+        if (!hasReview) {
+          for (const [k, r] of reviews.entries()) {
+            if (r && r.by === name) { hasReview = true; break }
+          }
+        }
+      } catch { }
+      if (!wasPresent && !hasClaim && !hasReceipt && !hasReview) {
+        return { error: 'Refused: completing an @all task requires having been in the room when it was created, or having a claim/receipt/review on the work' }
+      }
+    }
+
+    tasks.set(id, { ...t, status: 'done', completedBy: name, decidedBy: t.decidedBy })
     say(`task ${id} done by ${name}${note ? ': ' + note : ''}`)
     return { ok: true }
   }
-  const myTasks = () => [...tasks.values()].filter((t) => t.to === name)
+  const myTasks = () => [...tasks.values()].filter((t) => t.to === name || t.to === 'all' || t.to === '@all')
+
+  /**
+   * Room review: record a non-writer review verdict on files in the room.
+   * Stored in Y.Map 'reviews' as an append-only list per file: [{ by, at, verdict, note, hash }].
+   */
+  async function review(files, verdict, note = '') {
+    if (!Array.isArray(files) || files.length === 0) {
+      return { error: 'files must be a non-empty array' }
+    }
+    const v = String(verdict || '').toLowerCase()
+    if (v !== 'pass' && v !== 'fail') {
+      return { error: "verdict must be 'pass' or 'fail'" }
+    }
+
+    // 1. Validate manifest presence (Claude addition i)
+    for (const rel of files) {
+      if (!inManifest(rel)) {
+        return { error: `Refused: ${rel} is not in room manifest` }
+      }
+    }
+
+    // Ensure all target files are synced
+    for (const rel of files) {
+      const fe = openFile(rel)
+      if (!fe.synced && fe.provider) {
+        await new Promise((res) => {
+          const t = setTimeout(res, 3000)
+          fe.provider.on('sync', (isSynced) => {
+            if (isSynced) {
+              clearTimeout(t)
+              res()
+            }
+          })
+        })
+      }
+      if (!fe.synced) {
+        return { error: `Refused: ${rel} has not finished syncing yet` }
+      }
+    }
+
+    // 2. Validate non-contributor status
+    for (const rel of files) {
+      const fe = openFile(rel)
+      const curText = fe.text ? fe.text.toString() : ''
+      const rs = fe.ledger ? fe.ledger.toArray() : []
+      const authors = authorsOf(rs, verifyReceipt, curText)
+      const isContributor = authors.contributors.some(
+        (c) => c && (c.name === name || (identity && c.author === identity.id))
+      )
+      const head = fe.head ? fe.head.get('cur') : null
+      const isHeadLander = head && head.by === name && head.hash === contentHash(curText)
+      const boardEntry = board.get(rel)
+      const isBoardAuthor = boardEntry && boardEntry.by === name
+      const claimEntry = coordinator.sense(rel)
+      const isClaimant = claimEntry && claimEntry.by === name
+      if (isContributor || isHeadLander || isBoardAuthor || isClaimant) {
+        return { error: `Refused: @${name} contributed to ${rel}'s held content; review must come from a non-contributor` }
+      }
+    }
+
+    // 3. Record review on each file
+    const stamp = fmtTime()
+    for (const rel of files) {
+      const fe = openFile(rel)
+      const curText = fe.text ? fe.text.toString() : ''
+      const h = contentHash(curText)
+      const entry = {
+        file: rel,
+        by: name,
+        at: stamp,
+        ts: Date.now(),
+        verdict: v,
+        note: String(note || ''),
+        hash: h,
+      }
+      // ONLY per-review key to prevent concurrent clobbers under LWW
+      reviews.set(`${rel}::${entry.ts}::${newId()}`, entry)
+    }
+
+    say(`review ${v.toUpperCase()} on ${files.join(', ')} by ${name}${note ? ': ' + note : ''}`)
+    return { ok: true, files, verdict: v }
+  }
+
+  function getReviews(relPath) {
+    const mapEntries = []
+    const prefix = relPath ? relPath + '::' : ''
+    for (const [k, r] of reviews.entries()) {
+      if (relPath && k === relPath && Array.isArray(r)) {
+        for (const item of r) if (item && typeof item === 'object') mapEntries.push(item)
+      } else if (r && (!relPath || r.file === relPath || k.startsWith(prefix))) {
+        mapEntries.push(r)
+      }
+    }
+    const seen = new Set()
+    const unique = []
+    for (const r of mapEntries) {
+      const key = `${r.file}|${r.by}|${r.ts}|${r.hash}|${r.verdict}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        unique.push(r)
+      }
+    }
+    return unique.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+  }
+
+  function getReviewStatus(relPath) {
+    const fe = openFile(relPath)
+    const curText = fe.text ? fe.text.toString() : ''
+    const curHash = contentHash(curText)
+    const all = getReviews(relPath)
+
+    // Ignore reviews authored by contributors to the current held content
+    const rs = fe.ledger ? fe.ledger.toArray() : []
+    const authors = authorsOf(rs, verifyReceipt, curText)
+    const contributorNames = new Set(authors.contributors.map((c) => c.name).filter(Boolean))
+    const head = fe.head ? fe.head.get('cur') : null
+    if (head && head.by && head.hash === curHash) contributorNames.add(head.by)
+
+    const validReviews = all.filter((r) => r && !contributorNames.has(r.by))
+    const matching = validReviews.filter((r) => r.hash === curHash)
+    if (!matching.length) {
+      return { verdict: 'unreviewed', hash: curHash, stale: validReviews.length > 0, reviews: validReviews }
+    }
+    let lastFail = -1
+    let lastPass = -1
+    for (let i = 0; i < matching.length; i++) {
+      if (matching[i].verdict === 'fail') lastFail = i
+      if (matching[i].verdict === 'pass') lastPass = i
+    }
+    const finalVerdict = (lastPass > lastFail) ? 'pass' : 'fail'
+    return { verdict: finalVerdict, hash: curHash, stale: false, reviews: matching }
+  }
 
   // --- mission control: pause / resume / steer an agent ---
   // A human (or an owner) can PAUSE an agent: it should finish its current step,
@@ -4485,6 +4784,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     forkInfo,            // the active fork on a file as a resolvable object (base + versions + signed intents), or null
     resolveFork,         // propose the reconciled file; ICR-validated (parse + dangling) before it lands, refused otherwise
     edit: editFile,      // first-class authored write: intent + transition stamped race-free, then normal reconcile
+    // --- non-writer review & approval ---
+    review,
+    reviews: getReviews,
+    reviewStatus: getReviewStatus,
     // --- convergent substrate: provenance (I1) ---
     identity: () => identity ? { id: identity.id, name: identity.name, pk: identity.pk } : null, // never exposes the private key
     provenanceOf: (relPath) => { const e = fileDocs.get(relPath); return e && e.ledger ? e.ledger.toArray() : [] }, // signed receipts for a file

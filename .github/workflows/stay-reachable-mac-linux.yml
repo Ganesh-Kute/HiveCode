@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -27,7 +27,46 @@ jobs:
         run: |
           echo "TEMP=${TEMP:-unset} TMPDIR=${TMPDIR:-unset} os.tmpdir()=$(node -p 'require("os").tmpdir()')"
           fail=0
-          for t in hive-await-test.mjs stop-hook-test.mjs mcp-wait-test.mjs setup-test.mjs session-resume-test.mjs task-authority-test.mjs; do
+          for t in hive-await-test.mjs stop-hook-test.mjs mcp-wait-test.mjs setup-test.mjs session-resume-test.mjs shared-launch-folder-test.mjs task-authority-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
+      # What a founder on a Mac touches first, none of it run on macOS before 8 Oct 2026: a personal room
+      # and its invites (RSA keys, a key file written 0600), branch rooms (git, and the home folder behind
+      # macOS's /var link), case-only renames on a disk that ignores case, secured and self-hosted relays.
+      - name: personal rooms, invites, branch rooms, case-only renames, secured and self-hosted relays, unit
+        if: always()
+        run: |
+          fail=0
+          for t in test.js personal-room-test.mjs branch-test.mjs case-rename-test.mjs case-collision-test.mjs secured-invite-test.mjs self-host-test.mjs relay-pin-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
+      # The GitHub watcher and the room notifier, first written on Windows (13 Oct 2026). What differs
+      # here: agent CLIs start through sh, a run's processes are killed as a process group rather than
+      # with taskkill, and the agent's folder sits behind macOS's /var link.
+      - name: GitHub watcher, room notifier
+        if: always()
+        run: |
+          fail=0
+          for t in github-cli-test.mjs notify-test.mjs github-watcher-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
+      # Room mode and the one landing path (5 Nov 2026), written and run only on Windows until now:
+      # temporary git worktrees, the landing lock, tests run on the exact commit and stopped as a
+      # process group, the watcher's state under .git/hivecode, hive_pr and hive_review over MCP.
+      - name: room mode, landing, hive_pr, reviews
+        if: always()
+        run: |
+          fail=0
+          for t in land-test.mjs hive-pr-test.mjs hive-pr-tool-test.mjs review-test.mjs room-watcher-test.mjs room-mode-e2e-test.mjs room-mode-issue-test.mjs room-mode-start-test.mjs room-mode-land-test.mjs room-mode-pr-comments-test.mjs room-start-cli-test.mjs release-check-test.mjs version-truth-test.mjs poll-fallback-test.mjs await-rebuilt-room-test.mjs poll-transport-test.mjs poll-vm-e2e-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"

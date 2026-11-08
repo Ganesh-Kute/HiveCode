@@ -1,0 +1,61 @@
+{
+  "display_information": {
+    "name": "Hivecode",
+    "description": "AI agent panel, native stop button, and one Slack thread per task or GitHub issue.",
+    "background_color": "#111318"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hivecode",
+      "always_online": true
+    },
+    "assistant_view": {
+      "assistant_description": "Inspect live Hivecode rooms, stream task plans, and halt or resume AI agents from Slack.",
+      "suggested_prompts": [
+        {
+          "title": "What is running?",
+          "message": "status"
+        },
+        {
+          "title": "Stop everything",
+          "message": "stop all"
+        },
+        {
+          "title": "What happened overnight?",
+          "message": "what happened overnight"
+        }
+      ]
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "assistant:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "channels:read",
+        "groups:read",
+        "channels:history",
+        "groups:history",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "agent_session_stopped",
+        "assistant_thread_started",
+        "assistant_thread_context_changed",
+        "message.im",
+        "message.channels",
+        "message.groups"
+      ]
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

@@ -95,7 +95,10 @@ console.log('\n# D. running the suites and reading what they actually asserted')
 const output = new Map()
 for (const s of suites()) {
   process.stdout.write(`       ${s} ... `)
-  const r = spawnSync(process.execPath, [path.join(ROOT, s)], { cwd: ROOT, encoding: 'utf8', timeout: 240000 })
+  // Ten minutes, not four: the GitHub watcher's end-to-end suite runs about five, and a suite cut
+  // off by this limit reads below as its LAST assertions "NOT FOUND" -- measured 13 Oct 2026, when
+  // the four-minute limit hid its O group and reported the watcher's push guard as missing.
+  const r = spawnSync(process.execPath, [path.join(ROOT, s)], { cwd: ROOT, encoding: 'utf8', timeout: 600000 })
   const out = `${r.stdout || ''}${r.stderr || ''}`
   output.set(s, out)
   console.log(r.status === 0 ? 'green' : `EXIT ${r.status}`)

@@ -115,6 +115,14 @@ try {
   const a8b = await cli(inside, 'branch', 'homebound', '--relay', RELAY)
   for (const [k, v] of Object.entries(homeWas)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   T('A8b a folder inside a home-directory repo is refused (Q560), and nothing is created', a8b.code === 1 && /home directory/.test(a8b.out) && g(project2, 'rev-parse', '--verify', '--quiet', 'refs/heads/homebound').code !== 0 && g(project2, 'config', '--get', 'hivecode.homebound.room').code !== 0, a8b.out.slice(0, 100))
+  // ...and when the home directory is reached through a link (macOS, 6 Oct 2026: git names the
+  // repository's top with links resolved, the home directory comes as written).
+  const linkedHome = path.join(tmp, 'home-link')
+  fs.symlinkSync(project2, linkedHome, 'junction')
+  process.env.USERPROFILE = linkedHome; process.env.HOME = linkedHome
+  const a8c = await cli(path.join(linkedHome, 'not-a-repo'), 'branch', 'homebound2', '--relay', RELAY)
+  for (const [k, v] of Object.entries(homeWas)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  T('A8c ...also when the home directory is reached through a link', a8c.code === 1 && /home directory/.test(a8c.out) && g(project2, 'rev-parse', '--verify', '--quiet', 'refs/heads/homebound2').code !== 0 && g(project2, 'config', '--get', 'hivecode.homebound2.room').code !== 0, a8c.out.slice(0, 100))
   const seedDir = g(project, 'config', '--get', 'hivecode.feat.seed').out
   const seedGit = g(seedDir, 'status')
   T('A9 the seed folder is marked: git refuses to run in it', !!seedDir && seedGit.code !== 0 && /not a git repository/.test(seedGit.err), seedGit.err.slice(0, 90))
@@ -201,6 +209,14 @@ try {
   fs.writeFileSync(path.join(dirB, '.gitignore'), 'dist/\ncoverage/\n') // a dotfile edit must land too
   await waitUntil(() => read(dirB, 'app.js') === 'export const answer = 42\n' && read(dirA, 'tests/answer.test.js') && read(dirA, '.gitignore') === 'dist/\ncoverage/\n', 10000)
   await sleep(1500)
+  // THE DEVELOPER'S OWN GIT HOOKS, all failing. Measured 25 Oct 2026: a post-checkout hook that
+  // exits 1 (vexp's) made `pr` fail with Q563 although git had made the worktree. Landing works in
+  // our scratch worktree, where their hooks have no business; in their checkout the hooks stay.
+  const hooksDir = g(project, 'rev-parse', '--git-path', 'hooks').out
+  const hookDir = path.isAbsolute(hooksDir) ? hooksDir : path.join(project, hooksDir)
+  const HOOKS = ['post-checkout', 'pre-commit', 'commit-msg']
+  fs.mkdirSync(hookDir, { recursive: true })
+  for (const h of HOOKS) { fs.writeFileSync(path.join(hookDir, h), '#!/bin/sh\necho "the developer hook ran" >&2\nexit 1\n'); fs.chmodSync(path.join(hookDir, h), 0o755) }
   const featBefore = g(project, 'rev-parse', 'feat').out
   const e1 = await cli(project, 'pr', 'feat', '--dry-run')
   T('E1 --dry-run plans, names the deletion, and changes nothing', e1.code === 0 && g(project, 'rev-parse', 'feat').out === featBefore && /would delete 1 file\(s\) the room deleted: README\.md/.test(e1.out), e1.out.split('\n').slice(-1)[0])
@@ -215,6 +231,20 @@ try {
     g(project, 'show', 'feat:.gitignore').out === 'dist/\ncoverage/' && g(project, 'cat-file', '-e', 'feat:README.md').code !== 0)
   T('E4 the developer\'s checkout was never touched', g(project, 'symbolic-ref', '--short', 'HEAD').out === 'main' && g(project, 'status', '--porcelain').out === '' && g(project, 'rev-parse', 'main').out === mainTip)
   T('E5 no temporary worktree or branch is left behind', g(project, 'worktree', 'list', '--porcelain').out.split('\n').filter((l) => l.startsWith('worktree ')).length === 1 && !g(project, 'branch', '--list', 'hivecode-land/*').out)
+  const own = g(project, 'commit', '--allow-empty', '-m', 'the developer commits')
+  T('E5b the developer\'s failing git hooks did not stop the landing, and still run on their own commits', e2.code === 0 &&
+    HOOKS.every((h) => fs.existsSync(path.join(hookDir, h))) && own.code !== 0 && /the developer hook ran/.test(own.err) && g(project, 'config', '--get', 'core.hooksPath').code !== 0, own.err.slice(0, 120))
+  for (const h of HOOKS) fs.rmSync(path.join(hookDir, h))
+
+  // THE SECOND RUN IS THE ONE THAT PUSHES. Measured 1 Nov 2026 (antigravity-3): the branch output
+  // suggests `pr <name>` to look first, then `--pr` to push and open the PR. After a plain `pr` has
+  // landed everything, `pr --push` found nothing new to land and returned 0 BEFORE pushing: success
+  // printed, nothing pushed. A local bare origin, so nothing leaves this machine.
+  const origin = path.join(tmp, 'origin.git')
+  g(tmp, 'init', '-q', '--bare', origin)
+  g(project, 'remote', 'add', 'origin', origin)
+  const e5c = await cli(project, 'pr', 'feat', '--push')
+  T('E5c pr --push after a plain pr really pushes: the origin has the branch at its tip', e5c.code === 0 && g(origin, 'rev-parse', 'feat').out === g(project, 'rev-parse', 'feat').out, e5c.out.split('\n').slice(-2).join(' | '))
 
   const wtFeat = path.join(tmp, 'feat-wt')
   g(project, 'worktree', 'add', '-q', wtFeat, 'feat')

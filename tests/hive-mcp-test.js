@@ -99,6 +99,32 @@ assert('chat shows the said message', chat.includes('taking parser.js'))
 const members = await callTool('hive_members', {})
 assert('hive_members lists the agent as ai', members.includes('McpBot') && members.includes('(ai)'))
 
+// 6. second join with DIFFERENT name is refused (Q637) and leaves first session intact
+const secondDir = path.resolve('.mcp-test/agent2')
+fs.mkdirSync(secondDir, { recursive: true })
+const refused = await callTool('hive_join', { dir: secondDir, name: 'DifferentBot' })
+assert('second join with different name is refused with Q637', /Q637/.test(refused) && /already in use by 'McpBot'/.test(refused))
+assert('refusal does not suggest hive_leave', !/hive_leave/.test(refused))
+assert('refusal instructs adding second server entry', refused.includes('hivecode-2'))
+
+// prove first session is still alive and intact
+const statusAfter = await callTool('hive_status', {})
+assert('first session is still McpBot after refusal', statusAfter.includes('"name": "McpBot"'))
+await callTool('hive_say', { text: 'still alive as McpBot' })
+const chatAfter = await callTool('hive_read_chat', {})
+assert('first session can still post after refusal', chatAfter.includes('still alive as McpBot'))
+
+// 7. second join with SAME name is allowed (rejoin / switch)
+const rejoined = await callTool('hive_join', { dir: DIR, name: 'McpBot' })
+assert('same name rejoin is allowed', /room: room-/.test(rejoined))
+
+// 8. explicit leave allows a different name
+await callTool('hive_leave', {})
+const newJoined = await callTool('hive_join', { dir: DIR, name: 'DifferentBot' })
+assert('explicit leave allows new name', /room: room-/.test(newJoined))
+const statusNew = await callTool('hive_status', {})
+assert('session is now DifferentBot', statusNew.includes('"name": "DifferentBot"'))
+
 console.log(`\n=== ${failed === 0 ? 'ALL LIVE CHECKS PASSED' : failed + ' FAILED'} ===`)
 await callTool('hive_leave', {})
 mcp.kill(); relay.kill()

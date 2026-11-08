@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // hive-await — block until someone speaks to you, then exit. The CLI's `hive_wait`.
 //
-//   npx -y -p hivecode-mcp@latest hivecode-await "<relay|room>" <YourName> [idleMinutes]
+//   npx -y -p hivecode-mcp@latest hivecode-await "<relay|room>" <YourName> [idleMinutes] [app]
 //
 // Run it in the BACKGROUND and let its exit wake you. Exits 0 in both cases; read `reason` on stdout:
 //   {"reason":"mention","messages":[...]}   someone said @YourName or @all -> read, reply, run it again
@@ -37,15 +37,20 @@ import { startSync, parseLink } from './sync.js'
 import * as RC from './hive-receipts.js'
 import { awaitDir, armedFile, BEAT_MS } from './hive-listen.js'
 
-const [, , LINK = '', NAME = '', IDLE_MIN = '10'] = process.argv
+const [, , LINK = '', NAME = '', IDLE_MIN = '10', APP_ARG = ''] = process.argv
 if (!LINK || !NAME) {
-  console.error('usage: npx -y -p hivecode-mcp@latest hivecode-await "<relay|room>" <YourName> [idleMinutes]')
+  console.error('usage: npx -y -p hivecode-mcp@latest hivecode-await "<relay|room>" <YourName> [idleMinutes] [app]')
   process.exit(2)
 }
 const { relay, room } = parseLink(LINK)
 const dir = awaitDir(NAME)
+// Which app will be woken when this listener exits: passed by listenCommand, or inferred from the
+// session environment when the agent ran `node hive-await.js <link> <name> <min>` directly. Without
+// `app` here, a listener running while the MCP connection is closed or restarting leaves `app`
+// undefined in awareness, and hive-activity.js misreports the agent as "not woken by it".
+const APP = APP_ARG || process.env.HIVE_APP || (process.env.CLAUDE_CODE_SESSION_ID ? 'claude-code' : (process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.ANTIGRAVITY_AGENT ? 'antigravity' : ''))
 
-const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', syncFiles: false, listener: true, log: () => {} })
+const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', syncFiles: false, listener: true, app: APP, log: () => {} })
 
 // ARMED, AND THE NEWEST LISTENER WINS (4 Oct 2026; see hive-listen.js). This file is how the Stop
 // hook and the MCP server know, with no network call, that the agent will hear the room after its
@@ -55,20 +60,40 @@ const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: proces
 // listener that finds the file naming another process leaves: that one was started after it.
 const ARMED = armedFile(NAME, room)
 const SESSION = process.env.CLAUDE_CODE_SESSION_ID || process.env.ANTIGRAVITY_CONVERSATION_ID || ''
-const AGAIN = `"${process.execPath.replace(/\\/g, '/')}" "${path.resolve(process.argv[1]).replace(/\\/g, '/')}" "${LINK}" "${NAME}" ${IDLE_MIN}`
+const AGAIN = `"${process.execPath.replace(/\\/g, '/')}" "${path.resolve(process.argv[1]).replace(/\\/g, '/')}" "${LINK}" "${NAME}" ${IDLE_MIN}${APP_ARG ? ` "${APP_ARG}"` : ''}`
 const startedAt = Date.now()
 let synced = false
-const ownerPid = () => { try { return Number(JSON.parse(fs.readFileSync(ARMED, 'utf8')).pid) || 0 } catch { return 0 } }
+const readArmed = () => { try { return JSON.parse(fs.readFileSync(ARMED, 'utf8')) } catch { return null } }
+const ownerPid = () => Number((readArmed() || {}).pid) || 0
+const alive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+// THE NEWEST BY START TIME WINS, NOT THE LAST ONE TO WRITE (6 Oct 2026, the first macOS run). Every
+// listener reads the file and then rewrites it on each beat. An older listener that read it just
+// before a newer one wrote it put its own claim back on top, and the NEWER one then left as
+// "superseded" while the older stayed: N1 and N3 failed on macOS, never on Windows. So a claim is
+// judged by when its listener started. A listener yields only to one that started after it and is
+// still running; a newer one that finds an older claim on top takes the file back on its next beat.
+// The file is also written whole (a temp file renamed over it), so a reader never sees half of one.
+const newerThanMe = (rec) => {
+  const pid = Number(rec && rec.pid) || 0
+  if (!pid || pid === process.pid || !alive(pid)) return false
+  const at = Number(rec.at) || 0
+  return at > startedAt || (at === startedAt && pid > process.pid)
+}
 function beat() {
   try {
     fs.mkdirSync(path.dirname(ARMED), { recursive: true })
-    fs.writeFileSync(ARMED, JSON.stringify({ pid: process.pid, name: NAME, room, link: LINK, session: SESSION, at: startedAt, beat: Date.now(), synced }))
+    const body = JSON.stringify({ pid: process.pid, name: NAME, room, link: LINK, session: SESSION, ...(APP ? { app: APP } : {}), at: startedAt, beat: Date.now(), synced })
+    const part = `${ARMED}.${process.pid}.tmp`
+    try { fs.writeFileSync(part, body); fs.renameSync(part, ARMED) } catch {
+      try { fs.rmSync(part, { force: true }) } catch {}
+      fs.writeFileSync(ARMED, body)
+    }
   } catch { /* unarmed is the safe reading: the hook asks for a fresh listener, and it replaces this one */ }
 }
 const superseded = () => {
-  const o = ownerPid()
-  if (!o || o === process.pid) return false
-  finish('superseded', { note: `a newer listener for ${NAME} in ${room} took over (pid ${o}). Do not start this one again.` })
+  const rec = readArmed()
+  if (!newerThanMe(rec)) return false
+  finish('superseded', { note: `a newer listener for ${NAME} in ${room} took over (pid ${rec.pid}). Do not start this one again.` })
   return true
 }
 beat()
@@ -140,16 +165,34 @@ if (process.env.HIVE_AWAIT_KEEP_ALIVE !== '1' && PARENT > 1 && !parentGone()) {
   }, Number(process.env.HIVE_AWAIT_PARENT_CHECK_MS) || 15000).unref()
 }
 
+// A REBUILT ROOM MUST NOT LEAVE THE LISTENER DEAF (7 Nov 2026, found by antigravity-2). A relay
+// that restarts without its rooms (every deploy on Render's free plan) starts chat again from zero,
+// but the cursor on disk still said, say, 300: scanning from 300 of a 3-message chat found nothing,
+// so the agent showed LISTENING and no mention woke it until the idle timeout, which then moved the
+// cursor past everything it had missed. So the cursor records which room it was counted in (its
+// first message) and is ignored when that differs, or when it points past the end -- the rule the
+// room's cursor above and the MCP's catch-up already follow. Chat is never trimmed, so within one
+// room the first message never changes. An older cursor file without `head` is only clamped.
+// (tests/await-rebuilt-room-test.mjs)
 const cursorFile = path.join(dir, `.await-cursor-${room}.json`)
-const readCursor = () => { try { return Number(JSON.parse(fs.readFileSync(cursorFile, 'utf8')).at) || 0 } catch { return 0 } }
-const writeCursor = (n) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ at: n }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
+const headOf = (msgs) => { const m = msgs[0]; return m ? `${m.by}|${m.at}|${String(m.text || '').slice(0, 80)}` : '' }
+const readCursor = (msgs) => {
+  try {
+    const c = JSON.parse(fs.readFileSync(cursorFile, 'utf8'))
+    const at = Number(c.at) || 0
+    if (at > msgs.length) return 0
+    if (typeof c.head === 'string' && c.head && c.head !== headOf(msgs)) return 0
+    return at
+  } catch { return 0 }
+}
+const writeCursor = (n, msgs) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ at: n, head: headOf(msgs) }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
 
 function check() {
   if (superseded()) return // the newer listener delivers it; consuming it here would hide it from that one
   const msgs = chat.toArray()
   let lastMine = -1
   for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].by === NAME) { lastMine = i; break } }
-  const from = Math.max(readCursor(), lastMine + 1, roomCursor(msgs.length))
+  const from = Math.max(readCursor(msgs), lastMine + 1, roomCursor(msgs.length))
   const hits = []
   for (let i = from; i < msgs.length; i++) {
     const m = msgs[i]
@@ -158,7 +201,7 @@ function check() {
   // Advance past everything READ, not just everything matched — an unaddressed message I have
   // already seen must not be re-scanned on the next call either.
   if (hits.length) {
-    writeCursor(msgs.length)
+    writeCursor(msgs.length, msgs)
     publish(msgs.length)
     // THE ORDER TO START AGAIN RIDES ON EVERY WAKE. It used to be said once, on the agent's first
     // quiet hive_wait, and an agent had to remember it after every wake; agents forget (4 Oct 2026).
@@ -180,7 +223,7 @@ hive.provider.on('sync', (s) => {
 // An idle timeout also advances the cursor. Without this, a quiet window followed by a loud one
 // would re-deliver everything that arrived during the quiet window too.
 setTimeout(() => {
-  try { writeCursor(chat.length) } catch {}
+  try { writeCursor(chat.length, chat.toArray()) } catch {}
   publish(chat.length) // nothing in the window named us, so nothing in it is mail the MCP should raise
   finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again in the background to keep listening: ${AGAIN}` }, 1500)
 }, Number(IDLE_MIN) * 60 * 1000)

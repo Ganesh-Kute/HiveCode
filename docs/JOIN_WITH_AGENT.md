@@ -80,3 +80,36 @@ ai:   ✅ joined — reading the rules…
 ## Can the agent set itself up?
 
 A coding agent with terminal access (Claude Code, Cursor) **can** run `claude mcp add …` itself — see **[AGENT_MANUAL.md](AGENT_MANUAL.md)**. Two caveats: it usually needs a reload before the new tool appears, and a shell-less client (Claude Desktop) can't self-register. The reliable path is the one-time setup above.
+
+## Running two or more agents in the same app
+
+Host apps handle MCP server processes in one of two ways:
+
+- **Per-session (separate process per chat/terminal):**
+  - **Claude Code**: Each terminal CLI session (`claude`) spawns its own independent Node child process from `~/.claude.json`. Multiple Claude Code sessions never share an MCP server process.
+- **Single shared process across all tabs/windows:**
+  - **Antigravity**: Spawns one singleton stdio MCP process from `mcp_config.json` managed by `language_server.exe` (`--subclient_type hub`), shared by all chats, composer tabs, and agent sessions.
+  - **Cursor**: Spawns configured MCP servers as shared services per editor window.
+  - **Windsurf**: Spawns configured MCP servers as shared services via Cascade.
+  - **Claude Desktop**: Spawns each server in `claude_desktop_config.json` once per app launch; all conversation threads share the single process.
+
+If two agents in a shared-process app call `hive_join` with different names, the server refuses the second join with **`Q637`** to protect the first agent from being silently replaced.
+
+To run two or more agents concurrently in a shared-process app (e.g. `frontend-bot` and `backend-bot`), register a second MCP server entry in your config pointing to the same package:
+
+```json
+{
+  "mcpServers": {
+    "hivecode": {
+      "command": "npx",
+      "args": ["-y", "hivecode-mcp@latest"]
+    },
+    "hivecode-2": {
+      "command": "npx",
+      "args": ["-y", "hivecode-mcp@latest"]
+    }
+  }
+}
+```
+
+Restart your app. Assign `hivecode` tools to Agent 1 and `hivecode-2` tools to Agent 2. Each agent then has its own isolated process, folder, and identity in the room.

@@ -1,16 +1,13 @@
 {
   "name": "hivecode-mcp",
-  "version": "0.12.4",
+  "version": "0.14.0",
   "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/Ganesh-Kute/HiveCode",
+  "homepage": "https://hivecode.getgrm.tech",
   "bugs": {
-    "url": "https://github.com/Ganesh-Kute/HiveCode/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Ganesh-Kute/HiveCode.git"
+    "url": "https://hivecode.getgrm.tech/contact",
+    "email": "support@getgrm.tech"
   },
   "keywords": [
     "mcp",
@@ -31,12 +28,15 @@
     "hive-mcp.js",
     "hive-await.js",
     "hive-listen.js",
+    "hive-session.js",
     "hive-mux.js",
     "hive-mux-proto.js",
+    "hive-transport.js",
+    "hive-poll-proto.js",
     "hive-version.js",
     "hive-pr-staleness.js",
     "hive-pr.js",
-    "hive-branch.js",
+    "hive-branch.js", "hive-land.js", "hive-repos.js", "hive-room-mode.js", "hive-room-watcher.js",
     "hive-mailbox.js",
     "hive-obligations.js",
     "hive-receipts.js",
@@ -44,7 +44,9 @@
     "hive-instructions.js",
     "hive-activity.js",
     "hive-relay-health.js",
-    "hive-privacy.js", "hive-secrets.js",
+    "hive-privacy.js",
+    "hive-secrets.js",
+    "hive-room-key.js",
     "hive-setup.js",
     "hive-stdio.js",
     "hive-update.js",
@@ -67,12 +69,28 @@
     "lang-toml.js",
     "icr-merge.js",
     "hive-coord.js",
+    "hive-authors.js",
     "hive-gate.js",
     "substrate.js",
     "HIVE_RULES.md",
     "docs/MCP.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "hive-github.js",
+    "hive-notify.js",
+    "hive-webhook.js",
+    "hive-slack.js",
+    "hive-slack-agent.js",
+    "hive-mcp-http.js",
+    "slack-app-manifest.json",
+    "slack-app-manifest-inbound.json",
+    "slack-app-manifest-agent.json",
+    "hive-time.js",
+    "docs/GITHUB_WORKFLOW.md",
+    "docs/QUICKSTART.md",
+    "docs/TROUBLESHOOTING.md",
+    "docs/SLACK_SETUP.md",
+    "docs/ALWAYS_ON.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -83,12 +101,13 @@
     "relay": "node server.js",
     "sync:engine": "node sync-engine.mjs",
     "check:engine": "node sync-engine.mjs --check",
-    "pretest": "node scripts/sync-engine.mjs --check && node scripts/check-files.mjs && node scripts/check-deploy.mjs",
+    "check:deps": "node scripts/check-deps.mjs",
+    "pretest": "node scripts/check-deps.mjs && node scripts/sync-engine.mjs --check && node scripts/check-files.mjs && node scripts/check-deploy.mjs",
     "test": "node tests/test.js",
     "test:features": "node tests/features-test.mjs",
     "test:features:shape": "node tests/features-test.mjs --shape",
     "test:learnings": "node tests/learnings-test.mjs",
-    "test:docs": "node tests/readme-promises-test.mjs",
+    "test:docs": "node tests/readme-promises-test.mjs && node tests/rules-promises-test.mjs && node tests/site-cli-usage-test.mjs",
     "test:setup": "node tests/setup-test.mjs --package",
     "test:mcp": "node tests/mcp-conformance-test.mjs",
     "test:recreate": "node tests/blind-recreate-test.mjs",
@@ -96,7 +115,7 @@
     "test:attest": "node tests/attest-stale-test.mjs && node tests/hive-smp-test.js",
     "build:ext": "node scripts/build-icr-cjs.cjs && node scripts/build-privacy-cjs.cjs",
     "test:selfhost": "node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs",
-    "test:hardening": "node tests/genesis-claim-test.mjs && node tests/bare-root-write-test.mjs && node tests/version-truth-test.mjs && node tests/room-repo-drift-test.mjs && node tests/first-contact-refusal-test.mjs && node tests/first-contact-summary-test.mjs && node tests/open-file-cap-test.mjs && node tests/learnings-test.mjs && node tests/presence-listener-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs && node tests/join-honesty-test.mjs && node tests/relay-diagnosis-test.mjs && node tests/blind-recreate-test.mjs && node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs && node tests/readme-promises-test.mjs && node tests/setup-test.mjs && node tests/mcp-conformance-test.mjs && node tests/update-notice-test.mjs && node tests/mux-test.mjs && node tests/own-files-quiet-test.mjs && node tests/wiped-relay-rejoin-test.mjs && node tests/token-budget-test.mjs && node tests/relay-presence-sweep-test.mjs && node tests/join-scale-test.mjs && node tests/join-queue-delete-test.mjs && node tests/delete-safety-test.mjs && node tests/relay-no-echo-test.mjs && node tests/genesis-collision-test.mjs && node tests/dead-heat-verdict-test.mjs && node tests/dead-heat-forced-test.mjs && node tests/deleted-dir-write-test.mjs && node tests/hive-await-test.mjs && node tests/listener-mail-once-test.mjs && node tests/build-identity-test.mjs && node tests/task-authority-test.mjs && node tests/grm-private-test.mjs && node tests/mixed-build-test.mjs && node tests/duplicate-name-test.mjs && node tests/unwritable-file-test.mjs && node tests/relay-claim-delete-test.mjs && node tests/secret-gate-test.mjs && node tests/package-closure-test.mjs && node tests/guessable-room-test.mjs && node tests/case-collision-test.mjs && node tests/case-rename-test.mjs && node tests/collided-notice-test.mjs && node tests/secured-invite-test.mjs && node tests/attest-stale-test.mjs && node tests/hive-smp-test.js && node tests/branch-test.mjs && node tests/unshared-binary-notice-test.mjs && node tests/binary-sync-test.mjs && node tests/doc-cap-remeasure-test.mjs && node tests/session-resume-test.mjs",
+    "test:hardening": "node tests/genesis-claim-test.mjs && node tests/bare-root-write-test.mjs && node tests/version-truth-test.mjs && node tests/room-repo-drift-test.mjs && node tests/first-contact-refusal-test.mjs && node tests/first-contact-summary-test.mjs && node tests/open-file-cap-test.mjs && node tests/learnings-test.mjs && node tests/presence-listener-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs && node tests/join-honesty-test.mjs && node tests/relay-diagnosis-test.mjs && node tests/blind-recreate-test.mjs && node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs && node tests/readme-promises-test.mjs && node tests/setup-test.mjs && node tests/mcp-conformance-test.mjs && node tests/update-notice-test.mjs && node tests/mux-test.mjs && node tests/own-files-quiet-test.mjs && node tests/wiped-relay-rejoin-test.mjs && node tests/token-budget-test.mjs && node tests/relay-presence-sweep-test.mjs && node tests/join-scale-test.mjs && node tests/join-queue-delete-test.mjs && node tests/delete-safety-test.mjs && node tests/relay-no-echo-test.mjs && node tests/genesis-collision-test.mjs && node tests/dead-heat-verdict-test.mjs && node tests/dead-heat-forced-test.mjs && node tests/deleted-dir-write-test.mjs && node tests/hive-await-test.mjs && node tests/listener-mail-once-test.mjs && node tests/build-identity-test.mjs && node tests/task-authority-test.mjs && node tests/grm-private-test.mjs && node tests/mixed-build-test.mjs && node tests/duplicate-name-test.mjs && node tests/unwritable-file-test.mjs && node tests/relay-claim-delete-test.mjs && node tests/secret-gate-test.mjs && node tests/package-closure-test.mjs && node tests/guessable-room-test.mjs && node tests/case-collision-test.mjs && node tests/case-rename-test.mjs && node tests/collided-notice-test.mjs && node tests/secured-invite-test.mjs && node tests/personal-room-test.mjs &&node tests/attest-stale-test.mjs && node tests/hive-smp-test.js && node tests/branch-test.mjs && node tests/unshared-binary-notice-test.mjs && node tests/binary-sync-test.mjs && node tests/doc-cap-remeasure-test.mjs && node tests/session-resume-test.mjs && node tests/shared-launch-folder-test.mjs && node tests/portable-agent-config-test.mjs",
     "test:extension": "node tests/extension-parity-test.mjs && node tests/extension-privacy-parity-test.mjs",
     "test:ceiling": "node tests/refused-visible-test.mjs && node tests/ceiling-no-data-loss-test.mjs",
     "test:mux": "node tests/mux-test.mjs && node tests/mux-open-turns-test.mjs",
@@ -141,7 +160,8 @@
     "test:map": "node tests/hive-map-test.mjs",
     "test:gate": "node tests/hive-gate-test.mjs",
     "bench:ab": "node bench/coordination-ab.mjs",
-    "test:branch": "node tests/branch-test.mjs"
+    "test:branch": "node tests/branch-test.mjs",
+    "test:github": "node tests/github-cli-test.mjs && node tests/notify-test.mjs && node tests/github-watcher-test.mjs"
   },
   "engines": {
     "node": ">=18"

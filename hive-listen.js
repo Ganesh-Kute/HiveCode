@@ -64,8 +64,8 @@ export function isArmed({ name, room, session = '' }, { env = process.env, now =
 }
 
 /** The exact command an agent runs to listen. Forward slashes: bash and PowerShell both accept them. */
-export function listenCommand({ relay, room, name, idleMin = LISTEN_IDLE_MIN, node = process.execPath, awaitJs = AWAIT_JS }) {
-  return `"${String(node).replace(/\\/g, '/')}" "${awaitJs}" "${relay}|${room}" "${name}" ${idleMin}`
+export function listenCommand({ relay, room, name, idleMin = LISTEN_IDLE_MIN, app = '', node = process.execPath, awaitJs = AWAIT_JS }) {
+  return `"${String(node).replace(/\\/g, '/')}" "${awaitJs}" "${relay}|${room}" "${name}" ${idleMin}${app ? ` "${app}"` : ''}`
 }
 
 // Each app is told in its own tool's words; an app nobody has measured gets no order, because an

@@ -15,9 +15,13 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
+import net from 'net'
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
-const PORT = Number(process.env.HIVE_TEST_PORT) || (24200 + (process.pid % 17000))
+// A PORT THE SYSTEM SAYS IS FREE (8 Oct 2026). It was 24200 + pid % 17000: Windows reuses pids, so now
+// and then the port was still held, the relay could not bind, and this suite waited forever for a relay
+// that never said "listening" -- killed at the feature check's 240 s with half its assertions unprinted.
+const PORT = Number(process.env.HIVE_TEST_PORT) || await new Promise((res) => { const s = net.createServer(); s.listen(0, () => { const p = s.address().port; s.close(() => res(p)) }) })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
@@ -33,19 +37,27 @@ console.log('# it ships')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-await-'))
 const room = 'aw-' + crypto.randomBytes(5).toString('hex')
 const link = `ws://localhost:${PORT}|${room}`
+// A relay that never comes up is a FAILURE with a reason, not a hang: nothing after this line can run without it.
 const relay = await new Promise((res) => {
   const p = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off' } })
-  p.stdout.on('data', (d) => { if (/listening on/.test(d)) res(p) })
+  let said = ''
+  const giveUp = setTimeout(() => { console.log(`  FAIL the test relay did not start on port ${PORT} within 20 s: ${said.trim().slice(-300)}`); try { p.kill() } catch { } ; process.exit(1) }, 20000)
+  p.stdout.on('data', (d) => { said += d; if (/listening on/.test(d)) { clearTimeout(giveUp); res(p) } })
+  p.stderr.on('data', (d) => { said += d })
 })
 
 // One listener process. Resolves with { code, out, running } -- `running` true if it had not exited by `ms`.
-function listen(name, idleMin, ms, { lnk = link, env = { TEMP: tmp, TMPDIR: tmp }, cwd = ROOT } = {}) {
-  const child = spawn(process.execPath, [path.join(ROOT, 'hive-await.js'), lnk, name, String(idleMin)],
+function listen(name, idleMin, ms, { lnk = link, env = { TEMP: tmp, TMPDIR: tmp }, cwd = ROOT, app = '' } = {}) {
+  const args = [path.join(ROOT, 'hive-await.js'), lnk, name, String(idleMin)]
+  if (app) args.push(app)
+  const child = spawn(process.execPath, args,
     { cwd, env: { ...process.env, ...env } })
   let out = '', err = ''
   child.stdout.on('data', (d) => { out += d })
   child.stderr.on('data', (d) => { err += d })
-  const ready = new Promise((r) => { const t = setInterval(() => { if (/listening in/.test(err)) { clearInterval(t); r() } }, 100) })
+  // Gives up after 20 s instead of waiting forever: a listener that never got that far then fails the
+  // assertions that follow, each with its own reason, rather than freezing the suite.
+  const ready = new Promise((r) => { const t0 = Date.now(); const t = setInterval(() => { if (/listening in/.test(err) || Date.now() - t0 > 20000) { clearInterval(t); r() } }, 100) })
   const done = new Promise((r) => child.on('exit', (code) => r(code)))
   return {
     ready,
@@ -118,7 +130,8 @@ try {
   // agent had to remember it after every wake. Now the listener records that it is running, and the
   // Stop hook and the MCP server check that before a turn ends. A false "running" here is a deaf
   // agent that nobody knows is deaf, so the "no" cases matter as much as the "yes".
-  const { isArmed, armedFile, awaitDir } = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-listen.js`)
+  const { isArmed, armedFile, awaitDir, listenCommand } = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-listen.js`)
+  const ACT = await import(`file:///${ROOT.replace(/\\/g, '/')}/hive-activity.js`)
   const env3 = { TEMP: tmp, TMPDIR: tmp }
   const room3 = 'aw-' + crypto.randomBytes(5).toString('hex')
   const link3 = `ws://localhost:${PORT}|${room3}`
@@ -127,17 +140,34 @@ try {
 
   console.log('# a running listener says so, and stops saying so when it ends')
   {
-    const L = listen('Wren', 1, 15000, { lnk: link3, env: { ...env3, CLAUDE_CODE_SESSION_ID: 'sess-A' } })
+    const L = listen('Wren', 1, 15000, { lnk: link3, env: { ...env3, CLAUDE_CODE_SESSION_ID: 'sess-A', ANTIGRAVITY_CONVERSATION_ID: '', ANTIGRAVITY_AGENT: '' } })
     await L.ready
     await sleep(300)
     T('A1 while it waits, the agent is armed', isArmed({ name: 'Wren', room: room3 }, { env: env3 }))
     T('A2 ...for the session that started it', isArmed({ name: 'Wren', room: room3, session: 'sess-A' }, { env: env3 }))
     T('A3 ...and NOT for another session: its exit wakes the session that started it', !isArmed({ name: 'Wren', room: room3, session: 'sess-B' }, { env: env3 }))
+    const wrenMem = P3.members().find((m) => m.name === 'Wren')
+    const wrenDesc = wrenMem ? ACT.describe(null, { present: true, listener: !!wrenMem.listener, app: wrenMem.app }) : null
+    T('A3a while it waits alone (no MCP server), awareness carries its app so the room knows it can wake', !!wrenMem && /claude-code/i.test(wrenMem.app || '') && !!wrenDesc && wrenDesc.reachable === true, JSON.stringify({ wrenMem, wrenDesc }))
     P3.say('@Wren ping one')
     const r = await L.result()
     const next = String((r.parsed && r.parsed.next) || '')
     T('A4 a wake carries the exact command to listen again, on the wake itself', !r.running && next.includes('hive-await.js') && next.includes(link3) && next.includes('"Wren"'), JSON.stringify(r.parsed || {}).slice(0, 300))
     T('A5 once it has exited, the agent is no longer armed', !isArmed({ name: 'Wren', room: room3 }, { env: env3 }) && !fs.existsSync(armedFile('Wren', room3, env3)))
+  }
+  {
+    const cmd = listenCommand({ relay: `ws://localhost:${PORT}`, room: room3, name: 'Wren', app: 'antigravity-client' })
+    T('A6 listenCommand passes the app when known', cmd.includes('"antigravity-client"'), cmd)
+    const L = listen('Wren', 1, 15000, { lnk: link3, app: 'antigravity-client', env: { ...env3, CLAUDE_CODE_SESSION_ID: '', ANTIGRAVITY_CONVERSATION_ID: '', ANTIGRAVITY_AGENT: '' } })
+    await L.ready
+    await sleep(300)
+    const wrenMem = P3.members().find((m) => m.name === 'Wren')
+    const wrenLine = wrenMem ? ACT.line('Wren', null, { present: true, listener: !!wrenMem.listener, app: wrenMem.app }) : ''
+    T('A7 a listener started with an explicit app arg reports Reachable in hive_members, not "not woken by it"', !!wrenMem && wrenMem.app === 'antigravity-client' && /Reachable\.$/.test(wrenLine) && !/not woken by it/i.test(wrenLine), wrenLine)
+    P3.say('@Wren ping app')
+    const r = await L.result()
+    const next = String((r.parsed && r.parsed.next) || '')
+    T('A8 ...and the restart command on wake preserves that app arg', !r.running && next.includes('"antigravity-client"'), next)
   }
 
   console.log('# two listeners for one agent: the newest wins, so one message wakes it once')
@@ -153,6 +183,24 @@ try {
     P3.say('@Wren ping two')
     const r2 = await L2.result()
     T('N3 the newer one is woken by the mention', !r2.running && !!r2.parsed && r2.parsed.reason === 'mention' && /ping two/.test(r2.parsed.messages.join(' ')), JSON.stringify(r2.parsed || {}).slice(0, 200))
+  }
+
+  // macOS, 6 Oct 2026: N1 and N3 failed because the older listener read the file just before the
+  // newer one wrote it, then put its own claim back on top. This leaves the file exactly that way.
+  console.log("# an older listener's claim written over a newer one's does not push the newer one out")
+  {
+    const fast = { ...env3, HIVE_AWAIT_BEAT_MS: '300' }
+    const L1 = listen('Wren', 1, 15000, { lnk: link3, env: fast })
+    await L1.ready
+    const olderClaim = JSON.parse(fs.readFileSync(armedFile('Wren', room3, env3), 'utf8'))
+    const L2 = listen('Wren', 1, 15000, { lnk: link3, env: fast })
+    await L2.ready
+    fs.writeFileSync(armedFile('Wren', room3, env3), JSON.stringify({ ...olderClaim, beat: Date.now() }))
+    const r1 = await L1.result()
+    T('R1 the older listener still leaves, saying why', !r1.running && !!r1.parsed && r1.parsed.reason === 'superseded', JSON.stringify(r1.parsed || {}).slice(0, 200))
+    P3.say('@Wren ping three')
+    const r2 = await L2.result()
+    T('R2 the newer one stays, and is the one the mention wakes', !r2.running && !!r2.parsed && r2.parsed.reason === 'mention' && /ping three/.test(r2.parsed.messages.join(' ')), JSON.stringify(r2.parsed || {}).slice(0, 200))
   }
 
   console.log('# with TEMP and TMPDIR unset (most Linux), nothing lands in the folder it was started in')

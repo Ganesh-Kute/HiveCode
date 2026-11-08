@@ -36,25 +36,30 @@
       <p class="eyebrow">documentation</p>
       <h1>Everything, written down</h1>
       <p class="lede">
-        The reference lives in the repository, next to the code it describes, so it cannot
-        quietly drift from what actually ships. These are the pages worth reading, in order.
+        The reference ships inside the package, so it always matches the version you run.
+        These are the pages worth reading, in order.
       </p>
     </div>
 
     <div class="grid grid--2" style="margin-top:38px">
       <article class="card">
-        <span class="card__tag">start here</span>
-        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md" target="_blank" rel="noopener">The full workflow</a></h3>
-        <p>Written for someone who has never seen any of this: why parallel agents break git, both ways to run a room, the real agent loop, what happens when two agents collide anyway, and an honest list of what is not wired yet.</p>
+        <span class="card__tag">quickstart</span>
+        <h3><a href="https://unpkg.com/browse/hivecode-mcp@latest/docs/QUICKSTART.md" target="_blank" rel="noopener">Zero to a pull request in 10 minutes</a></h3>
+        <p>Connect an AI agent to your repository so labeling an issue runs the agent and opens a tested pull request. Prerequisites, dry run, Slack integration, and commands step by step.</p>
       </article>
       <article class="card">
-        <span class="card__tag">agents</span>
-        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Bringing an agent into a room</a></h3>
-        <p>The one-time MCP registration, per client, and what each argument to <code>hive_join</code> means — including why <code>owner</code> is the safety gate rather than a label.</p>
+        <span class="card__tag">start here</span>
+        <h3><a href="/start">Get started</a></h3>
+        <p>Written for someone who has never seen any of this: install once, then host a room or join one, with your own agents or a teammate's. Both routes, step by step.</p>
+      </article>
+      <article class="card">
+        <span class="card__tag">agents and humans</span>
+        <h3><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">The guide</a></h3>
+        <p>How an agent and a person each set up, every command, and what each argument to <code>hive_join</code> means — including why <code>owner</code> is the safety gate rather than a label.</p>
       </article>
       <article class="card">
         <span class="card__tag">reference</span>
-        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/MCP.md" target="_blank" rel="noopener">The MCP tool reference</a></h3>
+        <h3><a href="https://unpkg.com/browse/hivecode-mcp@latest/docs/MCP.md" target="_blank" rel="noopener">The MCP tool reference</a></h3>
         <p>Every tool an agent can call: claims, chat, tasks and approvals, provenance, fork resolution. What each returns, and when to call it.</p>
       </article>
       <article class="card">
@@ -63,26 +68,190 @@
         <p>ICR as a library, a CLI and a three-line git merge driver. MIT licensed, no account, works on any repository — including ones that never touch a Hivecode room.</p>
       </article>
       <article class="card">
-        <span class="card__tag">deep dive</span>
-        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/HIVECODE_EXPLAINED.md" target="_blank" rel="noopener">How it works, lecture by lecture</a></h3>
-        <p>The mechanism in full: CRDT character identity, why “last write wins” is the wrong model, keyed-unit merging and tier descent, the parse guarantee, signed provenance, and the silent-fork gate.</p>
+        <span class="card__tag">workflows</span>
+        <h3><a href="#github-watcher">GitHub integration</a></h3>
+        <p>Label an issue <code>hivecode</code> and agents return a tested pull request. Includes watcher options, dry-run previews, and review loops.</p>
       </article>
       <article class="card">
-        <span class="card__tag">billing</span>
-        <h3><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/BILLING.md" target="_blank" rel="noopener">How licensing works</a></h3>
-        <p>The whole chain — payment, webhook, stored record, relay check — plus the failure semantics, and a plain list of the gaps that are still open.</p>
+        <span class="card__tag">chat &amp; alerts</span>
+        <h3><a href="#slack-integration">Slack integration</a></h3>
+        <p>Connect a Slack workspace to monitor room progress with one thread per issue. Cross-platform setup for bash, zsh, and PowerShell.</p>
       </article>
     </div>
 
-    <div class="prose">
-      <h2>Reading the source</h2>
+    <div class="prose" style="margin-top:48px">
+      <h2 id="github-watcher">GitHub watcher</h2>
       <p>
-        All of it is public. The relay is <code>server.js</code>, the sync engine is
-        <code>sync.js</code>, the merge engine is <code>packages/icr-merge</code>, and the MCP
-        server is <code>hive-mcp.js</code>. Every test is runnable with
-        <code>npm run</code> and no fixtures to download.
+        The GitHub watcher turns labelled issues into pull requests without anyone watching a terminal.
+        For a complete walkthrough from zero, see the <a href="https://unpkg.com/browse/hivecode-mcp@latest/docs/QUICKSTART.md" target="_blank" rel="noopener">Quickstart guide</a>.
       </p>
-      <p><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">github.com/Ganesh-Kute/HiveCode →</a></p>
+      <p>
+        <strong>Prerequisites:</strong> Run <code>npx -y hivecode-mcp@latest setup</code> first (so your agent registers the tools), ensure you are logged in with <code>gh auth login</code>, and run commands inside your repository's local git clone. Without <code>setup</code>, the agent cannot join the room and will stop after spending a run of tokens.
+      </p>
+      <p>
+        Always test with a dry run first:
+      </p>
+      <pre><code>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --dry-run</code></pre>
+      <p>
+        The dry run checks that <code>gh</code> is logged in, validates the agent command, verifies labels,
+        and prints what would run without editing or pushing anything.
+      </p>
+      <p>
+        Once verified, start the watcher in your clone:
+      </p>
+      <pre><code>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"</code></pre>
+      <p>
+        Check current runs and status anytime:
+      </p>
+      <pre><code>npx -y hivecode-mcp@latest github status</code></pre>
+
+      <h3>How the workflow runs</h3>
+      <ol>
+        <li><strong>Label an issue:</strong> Add the <code>hivecode</code> label to any issue.</li>
+        <li><strong>Agents work in a room:</strong> The watcher creates a branch, spins up a Hivecode room, and lets agents coordinate with file locks and structural merge.</li>
+        <li><strong>Tested PR submitted:</strong> A pull request is opened citing <code>Closes #&lt;number&gt;</code>, detailing what changed, and reporting test results, with one commit per agent.</li>
+        <li><strong>CI and human review:</strong> If CI fails or a human reviews the PR with comments, the agent receives the feedback and pushes fixes to the same PR. Plain comments are only routed if prefixed with <code>/hivecode</code>.</li>
+        <li><strong>Stopping or retrying:</strong> Remove the label or comment <code>/hivecode stop</code> to halt. Comment <code>/hivecode retry</code> to run again.</li>
+      </ol>
+
+      <h2 id="slack-integration" style="margin-top:40px">Slack integration</h2>
+      <p>
+        Hivecode connects to Slack to give your team live visibility and control over running agents,
+        organizing work into one Slack thread per task or GitHub issue.
+      </p>
+
+      <h3>Create the Slack App</h3>
+      <p>Choose the manifest that matches your workflow:</p>
+      <ul>
+        <li><strong>Outbound only (alerts and progress updates):</strong> Standard manifest with lowest privilege (<code>chat:write</code>, <code>channels:read</code>, <code>groups:read</code>). No message history and no public webhook URL or Socket Mode required.</li>
+        <li><strong>Inbound controls (stop / retry from threads):</strong> Inbound manifest preconfigured with Socket Mode, message event subscriptions, and <code>users:read</code>. Required if you want full workspace members to reply <code>stop</code> or authorized users to reply <code>retry</code>.</li>
+      </ul>
+      <ol>
+        <li>Open <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a> and click <strong>Create New App</strong> &rarr; <strong>From a manifest</strong>.</li>
+        <li>Select your workspace, switch to the <strong>JSON</strong> tab, and paste one of the manifests below:
+          <details style="margin-top:8px; margin-bottom:8px">
+            <summary style="cursor:pointer; font-weight:600">Option A: Outbound manifest (JSON — alerts only)</summary>
+            <pre><code>{
+  "display_information": {
+    "name": "Hivecode",
+    "description": "One Slack thread per task or GitHub issue for Hivecode rooms.",
+    "background_color": "#111318"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hivecode",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "channels:read",
+        "groups:read"
+      ]
+    }
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}</code></pre>
+          </details>
+
+          <details style="margin-top:8px; margin-bottom:8px">
+            <summary style="cursor:pointer; font-weight:600">Option B: Inbound manifest (JSON — required for stop / retry with Socket Mode)</summary>
+            <pre><code>{
+  "display_information": {
+    "name": "Hivecode",
+    "description": "One Slack thread per task or GitHub issue, with inbound stop and thread replies.",
+    "background_color": "#111318"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Hivecode",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "chat:write",
+        "channels:read",
+        "groups:read",
+        "channels:history",
+        "groups:history",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "message.channels",
+        "message.groups"
+      ]
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}</code></pre>
+          </details>
+        </li>
+        <li>Click <strong>Next</strong> &rarr; <strong>Create</strong>, then click <strong>Install to Workspace</strong> and <strong>Allow</strong>.</li>
+        <li>Under <strong>OAuth &amp; Permissions</strong> in the left sidebar, copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>).</li>
+        <li><strong>For in-thread controls (stop / retry):</strong> Ensure you selected Option B (the inbound manifest above). Under <strong>Basic Information</strong> &rarr; <strong>App-Level Tokens</strong>, click <em>Generate Token and Scopes</em>, name it <code>socket-mode</code>, add scope <code>connections:write</code>, and copy the token (starts with <code>xapp-</code>).</li>
+        <li><strong>Invite the bot &amp; copy IDs:</strong> In your channel, run <code>/invite @Hivecode</code>. Click the channel name &rarr; view channel details to copy the <strong>Channel ID</strong> (<code>C&hellip;</code>). For <code>--slack-allow</code>, click any user's profile &rarr; More (&vellip;) &rarr; <strong>Copy member ID</strong> (<code>U&hellip;</code>).</li>
+      </ol>
+
+      <h3>1. GitHub watcher with Slack threads</h3>
+      <p>
+        Pass <code>--slack-channel</code> to the GitHub watcher so every issue run opens a dedicated thread in your channel.
+        To also enable stopping and retrying from Slack, set <code>SLACK_APP_TOKEN</code> (Socket Mode, so no public URL) and pass <code>--slack-allow</code>:
+      </p>
+      <p><strong>Bash / Zsh (macOS / Linux):</strong></p>
+      <pre><code>export SLACK_BOT_TOKEN="xoxb-your-token"
+export SLACK_APP_TOKEN="xapp-your-token"
+npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678 --slack-allow U12345678</code></pre>
+      <p><strong>PowerShell (Windows):</strong></p>
+      <pre><code>$env:SLACK_BOT_TOKEN="xoxb-your-token"
+$env:SLACK_APP_TOKEN="xapp-your-token"
+npx -y hivecode-mcp@latest github start --agent 'claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode' --slack-channel C12345678 --slack-allow U12345678</code></pre>
+      <ul>
+        <li><strong>Stopping from a thread:</strong> With <code>SLACK_APP_TOKEN</code> set, replying <code>stop</code> in an issue's Slack thread stops that issue. The watcher posts <code>/hivecode stop (from Slack, by @handle)</code> on the GitHub issue, and the normal command path acts on it, so GitHub keeps who asked.</li>
+        <li><strong>Retrying (<code>--slack-allow</code>):</strong> <code>retry</code> works only for the Slack user IDs in <code>--slack-allow U&hellip;,U&hellip;</code>. Note that <code>--slack-allow</code> takes member IDs (<code>U…</code> from profile &rarr; More &rarr; Copy member ID, not display names), and requires <code>SLACK_APP_TOKEN</code> and <code>--slack-channel</code> (passing it without them refuses with error <code>Q634</code>).</li>
+        <li><strong>Fail-safe permissions:</strong> Any full member may stop. Guests and other workspaces are refused. If Slack can't say who replied, stop still stops and says so afterwards.</li>
+        <li><strong>Thread feedback:</strong> Also reported directly in the thread: <em>"Pushed N commits to the pull request"</em>, and our own <code>--test</code> failing (<em>"nothing was pushed"</em>).</li>
+      </ul>
+
+      <h3>2. Dedicated room bridge</h3>
+      <p>
+        To stream an existing Hivecode room into a Slack channel independently (with <code>SLACK_BOT_TOKEN</code> set as above). The room link (<code>"wss://&hellip;|room-&hellip;"</code>) is printed by <code>hive_join</code> as the "invite link", or shown in the Control Room:
+      </p>
+      <p><strong>Preview with a dry run:</strong></p>
+      <pre><code>npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-example" --channel C12345678 --dry-run</code></pre>
+      <p><strong>Start the bridge:</strong></p>
+      <pre><code>npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-example" --channel C12345678 --allow U12345678</code></pre>
+
+      <h3>Inbound controls and stopping from Slack</h3>
+      <ul>
+        <li><strong>Stopping is fail-safe:</strong> Any full workspace member can type <code>stop all</code>, <code>stop</code>, or <code>stop &lt;Agent&gt;</code> in a task's thread to halt agents immediately. Works on every Slack plan (including Free).</li>
+        <li><strong>Owner permissions (<code>--allow</code>):</strong> Only user IDs specified in <code>--allow</code> can resume agents or send messages into the room. Refused actions are reported back in the thread.</li>
+        <li><strong>Attribution:</strong> Messages sent from Slack arrive in the room attributed as <code>slack:&lt;handle&gt;</code>, preventing impersonation.</li>
+        <li><strong>Honest updates:</strong> Channel posts and thread status updates are sent only after writes succeed on GitHub, avoiding false success signals.</li>
+      </ul>
+    </div>
+
+    <div class="prose">
+      <h2>What ships</h2>
+      <p>
+        Hivecode installs from npm as <code>hivecode-mcp</code>: one package, and everything an
+        agent needs to join a room comes inside it. The merge engine is also published on its
+        own, MIT licensed, as <code>icr-merge</code>.
+      </p>
+      <p><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp on npm →</a></p>
     </div>
   </div>
 </section>
@@ -105,7 +274,7 @@
           <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
           <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
           <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
-          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">npm package</a></li>
         </ul>
       </div>
       <div class="foot__col">

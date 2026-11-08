@@ -1,0 +1,162 @@
+// Each defence in hive-github.js and hive-notify.js, removed one at a time: the module's test has to
+// go red where that defence's row is, or the check that claims to cover it covers nothing.
+//
+//   node scripts/github-mutants.mjs [id ...]
+//
+// A mutant is a changed COPY beside the real file (<module>.mutant-<id>.js, deleted afterwards), so
+// the real module is never edited and a crashed run leaves nothing behind but that copy.
+import { spawn } from 'child_process'
+import fs from 'fs'
+import path from 'path'
+
+const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
+const TARGETS = {
+  github: { file: 'hive-github.js', test: 'tests/github-watcher-test.mjs', env: 'HIVE_GITHUB_MODULE' },
+  notify: { file: 'hive-notify.js', test: 'tests/notify-test.mjs', env: 'HIVE_NOTIFY_MODULE' },
+  // The same module as `github`, under its fast CLI test: what `github start` refuses, and the dry run.
+  cli: { file: 'hive-github.js', test: 'tests/github-cli-test.mjs', env: 'HIVE_GITHUB_MODULE' },
+}
+const SRC = Object.fromEntries(Object.entries(TARGETS).map(([k, t]) => [k, fs.readFileSync(path.join(ROOT, t.file), 'utf8')]))
+
+const MUTANTS = [
+  // hive-github.js
+  { t: 'github', id: 'trust', expect: 'E5', find: "const trusted = (item) => !!item && !isBot(item.user) && ASSOC.has(String(item.author_association || '').toUpperCase()) && canPush(item.user.login)", to: 'const trusted = (item) => !!item' },
+  { t: 'github', id: 'labeler', expect: 'B1', find: 'if (lab.bot || !canPush(lab.login)) {', to: 'if (false) {' },
+  { t: 'github', id: 'failed-read', expect: 'K2', find: 'const issue = gh.issue(n) // a failure here throws: nothing changes on a failed read', to: 'let issue; try { issue = gh.issue(n) } catch { return stop(n, it, `the ${label} label was removed`, \'label\') }' },
+  { t: 'github', id: 'same-failure', expect: 'C6', find: 'if (it.sameFailure >= 2) return needsHuman', to: 'if (false) return needsHuman' },
+  { t: 'github', id: 'workflows', expect: 'H1', find: 'const workflows = allowWorkflows ? [] : changed.filter', to: 'const workflows = true ? [] : changed.filter' },
+  { t: 'github', id: 'flush', expect: 'M1', find: '    await flushFolder(run)\n', to: '\n' },
+  { t: 'github', id: 'debounce', expect: 'E1', find: 'if (!it.settle || it.settle.sig !== sig) { it.settle = { sig, at: now() }; return result }\n    if (now() - it.settle.at < quietMs) return result\n', to: '' },
+  { t: 'github', id: 'sleep', expect: 'J2', find: 'if (lastTick && t - lastTick > gapLimit) {', to: 'if (false) {' },
+  { t: 'github', id: 'merge-first', expect: 'D4', find: "      if (it.pr) {\n        const pr = gh.pull(it.pr)\n        if (pr.merged_at || pr.merged) return finalize(n, it, 'done')\n        if (pr.state === 'closed') return finalize(n, it, 'closed')\n      }\n", to: '' },
+  { t: 'github', id: 'merge-kills', expect: 'S2', find: 'function finalize(n, it, outcome) {\n    killRun(n)\n', to: 'function finalize(n, it, outcome) {\n' },
+  { t: 'github', id: 'adopt', expect: 'N3', find: '          if (found) {\n', to: '          if (false) {\n' },
+  { t: 'github', id: 'never-joined', expect: 'G1', find: "if (run.dir && !fs.existsSync(path.join(run.dir, '.hive.json'))) {", to: 'if (false) {' },
+  { t: 'github', id: 'ask', expect: 'E4', find: "return key === 'ic' && it.question ? body : ''", to: 'return body' },
+  { t: 'github', id: 'check-first', expect: 'P1', find: "if (role === 'builder' && tester) {", to: 'if (false) {' },
+  { t: 'github', id: 'fail-holds', expect: 'P3', find: "if (out.verdict === 'FAIL') {", to: 'if (false) {' },
+  { t: 'github', id: 'no-verdict', expect: 'P10', find: "const noVerdict = role === 'tester' && !out.blocked && !out.verdict", to: 'const noVerdict = false' },
+  { t: 'github', id: 'restart-fresh', expect: 'R5', find: 'if (before.length && !(it.restart && before[0].watcher === me)) {', to: 'if (before.length) {' },
+  { t: 'github', id: 'done-signal', expect: 'R6', find: 'if (it.closedAtDone || readComments(n, it).retry) {', to: 'if (true) {' },
+  { t: 'github', id: 'closed-is-no', expect: 'R1', find: 'if (readComments(n, it).retry) {\n        delete state.issues[n]', to: 'if (true) {\n        delete state.issues[n]' },
+  // From antigravity-1's audit of the spec against the code (26 Oct): each of these was a row the code did not do.
+  { t: 'github', id: 'retry-after-closed-resumes', expect: 'R3b', find: 'on the work the person just said no to.\n        if (state.issues[n]) state.issues[n].restart = true', to: 'on the work the person just said no to.' },
+  { t: 'github', id: 'flush-as-builder', expect: 'P14', find: "name: run.who || name, kind: 'ai'", to: "name, kind: 'ai'" },
+  { t: 'github', id: 'hold-not-saved', expect: 'K1b', find: 'state.hold = { until: holdUntil, why: oneLine(e.message, 200) }', to: 'void 0' },
+  { t: 'github', id: 'wait-why-lost', expect: 'K6', find: 'it.waitWhy = `not started: ${oneLine(e.message, 200)}`', to: 'void 0' },
+  { t: 'github', id: 'touched-not-in-fix-comment', expect: 'P15', find: "${it.check.report || ''}${touched}", to: "${it.check.report || ''}" },
+  { t: 'github', id: 'login-once', expect: 'R4', find: "if (e.code === 'Q600' && !loginLost) {", to: "if (e.code === 'Q600') {" },
+  { t: 'github', id: 'catch-up', expect: 'Q1', find: 'if (pr.mergeable === false && sha && it.conflictTried !== sha) {', to: 'if (false) {' },
+  { t: 'github', id: 'report-first', expect: 'P12', find: "        it.next = 'build'\n        if (it.testerFails >= maxTesterFails)", to: '        if (it.testerFails >= maxTesterFails)' },
+  // hive-github.js: one Slack thread per issue (group T)
+  { t: 'github', id: 'slack-thread-kept', expect: 'T2', find: 'set: (k, v) => { state.slack[k] = v; save() } }', to: 'set: () => {} }' },
+  { t: 'github', id: 'slack-refusal-said', expect: 'T5', find: "const must = (r) => { if (r && r.ok === false) throw new Error(r.error || 'refused') ; return r }", to: 'const must = (r) => r' },
+  // No mutant for "the room id is posted": adding it to our text changes nothing, because
+  // scrubSlack() in hive-slack.js strips every room id and link on the way out (measured 25 Oct:
+  // that mutant stayed green). The guard is there, and tests/hive-slack-test.mjs covers it.
+  { t: 'github', id: 'slack-after-pr', expect: 'T1', find: 'if (!open) { it.needPr = true;', to: "if (!open) { toSlack(n, 'Pull request ready for review'); it.needPr = true;" },
+  // hive-github.js: replies from an issue's Slack thread (group T)
+  { t: 'github', id: 'slack-reply-after-github', expect: 'T9', find: "    try { gh.comment(n, scrub(`/hivecode ${action}", to: "    toSlack(n, 'Stopping, as asked.')\n    try { gh.comment(n, scrub(`/hivecode ${action}" },
+  { t: 'github', id: 'slack-thread-owned', expect: 'T7', find: "return m && state.issues[m[1]] ? Number(m[1]) : 0", to: "return m && state.issues[m[1]] ? Number(m[1]) : Number(Object.keys(state.issues)[0] || 0)" },
+  { t: 'github', id: 'slack-fix-pushed', expect: 'T4b', find: "toSlack(n, `Pushed ${count} commit", to: "void (n, `Pushed ${count} commit" },
+  { t: 'github', id: 'slack-gate-said', expect: 'T10', find: "toSlack(n, `\\`${oneLine(test, 80)}\\` failed on", to: "void (n, `\\`${oneLine(test, 80)}\\` failed on" },
+  // hive-github.js, under the CLI test
+  { t: 'cli', id: 'slack-token', expect: 'CK1', find: "if (!token) { logErr(`Q633", to: "if (false) { logErr(`Q633" },
+  // --slack-allow as first written: taken as given, so each of these started green and did nothing.
+  { t: 'cli', id: 'allow-no-app-token', expect: 'CK11', find: "if (!process.env.SLACK_APP_TOKEN) { logErr(`Q634 ${flag}", to: "if (false) { logErr(`Q634 ${flag}" },
+  { t: 'cli', id: 'allow-no-channel', expect: 'CK12', find: "if (!slackChannel) { logErr(`Q634 ${flag}", to: "if (false) { logErr(`Q634 ${flag}" },
+  { t: 'cli', id: 'allow-any-name', expect: 'CK13', find: "s && !/^[UW][A-Z0-9]{2,}$/.test(s)", to: "s && false" },
+  { t: 'cli', id: 'allow-whence-silent', expect: 'CK14', find: "k in typed || !(k in (saved.flags || {}))", to: "true" },
+  // Replies turned on with a token that cannot receive them: started green, and "stop" never arrived.
+  { t: 'cli', id: 'inbound-scopes-unchecked', expect: 'CK16', find: 'if (!sc.ok) { logErr(sc.error); return EXIT_FIX }', to: 'if (false) { logErr(sc.error); return EXIT_FIX }' },
+  // An agent that cannot use Hivecode, started anyway: every run paid for and failed.
+  { t: 'cli', id: 'agent-no-mcp-passes', expect: 'CA1', find: 'if (r.status !== 0 && /No MCP server named/i.test(out)) {', to: 'if (false) {' },
+  { t: 'cli', id: 'agent-mcp-failing-passes', expect: 'CA3', find: 'if (/fail|error|disconnected/i.test(status)) {', to: 'if (false) {' },
+  { t: 'cli', id: 'agent-allowed-tools-unchecked', expect: 'CA4', find: 'if (/--allowed-?tools\\b/i.test(s) && ', to: 'if (false && ' },
+  { t: 'cli', id: 'agent-unchecked-silent', expect: 'CA8', find: 'log(ac.note || ac.warn)', to: 'if (ac.note) log(ac.note)' },
+  { t: 'cli', id: 'saved-channel-silent', expect: 'CK15b', find: "${whence('slack-channel') ? ` That is --slack-channel ${slackChannel}${whence('slack-channel')}.` : ''}", to: '' },
+  // Start-up as a stranger meets it (found by antigravity-2's install walk from the packed tarball).
+  { t: 'cli', id: 'logged-out-is-outage', expect: 'CL4c', find: "  if (!r.status && /gh auth login/.test(msg)) return coded('Q600',", to: "  if (false) return coded('Q600'," },
+  { t: 'cli', id: 'repo-404-asks-login', expect: 'CL4d', find: '      : e.status === 404 ? `Q601 GitHub has no repository', to: '      : false ? `Q601 GitHub has no repository' },
+  { t: 'cli', id: 'double-code', expect: 'CL4e', find: '        : isQ(e) ? e.message : `Q603 ${e.message}`)', to: '        : `Q600 ${e.message}`)' },
+  // Slack replies at start: a refusal (Q635) or a socket that never opens is said once, the lock is
+  // given back, and it never says "watching" first.
+  // Uncaught, the throw ends the whole suite at CK19: what goes red is its last check, "no exception".
+  // (No mutant for the isQ() wrapper beside it: hive-slack.js now codes every start error, so the
+  // wrapper is a backstop for an older hive-slack.js and no test here can tell it apart.)
+  { t: 'cli', id: 'socket-uncaught', expect: 'no', find: '    } catch (e) {\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start', to: '    } catch (e) {\n      throw e\n      logErr(isQ(e) ? e.message : `Q634 Slack replies could not start' },
+  // The --notify webhook is a secret: checked at start, shown by host only, the env one never saved.
+  { t: 'cli', id: 'notify-unchecked', expect: 'CN1b', find: "    if (!u || !/^https?:$/.test(u.protocol) || !u.host) {", to: '    if (!u) {' },
+  { t: 'cli', id: 'notify-url-printed', expect: 'CN2', find: 'it is posted to ${notifyHost}.`)', to: 'it is posted to ${notifyUrl}.`)' },
+  { t: 'cli', id: 'notify-env-ignored', expect: 'CN4', find: "  const notifyUrl = opt('notify') || process.env.HIVE_NOTIFY_WEBHOOK || ''", to: "  const notifyUrl = opt('notify') || ''" },
+  // How `github start` exits, for whatever restarts it: 1 = try again, 2 = a person must act.
+  { t: 'cli', id: 'busy-is-fix', expect: 'CL4f', find: '    return busy ? EXIT_AGAIN : EXIT_FIX', to: '    return EXIT_FIX' },
+  { t: 'cli', id: 'refusal-is-again', expect: 'CL4h', find: '    return busy ? EXIT_AGAIN : EXIT_FIX', to: '    return EXIT_AGAIN' },
+  { t: 'cli', id: 'q635-is-again', expect: 'CK19', find: "      return e && (e.code === 'Q635' || e.slackError) ? EXIT_FIX : EXIT_AGAIN", to: '      return EXIT_AGAIN' },
+  { t: 'cli', id: 'slack-unreachable-is-fix', expect: 'CK21', find: 'return pf && pf.transient ? EXIT_AGAIN : EXIT_FIX }', to: 'return EXIT_FIX }' },
+  { t: 'cli', id: 'watching-before-slack', expect: 'CK19', find: '  w.recover()\n  let inbound = null\n', to: "  w.recover()\n  log('Hivecode is watching (before Slack answered)')\n  let inbound = null\n" },
+  { t: 'cli', id: 'socket-lock-kept', expect: 'CK19', find: '      releaseLock()\n      // Another process on the app (Q635)', to: '      // Another process on the app (Q635)' },
+  { t: 'cli', id: 'origin-token-shown', expect: 'CL2b', find: "const shown = String(origin.out || '').replace(/\\/\\/[^/@\\s]+@/, '//')", to: "const shown = String(origin.out || '')" },
+  { t: 'cli', id: 'help-is-error', expect: 'CT4', find: "rest.includes('-h')) { log(USAGE); return 0 }", to: "rest.includes('-h')) { logErr(USAGE); return 2 }" },
+  { t: 'cli', id: 'reply-retry-as-stop', expect: 'CK8', find: "check.mayAct(actor, action === 'stop' ? 'stop' : 'resume', allow)", to: "check.mayAct(actor, 'stop', allow)" },
+  { t: 'cli', id: 'reply-note-first', expect: 'CK10', find: '    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:', to: "    if (may.unverified) w.slackNote({ threadTs: ev.thread_ts, text: 'stopped; I could not confirm who you are' })\n    const r = await w.fromSlack({ threadTs: ev.thread_ts, action, handle:" },
+  { t: 'cli', id: 'dry-saves', expect: 'CD4', find: 'const save = () => { if (!dry) saveState(file, state) }', to: 'const save = () => { saveState(file, state) }' },
+  { t: 'cli', id: 'dry-runs', expect: 'CD3', find: '    if (dry) {\n      // Said in the order they would start', to: '    if (false) {\n      // Said in the order they would start' },
+  // The dry run as first written: a fresh state, so "would start now" whatever the file knew.
+  { t: 'cli', id: 'dry-fresh', expect: 'CD5', find: 'const state = loadState(file, log, { peek: dry })', to: 'const state = dry ? freshState() : loadState(file, log)' },
+  { t: 'cli', id: 'dry-peek', expect: 'CD11', find: 'const state = loadState(file, log, { peek: dry })', to: 'const state = loadState(file, log)' },
+  { t: 'cli', id: 'dry-known', expect: 'CD5', find: '      if (dry) return await dryPlan(labeled, byNum)\n', to: '' },
+  { t: 'cli', id: 'dry-claims', expect: 'CD6', find: 'const first = claimsOn(n)[0]', to: 'const first = null' },
+  { t: 'cli', id: 'dry-cap', expect: 'CD7', find: 'if (left <= 0) {', to: 'if (false) {' },
+  { t: 'cli', id: 'dry-cutoff', expect: 'CD8', find: "if (it.status === 'running' && !live && byNum.has(n)) {", to: 'if (false) {' },
+  { t: 'cli', id: 'dry-live', expect: 'CD10', find: 'if (live) log(`A watcher is running on this clone now', to: 'if (false) log(`A watcher is running on this clone now' },
+  { t: 'cli', id: 'dry-failed', expect: 'CD12', find: 'if (!res || !res.ok) {', to: 'if (false) {' },
+  { t: 'cli', id: 'status-peek', expect: 'CT3', find: 'const s = loadState(file, log, { peek: true })', to: 'const s = loadState(file, log)' },
+  { t: 'cli', id: 'q606-said', expect: 'CS9', find: 'const state = loadState(file, log)\n', to: 'const state = loadState(file)\n' },
+  // hive-notify.js
+  { t: 'notify', id: 'owner-here', expect: 'NT6', find: 'if (sent.tasks[task.id] || here(owner)) continue', to: 'if (sent.tasks[task.id]) continue' },
+  { t: 'notify', id: 'sent-once', expect: 'NT8', find: 'if (sent.tasks[task.id] || here(owner)) continue', to: 'if (here(owner)) continue' },
+  { t: 'notify', id: 'agents-only', expect: 'NT12', find: "if (!m || m.kind !== 'ai') continue", to: 'if (!m) continue' },
+  { t: 'notify', id: 'hello', expect: 'NT1', find: 'if (!okSent) {', to: 'if (false) {' },
+  { t: 'notify', id: 'batch', expect: 'NT10', find: 'if (buffer.length && t - lastFlush >= every * 60000) {', to: 'if (buffer.length) {' },
+  { t: 'notify', id: 'whole-name', expect: 'NT12', find: '(?![\\\\w-])', to: '' },
+  { t: 'notify', id: 'lost-once', expect: 'NT14', find: 'if (!toldLost && t - lostSince >= LOST_AFTER) {', to: 'if (t - lostSince >= LOST_AFTER) {' },
+]
+
+// --check: only that each mutant's text is in its file exactly once (a second, after an edit, would
+// mutate the wrong place). Takes a second, so run it after every change to the modules.
+const checkOnly = process.argv.includes('--check')
+const pick = process.argv.slice(2).filter((a) => a !== '--check')
+const todo = MUTANTS.filter((m) => !pick.length || pick.includes(m.id) || pick.includes(m.t))
+let bad = 0
+for (const m of todo) {
+  const count = SRC[m.t].split(m.find).length - 1
+  if (count !== 1) { console.log(`BAD MUTANT ${m.id}: its text occurs ${count} times in ${TARGETS[m.t].file}`); bad++ }
+}
+if (bad) process.exit(2)
+if (checkOnly) { console.log(`all ${todo.length} mutants apply exactly once`); process.exit(0) }
+
+function run(m) {
+  const T = TARGETS[m.t]
+  const file = `${T.file.replace(/\.js$/, '')}.mutant-${m.id}.js`
+  fs.writeFileSync(path.join(ROOT, file), SRC[m.t].replace(m.find, m.to))
+  return new Promise((res) => {
+    const p = spawn(process.execPath, [T.test], { cwd: ROOT, env: { ...process.env, [T.env]: file } })
+    let out = ''
+    p.stdout.on('data', (d) => { out += d })
+    p.stderr.on('data', (d) => { out += d })
+    p.on('close', () => {
+      try { fs.unlinkSync(path.join(ROOT, file)) } catch { }
+      const red = [...out.matchAll(/^\s+FAIL (\S+)/gm)].map((x) => x[1])
+      res({ ...m, red, caught: red.includes(m.expect) })
+    })
+  })
+}
+
+const width = Number(process.env.MUTANT_PARALLEL || 4)
+const results = []
+for (let i = 0; i < todo.length; i += width) results.push(...await Promise.all(todo.slice(i, i + width).map(run)))
+for (const r of results) console.log(`${r.caught ? 'caught ' : 'MISSED '} ${`${r.t}/${r.id}`.padEnd(20)} expected ${r.expect} red; red: ${r.red.join(', ') || 'none'}`)
+const missed = results.filter((r) => !r.caught)
+console.log(missed.length ? `\n${missed.length} mutant(s) survived` : `\nall ${results.length} mutants caught`)
+process.exit(missed.length ? 1 : 0)

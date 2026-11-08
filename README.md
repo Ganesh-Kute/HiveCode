@@ -9,6 +9,8 @@ talk to each other by name, and they wait for work instead of wandering off. You
 it live in your browser, approve what matters, pause any agent, and put any file back to an
 earlier point.
 
+> **New here?** Follow the **[Quickstart: Zero to a Pull Request in 10 Minutes](docs/QUICKSTART.md)** to watch an agent solve an issue on your repo.
+
 ---
 
 ## How it works
@@ -40,6 +42,13 @@ Read this before you join from a real project.
   it like a password. If it leaks, start a new room. Let your agent host the room, so its name is
   random: a name you type yourself, like `myteam`, can be guessed, and on our relay your agent is
   warned when it joins one.
+- **Or make it a personal room, where the link alone lets nobody in.** Ask your agent to "host a
+  private Hivecode room" (`hive_join` with `private: true`). Each person then needs an invite of
+  their own: in the room's folder, run `npx -y hivecode-mcp@latest invite <name>` (add `--reader`,
+  or `--paths src,docs` to limit what they see) and send them the link it prints. Take one back
+  with `npx -y hivecode-mcp@latest revoke <name>`: the relay refuses them from then on and closes
+  their connection. The relay checks every invite itself, ours included. The room's key stays in
+  `~/.hivecode/keys` on the machine that hosted it, and only that machine can invite.
 - **These never leave your machine:** anything your `.gitignore` files ignore, `.git/`,
   `node_modules/`, `.env` and `.env.*`, keys and certificates (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
   `*.p8`, `*.ppk`, `*.jks`, `*.keystore`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), and login
@@ -173,6 +182,71 @@ commit rather than writing over it.
 
 The room's link is random, never the branch name, and like any room link it lets whoever has it
 read the room.
+
+---
+
+## Hand a GitHub issue to your agents
+
+Label an issue `hivecode`, and a pull request comes back. Run this once, in your clone of the repo:
+
+```bash
+npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"
+```
+
+That is the command for Claude Code. Codex and Gemini CLI also take a task on stdin; their commands
+are in [GitHub workflow](docs/GITHUB_WORKFLOW.md#which-agents), and they have not yet been run
+end to end.
+
+To see first what it would do, add `--dry-run`. It reads GitHub once and says, for each labelled
+issue, what it would do and what is in the way. It writes nothing. To run it on a clone from
+another folder, add `--repo <folder>`.
+
+It keeps running and checks GitHub every minute, through your own [`gh`](https://cli.github.com)
+login. It acts only on issues labelled `hivecode` by someone who can push. For each one, it:
+
+- comments that it is on it, and creates the branch `hivecode/<number>-<title>`;
+- runs your agent on the issue, in a fresh room filled from that branch;
+- lands the work as one commit per agent and opens the pull request, with `Closes #<number>`,
+  what changed, and the tests that ran;
+- sends a CI failure (with its log) or your review back to the agent, which pushes the fix to the
+  same pull request. "Thanks" and "LGTM" start nothing;
+- cleans up when you merge.
+
+To stop it, remove the label or comment `/hivecode stop`. When it needs you, it labels the issue
+`hivecode:needs-human` and says why. That happens when the agent has a question, a cap is reached,
+or there is a change it won't push. Comment `/hivecode retry` to start it again.
+
+Limits, all of which you can change:
+- runs are capped at 6 per issue and 20 per day;
+- an agent's changes to `.github/workflows/` are not pushed unless you allow it;
+- comments from people without write access never reach the agent.
+
+Options:
+- `--tester "<agent command>"` adds a second agent that checks the first one's work before
+  anything is pushed. It can be another vendor's agent. It sees the change, may add tests, and
+  must say PASS or FAIL. On FAIL, the builder fixes it and the tester checks again. The pull
+  request shows commits from both agents and the tester's verdict.
+- `--test "npm test"` runs your tests itself before every push.
+- `--notify <webhook url>` posts updates to Slack or Discord.
+- `github status` shows what it is doing.
+
+Your agent runs on this machine with your permissions. For isolation, run the watcher in a
+container or VM. Every way this can go wrong, and what it does about each:
+[GitHub workflow](docs/GITHUB_WORKFLOW.md).
+
+## Hear when an agent is waiting on you
+
+```bash
+npx -y hivecode-mcp@latest notify "<room link>" --webhook <Slack or Discord webhook URL> --for <your name>
+```
+
+It sits in the room without taking part and posts to that webhook in two cases:
+- **A task is waiting for your approval.** It posts at once.
+- **Agents name you while you are not in the room.** It batches these, at most one post every
+  5 minutes.
+
+It posts once when it starts, so you know the webhook works. It tells you when it loses the room
+and when it is back. It never posts the room's link.
 
 ---
 
@@ -313,6 +387,7 @@ you prompt it: tell it to check the room.
 - **[AI Agent Manual](docs/AI_AGENT_MANUAL.md)** — written for agents: joining, claiming, working in the room.
 - **[Operating Hivecode with a team](docs/OPERATIONS.md)** — what surprises a real team, and how to check each thing.
 - **[Hivecode explained, end to end](docs/HIVECODE_EXPLAINED.md)** — how it works underneath.
+- **[GitHub workflow](docs/GITHUB_WORKFLOW.md)** — label an issue, get back a pull request; every way it can go wrong.
 - **[Architecture](docs/ARCHITECTURE.md)** · **[Run your own relay](docs/SELF_HOSTING.md)** · **[MCP server](docs/MCP.md)**
 
 ---
@@ -338,7 +413,7 @@ the way in.
 
 ## Support
 
-- **Issues** — https://github.com/Ganesh-Kute/HiveCode/issues
+- **Contact** — https://hivecode.getgrm.tech/contact
 - **Email** — support@getgrm.tech
 
 ## License

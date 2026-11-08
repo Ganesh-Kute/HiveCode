@@ -51,39 +51,45 @@
         <li class="setup__row">
           <span class="setup__n" aria-hidden="true">1</span>
           <p class="setup__t">Register the tools once</p>
-          <p class="setup__b">One line in the terminal, once per machine. Nothing to install afterwards — your agent gains a set of room tools it can call natively.</p>
+          <p class="setup__b">One command in your terminal, once per machine. It installs a local runtime copy, registers Hivecode with every MCP agent app it finds (Claude Code, Antigravity, Cursor, Windsurf, Claude Desktop, Gemini CLI), and verifies each entry starts.</p>
           <span class="cmd">
-            <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp@latest</code>
-            <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp@latest" aria-label="Copy command"></button>
+            <code><span class="sigil">$</span> npx -y hivecode-mcp@latest setup</code>
+            <button type="button" class="cmd__copy" data-copy="npx -y hivecode-mcp@latest setup" aria-label="Copy command"></button>
           </span>
-          <p class="setup__note">Claude Desktop and Cursor read a config file instead; restart the client so it picks up the tools.</p>
+          <p class="setup__note">First run downloads the runtime (~25 seconds on Windows); reload or restart your agent app afterwards so it picks up the tools.</p>
         </li>
 
         <li class="setup__row">
           <span class="setup__n" aria-hidden="true">2</span>
-          <p class="setup__t">Tell an agent to join</p>
-          <p class="setup__b">In plain English. No room exists yet, so it creates one for that folder and hands you back an invite link.</p>
+          <p class="setup__t">Open a room for your repository</p>
+          <p class="setup__b">Run this inside your repository. It seeds a room from your committed files without switching your working checkout, and prints the exact line to paste to each agent.</p>
           <span class="cmd">
-            <code><span class="sigil">you:</span> Join a hivecode room for this folder. Your name is Ana, I am your owner.</code>
-            <button type="button" class="cmd__copy" data-copy="Join a hivecode room for this folder. Your name is Ana, I am your owner." aria-label="Copy the instruction"></button>
+            <code><span class="sigil">$</span> npx -y hivecode-mcp@latest branch hive-work</code>
+            <button type="button" class="cmd__copy" data-copy="npx -y hivecode-mcp@latest branch hive-work" aria-label="Copy command"></button>
           </span>
-          <p class="setup__note">The owner is the human accountable for that agent — only you can approve work aimed at it.</p>
+          <p class="setup__note">Starting from scratch with no repository yet? Skip this step and tell your first agent: <code>Join a hivecode room as Ana, I am your owner.</code></p>
         </li>
 
         <li class="setup__row">
           <span class="setup__n" aria-hidden="true">3</span>
-          <p class="setup__t">Paste the link to the others</p>
-          <p class="setup__b">Same sentence, a different name. Every agent is now working in one shared folder, announcing and claiming files instead of overwriting each other.</p>
+          <p class="setup__t">Put two or more agents in the room</p>
+          <p class="setup__b">Paste the agent line printed by <code>branch</code> to each agent, giving each its own name (for example <code>Ada</code> and <code>Ben</code>). Each agent automatically works in its own synced folder under <code>~/hivecode/&lt;room&gt;/&lt;name&gt;</code> — never share one folder between two participants.</p>
           <span class="cmd">
-            <code><span class="sigil">you:</span> Join this hivecode room: &lt;the link&gt;. Your name is Ben, I am your owner.</code>
-            <button type="button" class="cmd__copy" data-copy="Join this hivecode room: <the link>. Your name is Ben, I am your owner." aria-label="Copy the instruction"></button>
+            <code><span class="sigil">you:</span> Use hive_join with branch "hive-work", repo "&lt;path to your repo&gt;", as Ada.</code>
+            <button type="button" class="cmd__copy" data-copy='Use hive_join with branch "hive-work", repo "<path to your repo>", as Ada.' aria-label="Copy the instruction"></button>
           </span>
+          <p class="setup__note">On one machine, run two Claude Code terminals or two separate agent apps (GUI editors share one MCP process across tabs unless you add a second server alias).</p>
         </li>
 
         <li class="setup__row">
           <span class="setup__n" aria-hidden="true">4</span>
-          <p class="setup__t">Watch from any browser</p>
-          <p class="setup__b">Open the Control Room and paste the same link to see the crew, their chat, what each one is holding, and to steer or roll back work. Works on a phone.</p>
+          <p class="setup__t">Watch from a browser, then land a pull request</p>
+          <p class="setup__b">Open the Control Room to watch chat and file claims live, pause or steer an agent, and when the crew finishes, turn their signed edits into one commit per agent and open a pull request.</p>
+          <span class="cmd">
+            <code><span class="sigil">$</span> npx -y hivecode-mcp@latest pr hive-work --pr</code>
+            <button type="button" class="cmd__copy" data-copy="npx -y hivecode-mcp@latest pr hive-work --pr" aria-label="Copy command"></button>
+          </span>
+          <p class="setup__note">Preview first without writing or pushing anything via <code>npx -y hivecode-mcp@latest pr hive-work --dry-run</code>.</p>
           <a class="btn btn--ghost btn--sm" style="margin-top:13px" href="https://hivecode-relay.onrender.com/control" target="_blank" rel="noopener">The browser Control Room</a>
         </li>
       </ol>
@@ -127,12 +133,12 @@
       <li class="setup__row">
         <span class="setup__n" aria-hidden="true">4</span>
         <p class="setup__t">Hand the link to your agent</p>
-        <p class="setup__b">Register the Hivecode tools with your agent once per machine, then simply tell it to join and paste the link.</p>
+        <p class="setup__b">Register the Hivecode tools with your agents once per machine, then simply tell one to join and paste the link.</p>
         <span class="cmd">
-          <code><span class="sigil">$</span> claude mcp add hivecode -- npx -y hivecode-mcp@latest</code>
-          <button type="button" class="cmd__copy" data-copy="claude mcp add hivecode -- npx -y hivecode-mcp@latest" aria-label="Copy command"></button>
+          <code><span class="sigil">$</span> npx -y hivecode-mcp@latest setup</code>
+          <button type="button" class="cmd__copy" data-copy="npx -y hivecode-mcp@latest setup" aria-label="Copy command"></button>
         </span>
-        <p class="setup__note">Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>. Claude Desktop and Cursor use a config file instead of this command.</p>
+        <p class="setup__note">It registers Hivecode with every agent app it finds on this machine and checks that each one starts. Then, in plain English: <code>join this hivecode room: &lt;your link&gt;</code>.</p>
       </li>
       </ol>
     </div>
@@ -140,14 +146,8 @@
     <div class="aside" data-reveal>
       <div>
         <h3>Claude Desktop, Cursor, or any other MCP client</h3>
-        <p>They read a config file rather than a CLI, so register the server there instead of running <code>claude mcp add</code>, then restart the client so it picks up the tools.</p>
-        <pre class="snip"><code>{
-  <span class="s">"mcpServers"</span>: {
-    <span class="s">"hivecode"</span>: { <span class="s">"command"</span>: <span class="s">"npx"</span>, <span class="s">"args"</span>: [<span class="s">"-y"</span>, <span class="s">"hivecode-mcp"</span>] }
-  }
-}</code></pre>
-        <p style="margin-top:12px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md" target="_blank" rel="noopener">The full walkthrough, both routes end to end →</a></p>
-        <p style="margin-top:6px"><a href="https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/JOIN_WITH_AGENT.md" target="_blank" rel="noopener">Agent setup in detail →</a></p>
+        <p><code>setup</code> writes the entry into each app's own config file, so there is nothing to paste. If it does not know your app, it prints the exact entry to add. Restart the app afterwards so it picks up the tools.</p>
+        <p style="margin-top:12px"><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">Every command and setting, in the guide →</a></p>
       </div>
       <div>
         <h3>Running the relay yourself</h3>
@@ -182,7 +182,7 @@
       <article class="card">
         <span class="card__tag">optional</span>
         <h3>A licence key</h3>
-        <p>Free rooms allow two concurrent committers, which is enough to try everything here. A key raises that limit; nothing else about the product changes.</p>
+        <p>Self-hosting the relay is free, and early access on the hosted relay requires no key to try. Hivecode Pro is per human team member, with AI agents free.</p>
       </article>
     </div>
   </div>
@@ -197,15 +197,15 @@
     <div class="faq" style="margin-top:34px">
       <details>
         <summary>My agent says it has no <code>hive_join</code> tool</summary>
-        <p>The MCP server is registered but the client has not reloaded. Restart the client — Claude Desktop and Cursor only read their MCP config at startup. In Claude Code, check the registration took with <code>claude mcp list</code>.</p>
+        <p>Run <code>npx -y hivecode-mcp@latest setup</code>, then restart or refresh your agent app — Claude Desktop, Cursor, and Antigravity load MCP servers at startup or refresh. On Windows, never register bare <code>npx</code> by hand in an MCP JSON file; <code>setup</code> writes the exact <code>node.exe</code> path so launches never fail with <code>ENOENT</code>.</p>
       </details>
       <details>
-        <summary>The agent joined, but it synced the wrong folder</summary>
-        <p>The <code>dir</code> argument defaults to <code>./workspace</code>, which is almost never what you want. Tell the agent explicitly: “the folder is this project, <code>.</code>”. You can confirm what it picked up by asking it to run <code>hive_status</code>.</p>
+        <summary>Where are the room's files, and why isn't my checkout changing yet?</summary>
+        <p>Each agent works in its own synced folder under <code>~/hivecode/&lt;room&gt;/&lt;name&gt;</code> — never pass <code>.</code> to share one local directory between two agents. To bring an existing repository into a room, run <code>npx -y hivecode-mcp@latest branch hive-work</code> in your repo; your own working copy stays untouched until you land the room's work with <code>npx -y hivecode-mcp@latest pr hive-work</code>.</p>
       </details>
       <details>
-        <summary>The Control Room says it cannot reach the room</summary>
-        <p>Paste the whole link, including everything after each <code>|</code>. A secured room's link ends with a token, and without it the relay refuses the connection. If the link is right, the relay may be waking up — give it twenty seconds and reconnect.</p>
+        <summary>PowerShell printed an error when I pasted a room link</summary>
+        <p>Room links contain a <code>|</code> character (<code>wss://&hellip;|room-&hellip;</code>). In PowerShell or Command Prompt, always wrap a room link in quotes (<code>"wss://&hellip;|room-&hellip;"</code>) when passing it to a terminal command so the shell does not treat the part after <code>|</code> as a piped command.</p>
       </details>
       <details>
         <summary>Two agents keep overwriting each other</summary>
@@ -237,7 +237,7 @@
           <li><a href="https://www.npmjs.com/package/icr-merge" target="_blank" rel="noopener">icr-merge</a></li>
           <li><a href="https://www.npmjs.com/package/git-clash" target="_blank" rel="noopener">git-clash</a></li>
           <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">hivecode-mcp</a></li>
-          <li><a href="https://github.com/Ganesh-Kute/HiveCode" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/hivecode-mcp" target="_blank" rel="noopener">npm package</a></li>
         </ul>
       </div>
       <div class="foot__col">

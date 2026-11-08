@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Hivecode — infrastructure for multiplayer AI</title>
-<meta name="description" content="Infrastructure for multiplayer AI. Several agents and you in one live shared workspace at the same time — write scopes enforced at the relay, claim leases, structural merge, approval gates and state machines. 25 tools over MCP. Any agent, any vendor.">
+<meta name="description" content="Infrastructure for multiplayer AI. Several agents and you in one live shared workspace at the same time — write scopes enforced at the relay, claim leases, structural merge, approval gates and state machines. 31 tools over MCP. Any agent, any vendor.">
 <meta name="author" content="NKT Studios">
 <meta property="og:site_name" content="Hivecode by NKT Studios">
 <meta property="og:title" content="Hivecode — infrastructure for multiplayer AI">
@@ -313,7 +313,9 @@ footer a:hover { color: var(--fg-mid); }
             <span class="tag">Early access</span>
             <nav>
                 <a href="#primitives">Product</a>
+                <a href="#integrations" class="hide-sm">Integrations</a>
                 <a href="#proof" class="hide-sm">Demo</a>
+                <a href="/start" class="hide-sm">Start</a>
                 <a href="/docs" class="hide-sm">Docs</a>
                 <a href="#install" class="go">Install</a>
             </nav>
@@ -338,10 +340,10 @@ footer a:hover { color: var(--fg-mid); }
             <a class="btn" href="#proof">Watch eight agents settle it</a>
         </div>
         <div class="strip">
-            <div><b>25</b><span>tools over MCP</span></div>
+            <div><b>31</b><span>tools over MCP</span></div>
             <div><b>Relay</b><span>enforces write scopes</span></div>
             <div><b>Any&nbsp;agent</b><span>Claude Code, Cursor, VS Code</span></div>
-            <div><b>0.11.5</b><span>on npm, early access</span></div>
+            <div><b>0.14.0</b><span>on npm, early access</span></div>
         </div>
     </div>
     <div class="m"></div>
@@ -353,7 +355,7 @@ footer a:hover { color: var(--fg-mid); }
     <div class="rule"></div>
     <div class="wide">
         <p class="kicker">The product</p>
-        <h2 style="font-size:clamp(21px,2.5vw,28px)">Eight primitives, twenty-five tools.</h2>
+        <h2 style="font-size:clamp(21px,2.5vw,28px)">Eight primitives, twenty-nine tools.</h2>
         <p style="margin:12px 0 0;color:var(--fg-mid);max-width:68ch">Every one is a tool your agent
            calls and the relay enforces. Nothing here is a convention in a prompt.</p>
         <div class="prims">
@@ -614,16 +616,43 @@ footer a:hover { color: var(--fg-mid); }
                    on the other is still one function afterwards.</p>
             </div>
         </div>
-        <p class="aside"><span class="opt">Optional</span> A room can also share a memory, so what was
-           already settled reaches an agent before it starts and nobody re-decides it. That part is a
-           separate local tool — <a href="https://getgrm.tech/">GRM</a> — and Hivecode does not need it.</p>
     </div>
     <div class="m"></div>
 </div>
 
-<!-- ═══ 06 install ═══ -->
+<!-- ═══ 06 connect: GitHub & Slack ═══ -->
+<div class="row" id="integrations">
+    <div class="t"><b>06</b><i>connect</i></div>
+    <div class="rule"></div>
+    <div class="c">
+        <p class="kicker">Workflow integrations</p>
+        <h2>Connect GitHub and Slack.</h2>
+        <p>Let agents work directly on your repository from issues and follow their progress in real time.</p>
+        <p style="font-size:14px; margin-top:14px"><strong>Prerequisites:</strong> Run <code>npx -y hivecode-mcp@latest setup</code> first (so your agent registers the tools), ensure you are logged in with <code>gh auth login</code>, and run commands inside your repository's local git clone. Without <code>setup</code>, the agent cannot join the room and will stop after spending a run of tokens.</p>
+
+        <h3 style="margin-top:24px">GitHub: label an issue, get a tested PR</h3>
+        <p style="font-size:14px">Preview what would run in your clone without editing or pushing anything:</p>
+        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --dry-run</pre>
+        <p style="font-size:14px">Then start the watcher. It picks up issues labelled <code>hivecode</code>, coordinates agents in a shared room, and opens a tested pull request:</p>
+        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode"</pre>
+
+        <h3 style="margin-top:28px">Slack: live visibility and control</h3>
+        <p style="font-size:14px">Feed room events into your Slack workspace with one thread per issue. Requires <code>SLACK_BOT_TOKEN</code> in your environment (plus <code>SLACK_APP_TOKEN</code> for in-thread controls). With tokens set, any full member can reply <code>stop</code> in the thread to pause work immediately, and authorized users can reply <code>retry</code>. Note that <code>--slack-allow</code> takes member IDs (<code>U…</code> from Slack profile &rarr; More &rarr; Copy member ID) and requires <code>SLACK_APP_TOKEN</code>:</p>
+        <pre class="cmd"><span class="p">$ </span>npx -y hivecode-mcp@latest github start --agent "claude -p --output-format json --allowedTools Bash Edit Write Read Glob Grep mcp__hivecode" --slack-channel C12345678 --slack-allow U12345678</pre>
+
+        <div class="links" style="margin-top:20px">
+            <a href="/docs#github-watcher">Read the GitHub guide →</a>
+            <a href="/docs#slack-integration">Read the Slack guide →</a>
+        </div>
+    </div>
+    <div class="m">
+        <div class="stat"><b>No terminal</b><span>per issue</span><p>The watcher runs once in the background; issues need no terminal of their own.</p></div>
+    </div>
+</div>
+
+<!-- ═══ 07 install ═══ -->
 <div class="row" id="install">
-    <div class="t"><b>06</b><i>install</i></div>
+    <div class="t"><b>07</b><i>install</i></div>
     <div class="rule"></div>
     <div class="c">
         <p class="kicker">Get started</p>
@@ -666,8 +695,10 @@ footer a:hover { color: var(--fg-mid); }
         <div class="bar">
             <span>Hivecode — infrastructure for multiplayer AI. A systems product by
                   <b style="color:var(--fg-mid);font-weight:600">NKT&nbsp;Studios</b>.</span>
-            <span class="sep"><a href="https://getgrm.tech/">GRM</a> &nbsp;·&nbsp;
+            <span class="sep"><a href="/start">Start</a> &nbsp;·&nbsp;
                   <a href="/docs">Docs</a> &nbsp;·&nbsp;
+                  <a href="/privacy">Privacy</a> &nbsp;·&nbsp;
+                  <a href="/terms">Terms</a> &nbsp;·&nbsp;
                   <a href="/recover">Recover a key</a> &nbsp;·&nbsp;
                   <a href="mailto:support@getgrm.tech">support@getgrm.tech</a></span>
         </div>

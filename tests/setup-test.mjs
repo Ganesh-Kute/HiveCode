@@ -258,6 +258,14 @@ fs.mkdirSync(below, { recursive: true })
 const fHome = setupIn(below)
 T('F6 (setup) the home folder itself is a repo with a commit', madeHome.status === 0, madeHome.stderr)
 T('F7 a folder whose repo is the HOME folder gets no branch line', fHome.code === 0 && /hive_join/.test(fHome.out) && !/hivecode-mcp@latest branch/.test(fHome.out), fHome.out)
+// macOS, 6 Oct 2026: F7 failed there, because the temp folder sits behind a link (/var is a link to
+// /private/var) and git names the repo's top with links resolved. Reaching the home folder through a
+// link (a junction on Windows) shows the same thing on every OS.
+const linkedHome = path.join(tmp('linkhome'), 'home')
+fs.symlinkSync(gHome, linkedHome, 'junction')
+const viaLink = spawnSync(process.execPath, [MCP, 'setup', '--dry-run', '--name', 'Tester'], { cwd: path.join(linkedHome, 'Downloads'), env: envFor(linkedHome), encoding: 'utf8', timeout: 180000, windowsHide: true })
+const fLinked = { code: viaLink.status, out: (viaLink.stdout || '') + (viaLink.stderr || '') }
+T('F7b ...also when the home folder is reached through a link', fLinked.code === 0 && /hive_join/.test(fLinked.out) && !/hivecode-mcp@latest branch/.test(fLinked.out), fLinked.out)
 const fresh = path.join(tmp('fresh'), 'r')
 fs.mkdirSync(fresh, { recursive: true }); gitIn(fresh, 'init', '-q')
 const fFresh = setupIn(fresh)

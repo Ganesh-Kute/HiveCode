@@ -350,8 +350,8 @@ export function attachRateLimit(conn, tier = null) {
 //
 // Keyed by room+identity and kept in memory only. It is operational telemetry, not billing:
 // billing is seats, which the licence record already decides.
-const usage = new Map() // `${room} ${identity}` -> {msgs, bytes, writes, writeBytes, refused, files:Set, sessions, lastAt}
-const UKEY = (room, who) => `${room} ${who}`
+const usage = new Map() // `${room}\0${identity}` -> {msgs, bytes, writes, writeBytes, refused, files:Set, sessions, lastAt}
+const UKEY = (room, who) => `${room}\0${who}`
 
 export function recordUsage(room, who, u, file = null) {
   if (!room || !who || !u) return
@@ -374,7 +374,7 @@ export function recordUsage(room, who, u, file = null) {
 export function usageFor(room = null) {
   const out = []
   for (const [k, e] of usage) {
-    const [r, who] = k.split(' ')
+    const [r, who] = k.split('\0')
     if (room && r !== room) continue
     out.push({
       room: r, agent: who,

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hivecode status</title>
+<meta name="description" content="Is the hosted Hivecode relay up, which build is it running, and which version is on npm. Checked live from your browser.">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/site.css">
+<style>
+  .stat{display:flex;align-items:center;gap:12px;margin:0 0 6px}
+  .dot{width:12px;height:12px;border-radius:50%;flex:none;background:var(--dim,#888)}
+  .dot.up{background:#2fbf71}.dot.down{background:#e5484d}.dot.unknown{background:#e2a336}
+  .facts{margin:10px 0 0;padding:0;list-style:none;font-family:"JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+  .note{font-size:14px;opacity:.8;margin-top:10px}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" data-nav>
+  <a class="brand" href="/" aria-label="Hivecode home">
+    <img class="brand__mark" src="/mark-64.png" alt="" width="64" height="64" decoding="async">
+    <span class="brand__name">Hivecode</span>
+  </a>
+  <nav class="nav__links" aria-label="Main">
+    <a href="/start">Start</a>
+    <a href="/docs">Docs</a>
+    <a href="/license">My licence</a>
+  </nav>
+</header>
+
+<main id="main">
+<section class="section page">
+  <div class="wrap" style="max-width:760px">
+    <div class="page__head">
+      <p class="eyebrow">status</p>
+      <h1>Is Hivecode up?</h1>
+      <p class="lede">
+        Checked live from your browser, every minute, while this page is open. Nothing here is
+        typed in by hand, so it cannot say "all good" when it is not.
+      </p>
+    </div>
+
+    <div class="grid grid--2" style="margin-top:38px">
+      <article class="card">
+        <span class="card__tag">relay</span>
+        <h3 class="stat"><span class="dot" id="relay-dot"></span><span id="relay-state">checking…</span></h3>
+        <p>The hosted relay at <code>hivecode-relay.onrender.com</code>, which rooms run on unless you run your own.</p>
+        <ul class="facts" id="relay-facts"></ul>
+        <p class="note" id="relay-note"></p>
+      </article>
+      <article class="card">
+        <span class="card__tag">npm</span>
+        <h3 class="stat"><span class="dot" id="npm-dot"></span><span id="npm-state">checking…</span></h3>
+        <p>The version <code>npx -y hivecode-mcp@latest</code> installs right now.</p>
+        <ul class="facts" id="npm-facts"></ul>
+      </article>
+    </div>
+
+    <p class="note" style="margin-top:28px">
+      On the plan it runs on today, a restart or a redeploy of the relay erases every room.
+      Files come back from participants' own folders when they rejoin, and chat and tasks do not.
+      For code that must not depend on our uptime, <a href="/docs">run your own relay</a>.
+      Something wrong that this page does not show? <a href="/contact">Tell us</a>.
+    </p>
+    <p class="note" id="checked"></p>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot__base">
+      <p>&copy; 2026 Hivecode</p>
+      <p><a href="/terms">Terms</a> &middot; <a href="/privacy">Privacy</a> &middot; <a href="/contact">Contact</a></p>
+    </div>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const RELAY = 'https://hivecode-relay.onrender.com/health'
+  const NPM = 'https://registry.npmjs.org/hivecode-mcp/latest'
+  const $ = (id) => document.getElementById(id)
+  const set = (k, cls, text) => { $(`${k}-dot`).className = `dot ${cls}`; $(`${k}-state`).textContent = text }
+  const facts = (k, rows) => { $(`${k}-facts`).innerHTML = rows.map(([a, b]) => `<li>${a}: ${String(b).replace(/[<&]/g, (c) => (c === '<' ? '&lt;' : '&amp;'))}</li>`).join('') }
+  const days = (s) => (s >= 86400 ? `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h` : `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`)
+  // A relay asleep on its free plan takes up to a minute to wake: that is slow, not down.
+  const timed = (url, opts, ms) => { const c = new AbortController(); const t = setTimeout(() => c.abort(), ms); return fetch(url, { ...opts, signal: c.signal, cache: 'no-store' }).finally(() => clearTimeout(t)) }
+
+  async function relay() {
+    const t0 = performance.now()
+    try {
+      const r = await timed(RELAY, {}, 70000)
+      const j = await r.json()
+      const ms = Math.round(performance.now() - t0)
+      if (!r.ok || !j.ok) { set('relay', 'down', 'answering, but not healthy'); facts('relay', [['HTTP', r.status]]); return }
+      set('relay', 'up', 'up')
+      facts('relay', [['answered in', `${ms} ms`], ['version', j.version], ['build', j.build || 'unknown'], ['up for', days(j.uptimeSec || 0)], ['rooms open', j.rooms]])
+      $('relay-note').textContent = ms > 15000 ? 'It was asleep and has just woken: the first join after a quiet spell is this slow.' : ''
+    } catch (e) {
+      // Without CORS the details are hidden from this page, but an opaque answer still proves the
+      // relay is reachable: say exactly that, never "down" for something that answered.
+      try {
+        await timed(RELAY, { mode: 'no-cors' }, 70000)
+        set('relay', 'unknown', 'reachable')
+        facts('relay', [])
+        $('relay-note').textContent = 'It answered, but this browser could not read the details.'
+      } catch {
+        set('relay', 'down', 'not reachable from here')
+        facts('relay', [])
+        $('relay-note').textContent = 'No answer in 70 seconds. If your own network is fine, the relay is down.'
+      }
+    }
+  }
+
+  async function npm() {
+    try {
+      const r = await timed(NPM, {}, 20000)
+      const j = await r.json()
+      set('npm', 'up', j.version ? `${j.version} on npm` : 'answering')
+      facts('npm', [['package', 'hivecode-mcp'], ['latest', j.version || 'unknown']])
+    } catch { set('npm', 'down', 'npm did not answer') ; facts('npm', []) }
+  }
+
+  async function check() {
+    await Promise.all([relay(), npm()])
+    $('checked').textContent = `Last checked ${new Date().toLocaleTimeString()}.`
+  }
+  check()
+  setInterval(check, 60000)
+})()
+</script>
+</body>
+</html>
