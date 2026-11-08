@@ -1435,6 +1435,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // LANDED, because an un-awaited open is the same false success one layer down: the caller
   // reads the directory, sees nothing, and concludes the file is absent.
   function fetchFile(relPath, { timeoutMs = 15000 } = {}) {
+    arrivedNew.delete(relPath) // asked for by name here: in use, so the full grace window applies
     const r = String(relPath)
     if (!canOpen(r)) return Promise.resolve({ ok: false, reason: `${r} is out of your scope` })
     if (collided.has(r)) {
@@ -1491,6 +1492,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function openFile(relPath) {
     let e = fileDocs.get(relPath)
     if (e) return e
+    if (newRemote.delete(relPath)) arrivedNew.add(relPath)
     const fdoc = new Y.Doc()
     const fprovider = fileTransport.provide(fileRoom(room, relPath), fdoc)
     const text = fdoc.getText('content')
@@ -1545,6 +1547,16 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           reconcile(relPath, 'remote')
           detectFork(relPath)
         }
+        // A new file that has just landed on disk frees its place for the next one (a burst of new
+        // files moves at sync speed, not at the 30 s grace), and lets waiting new files in.
+        if (arrivedNew.has(relPath)) {
+          const t = setTimeout(() => {
+            if (stopped) return
+            if (fileDocs.size > maxOpen()) evictIfOverCap(null)
+            if (openQueue.length && !openTimer) openTimer = setImmediate(drainOpenQueue)
+          }, 50)
+          if (t.unref) t.unref()
+        }
       }
     })
     // A refused upgrade lands here. The provider will keep retrying by itself, which is the
@@ -1569,6 +1581,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // its bound — so this is where the least-recently-used ones are let go.
     touched.set(relPath, Date.now())
     evictIfOverCap(relPath)
+    scheduleEvictRecheck()
     return e
   }
   function closeFile(relPath) {
@@ -1620,6 +1633,41 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const touched = new Map() // relPath -> last use (ms)
   const touchFile = (relPath) => { if (fileDocs.has(relPath)) touched.set(relPath, Date.now()) }
   let evicted = 0
+  // NEW FILES GET IN EVEN AT THE BOUND (Claude-cloud, 8 Nov 2026). A file a teammate creates AFTER
+  // this client joined, with no copy on this disk, used to be skipped outright once the working set
+  // was full: the manifest observer queued it, queueOpenFile returned at the bound, and nothing ever
+  // came back for it -- measured: never arrived in 180 s, mux or per-file, in any room fuller than
+  // HIVE_MAX_OPEN_FILES (and a 640-file room is fuller than the per-file 128). Such a key now opens
+  // anyway, and evictIfOverCap makes room by letting go of the least recently used. Bounded: at
+  // most NEW_HEADROOM over the bound at once, so a burst of hundreds of new files cannot open
+  // hundreds of sockets; the rest WAIT in the queue (never dropped) until the re-check frees room.
+  // Files that were in the room at join keep the old trade ("the rest sync when touched").
+  const newRemote = new Set() // keys added to the room after join, not on this disk, not yet opened
+  // ...and the ones that were opened that way and have not been used here since. Once such a file is
+  // ON DISK it may be let go without waiting out the grace window: it arrived, which is all it was
+  // opened for. LRU order still decides, so older idle files go first.
+  const arrivedNew = new Set()
+  const NEW_HEADROOM = 32
+  let evictRecheck = null
+  // evictIfOverCap only runs when a file opens, and a file inside its grace window cannot be let
+  // go -- so a set pushed over the bound by new files would stay over it. Look again once the
+  // grace has passed, evict down to the bound, and let any waiting new files in.
+  function scheduleEvictRecheck() {
+    if (evictRecheck || stopped) return
+    if (fileDocs.size <= maxOpen() && !newRemote.size) return
+    // While new files are landing or waiting, look again every second: a landed new file is
+    // evictable as soon as it is on disk, and that must not wait out a grace window that could be
+    // minutes long. Otherwise (only grace-protected files over the bound) look once the grace ends.
+    const ms = (newRemote.size || arrivedNew.size) ? 1000 : EVICT_GRACE_MS + 1000
+    evictRecheck = setTimeout(() => {
+      evictRecheck = null
+      if (stopped) return
+      evictIfOverCap(null)
+      if (openQueue.length && !openTimer) openTimer = setImmediate(drainOpenQueue)
+      scheduleEvictRecheck()
+    }, ms)
+    if (evictRecheck.unref) evictRecheck.unref()
+  }
   function evictIfOverCap(keep) {
     if (fileDocs.size <= maxOpen()) return
     const now = Date.now()
@@ -1631,14 +1679,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       try { if (e.conflict && e.conflict.size) continue } catch { }
       if (isClaimed(r)) continue
       const t = touched.get(r) || 0
-      if (now - t < EVICT_GRACE_MS) continue
+      const landedNew = arrivedNew.has(r) && fs.existsSync(path.join(ROOT, r))
+      if (now - t < EVICT_GRACE_MS && !landedNew) continue
       cand.push([r, t])
     }
     cand.sort((a, b) => a[1] - b[1]) // least recently used first
     let over = fileDocs.size - maxOpen()
     for (const [r] of cand) {
       if (over-- <= 0) break
-      closeFile(r); touched.delete(r); evicted++
+      closeFile(r); touched.delete(r); arrivedNew.delete(r); evicted++
     }
   }
 
@@ -1663,7 +1712,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     let over = fileDocs.size - cap
     for (const [r] of cand) {
       if (over-- <= 0) break
-      closeFile(r); touched.delete(r); evicted++
+      closeFile(r); touched.delete(r); arrivedNew.delete(r); evicted++
     }
   }
 
@@ -2354,6 +2403,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     if (!fe.synced && origin !== 'local') return
     touchFile(relPath)
+    if (origin !== 'remote') arrivedNew.delete(relPath) // a local change: an ordinary file now (see reconcile)
 
     if (origin === 'local') {
       if (!canWrite(relPath)) {
@@ -2530,6 +2580,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       else if (withheld.has(relPath)) clearWithheld(relPath)
     }
     touchFile(relPath) // reconciling a file IS using it — keep it in the working set
+    // ...but only a LOCAL change makes a just-arrived new file an ordinary one with the full grace.
+    // A remote reconcile is the arrival itself, and must not take away its early eviction.
+    if (origin !== 'remote') arrivedNew.delete(relPath)
     // SOURCE CAPTURE (fork gate): before ANYTHING in this pass can merge over or render into
     // this file, record any authored edit sitting on disk. The edit enters the provenance
     // DAG first; whatever happens to the disk afterwards can no longer lose it.
@@ -4118,26 +4171,33 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const key = openQueue.shift()
       openQueueSet.delete(key)
       if (fileDocs.size >= maxOpen()) {
-        openQueue.length = 0
-        openQueueSet.clear()
-        break
+        // At the bound a key from the join sweep waits for a touch, as before -- but a NEW file is
+        // never dropped: it opens within the headroom, or goes back to the head of the queue for
+        // the re-check (scheduleEvictRecheck) to let in once room is made.
+        if (!newRemote.has(key)) continue
+        if (fileDocs.size >= maxOpen() + NEW_HEADROOM) {
+          openQueue.unshift(key); openQueueSet.add(key)
+          scheduleEvictRecheck()
+          break
+        }
       }
       // STILL WANTED? A key can wait here while a peer deletes the file. Its document still exists on
       // the relay, so opening it would bring the deleted file back to this disk and publish it again
       // for everyone. Wanted = still in the room, or on this disk (a new local file not yet published).
       const wanted = inManifest(key) || fs.existsSync(path.join(ROOT, key))
+      if (!wanted) newRemote.delete(key)
       if (wanted && canOpen(key) && !SKIP.has(key) && !isIgnored(key) && !fileDocs.has(key)) {
         openFile(key)
         openedCount++
       }
     }
-    if (openQueue.length && !stopped && fileDocs.size < maxOpen()) {
+    if (openQueue.length && !stopped && (fileDocs.size < maxOpen() || (newRemote.size && fileDocs.size < maxOpen() + NEW_HEADROOM))) {
       openTimer = setImmediate(drainOpenQueue)
     }
   }
 
   function queueOpenFile(key) {
-    if (fileDocs.has(key) || fileDocs.size >= maxOpen() || openQueueSet.has(key)) return
+    if (fileDocs.has(key) || (fileDocs.size >= maxOpen() && !newRemote.has(key)) || openQueueSet.has(key)) return
     openQueueSet.add(key)
     if (fs.existsSync(path.join(ROOT, key))) openQueue.unshift(key)
     else openQueue.push(key)
@@ -4185,6 +4245,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         }
       }
       pendingManifestOps.delete(key)
+      newRemote.delete(key); arrivedNew.delete(key) // deleted while new or queued: nothing to wait for
       closeFile(key)
       { const qi = openQueue.indexOf(key); if (qi >= 0) { openQueue.splice(qi, 1); openQueueSet.delete(key) } } // deleted while queued
       if (!stamp) stamp = deletedStamp() // one folder per batch, so a bulk delete comes back together
@@ -4200,7 +4261,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     for (const [key, change] of others) {
       if (canOpen(key) && !SKIP.has(key) && !isIgnored(key)) {
         checkCaseCollision(key)
-        if (ev.changes.keys.size <= 2 && fileDocs.size < maxOpen()) {
+        // NEW = created after this client joined (roomAtJoin is the room at the first sync) and not
+        // on this disk. The join's own manifest arrives before roomAtJoin exists, so it is never new.
+        const isNew = !!roomAtJoin && change.action === 'add' && !roomAtJoin.has(key) && !fs.existsSync(path.join(ROOT, key))
+        if (isNew) newRemote.add(key)
+        if (ev.changes.keys.size <= 2 && (fileDocs.size < maxOpen() || (isNew && fileDocs.size < maxOpen() + NEW_HEADROOM))) {
           openFile(key)
         } else {
           queueOpenFile(key)
@@ -5044,6 +5109,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // how this room actually works — both are things an operator can only act on if
         // they can see them.
         openCap: maxOpen(),
+        newWaiting: newRemote.size,
         // 'mux' = every file on this client's one socket; 'socket' = a socket per file.
         transport: fileTransport.mode,
         evicted,

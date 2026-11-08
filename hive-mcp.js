@@ -1857,6 +1857,11 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           unread: mailbox().peek(chatArray()).unreadCount,
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
+          // How full this client's bounded working set is: files open / the bound (HIVE_MAX_OPEN_FILES, or
+          // 4096 on one socket, 128 with a socket per file). At the bound, files that were in the room
+          // at join arrive when touched; new ones still open (sync.js newRemote), and `waiting` counts
+          // the new ones queued for room.
+          ...(conn && conn.openCap ? { workingSet: `${conn.files}/${conn.openCap} open (${conn.transport === 'mux' ? 'one socket' : conn.transport === 'socket' ? 'a socket per file' : conn.transport})${conn.newWaiting ? `, ${conn.newWaiting} new waiting` : ''}` } : {}),
           // 'ws', or 'poll' where this network refuses WebSockets (HTTPS long-poll: same rooms, same rules).
           transport: conn ? transportFor(s.relay) : null,
           ...(conn && conn.folderLost ? { folderLost: conn.folderLost } : {}),
