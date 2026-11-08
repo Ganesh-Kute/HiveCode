@@ -102,8 +102,18 @@ try {
   {
     const s = await scene('ctl-late-' + Date.now(), 'ai', 1)
     await s.say('stop AgentA')
-    const corrected = await waitFor(() => s.posts.some((p) => /undid/.test(p.text || '') && /AgentA/.test(p.text || '')), 5000)
-    T('C6 a revert after the confirm is corrected in Slack', corrected, JSON.stringify(s.posts.map((p) => p.text)))
+    // Two honest outcomes, depending on whether the revert beats the 1 ms settle (measured: Linux CI
+    // 8 Nov saw the revert first, so the bridge said "refused"; Windows sees "paused" then "undid").
+    // What must never happen is a "paused" that Slack is left believing.
+    const texts = () => s.posts.map((p) => p.text || '')
+    const honest = () => {
+      const t = texts()
+      const lastPaused = t.map((x) => /paused/i.test(x) && !/refused|undid/i.test(x)).lastIndexOf(true)
+      const fixed = t.findIndex((x, i) => i > lastPaused && /AgentA/.test(x) && /undid|refused/i.test(x))
+      return fixed !== -1
+    }
+    const corrected = await waitFor(honest, 5000)
+    T('C6 a revert after the confirm is corrected in Slack', corrected, JSON.stringify(texts()))
     T('C6 the correction goes in the same thread', s.posts.filter((p) => /undid/.test(p.text || '')).every((p) => p.thread_ts === '1700000001.000100'), JSON.stringify(s.posts))
     T('C6 AgentA really is running', !s.agent.isPaused(), 'agent paused')
   }
