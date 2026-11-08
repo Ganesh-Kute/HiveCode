@@ -407,6 +407,13 @@ try {
   )
 
   // ---------------------------------------------------------------------------
+  // hive_check marked V6's mention read, but the read cursor still has to reach the relay over
+  // long-poll. A listener started before it lands wakes on that old mention instead of V7's: the
+  // 7 Nov macOS CI run lost exactly this race (V7-V9 red, Linux green). The sender's receipt
+  // saying READ is the proof it landed.
+  const readLanded = await waitUntil(async () => /VMAgent=READ\s+"@VMAgent please review from-ws\.js"/.test(await peerWS.call('hive_delivered', {})), 10000, 150)
+  if (!readLanded) console.log('  (V6 mention not shown READ to the sender within 10 s; V7 may wake on it)')
+
   section('3. Real hive-await.js OS listener behind 403 proxy: wake + mutant-killing exit cursor flush')
 
   // Inject 350ms RTT on POST /_hive_poll/<sid>/send (> hive-await.js's 200ms static sleep!)

@@ -10,6 +10,19 @@ import { whenDone, landIssue, computePlanFingerprint } from '../hive-room-mode.j
 let pass = 0
 let fail = 0
 
+// The reviewer is another client: its review reaches DevAgent through the relay. A fixed 300 ms
+// sleep was not always enough: on the 7 Nov macOS CI run T1.4-T2.6 failed (every check from the
+// first one that needs the other client's review), while Linux, Windows and the macOS baseline
+// were green. So wait until DevAgent holds every review the reviewer wrote (10 s cap).
+async function reviewsArrive(to, from, ms = 10000) {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if (to.doc.getMap('reviews').size >= from.doc.getMap('reviews').size) return true
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  return false
+}
+
 function T(desc, ok) {
   if (ok) {
     console.log(`  ok   ${desc}`)
@@ -141,7 +154,7 @@ try {
   })
 
   await reviewer.review(['buffer.js'], 'pass', 'LGTM')
-  await new Promise((r) => setTimeout(r, 300))
+  await reviewsArrive(agent, reviewer)
 
   // Now DevAgent modifies buffer.js (making review stale)
   await agent.edit('buffer.js', 'const buf = Buffer.alloc(2048); // modified\n', 'Resize buffer')
@@ -160,7 +173,7 @@ try {
 
   // 5. Unresolved fail review
   await reviewer.review(['buffer.js'], 'fail', 'Too large allocation')
-  await new Promise((r) => setTimeout(r, 300))
+  await reviewsArrive(agent, reviewer)
 
   const wd5 = whenDone ? await whenDone({
     link: `${RELAY}|${ROOM}`,
@@ -175,7 +188,7 @@ try {
 
   // 6. Valid pass review -> ready
   await reviewer.review(['buffer.js'], 'pass', '2048 is fine per spec')
-  await new Promise((r) => setTimeout(r, 300))
+  await reviewsArrive(agent, reviewer)
 
   const wd6 = whenDone ? await whenDone({
     link: `${RELAY}|${ROOM}`,
