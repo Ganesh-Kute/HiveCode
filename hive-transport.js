@@ -209,7 +209,9 @@ function proxyFetch(proxy, url, init = {}) {
     req.on('error', reject)
     const sig = init.signal
     if (sig) {
-      const abort = () => req.destroy(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))
+      // Like the built-in fetch: reject with the signal's reason (AbortSignal.timeout gives a
+      // TimeoutError, which callers such as hive-setup's wakeRelay test for by name).
+      const abort = () => req.destroy(sig.reason instanceof Error ? sig.reason : Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))
       if (sig.aborted) abort(); else sig.addEventListener('abort', abort, { once: true })
     }
     req.end(body || undefined)
@@ -220,6 +222,18 @@ function proxyFetch(proxy, url, init = {}) {
 export function fetchFor(url, env = process.env) {
   const p = proxyFor(url, env)
   return p ? (u, init) => proxyFetch(p, u, init) : globalThis.fetch
+}
+
+/**
+ * fetch(url, init) for ANY call to the relay: the route (proxy tunnel, or direct) is chosen per call
+ * from the environment at that moment. Every plain HTTP call to the relay goes through this; the
+ * built-in fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 was set when node started
+ * (Claude-cloud, 8 Nov 2026: hive-mux's /health probe failing behind a proxy held every file ~75 s).
+ */
+export function relayFetch(url, init) {
+  const f = fetchFor(String(url))
+  if (typeof f !== 'function') return Promise.reject(new Error('no fetch available in this runtime'))
+  return f(url, init)
 }
 
 const UNREACHED_CODES = {

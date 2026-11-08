@@ -22,6 +22,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { sign, decodeUnsafe, keyFingerprint, roomFingerprint, isSecuredRoom, makeSecuredRoomId } from './token.js'
 import { validateMemberName } from './hive-mailbox.js'
+import { relayFetch } from './hive-transport.js' // through the proxy, as every call to the relay
 
 export const keysDir = () => process.env.HIVE_KEYS_DIR || path.join(os.homedir(), '.hivecode', 'keys')
 const keyFile = (room) => path.join(keysDir(), `${room}.json`)
@@ -143,7 +144,7 @@ export async function revokeInvite({ room, relay, name }) {
   const failures = []
   for (const i of live) {
     try {
-      const r = await fetch(`${httpBase(relay || rec.relay)}/__hive/revoke`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room, token: owner, jti: i.jti }) })
+      const r = await relayFetch(`${httpBase(relay || rec.relay)}/__hive/revoke`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room, token: owner, jti: i.jti }) })
       const body = await r.json().catch(() => ({}))
       if (r.ok && body.ok) { i.revokedAt = Date.now(); done++; dropped += Number(body.dropped) || 0 }
       else failures.push(`HTTP ${r.status}${body.error ? ` ${body.error}` : ''}`)

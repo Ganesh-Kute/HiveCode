@@ -40,6 +40,7 @@ import { VERSION } from './hive-version.js'
 import { currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { validateMemberName } from './hive-mailbox.js'
 import { installStopHook, installAntigravityStopHook } from './hive-hook-install.js'
+import { relayFetch } from './hive-transport.js' // /health through the proxy, as every call to the relay
 
 export const SERVER_KEY = 'hivecode'
 const BACKUP_SUFFIX = '.before-hivecode'
@@ -340,11 +341,12 @@ function defaultName() {
   return v.ok ? cand : v.suggested
 }
 
-async function wakeRelay(relay) {
+/** Exported for tests/proxy-fetch-test.mjs. */
+export async function wakeRelay(relay) {
   const url = relay.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') + '/health'
   const t0 = Date.now()
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(75000) })
+    const r = await relayFetch(url, { signal: AbortSignal.timeout(75000) })
     return { ok: r.ok, ms: Date.now() - t0, status: r.status }
   } catch (e) { return { ok: false, ms: Date.now() - t0, error: e.name === 'TimeoutError' ? 'no answer in 75s' : e.message } }
 }

@@ -35,6 +35,8 @@
 // the only place the wording lives, and tests/relay-diagnosis-test.mjs COUNTS the producers so a
 // third copy fails a test rather than shipping.
 
+import { relayFetch } from './hive-transport.js'
+
 /** A free-tier per-room cap. At or below this, Q431 is the likely refusal and seats are the fix. */
 export const FREE_TIER_ROOM_CAP = 8
 
@@ -67,7 +69,9 @@ export function healthUrlFor(relay) {
 export async function probeRelayHealth(relay, { timeoutMs = 2500, fetchImpl } = {}) {
   const url = healthUrlFor(relay)
   if (!url) return { ok: false, url: null, error: 'no usable relay URL' }
-  const f = fetchImpl || (typeof fetch === 'function' ? fetch : null)
+  // relayFetch, not the built-in fetch: behind a proxy the built-in one cannot reach the relay at all,
+  // and this diagnosis would then blame the relay for what is this machine's network.
+  const f = fetchImpl || relayFetch
   if (!f) return { ok: false, url, error: 'no fetch available in this runtime' }
   try {
     const ac = new AbortController()

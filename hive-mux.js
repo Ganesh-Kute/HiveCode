@@ -19,6 +19,7 @@ import * as decoding from 'lib0/decoding'
 import { ObservableV2 } from 'lib0/observable'
 import { WebsocketProvider } from 'y-websocket'
 import { F, encodeFrame, decodeFrame, muxPath, MUX_VERSION } from './hive-mux-proto.js'
+import { relayFetch } from './hive-transport.js' // /health through the proxy, as the sockets go
 
 const messageSync = 0
 
@@ -257,7 +258,7 @@ class MuxConnection {
  * decided once -- HIVE_MUX=1 forces mux, HIVE_MUX=0 forces a socket per file, anything else asks
  * the relay's /health -- and file providers created before the answer are bound when it comes.
  */
-export function createFileTransport({ relay, room, wsOpts = {}, log = () => { }, env = process.env, fetchImpl = globalThis.fetch, onFallback = () => { }, retryMs = 1000, detectForMs = 90000 }) {
+export function createFileTransport({ relay, room, wsOpts = {}, log = () => { }, env = process.env, fetchImpl = relayFetch, onFallback = () => { }, retryMs = 1000, detectForMs = 90000 }) {
   const forced = env.HIVE_MUX === '0' || env.HIVE_MUX === '1'
   let mode = env.HIVE_MUX === '0' ? 'socket' : env.HIVE_MUX === '1' ? 'mux' : null
   let mux = null
