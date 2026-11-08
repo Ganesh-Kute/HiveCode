@@ -38,8 +38,8 @@ const CURSOR_KEY = '__cursor__'
 const MAX_SEEN_EVENTS = 500
 
 export const USAGE = `usage:
-  SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--dry-run] [--start-retry <ms>]
-  SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--agent] [--timeout <ms>] [--start-retry <ms>]
+  SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--inbound auto|poll|socket] [--dry-run] [--start-retry <ms>]
+  SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--agent] [--inbound auto|poll|socket] [--timeout <ms>] [--start-retry <ms>]
   SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack agent "<relay|room>" --channel <id> [--name <name>] [--allow <U123,U456>]
   SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack mcp-server "<relay|room>" [--port 8790] [--auth slack|none] [--allow <U123,U456>] [--trust-proxy]
 `
@@ -889,6 +889,68 @@ export function resumeAll(hive, by = 'slack', skipName = '') {
   return done
 }
 
+const CONTROL_WATCHES = new WeakMap()   // controls Y.Map -> Map(target -> end that watch)
+
+/** The AIs a "stop all" / "resume all" acts on. */
+export function aiTargets(hive, skipName = '') {
+  return (hive.members ? hive.members() : []).filter((p) => p.kind === 'ai' && !(skipName && p.name === skipName)).map((p) => p.name)
+}
+
+/** Write a control, then watch whether the room keeps it. Resolves true (kept) or false (refused).
+ *
+ *  WHY (8 Nov 2026). The relay's governor puts back a control written by anyone who may not
+ *  control: every AI, and on a strict room anyone without a human token. It does that one round
+ *  trip later and says nothing. The bridge used to answer Slack "paused" straight after writing,
+ *  so a refused stop was reported as done and the agents kept running
+ *  (tests/slack-control-confirm-test.mjs). There is no positive ack from the relay, so:
+ *   - within settleMs, any change of this agent's control away from the state we asked for is the
+ *     revert -> false;
+ *   - after that, until lateMs, the control going back to exactly what it was before our write is
+ *     a late revert -> onLateRevert() (so Slack can be corrected); any other change is someone
+ *     else's new decision and ends the watch.
+ *  A hive with no doc (a test fake) cannot be watched and resolves true. */
+export function confirmControl(hive, target, state, by, { settleMs = 1500, lateMs = 30000, onLateRevert = null } = {}) {
+  const controls = hive && hive.doc && typeof hive.doc.getMap === 'function' ? hive.doc.getMap('controls') : null
+  const snap = (v) => (v ? JSON.stringify([v.state, v.by, v.at]) : '')
+  // A newer write to the same agent through this function ends the older watch: otherwise "stop"
+  // then "resume" within one second (same by, same `at`) reads as the room putting the old value back.
+  const watching = controls ? (CONTROL_WATCHES.get(controls) || CONTROL_WATCHES.set(controls, new Map()).get(controls)) : null
+  if (watching && watching.has(target)) { try { watching.get(target)() } catch { } }
+  const before = controls ? snap(controls.get(target)) : ''
+  hive.control(target, state, by)
+  if (!controls || !(settleMs > 0)) return Promise.resolve(true)
+  const ours = snap(controls.get(target))
+  if (ours === before) return Promise.resolve(true)   // already exactly this; nothing to revert
+  return new Promise((resolve) => {
+    let settled = false
+    let t1 = null, t2 = null
+    const cleanup = () => {
+      try { controls.unobserve(obs) } catch { }
+      if (t1) clearTimeout(t1)
+      if (t2) clearTimeout(t2)
+      if (watching.get(target) === cleanup) watching.delete(target)
+      if (!settled) { settled = true; resolve(true) }   // superseded by our own newer write
+    }
+    watching.set(target, cleanup)
+    const obs = (ev) => {
+      if (!ev.keysChanged || !ev.keysChanged.has(target)) return
+      const cur = controls.get(target)
+      const now = snap(cur)
+      if (now === ours) return
+      if (!settled) {
+        if (!cur || cur.state !== state) { settled = true; cleanup(); resolve(false) }
+        return
+      }
+      if (now === before && typeof onLateRevert === 'function') { try { onLateRevert() } catch { } }
+      cleanup()
+    }
+    controls.observe(obs)
+    t1 = setTimeout(() => { t1 = null; if (!settled) { settled = true; resolve(true) } }, settleMs)
+    t2 = setTimeout(() => { t2 = null; cleanup() }, Math.max(settleMs, lateMs))
+    if (t2.unref) t2.unref()
+  })
+}
+
 /** Find the room's real spelling of a participant name (case-insensitive). */
 export function resolveName(hive, who) {
   const want = String(who || '').toLowerCase()
@@ -1084,6 +1146,8 @@ export function makeBridge({
   botUserId = '',
   lookupUser = null,
   minGapMs = 1000,
+  controlConfirmMs = 1500,
+  controlLateMs = 30000,
   now = () => Date.now(),
   userCacheTtlMs = USER_CACHE_TTL_MS,
   api = process.env.HIVE_SLACK_API || DEFAULT_API,
@@ -1188,6 +1252,25 @@ export function makeBridge({
     }
   }
 
+  // A stop or resume is reported only after the room kept it (confirmControl). A refusal says so,
+  // and a revert that lands after we confirmed is corrected in the same thread.
+  const refusedText = (verb, names) =>
+    `:warning: The room refused that ${verb}: *${names.join('*, *')}* ${names.length === 1 ? 'is' : 'are'} still ${verb === 'stop' ? 'running' : 'paused'}. ` +
+    'This bridge may not change agents in this room. A strict or secured room needs the bridge started with a human token (docs/SLACK_SETUP.md).'
+  const controlOne = (target, state, by, thread) =>
+    confirmControl(hive, target, state, by, {
+      settleMs: controlConfirmMs,
+      lateMs: controlLateMs,
+      onLateRevert: () => {
+        replyInThread(thread, `:warning: The room undid *${by}*'s ${state === 'paused' ? 'pause' : 'resume'} of *${target}* after I confirmed it: *${target}* is ${state === 'paused' ? 'running' : 'paused'} again. ` +
+          'This bridge may not change agents in this room (docs/SLACK_SETUP.md).')
+      },
+    })
+  async function controlMany(targets, state, by, thread) {
+    const kept = await Promise.all(targets.map((t) => controlOne(t, state, by, thread)))
+    return { done: targets.filter((_, i) => kept[i]), refused: targets.filter((_, i) => !kept[i]) }
+  }
+
   /** Handle an inbound Socket Mode event (`message` or `agent_session_stopped`).
    *  Asymmetric authorization via makeSlackActorCheck:
    *  - Guests (`is_restricted` / `is_ultra_restricted`) and Slack Connect users from other workspaces
@@ -1224,14 +1307,12 @@ export function makeBridge({
       const unverifiedNote = unverifiedStop ? ` (${check.reply})` : ''
 
       if (ev.type === 'agent_session_stopped' || (r && r.intent === 'stop-all')) {
-        const who = stopAll(hive, sender, botName)
-        await replyInThread(
-          replyTs,
-          who.length
-            ? `:octagonal_sign: *${sender}* paused *${who.join('*, *')}*. Nothing new will be picked up.${unverifiedNote}`
-            : 'No agents to pause.',
-        )
-        return { ok: true, action: 'stop-all', stopped: who, by: sender, unverified: unverifiedStop && who.length > 0 }
+        const { done: who, refused } = await controlMany(aiTargets(hive, botName), 'paused', sender, replyTs)
+        const parts = []
+        if (who.length) parts.push(`:octagonal_sign: *${sender}* paused *${who.join('*, *')}*. Nothing new will be picked up.${unverifiedNote}`)
+        if (refused.length) parts.push(refusedText('stop', refused))
+        await replyInThread(replyTs, parts.length ? parts.join('\n') : 'No agents to pause.')
+        return { ok: refused.length === 0, action: 'stop-all', stopped: who, refusedBy: refused.length ? 'room' : undefined, notStopped: refused, by: sender, unverified: unverifiedStop && who.length > 0 }
       }
       const real = resolveName(hive, r.who)
       if (!real || real === botName) {
@@ -1239,7 +1320,10 @@ export function makeBridge({
         await replyInThread(replyTs, `:no_entry: I do not see *${r.who}* in this room. Here right now: ${here}.`)
         return { ok: false, refused: 'unknown_agent' }
       }
-      hive.control(real, 'paused', sender)
+      if (!(await controlOne(real, 'paused', sender, replyTs))) {
+        await replyInThread(replyTs, refusedText('stop', [real]))
+        return { ok: false, refused: 'room_refused_control', who: real, by: sender }
+      }
       await replyInThread(replyTs, `:octagonal_sign: *${sender}* paused *${real}*.${unverifiedNote}`)
       return { ok: true, action: 'stop', who: real, by: sender, unverified: unverifiedStop }
     }
@@ -1261,12 +1345,12 @@ export function makeBridge({
       }
       const sender = check.by
       if (r.intent === 'resume-all') {
-        const who = resumeAll(hive, sender, botName)
-        await replyInThread(
-          replyTs,
-          who.length ? `:arrow_forward: *${sender}* resumed *${who.join('*, *')}*.` : 'No agents to resume.',
-        )
-        return { ok: true, action: 'resume-all', resumed: who, by: sender }
+        const { done: who, refused } = await controlMany(aiTargets(hive, botName), 'running', sender, replyTs)
+        const parts = []
+        if (who.length) parts.push(`:arrow_forward: *${sender}* resumed *${who.join('*, *')}*.`)
+        if (refused.length) parts.push(refusedText('resume', refused))
+        await replyInThread(replyTs, parts.length ? parts.join('\n') : 'No agents to resume.')
+        return { ok: refused.length === 0, action: 'resume-all', resumed: who, notResumed: refused, by: sender }
       }
       const real = resolveName(hive, r.who)
       if (!real || real === botName) {
@@ -1274,7 +1358,10 @@ export function makeBridge({
         await replyInThread(replyTs, `:no_entry: I do not see *${r.who}* in this room. Here right now: ${here}.`)
         return { ok: false, refused: 'unknown_agent' }
       }
-      hive.control(real, 'running', sender)
+      if (!(await controlOne(real, 'running', sender, replyTs))) {
+        await replyInThread(replyTs, refusedText('resume', [real]))
+        return { ok: false, refused: 'room_refused_control', who: real, by: sender }
+      }
       await replyInThread(replyTs, `:arrow_forward: *${sender}* resumed *${real}*.`)
       return { ok: true, action: 'resume', who: real, by: sender }
     }
@@ -1490,10 +1577,32 @@ export function makeSlackPoller({
     const nowSec = now() / 1000
     // First attach: anchor to Slack's own newest message, never to this machine's clock, and act
     // on nothing that was already there.
+    // The anchor is the newest thing Slack holds that we could be asked about: a top-level ts, a
+    // root's latest_reply, or (for a tracked thread whose root is off the first page) its newest
+    // reply. Anchoring to the newest top-level ts alone replayed a reply posted before the bridge
+    // existed (tests/slack-poller-cursor-test.mjs P1, found by Antigravity).
     if (!cursor) {
-      const r = await call('conversations.history', { channel, limit: 1 })
-      const newest = (r.messages || [])[0]
-      cursor = newest ? String(newest.ts) : `${Math.floor(nowSec)}.000000`
+      let high = ''
+      const bump = (ts) => { if (ts && tsNum(ts) > tsNum(high)) high = String(ts) }
+      const r = await call('conversations.history', { channel, limit: 100 })
+      const onPage = new Set()
+      for (const m of r.messages || []) { if (!m) continue; onPage.add(String(m.ts)); bump(m.ts); bump(m.latest_reply) }
+      for (const t of tracked()) {
+        if (onPage.has(t.ts)) continue
+        try {
+          let pageCursor = ''
+          for (let page = 0; page < 5; page++) {
+            const rr = await call('conversations.replies', { channel, ts: t.ts, limit: 200, ...(pageCursor ? { cursor: pageCursor } : {}) })
+            for (const m of rr.messages || []) if (m) bump(m.ts)
+            pageCursor = (rr.has_more && rr.response_metadata && rr.response_metadata.next_cursor) || ''
+            if (!pageCursor) break
+          }
+        } catch (e) {
+          if (e && e.status === 429) throw e
+          // A deleted or unreadable thread cannot replay anything; anchor on the rest.
+        }
+      }
+      cursor = high || `${Math.floor(nowSec)}.000000`
       floor = cursor
       persist()
       return { anchored: cursor, delivered: 0, skipped: 0 }
@@ -1589,7 +1698,9 @@ export function makeSlackPoller({
     }
 
     // 6. Only now move the marks: the channel cursor and each thread's last-read reply.
-    for (const m of top) if (m && m.ts && tsNum(m.ts) > tsNum(cursor)) cursor = String(m.ts)
+    //    Slack ts is one clock per channel, so replies move the cursor too (P2: most bridge traffic
+    //    is thread replies; a cursor that only followed top-level messages stood still).
+    for (const m of [...top, ...replies]) if (m && m.ts && tsNum(m.ts) > tsNum(cursor)) cursor = String(m.ts)
     for (const [ts, high] of threadHigh) {
       if (tsNum(high) > tsNum(threadSeen(ts))) { set(`t:${ts}`, high); threadSeenDisk[ts] = high }
     }
@@ -2157,6 +2268,8 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     post: (m) => slackPost('chat.postMessage', m, TOKEN, fetchImpl),
     // Slack asks for about one message per second per channel; tests may go faster.
     minGapMs: Math.max(0, Number(env.HIVE_SLACK_MIN_GAP_MS) || 1000),
+    // How long a stop/resume waits to see whether the room kept it (confirmControl).
+    controlConfirmMs: Math.max(0, Number(env.HIVE_SLACK_CONTROL_CONFIRM_MS) || 1500),
   })
   // Inbound over HTTPS: --inbound poll, or a network that refused Socket Mode's WebSocket.
   const startPolling = async (why) => {

@@ -581,6 +581,7 @@ try {
     teamId: 'T_OUR_TEAM',
     botUserId: 'U_BOT',
     minGapMs: 20,
+    controlConfirmMs: 0, // bare y-websocket relay: no governor, nothing to confirm (slack-control-confirm-test runs the real one)
     now: () => bridgeClock,
     onError: (e) => bridgeErrors.push(e),
     post: (m) => slackPost('chat.postMessage', m, 'xoxb-test'),

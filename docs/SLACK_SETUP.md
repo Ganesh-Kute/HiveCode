@@ -236,6 +236,30 @@ Paste the contents of [`slack-app-manifest-inbound.json`](../slack-app-manifest-
 3. Enter `socket-mode` as the **Token Name** (required by Slack), click **Add Scope**, select `connections:write`, and click **Generate**.
 4. Copy the resulting `xapp-…` token and set it as `SLACK_APP_TOKEN`.
 
+### Networks That Refuse WebSockets (Cloud VMs): `--inbound`
+Socket Mode is a WebSocket. Some networks refuse every WebSocket upgrade. One example is Antigravity's cloud VM, whose proxy answers `403 WebSocket upgrades are not allowed`. On such a network the bridge reads Slack over plain HTTPS instead: `conversations.history` for the channel and `conversations.replies` for the threads it tracks.
+
+| `--inbound` (or `HIVE_SLACK_INBOUND`) | What it does |
+| --- | --- |
+| `auto` (default) | Socket Mode when `SLACK_APP_TOKEN` is set. If the network refuses the upgrade with an HTTP status, it switches to HTTPS polling and prints `[hivecode] Slack replies are read over HTTPS every 3 s (...)`. Without `SLACK_APP_TOKEN`, it is outbound only, as before. |
+| `poll` | HTTPS polling only. **Needs no `SLACK_APP_TOKEN`**, just a bot token from [`slack-app-manifest-inbound.json`](../slack-app-manifest-inbound.json) (`channels:history` or `groups:history`, plus `users:read`). |
+| `socket` | Socket Mode only. Never polls. |
+
+```bash
+SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack check --channel C0123456789 --inbound poll
+SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel C0123456789 --allow U123 --inbound poll
+```
+
+What to know about polling:
+- **Speed:** a reply reaches the room within about `HIVE_SLACK_POLL_MS` (default 3000 ms). Socket Mode is near-instant.
+- **Restarts:** where it stopped reading is kept in the room and on disk, so a restarted bridge neither replays old messages nor skips new ones. Two bridges on one room claim each message before acting, so a `stop` is acted on once.
+- **Downtime:** after the bridge has been offline, messages older than `HIVE_SLACK_CATCHUP_MS` (default 30 minutes) are **not acted on**. A two-hour-old `resume` should not fire. The bridge posts once in the room's thread with the offline window and the count, so nobody assumes they were handled. Send it again if it still matters.
+- **Rate limits:** two reads per poll, more while tracked threads are active. A `429` is honoured with Slack's `Retry-After`.
+- `--agent` (the native stop button) needs Socket Mode and cannot poll.
+
+### Strict or Secured Rooms: the Bridge Needs a Human Token
+`stop` and `resume` from Slack change the room's controls, and the relay lets only a human change controls: an AI's write is reverted. The bridge acts for a named Slack person, so it joins as a human. On an open room this works with no token. On a **strict or secured room**, start the bridge with a human (or admin/maintainer) token in the link or `HIVE_TOKEN`. Otherwise the relay reverts the stop, so check the agents' state in the room after your first `stop`.
+
 ### Who May Act (`--allow` / `--slack-allow`) & No Impersonation
 - **STOP is fail-safe**: Any full member of your Slack workspace may type `stop`, `stop all`, or `stop <AgentName>` in a thread to pause agents (or stop an active GitHub issue run) immediately. If Slack's `users.info` endpoint fails during an outage, `stop` still succeeds and notes `(stopped; I could not confirm who you are)`.
 - **RESUME, RETRY, and thread replies require the allowlist (`--allow U123,U456` on `slack start`, or `--slack-allow U123,U456` on `github start`)**: Only Slack user IDs explicitly listed in the allowlist (find yours in Slack under **Profile → `⋯` → Copy member ID**) may resume agents (`resume`, `resume all`, `resume <AgentName>`), retry a GitHub issue run (`retry`), or send replies into the room. If the allowlist is omitted, inbound is **stop-only**.

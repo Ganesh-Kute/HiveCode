@@ -65,7 +65,7 @@ jobs:
         if: always()
         run: |
           fail=0
-          for t in hive-slack-test.mjs hive-slack-agent-test.mjs slack-poll-inbound-test.mjs; do
+          for t in hive-slack-test.mjs hive-slack-agent-test.mjs slack-poll-inbound-test.mjs slack-control-confirm-test.mjs slack-poller-cursor-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"

@@ -365,6 +365,7 @@ function spawnSlackCli(args, extraEnv = {}) {
       HIVE_SLACK_API: SLACK_API,
       HIVE_SLACK_POLL_MS: '150',
       HIVE_SLACK_MIN_GAP_MS: '50',
+      HIVE_SLACK_CONTROL_CONFIRM_MS: '300',
       HIVE_SLACK_STATE_DIR: stateDir,
       TEMP: stateDir,
       TMPDIR: stateDir,
