@@ -445,6 +445,33 @@ if (isMain) {
     // the room and the blob differ in style -- which on this repo is most files -- producing a
     // diff of every line for a change nobody made.
     const skip = new Set(v.identical.map((d) => d.rel))
+    const isText = (buf) => !buf.includes(0)
+    const hasCrlf = (s) => {
+      if (typeof s !== 'string') return false
+      const crlf = (s.match(/\r\n/g) || []).length
+      return crlf > 0 && crlf * 2 >= (s.match(/\n/g) || []).length
+    }
+    const wantsCrlf = (rel, dest) => {
+      try {
+        if (fs.existsSync(dest)) {
+          const buf = fs.readFileSync(dest)
+          if (!isText(buf)) return false
+          if (hasCrlf(buf.toString('utf8'))) return true
+        }
+      } catch { }
+      try {
+        const sha = git(['rev-parse', `${base}:${rel}`])
+        if (sha.code === 0) {
+          const raw = gitRaw(['cat-file', 'blob', sha.out]).out
+          if (hasCrlf(raw)) return true
+        }
+      } catch { }
+      try {
+        const attr = git(['check-attr', 'eol', '--', rel]).out
+        if (attr.includes('eol: crlf')) return true
+      } catch { }
+      return false
+    }
     let made = 0
     for (const g0 of groups) {
       // THE COMMIT MESSAGE MUST DESCRIBE WHAT WAS COMMITTED. Built from g0.files it said
@@ -457,7 +484,12 @@ if (isMain) {
       for (const f of g.files) {
         const dest = path.join(REPO, f.rel)
         fs.mkdirSync(path.dirname(dest), { recursive: true })
-        fs.copyFileSync(f.abs, dest)
+        if (wantsCrlf(f.rel, dest)) {
+          const text = fs.readFileSync(f.abs, 'utf8')
+          fs.writeFileSync(dest, toLF(text).replace(/\n/g, '\r\n'), 'utf8')
+        } else {
+          fs.copyFileSync(f.abs, dest)
+        }
         git(['add', '--', f.rel])
       }
       const msg = commitMessage(g, room)
