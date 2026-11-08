@@ -22,12 +22,16 @@
 //
 //   K1  (control) B really had A's edit on disk before it claimed
 //   K2  OPEN: markers still appear; nothing is lost: both A's and B's line are in both folders
+//   K3  OPEN: handover via hive_edit (declared base) through real hive-mcp. Assert NO markers and Ben's line in both folders.
 //   S1  CONTROL: a genuinely stale write is still caught. B edits a line WITHOUT having A's
 //       newer change in mind (B's write drops A's line) -> A's line is not silently deleted.
 import { spawn } from 'child_process'
 import fs from 'fs'; import os from 'os'; import path from 'path'
 import crypto from 'crypto'
+import { fileURLToPath } from 'url'
 import { startSync } from '../sync.js'
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 const PORT = 1339
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -58,6 +62,39 @@ const fA = path.join(dA, 'checkout.js'), fB = path.join(dB, 'checkout.js')
 const join = (dir, name) => startSync({ relay: wsUrl, room, dir, name, kind: 'ai', log: () => {} })
 const markers = (s) => (s || '').includes('<<<<<<<')
 
+function spawnMcp(label, homeDir) {
+  const p = spawn(process.execPath, [path.join(ROOT, 'hive-mcp.js')], {
+    cwd: ROOT,
+    env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, HIVE_RELAY: wsUrl, HIVE_PROVENANCE: 'on', HIVE_FORK_GATE: 'on' },
+  })
+  let buf = ''
+  const pending = new Map()
+  p.stdout.on('data', (d) => {
+    buf += d.toString()
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1)
+      if (!line) continue
+      let msg; try { msg = JSON.parse(line) } catch { continue }
+      if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id) }
+    }
+  })
+  let nextId = 1
+  const rpc = (method, params) => new Promise((resolve) => {
+    const id = nextId++
+    pending.set(id, resolve)
+    p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
+  })
+  const notify = (method, params) => p.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n')
+  const call = async (name, args) => {
+    const r = await rpc('tools/call', { name, arguments: args || {} })
+    const c = r && r.result && r.result.content
+    if (Array.isArray(c) && c[0] && typeof c[0].text === 'string') return c[0].text
+    return JSON.stringify(r && (r.error || r.result) || r)
+  }
+  return { proc: p, rpc, notify, call }
+}
+
 const V1 = 'export function total(subtotal) {\n  return subtotal\n}\n'
 const A_V = 'export function total(subtotal) {\n  return subtotal * 1.18 // A: tax\n}\n'
 const B_V = 'export function total(subtotal) {\n  return Math.round(subtotal * 1.18) // B: round\n}\n'
@@ -81,6 +118,53 @@ try {
   // OPEN: K3 (no markers, B's line only) is the goal and is not met; see the header.
   T('K2 nothing is lost: A\'s and B\'s line are both in both folders', [read(fA), read(fB)].every((t) => (t || '').includes('A: tax') && (t || '').includes('B: round')), JSON.stringify(read(fA)))
   B.release('checkout.js'); await sleep(1500)
+
+  console.log('\n# K3: Handover via real hive-mcp (hive_edit declared base)')
+  const dK3A = path.join(tmp, 'k3a'), dK3B = path.join(tmp, 'k3b')
+  fs.mkdirSync(dK3A); fs.mkdirSync(dK3B)
+  const homeK3A = path.join(tmp, 'homeK3A'), homeK3B = path.join(tmp, 'homeK3B')
+  fs.mkdirSync(homeK3A); fs.mkdirSync(homeK3B)
+  const mcpA = spawnMcp('K3-Ada', homeK3A)
+  const mcpB = spawnMcp('K3-Ben', homeK3B)
+  try {
+    for (const x of [mcpA, mcpB]) {
+      await x.rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1' } })
+      x.notify('notifications/initialized')
+    }
+    await mcpA.call('hive_join', { link: `${wsUrl}|${room}`, dir: dK3A, name: 'K3Ada' })
+    await mcpB.call('hive_join', { link: `${wsUrl}|${room}`, dir: dK3B, name: 'K3Ben' })
+    await sleep(2000)
+
+    const fK3A = path.join(dK3A, 'k3.js'), fK3B = path.join(dK3B, 'k3.js')
+    await mcpA.call('hive_claim', { region: 'k3.js', intent: 'seed' })
+    await mcpA.call('hive_edit', { file: 'k3.js', content: V1, intent: 'seed' })
+    await sleep(3000)
+    await mcpA.call('hive_release', { region: 'k3.js' })
+    await sleep(1500)
+
+    await mcpA.call('hive_claim', { region: 'k3.js', intent: 'tax' })
+    await mcpA.call('hive_edit', { file: 'k3.js', content: A_V, intent: 'tax' })
+    await sleep(3000)
+    await mcpA.call('hive_release', { region: 'k3.js' })
+    await sleep(2000)
+
+    T('(K3 setup) Ben has Ada\'s edit on disk before claiming', read(fK3B) === A_V)
+
+    await mcpB.call('hive_claim', { region: 'k3.js', intent: 'rounding' })
+    await mcpB.call('hive_edit', { file: 'k3.js', old: '  return subtotal * 1.18 // A: tax', new: '  return Math.round(subtotal * 1.18) // B: round', intent: 'rounding' })
+    await sleep(3500)
+
+    const contentK3A = read(fK3A) || ''
+    const contentK3B = read(fK3B) || ''
+    T('K3 (declared base via hive_edit) no conflict markers on Ada', !markers(contentK3A), markers(contentK3A) ? 'found markers' : '')
+    T('K3 (declared base via hive_edit) no conflict markers on Ben', !markers(contentK3B), markers(contentK3B) ? 'found markers' : '')
+    T('K3 (declared base via hive_edit) both folders hold Ben\'s line', contentK3A.includes('B: round') && contentK3B.includes('B: round'))
+    await mcpB.call('hive_release', { region: 'k3.js' })
+    await sleep(1500)
+  } finally {
+    try { mcpA.proc.kill() } catch {}
+    try { mcpB.proc.kill() } catch {}
+  }
 
   console.log('\n# CONTROL: a stale write is still caught')
   // B writes from a copy it took BEFORE A's next change, with no claim (so nothing reset its

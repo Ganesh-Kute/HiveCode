@@ -880,8 +880,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'file path or region id' }, force: { type: 'boolean', description: 'release despite a failing gate; recorded against you and announced; for abandoned work only' }, why: { type: 'string', description: 'why the work is abandoned (give it whenever force is true)' } }, required: ['region'] } },
   { name: 'hive_claims', description: 'The live claim board: who holds which file. Authoritative; read it instead of asking the room.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_edit', description: 'Write a file through the medium (preferred over editing on disk): your intent and the exact change are signed into the provenance ledger as it lands. Claim the file first.',
-    inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'relative path in the room' }, content: { type: 'string', description: 'the complete new file content' }, intent: { type: 'string', description: 'why you are making the change (signed into provenance)' } }, required: ['file', 'content'] } },
+  { name: 'hive_edit', description: 'Write a file through the medium (preferred over editing on disk): your intent and the exact change are signed into the provenance ledger as it lands. Claim the file first. Changing existing lines: pass old (whole lines, exactly as you read them) and new; if those lines changed since you read them it is refused and nothing is written. A whole new file: pass content.',
+    inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'relative path in the room' }, old: { type: 'string', description: 'whole lines you are replacing, exactly as you read them; must appear once' }, new: { type: 'string', description: 'what replaces old' }, content: { type: 'string', description: 'the complete new file content (instead of old/new)' }, intent: { type: 'string', description: 'why you are making the change (signed into provenance)' } }, required: ['file'] } },
   { name: 'hive_fork', description: 'Read a silent fork on a file: the common base plus every divergent version with its author and signed intent. Reconcile them, then submit with hive_resolve.',
     inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'the forked file path, as announced in chat' } }, required: ['file'] } },
   { name: 'hive_resolve', description: 'Resolve a fork with the full reconciled file, serving every side\'s intent. It must parse with no dangling references, or it is refused and nothing changes.',
@@ -976,11 +976,14 @@ function enforceDcoLock(opts = {}) {
   // violated within the hour by everyone including its author. A COUNTED lease makes the second
   // write impossible rather than discouraged: the server spends it, and the window shuts itself.
   const lease = /^PUBLISH(?::(\d+))?$/.exec(String(status || ''))
-  if (lease && opts.consumes) {
+  // `peek` checks the lease without spending it: hive_edit old/new peeks, writes, and spends only when
+  // something landed, so a refused or no-op edit keeps the window (antigravity-3, 1 Nov).
+  if (lease && (opts.consumes || opts.peek)) {
     const left = lease[1] === undefined ? 1 : Number(lease[1])
     if (left <= 0) {
       throw new Error(`[Lease Spent] Your PUBLISH window is used up. Ask for a new one — and if this is a revision of what you just wrote, publish to a NEW path rather than rewriting it.`)
     }
+    if (!opts.consumes) return
     const next = left - 1
     try {
       s.hive.setState(`${name}_status`, next > 0 ? `PUBLISH:${next}` : 'LOCKED')
@@ -1739,9 +1742,15 @@ Then call hive_release.`)
       case 'hive_claims': { const b = requireSession().hive.claimsBoard(); return text(b.length ? b.map((c) => `${c.region} — ${c.by}${c.intent ? ` (${c.intent})` : ''}`).join('\n') : '(nothing claimed right now — all open)') }
       case 'hive_edit': {
         const editPath = String(args.file || '')
+        // Two modes, never mixed: content is the whole file, old/new is the lines the agent edited.
+        // Only `file` is required by the schema now, so these checks are what refuse a call missing both.
+        const byLines = args.old !== undefined || args.new !== undefined
+        if (byLines && args.content !== undefined) return err('pass either content (the whole file) or old and new (the lines you changed), not both. Nothing was written.')
+        if (byLines && (typeof args.old !== 'string' || typeof args.new !== 'string')) return err('old/new needs both old and new. Nothing was written.')
+        if (!byLines && typeof args.content !== 'string') return err('pass content (the whole file), or old and new (the lines you changed). Nothing was written.')
         // Path gate + lease consumed BEFORE the write, not after: a spent lease that still wrote is
         // indistinguishable from no lease at all.
-        enforceDcoLock({ consumes: true, path: editPath })
+        enforceDcoLock(byLines ? { peek: true, path: editPath } : { consumes: true, path: editPath })
         // HIV-27, same reasoning: this tool's entire promise is that the change reaches every
         // peer. On a path this client never opens a connection for, it would not -- and it
         // would still report success.
@@ -1751,8 +1760,20 @@ Then call hive_release.`)
 
 Nothing was written. This tool exists to guarantee the change syncs to every peer; on this path it cannot.`)
         }
-        const r = requireSession().hive.edit(editPath, String(args.content ?? ''), String(args.intent || ''))
+        let r
+        if (byLines) {
+          // A file the room has but this folder has not loaded yet comes back as `loading`: wait for it
+          // (up to 8 s) rather than hand the agent a retry it may answer with a blind content write.
+          for (let t = 0; ; t++) {
+            if (t) enforceDcoLock({ peek: true, path: editPath })
+            r = requireSession().hive.editLines(editPath, args.old, args.new, String(args.intent || ''))
+            if (!r.loading || t >= 32) break
+            await new Promise((res) => setTimeout(res, 250))
+          }
+          if (r.ok && !r.noop) enforceDcoLock({ consumes: true, path: editPath }) // peeked just above, nothing awaited since
+        } else r = requireSession().hive.edit(editPath, args.content, String(args.intent || ''))
         if (r.error) return err(r.error)
+        if (r.noop) return text(`nothing to change: old and new are the same in ${r.file}. Nothing was written.`)
         if (r.withheld) {
           firstTime('withheld:' + r.file) // said here, so the next hive_wait does not say it again
           return text(`⛔ wrote ${r.file} in YOUR folder only. It was NOT shared, because it contains ${r.withheld}, and Hivecode does not send keys to the room or the relay. Nobody else has this change. Read the key from the environment instead (put it in .env, which is never shared); the file is shared on its next save without the key.`)

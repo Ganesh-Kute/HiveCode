@@ -186,6 +186,15 @@ hive_complete  → mark the task done
 exact change into the provenance ledger at the instant of the write, race-free, before the
 merge happens. Editing the file directly on disk still syncs, but the "why" is lost.
 
+To change existing lines, pass `old` (the whole lines, exactly as you read them) and `new`.
+That tells Hivecode which version you edited, so a clean handover lands as written: another
+agent changed a line, released the file, and you change that same line. A write on disk cannot
+say which version it came from, so the same handover written on disk still shows conflict
+markers. `old` must appear once, as whole lines. If those lines changed since you read them, or
+someone else holds the file, or your copy has changes the room has not taken yet, the edit is
+refused and nothing is written. An empty `new` deletes the lines. Pass `content` instead for a
+new file or a whole-file rewrite.
+
 ### Watch from a browser
 
 Open **<https://livecode-xoss.onrender.com/control>** and paste the same link.

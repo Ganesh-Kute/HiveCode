@@ -1069,6 +1069,97 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const held = withheld.get(relPath) || (SHARE_SECRETS ? null : newSecrets(content, fe && fe.synced ? fe.text.toString() : '')[0])
     return { ok: true, file: relPath, landed, conflicted: hasConflictMarkers(disk), ...(held ? { withheld: describeSecret(held) } : {}) }
   }
+  // hive_edit old/new: the agent STATES the lines it edited, so nothing has to guess its base.
+  //
+  // A disk write cannot say which version it was made from, and from the texts alone "B replaced
+  // A's change" and "B wrote from a copy older than A's change" can be identical: four rules that
+  // guessed each deleted work silently (1 Nov 2026), so a plain write still merges against the fork.
+  // Here `old` must be whole lines that appear exactly once in the room's copy. The room's copy is
+  // then the base by construction: B's lines land as written and every other line is untouched. A
+  // stale reader's `old` no longer matches the lines that changed under it, so it is refused, and the
+  // refusal shows the lines as they are now.
+  function editLines(relPath, oldText, newText, intent) {
+    relPath = String(relPath || '').replace(/\\/g, '/')
+    const NOTHING = 'Nothing was written.'
+    if (typeof oldText !== 'string' || typeof newText !== 'string') return { error: `need both old and new. ${NOTHING}` }
+    if (!oldText.trim()) return { error: `old is empty: pass the whole lines you are replacing, exactly as they are now. ${NOTHING}` }
+    if (!relPath || !isSafeRelPath(relPath)) return { error: `unsafe path. ${NOTHING}` }
+    if (folderLost) return { error: folderLost.message }
+    if (SKIP.has(relPath) || isIgnored(relPath)) return { error: `${relPath} is not a syncable file. ${NOTHING}` }
+    if (!canOpen(relPath)) return { error: `${relPath} is out of your scope. ${NOTHING}` }
+    if (!canWrite(relPath)) return { error: `${relPath} is read-only for you. ${NOTHING}` }
+    // The room's copy is only a base while it IS the room's copy: not offline, and not while someone
+    // else holds the file and can change it underneath (antigravity-3, 1 Nov).
+    if (!provider.wsconnected) return { error: `you are not connected to the room, so its copy of ${relPath} cannot be checked. ${NOTHING}` }
+    const holder = coordinator.sense(relPath)
+    if (holder && holder.by && holder.by !== name) return { error: `${holder.by} holds ${relPath}${holder.intent ? ` (${holder.intent})` : ''}, so its lines can change under you. Claim it once they release it. ${NOTHING}` }
+    const fe = fileDocs.get(relPath)
+    if (!fe || !fe.synced) {
+      // In the room but not loaded here (outside the open set, or still arriving): never send the
+      // agent to content mode, which would replace a file it has not read (antigravity-3, 1 Nov).
+      if (inManifest(relPath)) {
+        if (!fe) { try { openFile(relPath) } catch { } }
+        return { loading: true, error: `${relPath} is in the room but not loaded here yet; it is loading now, retry in a few seconds. Do not write it with content: that would replace the room's copy without reading it. ${NOTHING}` }
+      }
+      return { error: `${relPath} is not in the room, so there are no lines to replace. Create it with content instead. ${NOTHING}` }
+    }
+    // The file's own channel, not just the room's: `fe.synced` latches at the first sync, so while
+    // this file's channel is down or catching up its copy can be stale with the room connected, and a
+    // stale match fuses with the newer edit on reconnect (antigravity-3, 1 Nov: "applyTax(subtotal)20").
+    if (!fe.provider || !fe.provider.wsconnected || !fe.provider.synced) return { error: `${relPath}'s own channel is reconnecting, so its current lines cannot be checked; retry in a moment. ${NOTHING}` }
+    // Through the LF view, like every engine read: the room holds LF, and a CRLF disk (a Windows checkout)
+    // compared raw differs on every line, so every old/new edit there was refused (handover-edit H16).
+    let disk = null; try { disk = readDiskText(path.join(ROOT, relPath)) } catch { }
+    const cur = fe.text.toString()
+    // Nothing is sent first: a refused edit sends nothing at all (antigravity-3, 1 Nov). Whatever makes
+    // this disk differ from the room (an unsent save, a key held back, a frozen kept edit, markers) would
+    // be written over by replacing lines in the room's copy, so it is refused.
+    if (disk !== cur) {
+      const why = disk === null ? 'it is missing from your folder'
+        : withheld.has(relPath) ? 'it holds a key that is kept out of the room'
+        : keptUnsent.has(relPath) ? 'it holds an edit that never reached the room, frozen until you save the file again'
+        : hasConflictMarkers(disk) ? 'it carries conflict markers'
+        : 'it has changes the room has not taken yet; if you just saved it, retry in a moment'
+      return { error: `your copy of ${relPath} differs from the room's (${why}). Replacing lines in the room's copy would write over that. ${NOTHING}` }
+    }
+    if (keptUnsent.has(relPath)) keptUnsent.delete(relPath) // identical to the room: nothing left to keep
+    const eol = cur.includes('\r\n') ? '\r\n' : '\n'
+    // One trailing line break is not part of the lines: "b\n" and "b" both mean the line b, so a break
+    // dropped or added on one side can never join two lines or leave a blank one (antigravity-3, 1 Nov).
+    const asLines = (s) => s.replace(/\r?\n$/, '').replace(/\r?\n/g, eol)
+    const o = asLines(oldText), n = asLines(newText)
+    if (!o.trim()) return { error: `old is empty: pass the whole lines you are replacing, exactly as they are now. ${NOTHING}` }
+    const atStart = (i) => i === 0 || cur[i - 1] === '\n'
+    // A match ending in a line break ("b\n" left after stripping "b\n\n") means a blank line follows,
+    // so it may not end at the end of the file; and never between the \r and \n of one line end
+    // (antigravity-3, 1 Nov).
+    const atEnd = (j) => (j === cur.length && !o.endsWith('\n')) || (cur[j] === '\n' && cur[j - 1] !== '\r') || cur.startsWith('\r\n', j)
+    const at = [], whole = []
+    for (let i = cur.indexOf(o); i !== -1; i = cur.indexOf(o, i + 1)) { at.push(i); if (atStart(i) && atEnd(i + o.length)) whole.push(i) }
+    const lineAt = (i) => { const s = cur.lastIndexOf('\n', i - 1) + 1; let e = cur.indexOf('\n', i + o.length); if (e === -1) e = cur.length; return cur.slice(s, e).replace(/\r$/, '') }
+    const last = (() => { try { const rs = fe.ledger ? fe.ledger.toArray() : []; const r = rs[rs.length - 1]; return r && r.name ? ` It was last changed by ${r.name}.` : '' } catch { return '' } })()
+    if (whole.length > 1) return { error: `old appears ${whole.length} times in ${relPath}; add the lines around it so it matches once. ${NOTHING}` }
+    if (!whole.length && at.length) {
+      return { error: `old must be whole lines. In the room's copy it is part of ${at.length === 1 ? 'this line' : 'these lines'}, as ${at.length === 1 ? 'it is' : 'they are'} now:\n${[...new Set(at.map(lineAt))].slice(0, 3).join('\n')}\nIf that is what you edited, pass the whole line.${last} ${NOTHING}` }
+    }
+    if (!whole.length) {
+      // Show the line that looks most like the first line of `old`, so the agent sees what changed.
+      const first = o.split(/\r?\n/).find((l) => l.trim()) || ''
+      const pre = (a, b) => { let k = 0; while (k < a.length && k < b.length && a[k] === b[k]) k++; return k }
+      let best = '', score = 0
+      for (const l of cur.split(/\r?\n/)) { const k = pre(l.trim(), first.trim()); if (k > score) { score = k; best = l } }
+      return { error: `old is not in the room's copy of ${relPath}: it changed since you read it.${last}${score >= 6 ? ` The closest line now is:\n${best}\n` : ' '}Read the file again and pass the lines as they are now. ${NOTHING}` }
+    }
+    if (o === n) return { ok: true, noop: true, file: relPath }
+    let s = whole[0], e = s + o.length
+    // An EMPTY new deletes the lines together with one line break, so no blank line is left behind.
+    // new "\n" is a blank line, not a delete (antigravity-3, 1 Nov).
+    if (!newText) { if (cur.startsWith('\r\n', e)) e += 2; else if (cur[e] === '\n') e += 1; else if (s > 0) s -= (s > 1 && cur[s - 2] === '\r') ? 2 : 1 }
+    const next = cur.slice(0, s) + n + cur.slice(e)
+    // The declared base: this edit was made against the room's copy, by construction.
+    forkBases.set(relPath, cur); shadow.set(relPath, cur)
+    return { ...editFile(relPath, next, intent), via: 'lines' }
+  }
   // Detect a live fork and record it. The version set is a CRDT UNION (per-hash keys), so
   // this is monotonic + convergent: every peer contributes what it sees and the set grows
   // to the full fork on all peers regardless of arrival order. Does NOT touch Y.Text.
@@ -2878,7 +2969,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           icrWarned.set(relPath, why)
           log(`[${name}] !! REFUSED a fused merge of ${relPath}: ${why}`)
           try {
-            say(`[!] @all ${relPath}: a merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact and unchanged. Someone must reconcile them deliberately; a plain file write will merge against the other version again, hive_edit replaces it outright.`)
+            say(`[!] @all ${relPath}: a merge was REFUSED because it fused rather than merged — ${why}. Nothing was written: the room's copy and ${name}'s local copy are both intact and unchanged. Someone must reconcile them deliberately: a plain file write, or hive_edit with content, merges against the other version again.`)
           } catch { /* the log still carries it */ }
         }
         return
@@ -2924,7 +3015,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (hasMarkers && !conflicted.has(relPath)) {
       conflicted.add(relPath)
       log(`[${name}] ⚠ merge conflict in ${relPath} — kept BOTH versions with <<<<<<< markers`)
-      try { say(`⚠ MERGE CONFLICT in ${relPath} — it has <<<<<<< markers. Whoever owns it: resolve before continuing.`) } catch { }
+      try { say(`⚠ MERGE CONFLICT in ${relPath} — it has <<<<<<< markers. Whoever owns it: resolve before continuing, by saving the file without them or by passing the marked block as old to hive_edit old/new.`) } catch { }
     } else if (!hasMarkers && conflicted.has(relPath)) {
       conflicted.delete(relPath)
       try { say(`✓ conflict in ${relPath} resolved.`) } catch { }
@@ -4821,6 +4912,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     forkInfo,            // the active fork on a file as a resolvable object (base + versions + signed intents), or null
     resolveFork,         // propose the reconciled file; ICR-validated (parse + dangling) before it lands, refused otherwise
     edit: editFile,      // first-class authored write: intent + transition stamped race-free, then normal reconcile
+    editLines,           // hive_edit old/new: whole lines found once in the room's copy, which is then the base
     // --- non-writer review & approval ---
     review,
     reviews: getReviews,
