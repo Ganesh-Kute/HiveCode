@@ -26,7 +26,7 @@ import { createRequire } from 'module'
 import { WebSocketServer } from 'ws'
 // y-websocket v2's server half, kept in-repo: the client moved to v3, which ships no server code.
 // See the header of vendor/y-websocket/utils.cjs for why it is CommonJS and why it is here.
-import { setupWSConnection, setPersistence, getYDoc } from './vendor/y-websocket/utils.cjs'
+import { setupWSConnection, setPersistence, getYDoc, docs as yDocs } from './vendor/y-websocket/utils.cjs'
 import {
   LIMITS, TIERS, limitsFor, admitConnection, noteConnectionOpened, noteConnectionClosed,
   admitChannel, noteChannelOpened, noteChannelClosed,
@@ -303,6 +303,38 @@ function isSyncWrite(data) {
   } catch { return false }
 }
 
+// y-websocket's client handshake ALWAYS answers syncStep1 with a syncStep2, even when the client
+// has nothing to send ([0, 0]) or only structs + deletions the relay's doc already holds. Note
+// that Y.diffUpdate strips already-known structs but leaves the delete set untouched, so any file
+// that has ever had a deletion still carries its historical delete set on reconnect. Called ONLY
+// after writeBlockReason(conn) matches, so the common unclaimed write path pays zero diff cost.
+function isNoopSyncWrite(data, conn) {
+  try {
+    const dec = decoding.createDecoder(new Uint8Array(data))
+    if (decoding.readVarUint(dec) !== 0) return false
+    const t = decoding.readVarUint(dec)
+    if (t !== 1 && t !== 2) return false
+    const u = decoding.readVarUint8Array(dec)
+    if (u.length === 2 && u[0] === 0 && u[1] === 0) return true
+    const room = conn && conn._hive && conn._hive.room
+    const doc = room ? yDocs.get(room) : null
+    if (!doc) return false
+    const d = Y.diffUpdate(u, Y.encodeStateVector(doc))
+    if (d.length === 2 && d[0] === 0 && d[1] === 0) return true
+    const parsed = Y.decodeUpdate(d)
+    if (parsed.structs.length > 0) return false
+    const docDs = Y.createDeleteSetFromStructStore(doc.store)
+    for (const [client, items] of parsed.ds.clients) {
+      const have = docDs.clients.get(client)
+      for (const it of items) {
+        if (it.len <= 0) continue
+        if (!have || !have.some((r) => r.clock <= it.clock && r.clock + r.len >= it.clock + it.len)) return false
+      }
+    }
+    return true
+  } catch { return false }
+}
+
 // Returns a reason string if this connection's write to its file should be blocked,
 // or null to allow. Fail-OPEN on anything unknown (availability > strictness — this
 // is coordination, not the access-control gate, which stays fail-closed at handshake).
@@ -402,7 +434,7 @@ function installWriteGate(conn) {
           if (GOVERNOR !== 'off' && conn._hive && conn._hive.identity) {
             try { gov.note(baseRoomOf(conn._hive.room), conn._hive.identity.name, data.length || data.byteLength || 0) } catch { /* metering must never drop a legal write */ }
           }
-        } else {
+        } else if (!isNoopSyncWrite(data, conn)) {
           audit('write-blocked', { room: conn._hive.room, who: conn._hive.identity.name, file: pathOf(conn._hive.room), reason: block.reason, permanent: !!block.permanent, mode: ENFORCE_CLAIMS })
           // A GOVERNOR PAUSE IGNORES THE CLAIM-ENFORCEMENT MODE, AND IT ALWAYS QUEUES.
           //
