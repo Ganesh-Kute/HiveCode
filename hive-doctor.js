@@ -26,7 +26,9 @@ import fs from 'fs'
 import path from 'path'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { WebSocket } from 'ws'
+// HiveSocket, not raw ws: the same pipe every client uses, so the doctor reaches the relay behind a
+// proxy too (CONNECT tunnel, long-poll where the upgrade is refused; loopback direct; HIVE_PROXY=off).
+import { HiveSocket, unreachedReason } from './hive-transport.js'
 import { parseLink } from './sync.js'
 import { fileRoom } from './token.js'
 
@@ -41,7 +43,7 @@ const DIR = flag('dir', '')
 const LIMIT = Number(flag('limit', '4000')) || 4000
 const JSON_OUT = argv.includes('--json')
 const { relay, room } = parseLink(LINK)
-const wsOpts = { WebSocketPolyfill: WebSocket, connect: true }
+const wsOpts = { WebSocketPolyfill: HiveSocket, connect: true }
 const BATCH = 24          // sockets open at once — a full project is thousands of files
 const SYNC_MS = 6000      // how long one batch may take to report synced
 
@@ -58,8 +60,11 @@ function syncedOnce(provider, ms) {
 
 const doc = new Y.Doc()
 const provider = new WebsocketProvider(relay, room, doc, wsOpts)
+let firstError = null // the first connection error says WHY: never reached it, or it refused
+provider.on('connection-error', (ev) => { if (!firstError) firstError = ev })
 if (!(await syncedOnce(provider, 15000))) {
-  console.error(`Q543 could not reach the relay at ${relay} (room "${room}")`)
+  const why = firstError && unreachedReason(firstError)
+  console.error(`Q543 could not reach the relay at ${relay} (room "${room}")${why ? `: ${why}` : ''}`)
   process.exit(2)
 }
 

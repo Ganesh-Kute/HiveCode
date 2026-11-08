@@ -36,7 +36,7 @@ import { startUpdateCheck, updateNotice } from './hive-update.js'
 if (!process.env.HIVE_PROVENANCE) process.env.HIVE_PROVENANCE = 'on'
 if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
-import { transportFor } from './hive-transport.js'
+import { transportFor, unreachedReason, proxyFor } from './hive-transport.js'
 import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
 import { newPersonalRoom, saveRoomKey, loadRoomKey, hostToken, main as roomKeyMain } from './hive-room-key.js'
 import { isSecuredRoom } from './token.js'
@@ -320,6 +320,7 @@ was not written. Fix the relay and call hive_join again.`
   let synced = false
   let connErr = ''
   let refusedCode = null
+  let unreached = '' // set when this machine never reached the relay at all (DNS, proxy): see below
   await new Promise((resolve) => {
     let done = false
     const finish = () => { if (!done) { done = true; resolve() } }
@@ -329,7 +330,10 @@ was not written. Fix the relay and call hive_join again.`
     hive.provider.on('connection-error', (ev) => {
       const code = RH.statusFromError(ev) || (ev && (ev.code || ev.status || ev.type))
       if (code && typeof code === 'number') refusedCode = code
-      if (!connErr) connErr = `the relay refused the connection${code ? ` (${code})` : ''}`
+      // "Refused" only when the relay answered. A DNS failure or a proxy's refusal never reached it.
+      const why = unreachedReason(ev)
+      if (why && !unreached) unreached = why
+      if (!connErr) connErr = why || `the relay refused the connection${code ? ` (${code})` : ''}`
     })
     setTimeout(finish, 8000) // don't hang if the relay is cold
   })
@@ -352,6 +356,30 @@ was not written. Fix the relay and call hive_join again.`
         '',
         'Tell whoever is running the relay, then retry hive_join. Call hive_status to re-check:',
         'it reports `connected` and `filesSynced`, and both are authoritative.',
+      ].join('\n')
+    }
+    if (unreached) {
+      // Not the relay's capacity, tokens or restarts -- so none of explainNotSyncing()'s talk about them.
+      const via = proxyFor(relay)
+      let host = relay
+      try { host = new URL(relay).host } catch { }
+      return [
+        `NOT JOINED -- ${unreached.replace(/\.+$/, "")}.`,
+        `room: ${room}`,
+        `relay: ${relay}`,
+        `folder: ${ROOT}`,
+        `proxy: ${via ? `${via.hostname}:${via.port || (via.protocol === 'https:' ? 443 : 80)}` : 'none (no HTTPS_PROXY/HIVE_PROXY for this relay, or NO_PROXY / HIVE_PROXY=off)'}`,
+        '',
+        'DO NOT START WORK. You are not in this room. Nothing you write will reach anyone, no',
+        'claim you make binds anyone else, and the files in this folder are NOT shared. Any work',
+        'you do now is invisible to the team and can be silently overwritten later.',
+        '',
+        'This is the network between THIS machine and the relay. The relay never saw this connection,',
+        'so its capacity, tokens and restarts are not the cause. Check that this machine can reach',
+        `${host} at all. If it reaches the internet only through a proxy, set HTTPS_PROXY (or`,
+        `HIVE_PROXY) to it. If the proxy refused, ask whoever runs it to allow CONNECT to ${host}.`,
+        'Then retry hive_join. Call hive_status to re-check: it reports `connected` and',
+        '`filesSynced`, and both are authoritative.',
       ].join('\n')
     }
     const why = connErr || 'no sync within 8s -- the relay did not answer'

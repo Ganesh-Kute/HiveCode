@@ -7,7 +7,9 @@
 
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { WebSocket } from 'ws'
+// HiveSocket, not raw ws: behind an explicit proxy it tunnels (CONNECT), where the proxy refuses the
+// upgrade it long-polls, loopback stays direct, HIVE_PROXY=off restores the old direct dial.
+import { HiveSocket } from './hive-transport.js'
 import { makeCoordinator } from './hive-coord.js'
 
 const [, , RELAY, ROOM, self, REGIONS, ITERS] = process.argv
@@ -19,7 +21,7 @@ const WORK = 60       // how long an owner "edits" before releasing
 
 const doc = new Y.Doc()
 const claims = doc.getMap('claims')
-const prov = new WebsocketProvider(RELAY, ROOM, doc, { WebSocketPolyfill: WebSocket })
+const prov = new WebsocketProvider(RELAY, ROOM, doc, { WebSocketPolyfill: HiveSocket })
 await new Promise((res) => prov.on('sync', (s) => s && res()))
 
 const coord = makeCoordinator(claims, self, { ttl: 1500 })

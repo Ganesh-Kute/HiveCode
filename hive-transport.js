@@ -17,6 +17,26 @@
 //
 // Plain fetch carries the requests. On Node 24 with NODE_USE_ENV_PROXY=1 -- what Antigravity's VMs
 // set -- fetch goes through HTTPS_PROXY and trusts NODE_EXTRA_CA_CERTS by itself.
+//
+// AN EXPLICIT PROXY (Claude-cloud, 8 Nov 2026). Where the only way out is a forward proxy named in
+// HTTPS_PROXY (Claude Code cloud containers, CI runners, company laptops), outside host names do not
+// even resolve. `ws` never reads HTTPS_PROXY, and fetch ignores it unless NODE_USE_ENV_PROXY=1 was
+// set when node started, so the WebSocket died with ENOTFOUND, the long-poll probe died the same
+// way, and hive_join said "the relay refused the connection" about a relay it never reached. Now:
+//   - proxyFor(url) picks the proxy: HIVE_PROXY (a URL, or off), else HTTPS_PROXY for wss:/https:
+//     and HTTP_PROXY for ws:/http:. NO_PROXY is honoured; loopback never goes through a proxy.
+//   - Both pipes ride an HTTP CONNECT tunnel through it: the WebSocket (an agent for `ws`) and the
+//     long-poll requests (fetchFor). Through a tunnel to a wss:// relay the proxy sees only
+//     "CONNECT host:443"; the path and query -- where the room token rides -- stay inside TLS.
+//   - A tunnel that fails says so: unreachedReason() tells "never reached the relay" (DNS, the
+//     proxy refused CONNECT, the proxy itself unreachable) apart from a relay that answered and
+//     refused. A proxy's 403/407 deliberately carries no `status`: statusFromError would read it as
+//     the relay's own 403 and explain a proxy problem as a bad token. Proxy credentials are sent
+//     and never printed.
+import http from 'http'
+import https from 'https'
+import net from 'net'
+import tls from 'tls'
 import { WebSocket as WS } from 'ws'
 import { POLL_PREFIX, POLL_VERSION, packFrames, unpackFrames } from './hive-poll-proto.js'
 
@@ -44,7 +64,189 @@ export function transportFor(relay, env = process.env) {
     return decided.get(httpOrigin(relay)) || 'ws'
   } catch { return 'ws' }
 }
-const proxyConfigured = (env = process.env) => !!(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy)
+const PROXY_OFF = /^(off|0|false|no|none|direct)$/i
+const proxyConfigured = (env = process.env) => {
+  const hive = String(env.HIVE_PROXY || '').trim()
+  if (hive) return !PROXY_OFF.test(hive)
+  return !!(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy)
+}
+
+// ---- the proxy, when there is one -----------------------------------------------------------
+
+const bareHost = (h) => String(h || '').replace(/^\[|\]$/g, '').toLowerCase()
+const isLoopback = (h) => h === 'localhost' || h.endsWith('.localhost') || /^127\./.test(h) || h === '::1' || h === '0:0:0:0:0:0:0:1'
+
+/** curl's NO_PROXY rules: "*", "host", ".suffix" / "*.suffix", "host:port", "[v6]:port"; a bare name also covers its subdomains. */
+function noProxyMatches(host, port, list) {
+  for (const raw of String(list).split(/[\s,]+/)) {
+    const e = raw.trim().toLowerCase()
+    if (!e) continue
+    if (e === '*') return true
+    let h = e, p = ''
+    const v6 = /^\[([^\]]+)\](?::(\d+))?$/.exec(e)
+    if (v6) { h = v6[1]; p = v6[2] || '' }
+    else if ((e.match(/:/g) || []).length === 1) { [h, p] = e.split(':') }
+    if (p && p !== String(port)) continue
+    h = h.replace(/^\*\./, '.')
+    if (h.startsWith('.') ? (host === h.slice(1) || host.endsWith(h)) : (host === h || host.endsWith('.' + h))) return true
+  }
+  return false
+}
+
+/** The proxy to reach `target` (a ws:, wss:, http: or https: URL) through, as a URL, or null for direct. */
+export function proxyFor(target, env = process.env) {
+  let u
+  try { u = new URL(target) } catch { return null }
+  const secure = u.protocol === 'wss:' || u.protocol === 'https:'
+  const host = bareHost(u.hostname)
+  const port = u.port || (secure ? '443' : '80')
+  if (!host || isLoopback(host)) return null
+  const hive = String(env.HIVE_PROXY || '').trim()
+  if (hive && PROXY_OFF.test(hive)) return null
+  const raw = hive || (secure ? (env.HTTPS_PROXY || env.https_proxy) : (env.HTTP_PROXY || env.http_proxy))
+  if (!raw) return null
+  const np = env.NO_PROXY != null ? env.NO_PROXY : env.no_proxy
+  if (np && noProxyMatches(host, port, np)) return null
+  try {
+    const p = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`)
+    return p.protocol === 'http:' || p.protocol === 'https:' ? p : null
+  } catch { return null }
+}
+
+/** host:port of a proxy, never its user:pass. */
+const proxyLabel = (p) => `${p.hostname}:${p.port || (p.protocol === 'https:' ? 443 : 80)}`
+
+function unreachedError(proxy, detail, extra = {}) {
+  // No `status` here, on purpose (see the header): this is the proxy talking, not the relay.
+  return Object.assign(new Error(`never reached the relay: proxy ${proxyLabel(proxy)} ${detail}`), { hiveUnreached: true, proxy: proxyLabel(proxy) }, extra)
+}
+
+/** An HTTP CONNECT tunnel to host:port through `proxy`: resolves with the raw socket at the far end. */
+function openTunnel(proxy, host, port, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const target = `${net.isIPv6(host) ? `[${host}]` : host}:${port}`
+    const headers = { host: target }
+    if (proxy.username || proxy.password) {
+      const cred = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`
+      headers['proxy-authorization'] = 'Basic ' + Buffer.from(cred).toString('base64')
+    }
+    const secureProxy = proxy.protocol === 'https:'
+    const req = (secureProxy ? https : http).request({
+      host: bareHost(proxy.hostname), port: proxy.port || (secureProxy ? 443 : 80),
+      method: 'CONNECT', path: target, headers, agent: false,
+    })
+    let settled = false
+    const done = (fn, v) => { if (!settled) { settled = true; clearTimeout(timer); fn(v) } }
+    const timer = setTimeout(() => {
+      req.destroy()
+      done(reject, unreachedError(proxy, `did not answer CONNECT ${target} within ${Math.round(timeoutMs / 1000)}s`, { code: 'ETIMEDOUT' }))
+    }, timeoutMs)
+    req.once('connect', (res, sock, head) => {
+      if (res.statusCode !== 200) {
+        sock.destroy()
+        const hint = res.statusCode === 407 ? ' (it wants credentials: put user:pass in the proxy URL)' : ''
+        return done(reject, unreachedError(proxy, `refused CONNECT ${target} with HTTP ${res.statusCode}${hint}`, { proxyStatus: res.statusCode }))
+      }
+      // Bytes the far end already sent after the proxy's 200 belong to the tunnelled stream.
+      if (head && head.length) sock.unshift(head)
+      done(resolve, sock)
+    })
+    req.once('error', (e) => done(reject, unreachedError(proxy, `could not be reached: ${(e && (e.code || e.message)) || e}`, { code: e && e.code })))
+    req.end()
+  })
+}
+
+const TLS_KEYS = ['ca', 'cert', 'key', 'pfx', 'passphrase', 'rejectUnauthorized', 'ciphers', 'ALPNProtocols', 'minVersion', 'maxVersion', 'secureContext', 'checkServerIdentity', 'session']
+const agents = new Map()
+/**
+ * An http(s).Agent whose every connection is a CONNECT tunnel through `proxy` (TLS on top for wss:/https:).
+ * kind 'fetch' keeps tunnels alive for the long-poll requests; kind 'ws' never reuses one, so a
+ * WebSocket upgrade always gets a tunnel of its own and never rides one a poll request opened.
+ */
+function tunnelAgent(proxy, secure, kind = 'fetch') {
+  const key = `${kind}|${secure ? 's' : 'p'}|${proxy.href}`
+  let a = agents.get(key)
+  if (a) return a
+  a = new (secure ? https.Agent : http.Agent)(kind === 'fetch' ? { keepAlive: true, maxFreeSockets: 4 } : { keepAlive: false })
+  a.createConnection = (opts, cb) => {
+    const host = bareHost(opts.host || opts.hostname)
+    const port = Number(opts.port) || (secure ? 443 : 80)
+    openTunnel(proxy, host, port).then((sock) => {
+      if (!secure) return cb(null, sock)
+      const t = { socket: sock, host, servername: opts.servername || (net.isIP(host) ? undefined : host) }
+      for (const k of TLS_KEYS) if (opts[k] !== undefined) t[k] = opts[k]
+      cb(null, tls.connect(t))
+    }, (e) => cb(e))
+  }
+  agents.set(key, a)
+  return a
+}
+
+/** A fetch-shaped call carried over the tunnel agent: just what offersPoll and PollSocket use. */
+function proxyFetch(proxy, url, init = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const secure = u.protocol === 'https:'
+    const body = init.body == null ? null : Buffer.from(init.body)
+    const headers = { ...(init.headers || {}) }
+    if (body) headers['content-length'] = String(body.length)
+    const req = (secure ? https : http).request(u, { method: init.method || 'GET', headers, agent: tunnelAgent(proxy, secure) }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('error', reject)
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks)
+        resolve({
+          status: res.statusCode,
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          headers: { get: (k) => { const v = res.headers[String(k).toLowerCase()]; return v == null ? null : Array.isArray(v) ? v.join(', ') : String(v) } },
+          json: async () => JSON.parse(buf.toString('utf8')),
+          text: async () => buf.toString('utf8'),
+          arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+        })
+      })
+    })
+    req.on('error', reject)
+    const sig = init.signal
+    if (sig) {
+      const abort = () => req.destroy(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))
+      if (sig.aborted) abort(); else sig.addEventListener('abort', abort, { once: true })
+    }
+    req.end(body || undefined)
+  })
+}
+
+/** The fetch to reach `url` with: through the proxy tunnel when one applies, else the built-in one. */
+export function fetchFor(url, env = process.env) {
+  const p = proxyFor(url, env)
+  return p ? (u, init) => proxyFetch(p, u, init) : globalThis.fetch
+}
+
+const UNREACHED_CODES = {
+  ENOTFOUND: 'its host name did not resolve (DNS)',
+  EAI_AGAIN: 'its host name did not resolve (DNS, temporary failure)',
+  ECONNREFUSED: 'nothing accepted the connection',
+  ETIMEDOUT: 'the connection timed out',
+  EHOSTUNREACH: 'there is no route to its host',
+  ENETUNREACH: 'there is no route to its network',
+}
+/**
+ * If a connection error means the relay was NEVER REACHED -- DNS, no route, the proxy refused or was
+ * itself unreachable -- say so in one line; null when the relay answered (or it cannot be told).
+ * Takes an Error or the event a socket's onerror got.
+ */
+export function unreachedReason(x) {
+  const e = x && (x.error instanceof Error ? x.error : x)
+  if (!e || typeof e !== 'object') return null
+  if (e.hiveUnreached) return String(e.message)
+  const code = e.code || (e.cause && e.cause.code)
+  const why = typeof code === 'string' && UNREACHED_CODES[code]
+  if (!why) return null
+  const host = e.hostname || (e.cause && e.cause.hostname) || e.address
+  let s = `never reached the relay: ${why}${host ? ` (${host})` : ''} [${code}]`
+  if ((code === 'ENOTFOUND' || code === 'EAI_AGAIN') && !proxyConfigured()) s += '. If this machine reaches the internet only through a proxy, set HTTPS_PROXY (or HIVE_PROXY) to it.'
+  return s
+}
 function statusOf(ev) {
   if (!ev) return null
   if (typeof ev.status === 'number') return ev.status
@@ -53,8 +255,11 @@ function statusOf(ev) {
 }
 
 /** Does this relay offer long-poll? Read from /health over plain HTTPS; remembered for a minute. */
-export function offersPoll(origin, fetchImpl = globalThis.fetch) {
-  const p = probes.get(origin)
+export function offersPoll(origin, fetchImpl = fetchFor(origin)) {
+  // Keyed by the route too: an answer read through one proxy (or directly) says nothing about another.
+  const via = proxyFor(origin)
+  const key = `${via ? via.href : 'direct'}|${origin}`
+  const p = probes.get(key)
   if (p && Date.now() - p.at < 60000) return p.offers
   const offers = (async () => {
     try {
@@ -66,7 +271,7 @@ export function offersPoll(origin, fetchImpl = globalThis.fetch) {
       return Number(j && j.poll) >= 1
     } catch { return false }
   })()
-  probes.set(origin, { at: Date.now(), offers })
+  probes.set(key, { at: Date.now(), offers })
   return offers
 }
 
@@ -100,7 +305,7 @@ export class PollSocket extends SocketShape {
     this.url = url
     this.readyState = CONNECTING
     this.binaryType = 'nodebuffer'
-    this._fetch = opts.fetch || globalThis.fetch
+    this._fetch = opts.fetch || fetchFor(url)
     const u = new URL(url)
     this._base = httpOrigin(url) + POLL_PREFIX
     this._path = u.pathname + u.search
@@ -124,7 +329,11 @@ export class PollSocket extends SocketShape {
     if (this.readyState !== CONNECTING) return
     let r
     try { r = await this._req('open', JSON.stringify({ path: this._path, v: POLL_VERSION }), { 'content-type': 'application/json' }, 30000) }
-    catch (e) { return this._fail(`could not reach the relay over HTTPS: ${(e && e.cause && e.cause.code) || (e && e.message) || e}`) }
+    catch (e) {
+      // The tunnel said why the relay was never reached: keep that, so unreachedReason() still can.
+      if (e && e.hiveUnreached) return this._fail(e.message, undefined, { hiveUnreached: true, proxy: e.proxy, proxyStatus: e.proxyStatus, code: e.code })
+      return this._fail(`could not reach the relay over HTTPS: ${(e && e.cause && e.cause.code) || (e && e.message) || e}`, undefined, e && e.cause && e.cause.code ? { code: e.cause.code, hostname: e.cause.hostname } : null)
+    }
     let j = null
     try { j = await r.json() } catch { }
     if (r.status !== 200 || !j || !j.sid) {
@@ -140,10 +349,10 @@ export class PollSocket extends SocketShape {
     this._recvLoop()
     this._flush()
   }
-  _fail(message, status) {
+  _fail(message, status, extra = null) {
     if (this.readyState === CLOSED) return
     this.readyState = CLOSED
-    const error = Object.assign(new Error(message), status ? { status } : {})
+    const error = Object.assign(new Error(message), extra || {}, status ? { status } : {})
     fire(this, 'error', { type: 'error', message, error, status, target: this })
     fire(this, 'close', { type: 'close', code: 1006, reason: message, wasClean: false, target: this })
   }
@@ -274,7 +483,9 @@ export class HiveSocket extends SocketShape {
    * again. The error and close that follow are the ones ws itself would emit.
    */
   _makeWS(url, protocols) {
-    const ws = new WS(url, protocols)
+    // Behind an explicit proxy the socket rides a CONNECT tunnel (an agent wins over ws's own dialer).
+    const proxy = proxyFor(url)
+    const ws = proxy ? new WS(url, protocols, { agent: tunnelAgent(proxy, /^wss:/i.test(url), 'ws') }) : new WS(url, protocols)
     ws.on('unexpected-response', (req, res) => {
       this._relayRefused = !!(res.headers && res.headers['x-hive-relay'])
       res.resume()
