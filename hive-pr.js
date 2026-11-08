@@ -448,31 +448,65 @@ if (isMain) {
     // diff of every line for a change nobody made.
     const skip = new Set(v.identical.map((d) => d.rel))
     const isText = (buf) => !buf.includes(0)
-    const hasCrlf = (s) => {
-      if (typeof s !== 'string') return false
-      const crlf = (s.match(/\r\n/g) || []).length
-      return crlf > 0 && crlf * 2 >= (s.match(/\n/g) || []).length
+    function splitLinesWithEndings(text) {
+      const lines = [], endings = []
+      let start = 0
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === '\n') {
+          if (i > start && text[i - 1] === '\r') {
+            lines.push(text.slice(start, i - 1))
+            endings.push('\r\n')
+          } else {
+            lines.push(text.slice(start, i))
+            endings.push('\n')
+          }
+          start = i + 1
+        }
+      }
+      if (start < text.length) {
+        lines.push(text.slice(start))
+        endings.push('')
+      }
+      return { lines, endings }
     }
-    const wantsCrlf = (rel, dest) => {
-      try {
-        if (fs.existsSync(dest)) {
-          const buf = fs.readFileSync(dest)
-          if (!isText(buf)) return false
-          if (hasCrlf(buf.toString('utf8'))) return true
+    function restoreEndings(newText, baseText, fallbackCrlf = false) {
+      if (!baseText) {
+        return fallbackCrlf ? toLF(newText).replace(/\n/g, '\r\n') : toLF(newText)
+      }
+      if (!baseText.includes('\r\n')) {
+        return fallbackCrlf ? toLF(newText).replace(/\n/g, '\r\n') : toLF(newText)
+      }
+      if (!baseText.replace(/\r\n/g, '').includes('\n')) {
+        return toLF(newText).replace(/\n/g, '\r\n')
+      }
+      const base = splitLinesWithEndings(baseText)
+      const crlfCount = base.endings.filter((e) => e === '\r\n').length
+      const lfCount = base.endings.filter((e) => e === '\n').length
+      const defaultEnding = crlfCount >= lfCount ? '\r\n' : '\n'
+      const contentToEnding = new Map()
+      for (let i = 0; i < base.lines.length; i++) {
+        const l = base.lines[i]
+        if (!contentToEnding.has(l)) contentToEnding.set(l, [])
+        contentToEnding.get(l).push(base.endings[i])
+      }
+      const { lines: newLines, endings: newEndings } = splitLinesWithEndings(newText)
+      const out = []
+      for (let i = 0; i < newLines.length; i++) {
+        const l = newLines[i]
+        const isLast = (i === newLines.length - 1 && newEndings[i] === '')
+        let e = ''
+        if (!isLast) {
+          if (contentToEnding.has(l) && contentToEnding.get(l).length > 0) {
+            e = contentToEnding.get(l).shift()
+          } else if (i < base.endings.length && base.endings[i] !== '') {
+            e = base.endings[i]
+          } else {
+            e = defaultEnding
+          }
         }
-      } catch { }
-      try {
-        const sha = git(['rev-parse', `${base}:${rel}`])
-        if (sha.code === 0) {
-          const raw = gitRaw(['cat-file', 'blob', sha.out]).out
-          if (hasCrlf(raw)) return true
-        }
-      } catch { }
-      try {
-        const attr = git(['check-attr', 'eol', '--', rel]).out
-        if (attr.includes('eol: crlf')) return true
-      } catch { }
-      return false
+        out.push(l + e)
+      }
+      return out.join('')
     }
     let made = 0
     for (const g0 of groups) {
@@ -486,11 +520,30 @@ if (isMain) {
       for (const f of g.files) {
         const dest = path.join(REPO, f.rel)
         fs.mkdirSync(path.dirname(dest), { recursive: true })
-        if (wantsCrlf(f.rel, dest)) {
-          const text = fs.readFileSync(f.abs, 'utf8')
-          fs.writeFileSync(dest, toLF(text).replace(/\n/g, '\r\n'), 'utf8')
-        } else {
+        const rawNew = fs.readFileSync(f.abs)
+        if (!isText(rawNew)) {
           fs.copyFileSync(f.abs, dest)
+        } else {
+          let baseText = null
+          try {
+            const sha = git(['rev-parse', `${base}:${f.rel}`])
+            if (sha.code === 0) {
+              const raw = gitRaw(['cat-file', 'blob', sha.out]).out
+              if (isText(Buffer.from(raw))) baseText = raw
+            }
+          } catch { }
+          let fallbackCrlf = false
+          try {
+            const attr = git(['check-attr', 'eol', '--', f.rel]).out
+            if (attr.includes('eol: crlf')) fallbackCrlf = true
+            else if (!baseText && fs.existsSync(dest)) {
+              const rawDisk = fs.readFileSync(dest, 'utf8')
+              const crlf = (rawDisk.match(/\r\n/g) || []).length
+              if (crlf && crlf * 2 >= (rawDisk.match(/\n/g) || []).length) fallbackCrlf = true
+            }
+          } catch { }
+          const formatted = restoreEndings(rawNew.toString('utf8'), baseText, fallbackCrlf)
+          fs.writeFileSync(dest, formatted, 'utf8')
         }
         git(['add', '--', f.rel])
       }
