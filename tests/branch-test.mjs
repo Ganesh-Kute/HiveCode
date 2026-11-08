@@ -125,7 +125,7 @@ try {
   T('A8c ...also when the home directory is reached through a link', a8c.code === 1 && /home directory/.test(a8c.out) && g(project2, 'rev-parse', '--verify', '--quiet', 'refs/heads/homebound2').code !== 0 && g(project2, 'config', '--get', 'hivecode.homebound2.room').code !== 0, a8c.out.slice(0, 100))
   const seedDir = g(project, 'config', '--get', 'hivecode.feat.seed').out
   const seedGit = g(seedDir, 'status')
-  T('A9 the seed folder is marked: git refuses to run in it', !!seedDir && seedGit.code !== 0 && /not a git repository/.test(seedGit.err), seedGit.err.slice(0, 90))
+  T('A9 the seed folder is marked: git refuses to run in it', !!seedDir && seedGit.code !== 0 && /(not a git repository|gitfile does not point to a valid repository)/i.test(seedGit.err), seedGit.err.slice(0, 90))
 
   // ─── B. AGENTS JOIN BY BRANCH: own folder each, whole tree, git refused ────────────────────
   console.log('\n# B. hive_join { branch }')
@@ -144,7 +144,7 @@ try {
     !roomA.doc.getMap('manifest').has('config/keys.js') && !roomA.doc.getArray('chat').toArray().some((m) => /config\/keys\.js/.test(String(m.text || ''))),
     JSON.stringify({ inRoom: roomA.doc.getMap('manifest').has('config/keys.js'), said: roomA.doc.getArray('chat').toArray().map((m) => String(m.text || '')).filter((t) => /keys\.js/.test(t)) }))
   const inA = g(dirA, 'status')
-  T('B5 git refuses inside an agent folder, although it sits inside another repo', inA.code !== 0 && /not a git repository/.test(inA.err), inA.err.slice(0, 90))
+  T('B5 git refuses inside an agent folder, although it sits inside another repo', inA.code !== 0 && /(not a git repository|gitfile does not point to a valid repository)/i.test(inA.err), inA.err.slice(0, 90))
   const jn = textOf(await A._test.callTool('hive_join', { branch: 'nobound', repo: project, name: 'Builder' }))
   T('B6 a branch with no room is refused with the next step, and the session is untouched', /Q562/.test(jn) && /npx -y hivecode-mcp@latest branch nobound/.test(jn) && /session is untouched/.test(jn) && A._test.getSession().dir === dirA)
   const jl = textOf(await A._test.callTool('hive_join', { branch: 'feat', link, repo: project, name: 'Builder' }))
