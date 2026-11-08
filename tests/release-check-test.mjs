@@ -52,6 +52,21 @@ try {
   const r1 = await call(A, 'hive_release', { region: 'a.js' })
   T('R1 edited in the synced folder: a plain release, no warning', /^released a\.js/.test(r1) && !/!!|Note:/.test(r1), r1)
 
+  // R1b: CRLF file on disk (Windows checkout): edited in the synced folder, it arrived.
+  // Must not hang for 3 s or warn about false divergence.
+  fs.writeFileSync(path.join(dirA, 'crlf.txt'), 'export const c = 1\r\nexport const d = 2\r\n')
+  await waitUntil(() => fs.existsSync(path.join(dirB, 'crlf.txt')), 15000)
+  await call(A, 'hive_claim', { region: 'crlf.txt', intent: 'bump crlf' })
+  fs.writeFileSync(path.join(dirA, 'crlf.txt'), 'export const c = 1\r\nexport const d = 3\r\n')
+  await waitUntil(() => {
+    try { return fs.readFileSync(path.join(dirB, 'crlf.txt'), 'utf8').includes('d = 3') } catch { return false }
+  }, 15000)
+  const t0_crlf = Date.now()
+  const r1b = await call(A, 'hive_release', { region: 'crlf.txt' })
+  const elapsed_crlf = Date.now() - t0_crlf
+  T('R1b CRLF file in synced folder: a plain release, no warning', /^released crlf\.txt/.test(r1b) && !/!!|Note:/.test(r1b), r1b)
+  T('R1b CRLF file in synced folder: releases immediately (< 1500ms, not stuck for 3s)', elapsed_crlf < 1500, `took ${elapsed_crlf}ms`)
+
   // R2: claimed, then edited a COPY elsewhere (a scratch folder; another window's folder).
   await call(A, 'hive_claim', { region: 'b.js', intent: 'bump b' })
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'scratch-'))

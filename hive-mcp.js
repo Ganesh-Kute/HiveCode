@@ -609,9 +609,10 @@ const connectionOf = (hive) => (typeof hive.connection === 'function' ? hive.con
 // copy changed and whether this folder's copy arrived. Said, not refused: claiming and then deciding
 // not to edit is legitimate.
 const claimSnaps = new Map() // `${room}|${region}` -> sha256 of the room's text at claim time
+const toLF = (s) => (typeof s === 'string' && s.indexOf('\r\n') !== -1 ? s.replace(/\r\n/g, '\n') : s)
 const textHash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
 const roomTextOf = (s, region) => { try { const t = s.hive._fileText(region); return typeof t === 'string' ? t : null } catch { return null } }
-const diskTextOf = (s, region) => { try { return fs.readFileSync(path.join(s.dir, ...region.split('/')), 'utf8') } catch { return null } }
+const diskTextOf = (s, region) => { try { return toLF(fs.readFileSync(path.join(s.dir, ...region.split('/')), 'utf8')) } catch { return null } }
 function noteClaim(s, region) {
   const t = roomTextOf(s, region)
   claimSnaps.set(`${s.room}|${region}`, t == null ? null : textHash(t))

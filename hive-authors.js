@@ -14,10 +14,12 @@ export function isReceiptValid(verify, r) {
 /**
  * The authors of a file's held content, newest-landed first, from verified receipts only.
  */
+const toLF = (s) => (typeof s === 'string' && s.indexOf('\r\n') !== -1 ? s.replace(/\r\n/g, '\n') : s)
+
 export function authorsOf(receipts, verify, roomText) {
   const ok = (receipts || []).filter((r) => r && r.author && isReceiptValid(verify, r))
   if (!ok.length) return { last: null, contributors: [], first: 0, receipts: [] }
-  const want = typeof roomText === 'string' ? contentHash(roomText) : null
+  const want = typeof roomText === 'string' ? contentHash(toLF(roomText)) : null
   let idx = -1
   if (want) {
     for (let i = ok.length - 1; i >= 0; i--) {

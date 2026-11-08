@@ -70,6 +70,9 @@ console.log('\n# grouping logic')
   T('...and to the newest author when the room holds the newest content', authorsOf(rv, () => true, BEN).last.name === 'Ben')
   T('...and content no receipt matches still falls back to the newest', authorsOf(rv, () => true, 'unsigned\n').last.name === 'Ben')
   T('...and the reverted agent is not kept as a co-author of what the room holds', authorsOf(rv, () => true, ADA).contributors.every((c) => c.name !== 'Ben'))
+  const ADA_CRLF = ADA.replace(/\n/g, '\r\n')
+  T('after a revert, CRLF room text is credited to whoever wrote THAT content', authorsOf(rv, () => true, ADA_CRLF).last.name === 'Ada', authorsOf(rv, () => true, ADA_CRLF).last.name)
+  T('...and the reverted agent is not kept as a co-author of CRLF room text', authorsOf(rv, () => true, ADA_CRLF).contributors.every((c) => c.name !== 'Ben'))
 
   const groups = planCommits([
     { rel: 'b.js', last: { author: 'idB', name: 'AgentB' }, contributors: [{ author: 'idB', name: 'AgentB' }], first: 200 },
@@ -201,6 +204,7 @@ console.log('\n# grouping logic')
   T('isOrphan exists', typeof isOrphan === 'function')
   T('isOrphan is false for attributed file', isOrphan({ rel: 'a.js', last: { author: 'idA' }, roomText: 'x', branchText: 'y' }) === false)
   T('isOrphan is false for unchanged base seed file', isOrphan({ rel: 'seed.js', last: null, roomText: 'const x = 1\n', branchText: 'const x = 1\n' }) === false)
+  T('isOrphan is false when branch and room differ only in line endings', isOrphan({ rel: 'crlf.js', last: null, roomText: 'hello\r\n', branchText: 'hello\n' }) === false)
   T('isOrphan is false for Hivecode own file .hive.json', isOrphan({ rel: '.hive.json', last: null, roomText: '{}', branchText: null }) === false)
   T('isOrphan is false for Hivecode own file HIVE_STATUS.md', isOrphan({ rel: 'HIVE_STATUS.md', last: null, roomText: '# status', branchText: null }) === false)
   T('isOrphan is true for unverified new file', isOrphan({ rel: 'new.js', last: null, roomText: 'new file', branchText: null }) === true)

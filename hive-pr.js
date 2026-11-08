@@ -36,7 +36,8 @@ import path from 'path'
 import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync, parseLink } from './sync.js'
-import { accountFor, verdict, explain, DIVERGED } from './hive-pr-staleness.js'
+import { accountFor, verdict, explain, DIVERGED, sameText } from './hive-pr-staleness.js'
+const toLF = (s) => (typeof s === 'string' && s.indexOf('\r\n') !== -1 ? s.replace(/\r\n/g, '\n') : s)
 import { contentHash } from './substrate.js'
 
 const argv = process.argv.slice(2)
@@ -167,7 +168,7 @@ export const isOwnFile = (rel) => {
 export function isOrphan({ rel, last, roomText, branchText }) {
   if (last) return false
   if (isOwnFile(rel)) return false
-  if (branchText !== null && branchText !== undefined && branchText === roomText) return false
+  if (branchText !== null && branchText !== undefined && sameText(branchText, roomText)) return false
   return true
 }
 
@@ -340,7 +341,7 @@ if (isMain) {
       const audit = hive.verifyProvenanceOf(rel) || { bad: [] }
       const badIdx = new Set((audit.bad || []).map((b) => b.i))
       let roomText = null
-      try { roomText = fs.readFileSync(path.join(dir, rel), 'utf8') } catch { }
+      try { roomText = toLF(fs.readFileSync(path.join(dir, rel), 'utf8')) } catch { }
       const a = authorsOf(receipts, (r) => !badIdx.has(receipts.indexOf(r)), roomText)
       files.push({ rel, abs: path.join(dir, rel), ...a })
     }
@@ -354,7 +355,7 @@ if (isMain) {
       } else {
         const sha = git(['rev-parse', `${base}:${f.rel}`])
         const branchText = sha.code === 0 ? gitRaw(['cat-file', 'blob', sha.out]).out : null
-        const roomText = fs.readFileSync(f.abs, 'utf8')
+        const roomText = toLF(fs.readFileSync(f.abs, 'utf8'))
         if (isOrphan({ rel: f.rel, last: f.last, roomText, branchText })) {
           orphans.push(f)
         }
@@ -387,7 +388,7 @@ if (isMain) {
         // tree hands back bytes git never stored, and every content hash misses.
         const sha = git(['rev-parse', `${base}:${f.rel}`])
         const branchText = sha.code === 0 ? gitRaw(['cat-file', 'blob', sha.out]).out : null
-        const roomText = fs.readFileSync(f.abs, 'utf8')
+        const roomText = toLF(fs.readFileSync(f.abs, 'utf8'))
         decisions.push({ ...accountFor({ rel: f.rel, branchText, roomText, receipts: hive.provenanceOf(f.rel) || [] }), _f: f })
       }
     }
