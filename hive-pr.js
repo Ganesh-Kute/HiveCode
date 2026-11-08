@@ -172,6 +172,8 @@ export function isOrphan({ rel, last, roomText, branchText }) {
   return true
 }
 
+export const hashFile = (absPath) => { try { return contentHash(toLF(fs.readFileSync(absPath, 'utf8'))) } catch { return null } }
+
 export function commitMessage(g, room) {
   const list = g.files.map((f) => f.rel).sort()
 
@@ -405,7 +407,7 @@ if (isMain) {
         orphans,
         identical: identicalRels,
         blocked: blockedRels,
-        hashes: Object.fromEntries(groups.flatMap((g) => g.files || []).map((x) => { try { return [x.rel, contentHash(fs.readFileSync(x.abs, 'utf8'))] } catch { return null } }).filter(Boolean)),
+        hashes: Object.fromEntries(groups.flatMap((g) => g.files || []).map((x) => { const h = hashFile(x.abs); return h ? [x.rel, h] : null }).filter(Boolean)),
       })
       try {
         fs.mkdirSync(path.dirname(path.resolve(PLAN_JSON)), { recursive: true })

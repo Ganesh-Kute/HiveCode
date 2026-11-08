@@ -52,6 +52,7 @@ const alive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { r
 const tailLines = (s, n) => String(s || '').replace(/\s+$/, '').split(/\r?\n/).slice(-n).join('\n')
 // Hivecode's generated files in a room folder: never project work, never an "orphan".
 const GENERATED = /^HIVE_[A-Z_]+\.md$/
+const toLF = (s) => (typeof s === 'string' && s.indexOf('\r\n') !== -1 ? s.replace(/\r\n/g, '\n') : s)
 
 /**
  * landAndOpen(opts) -> Promise<Result>
@@ -587,7 +588,7 @@ function scrubbedEnv(env, res) {
  * commit are exactly the ones this checkout installed from, its node_modules is linked in (a
  * junction on Windows); otherwise the command runs as given.
  */
-function linkDependencies(root, dir, sha, res) {
+export function linkDependencies(root, dir, sha, res) {
   const nm = path.join(root, 'node_modules')
   if (!fs.existsSync(nm) || fs.existsSync(path.join(dir, 'node_modules'))) return ''
   const LOCKS = ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb']
@@ -598,8 +599,11 @@ function linkDependencies(root, dir, sha, res) {
     const at = spawnSync('git', ['cat-file', 'blob', `${sha}:${f}`], { cwd: root, windowsHide: true, maxBuffer: 64 * 1024 * 1024 })
     const theirs = at.status === 0 ? at.stdout : null
     if ((mine === null) !== (theirs === null)) return ''
-    if (mine !== null && !mine.equals(theirs)) return ''
-    if (mine !== null) any = true
+    if (mine !== null) {
+      const match = mine.equals(theirs) || (!f.endsWith('.lockb') && toLF(mine.toString('utf8')) === toLF(theirs.toString('utf8')))
+      if (!match) return ''
+      any = true
+    }
   }
   if (!any) return ''
   const link = path.join(dir, 'node_modules')

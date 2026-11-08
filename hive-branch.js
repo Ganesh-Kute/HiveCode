@@ -45,6 +45,7 @@ const TEXT_MAX = 1_000_000 // sync.js MAX_BYTES: a larger file never crosses the
 export { projectRoot, validBranch, revParse, coded, safeSegment, isOwnFile, git as gitIn, waitFor }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const coded = (code, msg) => Object.assign(new Error(`${code} ${msg}`), { code })
+const toLF = (s) => (typeof s === 'string' && s.indexOf('\r\n') !== -1 ? s.replace(/\r\n/g, '\n') : s)
 
 // ---- where things live --------------------------------------------------------------------
 
@@ -236,7 +237,7 @@ export function markNotACheckout(dir) {
   let st = null
   try { st = fs.lstatSync(p) } catch { /* absent: ours to create */ }
   if (st) {
-    if (st.isFile() && fs.readFileSync(p, 'utf8') === NOT_A_CHECKOUT) return { ok: true }
+    if (st.isFile() && toLF(fs.readFileSync(p, 'utf8')) === NOT_A_CHECKOUT) return { ok: true }
     return { ok: false, why: `${dir} is a git checkout (it has its own .git). A branch room's folders never are: git run there could rewrite the room's files. Leave \`dir\` out and the folder is chosen for you.` }
   }
   fs.writeFileSync(p, NOT_A_CHECKOUT)
@@ -297,7 +298,7 @@ async function seedRoom({ root, branch, commit, link, you, log }) {
   const { relay, room } = parseLink(link)
   const files = treeFiles(root, commit)
   const carries = roomCarries(files)
-  const expected = new Map(files.filter(carries).map((f) => [f.rel, f.buf.toString('utf8')]))
+  const expected = new Map(files.filter(carries).map((f) => [f.rel, toLF(f.buf.toString('utf8'))]))
   const dir = roomFolder(link, you)
   const mark = markNotACheckout(dir)
   if (!mark.ok) throw coded('Q564', mark.why)
@@ -323,7 +324,7 @@ async function seedRoom({ root, branch, commit, link, you, log }) {
       throw coded('Q565', `the seed did not finish publishing: the room holds ${st.roomFiles} of ${expected.size} files after ${Math.round(budget / 1000)} s. ${st.notSyncing ? `${st.notSyncing} file(s) were refused by the relay. ` : ''}Nothing was bound; run the same command again.`)
     }
     verifier = startSync({ relay, room, dir: vdir, name: `${you}-check`, kind: 'ai', passive: true, log: () => {} })
-    const read = (r) => { try { return fs.readFileSync(path.join(vdir, ...r.split('/')), 'utf8') } catch { return null } }
+    const read = (r) => { try { return toLF(fs.readFileSync(path.join(vdir, ...r.split('/')), 'utf8')) } catch { return null } }
     const got = await waitFor(() => [...expected].every(([r, t]) => read(r) === t), budget, 300)
     if (!got) {
       const missing = [...expected.keys()].filter((r) => read(r) !== expected.get(r))
@@ -404,7 +405,7 @@ export function removeRoomFolder(dir, room) {
   let ours = false
   try {
     ours = abs.startsWith(home) &&
-      fs.readFileSync(path.join(abs, '.git'), 'utf8') === NOT_A_CHECKOUT &&
+      toLF(fs.readFileSync(path.join(abs, '.git'), 'utf8')) === NOT_A_CHECKOUT &&
       JSON.parse(fs.readFileSync(path.join(abs, '.hive.json'), 'utf8')).room === room
   } catch { ours = false }
   if (!fs.existsSync(abs)) return
