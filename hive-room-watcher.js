@@ -463,11 +463,12 @@ export async function roomSay({ link, text, token = '', timeoutMs = 60000 }) {
  * `github start --room "<link>"`, called from hive-github.js main() after it has checked the repo and
  * the GitHub login. Returns an exit code.
  */
-export async function runRoomMode({ f, opt, gh, id, info, root, gitDir, label, log, logErr, sleepMs = (s) => sleep(s * 1000) }) {
+export async function runRoomMode({ f, opt, gh, id, info, root, gitDir, label, log, logErr, sleepMs = (s) => sleep(s * 1000), ghRunner }) {
   const RM = await import('./hive-room-mode.js')
   const GH = await import('./hive-github.js')
   const link = String(opt('room') || '').trim()
-  const start = await RM.checkRoomModeStart({ link, repo: root, timeoutMs: 60000 })
+  const runner = ghRunner || (gh ? () => ({ status: 0 }) : undefined)
+  const start = await RM.checkRoomModeStart({ link, repo: root, timeoutMs: 60000, ghRunner: runner })
   if (!start.ok) { logErr(start.why || `${start.code} room mode cannot start`); return start.code === 'Q656' ? GH.EXIT_AGAIN : GH.EXIT_FIX }
   if (start.warn) log(start.warn)
   const releaseLock = () => { try { const rec = JSON.parse(fs.readFileSync(start.lockFile, 'utf8')); if (Number(rec.pid) === process.pid) fs.unlinkSync(start.lockFile) } catch { } }

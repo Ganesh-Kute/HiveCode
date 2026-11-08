@@ -60,7 +60,7 @@ console.log('\n# B1: Room-Mode Start Checks')
 
   const t1 = grr ? grr(path.join(repo1, 'sub', 'deep')) : null
   const rootFound = t1 && t1.ok ? (t1.root || t1.repo) : null
-  T('T2.1 finds git toplevel from subdirectory', Boolean(rootFound && path.resolve(rootFound) === path.resolve(repo1)))
+  T('T2.1 finds git toplevel from subdirectory', Boolean(rootFound && fs.realpathSync(rootFound) === fs.realpathSync(repo1)))
 
   // Git worktree simulation (.git is a file, not a directory)
   const wtReal = path.join(tmp, 'wt-real')

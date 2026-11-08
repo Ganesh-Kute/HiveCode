@@ -46,6 +46,18 @@ const startRelay = (port, env = {}) => new Promise((res, rej) => {
 })
 const freePort = () => new Promise((res) => { const s = net.createServer(); s.listen(0, () => { const p = s.address().port; s.close(() => res(p)) }) })
 
+const TMP_PROBE = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-case-probe-'))
+const probe = path.join(TMP_PROBE, 'CaseProbe')
+fs.writeFileSync(probe, '')
+const isCaseInsensitive = fs.existsSync(path.join(TMP_PROBE, 'caseprobe'))
+fs.rmSync(probe)
+try { fs.rmSync(TMP_PROBE, { recursive: true, force: true }) } catch { }
+if (!isCaseInsensitive) {
+  console.log('  skipped: this disk is case-sensitive, so Case.js and case.js never collide here')
+  console.log('\n=== 0 passed, 0 failed ===')
+  process.exit(0)
+}
+
 const PORT = await freePort()
 console.log(`# Starting relay on port ${PORT}...`)
 const relay = await startRelay(PORT)

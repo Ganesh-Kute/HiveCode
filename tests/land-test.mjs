@@ -135,7 +135,7 @@ try {
     const reg = (() => { try { return JSON.parse(fs.readFileSync(path.join(process.env.HIVE_HOME, 'repos.json'), 'utf8')) } catch { return null } })()
     const k1room = g(project, 'config', '--get', 'hivecode.k1.room').out.split('|')[1]
     const entries = reg && reg.rooms && [].concat(reg.rooms[k1room] || [])
-    T('K0 binding the branch registered this repo for the room on this machine', !!entries && entries.some((e) => path.resolve(e.root) === path.resolve(project) && e.branch === 'k1'), JSON.stringify(entries))
+    T('K0 binding the branch registered this repo for the room on this machine', !!entries && entries.some((e) => fs.realpathSync(e.root) === fs.realpathSync(project) && e.branch === 'k1'), JSON.stringify(entries))
     const holder = a.hive.doc.getMap('repo_holder').toJSON()
     T('K0b the room records who holds the repo, and no path', holder.branch === 'k1' && !!holder.holder && !JSON.stringify(holder).includes(path.basename(project)), JSON.stringify(holder))
     const r = await HL.landAndOpen({ cwd: project, branch: 'k1', dry: true })
@@ -320,7 +320,7 @@ try {
     const before = tipOf('c1')
     // Any worktree but the project's own. (Matching on "hive-land-" counted the project itself: this
     // test's temp folder is named hive-land-test-..., so the "window" opened before the landing began.)
-    const worktrees = () => g(project, 'worktree', 'list', '--porcelain').out.split('\n').filter((l) => l.startsWith('worktree ') && path.resolve(l.slice(9)) !== path.resolve(project)).length
+    const worktrees = () => g(project, 'worktree', 'list', '--porcelain').out.split('\n').filter((l) => l.startsWith('worktree ') && fs.realpathSync(l.slice(9)) !== fs.realpathSync(project)).length
     process.env.HIVE_TEST_OPEN_DELAY_MS = '4000' // hive-pr's mirror arrives slowly: the window to claim in
     const landing = HL.landAndOpen({ cwd: project, branch: 'c1', dry: false, by: 'c-test' })
     // The temporary worktree exists only after the first claims check passed: claim exactly then.

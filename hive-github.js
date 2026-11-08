@@ -1687,7 +1687,9 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const root = path.resolve(top.out)
   // Some people keep their whole home folder under git. Run anywhere inside it, outside a project,
   // and the "repository" is their home: say that, rather than a puzzling "origin (none)".
-  if (sub === 'start' && root.toLowerCase() === path.resolve(os.homedir()).toLowerCase()) {
+  const realRoot = (() => { try { return fs.realpathSync(root) } catch { return root } })()
+  const realHome = (() => { try { return fs.realpathSync(os.homedir() || '') } catch { return os.homedir() || '' } })()
+  if (sub === 'start' && realRoot.toLowerCase() === realHome.toLowerCase()) {
     logErr(`Q601 ${cwd} is inside the git repository that is your home folder (${root}), not a project's clone. Run this in your clone of the repo.`)
     return EXIT_FIX
   }
