@@ -138,6 +138,22 @@ try {
   T('E7 a file with a lone CR reaches the other peer', e7)
   const winLone = read(path.join(dirWin, 'lone.js'))
   T('E7 the lone CR survives, and the line ends are the receiving disk\'s', winLone !== null && winLone.includes('"a\rb"'), show(winLone))
+  // E9: hive_attest across the two disks. Same text, so the same hash, but the Windows file is
+  // longer by one byte per line. A size the Windows agent posts, checked on the Mac, must not be
+  // called a mismatch; and the two peers must be shown at ONE size, or "confirmed by 2+ peers at
+  // the same size" is printed over two different numbers (antigravity-4, 8 Nov).
+  await sleep(1500)
+  const winBytes = Buffer.byteLength(read(pWin), 'latin1'), macBytes = Buffer.byteLength(read(pMac), 'latin1')
+  T('E9 setup: the two disks really differ in size', winBytes > macBytes, `win=${winBytes} mac=${macBytes}`)
+  const aw = win.attest('app.js', winBytes, 0)
+  T('E9 the Windows peer\'s own count is not a mismatch', !aw.mismatch, JSON.stringify(aw.mismatch))
+  await sleep(2000)
+  const am = mac.attest('app.js', winBytes, 0)
+  T('E9 a CRLF count stated on the LF disk is not a mismatch', !am.mismatch, JSON.stringify(am.mismatch))
+  T('E9 the two peers agree (quorum, not diverged)', am.quorum && !am.diverged, JSON.stringify({ q: am.quorum, d: am.diverged }))
+  T('E9 both peers are shown at one size', am.sizes && am.sizes.length === 1, JSON.stringify(am.peers))
+  const bogus = mac.attest('app.js', macBytes + 7, 0)
+  T('E9 a count that matches no form of the file IS still a mismatch', !!bogus.mismatch, JSON.stringify(bogus.mismatch))
   T('no client threw', thrown.length === 0, thrown.slice(0, 2).join(' | '))
 } catch (e) {
   T('the suite ran', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))

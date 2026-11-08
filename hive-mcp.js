@@ -1608,7 +1608,8 @@ async function dispatch(req) {
           : r.quorum
             ? 'QUORUM: 2+ peers agree — this publish is confirmed.'
             : 'Only you so far. Ask another agent to hive_attest the same path; a single folder proves nothing.'
-        return text(`attested ${f} at ${r.measuredBytes ?? args.bytes} bytes.\n  ${who}${mismatchNote}${lagNotice}\n${quorumStatus}`)
+        const eolNote = (r.diskBytes != null && r.diskBytes !== r.measuredBytes) ? ` (${r.diskBytes} on this disk, which uses CRLF line endings; sizes here are of the room's LF text)` : ''
+        return text(`attested ${f} at ${r.measuredBytes ?? args.bytes} bytes${eolNote}.\n  ${who}${mismatchNote}${lagNotice}\n${quorumStatus}`)
       }
       case 'hive_verified': {
         const f = String(args.file || ''); if (!f) return err('need a file path')

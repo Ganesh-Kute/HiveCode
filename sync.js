@@ -4573,6 +4573,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const full = path.join(ROOT, p)
       let measuredHash = null
       let measuredBytes = null
+      let diskBytes = null // this disk's own count, when its line endings make it differ
       let measuredLines = null
       let absent = false
       let mismatch = null
@@ -4581,16 +4582,20 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (fs.existsSync(full)) {
         try {
           const rawDisk = fs.readFileSync(full, 'utf8')
-          // The hash is of the text (LF), the room's form: a Windows and a Mac copy of the same file
-          // must attest as the same content. The byte count is this disk's, and a stated count may be
-          // either this disk's or the LF form (what a peer on the other OS measured).
+          // Hash AND size are of the text in the room's form (LF), so a Windows and a Mac copy of the
+          // same file attest as one content at one size. Recording each disk's own byte count printed
+          // "confirmed by 2+ peers at the same size" over two different numbers. A STATED count is
+          // whatever some agent measured on some disk, so it matches if it is any form of this text:
+          // this disk's bytes, the LF form, or the CRLF form (a Windows peer's number read on a Mac).
           diskContent = toLF(rawDisk)
           measuredHash = contentHash(diskContent)
-          measuredBytes = Buffer.byteLength(rawDisk, 'utf8')
+          measuredBytes = Buffer.byteLength(diskContent, 'utf8')
+          diskBytes = Buffer.byteLength(rawDisk, 'utf8')
           const normalized = diskContent.endsWith('\n') ? diskContent.slice(0, -1) : diskContent
           measuredLines = diskContent.length === 0 ? 0 : normalized.split(/\r?\n/).length
           const statedBytes = Number(bytes)
-          if (Number.isFinite(statedBytes) && statedBytes > 0 && statedBytes !== measuredBytes && statedBytes !== Buffer.byteLength(diskContent, 'utf8')) {
+          const crlfBytes = measuredBytes + (diskContent.match(/\n/g) || []).length
+          if (Number.isFinite(statedBytes) && statedBytes > 0 && ![measuredBytes, diskBytes, crlfBytes].includes(statedBytes)) {
             mismatch = { stated: statedBytes, measured: measuredBytes }
           }
         } catch {
@@ -4685,6 +4690,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         path: p,
         mismatch,
         measuredBytes,
+        diskBytes,
         measuredLines,
         measuredHash,
         lagging: lagging && !stuckLagging,
