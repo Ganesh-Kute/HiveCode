@@ -1695,6 +1695,23 @@ export function makeSlackPoller({
         if (now() - first < takeOverMs) continue // the other bridge has it; look again next tick
         set(`c:${k}`, me)
       }
+      const r = m && m.text ? route(m.text) : null
+      const isControl = Boolean(
+        m && (
+          m.type === 'agent_session_stopped' ||
+          Boolean(r && (r.intent === 'stop' || r.intent === 'stop-all' || r.intent === 'resume' || r.intent === 'resume-all'))
+        )
+      )
+      if (isControl) {
+        seen.add(k)
+        set(`s:${k}`, 1)
+        if (tsNum(k) > tsNum(cursor)) cursor = k
+        if (m.thread_ts && tsNum(k) > tsNum(threadSeen(m.thread_ts))) {
+          set(`t:${m.thread_ts}`, k)
+          threadSeenDisk[m.thread_ts] = k
+        }
+        persist()
+      }
       try { await onEvent(m) } catch (e) { try { logErr(`[hivecode] a Slack message could not be handled: ${e && e.message}`) } catch { } }
       seen.add(k); set(`s:${k}`, 1); claimSeenAt.delete(k)
       delivered++

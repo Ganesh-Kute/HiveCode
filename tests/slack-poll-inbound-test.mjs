@@ -419,6 +419,22 @@ async function joinWorker(roomName, agentName = 'Worker') {
   return h
 }
 
+async function joinHuman(roomName, name = 'Ganesh') {
+  const dir = fs.mkdtempSync(path.join(tmp, `human-${name}-`))
+  const h = startSync({
+    relay: `ws://127.0.0.1:${RELAY_PORT}`,
+    room: roomName,
+    dir,
+    name,
+    kind: 'human',
+    syncFiles: false,
+    log: () => {},
+  })
+  syncClients.push(h)
+  await waitUntil(() => h.status().connected, 6000, 80)
+  return h
+}
+
 try {
   // -------------------------------------------------------------------------
   section('1. Fake Slack anti-vacuity & fast 403 Socket Mode fallback')
@@ -716,7 +732,9 @@ try {
   // While the bridge is down, two messages arrive after nextTs(25):
   //   1) A stale "stop" at ~now - 50s (50s old > 15s HIVE_SLACK_CATCHUP_MS) -> MUST NOT pause Worker, and bridge posts catch-up skip notice once!
   //   2) A fresh thread reply at ~now - 1s (1s old < 15s HIVE_SLACK_CATCHUP_MS) -> MUST be delivered!
-  workerRebuilt.control('Worker', 'running', 'test')
+  const humanAdmin = await joinHuman(ROOM, 'Ganesh')
+  humanAdmin.control('Worker', 'running', 'Ganesh')
+  await sleep(100)
   const postsBeforeS10b = slackState.stats.postedMessages.length
   const nowSec = Math.floor(Date.now() / 1000)
   addTopMessage({ user: 'U02COWRK88', text: 'stop', ts: `${nowSec - 50}.100000` })
@@ -747,6 +765,43 @@ try {
       skippedNotices.length === 1
     ),
     `freshArrived=${freshCatchupArrived} workerState=${ctrlAfterCatchup?.state} notices=${skippedNotices.length}`
+  )
+
+  // S10c: Bridge killed 50ms after acting on "stop" (during confirmControl) does NOT replay stop on restart
+  const bridgeCrash = spawnSlackCli(
+    ['start', LINK, '--channel', CHANNEL, '--allow', 'U01OWNER99', '--inbound', 'poll'],
+    { SLACK_BOT_TOKEN: 'xoxb-valid', TEMP: sharedStateDir }
+  )
+  await bridgeCrash.waitReady(2500)
+  const tsStopCrash = `${Math.floor(Date.now() / 1000) + 1}.000000`
+  addTopMessage({ user: 'U02COWRK88', text: 'stop', ts: tsStopCrash })
+  await waitUntil(() => {
+    const c = workerRebuilt.doc.getMap('controls').get('Worker')
+    return c && c.state === 'paused'
+  }, 3000, 50)
+  await sleep(50)
+  bridgeCrash.child.kill('SIGKILL')
+  await sleep(100)
+
+  humanAdmin.control('Worker', 'running', 'Ganesh')
+  await waitUntil(() => {
+    const c = workerRebuilt.doc.getMap('controls').get('Worker')
+    return c && c.state === 'running'
+  }, 2000, 50)
+
+  const bridgeRestarted = spawnSlackCli(
+    ['start', LINK, '--channel', CHANNEL, '--allow', 'U01OWNER99', '--inbound', 'poll'],
+    { SLACK_BOT_TOKEN: 'xoxb-valid', TEMP: sharedStateDir }
+  )
+  await bridgeRestarted.waitReady(2500)
+  await sleep(600)
+  await bridgeRestarted.kill()
+
+  const ctrlAfterRestart = workerRebuilt.doc.getMap('controls').get('Worker')
+  T(
+    'S10c at-most-once control: bridge killed 50ms after acting on "stop" does not replay stop on restart after human resume',
+    Boolean(ctrlAfterRestart && ctrlAfterRestart.state === 'running'),
+    `workerState=${ctrlAfterRestart?.state} by=${ctrlAfterRestart?.by}`
   )
 
   // S11: `slack check` behind 403 Socket Mode proxy auto-falls back to polling and verifies inbound reply
