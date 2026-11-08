@@ -22,6 +22,14 @@ runs:
       with:
         node-version: '20'
 
+    - name: Install dependencies
+      working-directory: ${{ github.action_path }}
+      run: npm ci --omit=dev --ignore-scripts
+      shell: bash
+
     - name: Run git-clash engine
-      run: node packages/git-clash/cli.mjs --scan --base=${{ inputs.base_sha }} --head=${{ inputs.head_sha }}
+      env:
+        BASE_SHA: ${{ inputs.base_sha }}
+        HEAD_SHA: ${{ inputs.head_sha }}
+      run: node "${{ github.action_path }}/packages/git-clash/cli.mjs" --scan --base="$BASE_SHA" --head="$HEAD_SHA"
       shell: bash
