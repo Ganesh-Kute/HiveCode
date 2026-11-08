@@ -18,6 +18,16 @@ const PORT = 1248
 const RELAY = `ws://localhost:${PORT}`
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-attest-test-'))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const until = async (pred, ms = 10000, step = 100) => {
+  const end = Date.now() + ms
+  let last = null
+  while (Date.now() < end) {
+    last = await pred()
+    if (last) return last
+    await sleep(step)
+  }
+  return last || (await pred())
+}
 let failed = 0
 const assert = (n, c, extra = '') => {
   console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? ' — ' + extra : ''}`)
@@ -132,9 +142,12 @@ assert('stated bytes different from measured is reported', /stated 999|you state
 console.log('\n# 5. Direct doc edit bypassing bump turns QUORUM into "older version"')
 // Both B and A attest foo.js to reach QUORUM on 20 bytes
 const bAttestRes = await B.call('hive_attest', { file: 'foo.js', bytes: 20, lines: 1 })
-await sleep(1500)
-const vBefore = await A.call('hive_verified', { file: 'foo.js' })
-assert('both reach quorum on current foo.js', /QUORUM/.test(vBefore), `${bAttestRes}\n--- verified before:\n${vBefore}`)
+// Wait for Beta's attestation to sync to Alpha over the relay (up to 10s)
+const vBefore = await until(async () => {
+  const v = await A.call('hive_verified', { file: 'foo.js' })
+  return /QUORUM/.test(v) ? v : null
+}, 10000)
+assert('both reach quorum on current foo.js', /QUORUM/.test(vBefore || ''), `${bAttestRes}\n--- verified before:\n${vBefore}`)
 
 // Now simulate an edit that bypasses the bump:
 // 1. A edits foo.js to new content 'bypassed content\n'
@@ -143,13 +156,15 @@ await sleep(1000)
 
 // 2. Connect tester to room doc and reset swarm_versions to version 2 (simulating a client that edited doc without bumping n)
 const tester = startSync({ relay: RELAY, room: parseLink(link).room, dir: path.join(ROOT, 't'), name: 'Tester', passive: true, syncFiles: false, log: () => {} })
-await sleep(1000)
+await until(() => tester.provider && tester.provider.synced, 10000)
 tester.doc.getMap('swarm_versions').set('foo.js', { n: 2, hash: contentHash('hello world updated\n') })
-await sleep(800)
 
-// Check verified report without anyone re-attesting
-const vAfter = await A.call('hive_verified', { file: 'foo.js' })
-assert('bypassed doc edit reports older version, not plain quorum', /older version/i.test(vAfter) && !/^QUORUM:/m.test(vAfter), vAfter)
+// Check verified report without anyone re-attesting: wait until A receives tester's version reset
+const vAfter = await until(async () => {
+  const v = await A.call('hive_verified', { file: 'foo.js' })
+  return (/older version/i.test(v) && !/^QUORUM:/m.test(v)) ? v : null
+}, 10000)
+assert('bypassed doc edit reports older version, not plain quorum', /older version/i.test(vAfter || '') && !/^QUORUM:/m.test(vAfter || ''), vAfter)
 tester.stop()
 
 console.log('\n# 6. Propagation lag prevents false divergence and answers not caught up')
@@ -178,9 +193,12 @@ assert('lagging folder does NOT create divergence in verified', !/\[!\] DIVERGED
 fs.writeFileSync(path.join(dirB, 'lag.js'), 'version 2 updated\n', 'utf8')
 const bCatchup = await B.call('hive_attest', { file: 'lag.js', bytes: 18, lines: 1 })
 assert('caught up peer reaches quorum on v2', /QUORUM/.test(bCatchup), bCatchup)
-await sleep(600)
-const vCatchup = await A.call('hive_verified', { file: 'lag.js' })
-assert('verified confirms quorum once caught up', /QUORUM/.test(vCatchup), vCatchup)
+// Wait for Beta's catchup attest to sync to Alpha
+const vCatchup = await until(async () => {
+  const v = await A.call('hive_verified', { file: 'lag.js' })
+  return /QUORUM/.test(v) ? v : null
+}, 10000)
+assert('verified confirms quorum once caught up', /QUORUM/.test(vCatchup || ''), vCatchup)
 
 console.log('\n# 7. Line count with trailing newline matches wc -l')
 fs.writeFileSync(path.join(dirA, 'lines.js'), '1\n2\n3\n4\n5\n', 'utf8')
