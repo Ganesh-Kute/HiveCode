@@ -26,6 +26,9 @@
 
 import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
+import { realpathSync as __hiveRealpath } from 'fs'
+import { resolve as __hiveResolve } from 'path'
+import { fileURLToPath as __hiveFileURLToPath } from 'url'
 import {
   makeQueue,
   slackPost,
@@ -392,6 +395,14 @@ export async function main(argv = process.argv.slice(2), {
   })
 }
 
-if (process.argv[1] && import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+// Run directly (node <file>, or through an npx / node_modules/.bin symlink)? Compared by real path:
+// the old `file:///${argv[1]}` test built "file:////..." on macOS and Linux, never matched, and the
+// process exited 0 having done nothing.
+function __hiveIsEntry() {
+  if (!process.argv[1]) return false
+  const me = __hiveFileURLToPath(import.meta.url)
+  try { return __hiveRealpath(process.argv[1]) === __hiveRealpath(me) } catch { return __hiveResolve(process.argv[1]) === __hiveResolve(me) }
+}
+if (__hiveIsEntry()) {
   main().then((code) => { if (code !== 0) process.exit(code) })
 }

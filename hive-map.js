@@ -29,6 +29,9 @@
 // can do to this map, because the whole point is to be able to trust one glance at it.
 
 import { startSync, parseLink } from './sync.js'
+import { realpathSync as __hiveRealpath } from 'fs'
+import { resolve as __hiveResolve } from 'path'
+import { fileURLToPath as __hiveFileURLToPath } from 'url'
 
 const STATES = new Set(['built', 'broken', 'planned', 'wip'])
 // An edge means one of two different things and they must not be drawn the same way.
@@ -191,7 +194,15 @@ export function applyCommand(graph, name, action, pos, flags) {
 
 // Only connect when run directly, so the tests can import the pure half above without this file
 // demanding arguments, parsing a link, or opening a socket on import.
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+// Run directly (node <file>, or through an npx / node_modules/.bin symlink)? Compared by real path:
+// the old `file:///${argv[1]}` test built "file:////..." on macOS and Linux, never matched, and the
+// process exited 0 having done nothing.
+function __hiveIsEntry() {
+  if (!process.argv[1]) return false
+  const me = __hiveFileURLToPath(import.meta.url)
+  try { return __hiveRealpath(process.argv[1]) === __hiveRealpath(me) } catch { return __hiveResolve(process.argv[1]) === __hiveResolve(me) }
+}
+if (__hiveIsEntry()) {
   if (!LINK || !NAME || !ACTION) {
     console.error('usage: node hive-map.js "<relay|room>" <YourName> <add|link|state|note|rm|unlink|list> [args]')
     process.exit(2)
