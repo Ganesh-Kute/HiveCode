@@ -460,7 +460,11 @@ export function filterRoomMembers(rawMembers = []) {
 
   for (const m of rawMembers) {
     if (!m || !m.name) continue
-    if (m.name === 'GitHub' || m.passive || m.listener) continue
+    // A LISTENER IS THE AGENT, NOT A BOT (P1-6, 9 Nov 2026). hive-await joins under the agent's own
+    // name, tagged `listener` and deliberately NOT passive, and presence is merged by name: every
+    // agent that keeps its listener armed (the room's rule) came back with listener: true and was
+    // dropped here, so the first issue comment said "In the room now: none yet" with agents present.
+    if (m.name === 'GitHub' || m.passive) continue
     // Exclude Recorder or ControlRoom viewer
     if (/recorder|control[-_ ]?room/i.test(m.name) || /control[-_ ]?room/i.test(m.app || '')) continue
 
