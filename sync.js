@@ -282,9 +282,11 @@ export function clashFinal(base, intents, names = new Map()) {
     if (distinct.length === 1) mid = distinct[0].lines
     else if (distinct.length === 2) mid = [`<<<<<<< ${label(distinct[0].id)}`, ...distinct[0].lines, '=======', ...distinct[1].lines, `>>>>>>> ${label(distinct[1].id)}`]
     else {
+      // Plain separators: a labelled one ("======= Bob") is not one any merge reads, and a late save
+      // merged against such a block lost every version in it (late-save-merge-test L2).
       mid = [`<<<<<<< ${label(distinct[0].id)}`, ...distinct[0].lines]
-      for (const d of distinct.slice(1)) mid.push(`======= ${label(d.id)}`, ...d.lines)
-      mid.push(`>>>>>>> ${distinct.length} versions`)
+      for (const d of distinct.slice(1)) mid.push('=======', ...d.lines)
+      mid.push(`>>>>>>> ${distinct.slice(1).map((d) => label(d.id)).join(', ')} (${distinct.length} versions)`)
     }
   }
   return [...r.pre, ...mid, ...r.post].join('\n')

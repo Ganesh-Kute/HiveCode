@@ -47,39 +47,38 @@ function hasConflictMarkers(text) {
 }
 
 // Strip and de-nest conflict markers to prevent exponential 2^N code ballooning
+// Strip conflict markers, keeping the 'local' side (before the first =======), the 'theirs' side (after
+// it), or 'all': every version in the block, in order, each distinct one once. A separator may carry a
+// label ("======= Bob"): the 3-version blocks of a same-line race do.
 function stripConflictMarkers(text, prefer = 'local') {
   if (!text || !hasConflictMarkers(text)) return text || ''
   const lines = text.split('\n')
   const out = []
   let inConflict = false
-  let inTheirs = false
-  const localBlock = []
-  const theirsBlock = []
+  let sections = []
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (/^<<<<<<< /.test(line)) {
       inConflict = true
-      inTheirs = false
-      localBlock.length = 0
-      theirsBlock.length = 0
+      sections = [[]]
       continue
     }
-    if (/^=======$/.test(line) && inConflict) {
-      inTheirs = true
+    if (/^=======( |$)/.test(line) && inConflict) {
+      sections.push([])
       continue
     }
     if (/^>>>>>>> /.test(line) && inConflict) {
       inConflict = false
-      out.push(...(prefer === 'theirs' ? theirsBlock : localBlock))
+      if (prefer === 'all') {
+        const seen = new Set()
+        for (const sec of sections) { const k = sec.join('\n'); if (seen.has(k)) continue; seen.add(k); out.push(...sec) }
+      } else if (prefer === 'theirs') out.push(...sections.slice(1).flat())
+      else out.push(...sections[0])
       continue
     }
-    if (inConflict) {
-      if (inTheirs) theirsBlock.push(line)
-      else localBlock.push(line)
-    } else {
-      out.push(line)
-    }
+    if (inConflict) sections[sections.length - 1].push(line)
+    else out.push(line)
   }
   return out.join('\n')
 }
@@ -258,7 +257,9 @@ function merge3(base, mine, theirs) {
 
   const cleanBase = hasConflictMarkers(base) ? stripConflictMarkers(base, 'local') : (base || '')
   const cleanMine = hasConflictMarkers(mine) ? stripConflictMarkers(mine, 'local') : (mine || '')
-  const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, 'theirs') : (theirs || '')
+  // The room's copy holding a conflict block: keep EVERY version in it. Keeping one side dropped the
+  // other author's work whenever a late save merged against the block (P0-F, late-save-merge-test).
+  const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, 'all') : (theirs || '')
 
   const nm = norm(cleanMine), nt = norm(cleanTheirs), nb = norm(cleanBase)
   if (nm === nt) return { text: nt, conflict: false }
