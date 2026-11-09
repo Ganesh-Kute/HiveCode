@@ -1125,7 +1125,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // to everybody; this is what lets a join tell another agent with the same name (refused, see
   // sameNameElsewhere) from this agent a moment ago, restarting in the same folder (allowed).
   const IID = crypto.createHash('sha256').update(`${os.hostname()}|${ROOT}`).digest('hex').slice(0, 12)
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID }) // identity is implicit in the client
+  const joinedAt = Date.now()
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID, joined: joinedAt }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -3697,7 +3698,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID, joined: joinedAt })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -5164,7 +5165,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (id === me || !u || !u.name || String(u.name).toLowerCase() !== lc) continue
         if (u.listener || u.iid === IID) continue
         if (kind === 'human' && u.kind === 'human') continue
-        out.push({ name: u.name, kind: u.kind, owner: u.owner, app: u.app })
+        out.push({ name: u.name, kind: u.kind, owner: u.owner, app: u.app, joined: u.joined, clientID: id })
       }
       return out
     },

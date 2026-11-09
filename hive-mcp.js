@@ -429,6 +429,10 @@ was not written. Fix the relay and call hive_join again.`
       'it reports `connected` and `filesSynced`, and both are authoritative.',
     ].join('\n')
   }
+  // HIV-C3: wait for presence to settle before evaluating sameNameElsewhere (Incident I-3).
+  // Waits for the first awareness update from the relay, or 1500 ms, whichever comes first.
+  await settlePresence(hive, 1500)
+
   // ONE NAME, ONE PARTICIPANT (Q581). Everything in a room is keyed by name, so a second agent under
   // a name already here is the same identity to everybody: both are told they hold each other's
   // claims, both read each other's mail, and their writes land on each other's files. Measured
@@ -460,6 +464,29 @@ was not written. Fix the relay and call hive_join again.`
   const startAt = Number.isFinite(Number(chatCursor)) ? Number(chatCursor) : chatLen
   session.mailbox = createMailbox({ me: name, startAt, frontier: chatFrontier && typeof chatFrontier === 'object' ? chatFrontier : null })
   persistCursor()
+  session.joined = Date.now()
+
+  // Twin join re-check (0.14.4 C3): if two case-variant names joined at the same moment both see nobody.
+  // Re-check once more about 3 s after joining. If a twin has appeared, the LATER joiner
+  // (higher join time) gets one line telling it to rejoin under another name.
+  setTimeout(() => {
+    try {
+      if (!session || session.name !== name || session.room !== room) return
+      const dupesLater = typeof hive.sameNameElsewhere === 'function' ? hive.sameNameElsewhere() : []
+      if (!dupesLater.length) return
+      const d = dupesLater[0]
+      const myJoined = session.joined || 0
+      const theirJoined = d.joined || 0
+      const myId = hive.provider && hive.provider.awareness ? hive.provider.awareness.clientID : 0
+      const isLater = theirJoined < myJoined || (theirJoined === myJoined && (d.clientID || 0) < myId)
+      if (isLater) {
+        const taken = new Set(hive.members().map((m) => String(m.name).toLowerCase()))
+        let n = 2
+        while (taken.has(`${name}-${n}`.toLowerCase())) n++
+        session.twinWarning = `A twin named "${d.name}" joined at the same moment. You are the later joiner: call hive_join with a different name to rejoin under another name (e.g. hive_join { name: "${name}-${n}" }).`
+      }
+    } catch { }
+  }, 3000).unref?.()
 
   const others = hive.members().filter((m) => m.name !== name).map((m) => `${m.name}(${m.kind})`)
   const mixedNote = mixedLine(hive.members(), name, VERSION_LABEL)
@@ -603,7 +630,8 @@ was not written. Fix the relay and call hive_join again.`
       : (browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : '')
   // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
   // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.
-  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  const ls = listenerStatusFor({ name, room, useToken, passive })
+  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nlistener: ${ls.card}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 // A MIXED BUILD, TOLD TO THE ONE WHO CAN ACT ON IT (2 Oct 2026). The room's own warning names
@@ -861,6 +889,48 @@ function collidedNotice(s) {
       (fresh.length > shown.length ? `\n  ... (+${fresh.length - shown.length} more; hive_status lists all)` : '') +
       `\nThey are separate files in the room: editing yours never changes the other. To work on one, ask whoever added it to rename it so the two names differ by more than case.`
   } catch { return '' }
+}
+
+function twinNotice(s) {
+  if (!s || !s.twinWarning) return ''
+  return `\n\n⚠ ${s.twinWarning}`
+}
+
+async function settlePresence(hive, timeoutMs = 1500) {
+  if (hive && hive.provider && hive.provider.awareness && typeof hive.sameNameElsewhere === 'function' && !hive.sameNameElsewhere().length) {
+    await new Promise((resolve) => {
+      let timer = null
+      let done = false
+      const finish = () => {
+        if (!done) {
+          done = true
+          clearTimeout(timer)
+          try { hive.provider.awareness.off('change', onChange) } catch { }
+          resolve()
+        }
+      }
+      const onChange = (_changes, origin) => {
+        if (origin !== 'local') finish()
+      }
+      timer = setTimeout(finish, timeoutMs)
+      hive.provider.awareness.on('change', onChange)
+    })
+  }
+}
+
+function listenerStatusFor({ session: s, name, room, useToken, passive } = {}) {
+  const targetName = name || (s && s.name)
+  const targetRoom = room || (s && s.room)
+  const isPassive = passive !== undefined ? !!passive : !!(s && s.passive)
+  const isAuthed = useToken !== undefined ? !!useToken : !!(s && s.authed)
+  const how = !isAuthed && !isPassive ? listenHow(clientName()) : ''
+  if (!how) return { enabled: false, status: 'not used on this client', card: 'idle with hive_wait' }
+  const armed = isArmed({ name: targetName, room: targetRoom })
+  return {
+    enabled: true,
+    status: armed ? 'running' : 'not running',
+    card: armed ? 'running' : 'not running',
+  }
 }
 
 // A KEY IN A FILE KEEPS THE FILE HERE (3 Oct 2026; sync.js heldForSecret). The agent that pasted it
@@ -1424,7 +1494,7 @@ async function dispatch(req) {
             }
           }
         } catch { }
-        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s) + collidedNotice(s))
+        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s) + collidedNotice(s) + twinNotice(s))
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
       case 'hive_assign': { enforceDcoLock(); const taskKey = findSecrets(String(args.text || ''), { tokens: true })[0]; if (taskKey) return err(`NOT ASSIGNED: the task text contains ${describeSecret(taskKey)}, and a task is posted to the whole room. Say where the key is kept instead.`); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
@@ -1536,14 +1606,14 @@ async function dispatch(req) {
           const waitMsg = armed
             ? '(nothing yet — your background listener is running and will wake you when called: you may end your turn now.)'
             : '(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)'
-          return text(`${waitMsg}${owedStr}${connStr}${unwritableNotice(sess)}${withheldNotice(sess)}${collidedNotice(sess)}${stateStr}${rulesStr}${ll}`)
+          return text(`${waitMsg}${owedStr}${connStr}${unwritableNotice(sess)}${withheldNotice(sess)}${collidedNotice(sess)}${twinNotice(sess)}${stateStr}${rulesStr}${ll}`)
         }
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()) + withheldNotice(requireSession()) + collidedNotice(requireSession()))
+        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()) + withheldNotice(requireSession()) + collidedNotice(requireSession()) + twinNotice(requireSession()))
       }
       case 'hive_delivered': {
         const s2 = requireSession()
@@ -1909,9 +1979,11 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // reportable and "where is my source going" was not. A bare relay URL is not an
         // answer to the second -- the public relay and a company's own are the same shape.
         const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs, room: s.room })
+        const ls = listenerStatusFor({ session: s })
         return text({
           room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(BUILD ? { build: BUILD } : {}), ...(updateNotice() ? { update: updateNotice() } : {}),
           ...(clientName() ? { app: clientName() } : {}), // which agent app this is: support needs it, and so does waitPolicy
+          listener: ls.status,
           privacy: pv.headline,
           access: isSecuredRoom(s.room) ? (loadRoomKey(s.room) ? 'personal: invite only, and you host it (npx -y hivecode-mcp@latest invite <name>)' : 'personal: invite only') : 'open: anyone with the link can join',
           ...(pv.warn ? { privacyWarning: pv.warn } : {}),
@@ -1919,6 +1991,7 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           unread: mailbox().peek(requireSession().hive.doc.getArray('chat')).unreadCount,
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
+          ...(s.twinWarning ? { twinWarning: s.twinWarning } : {}),
           // How full this client's bounded working set is: files open / the bound (HIVE_MAX_OPEN_FILES, or
           // 4096 on one socket, 128 with a socket per file). At the bound, files that were in the room
           // at join arrive when touched; new ones still open (sync.js newRemote), and `waiting` counts
@@ -2283,6 +2356,9 @@ export const _test = {
   // process forgets between them.
   forget: (key) => explained.delete(key),
   mixedLine,
+  listenerStatusFor,
+  settlePresence,
+  joinRoom,
   callTool: (name, args = {}) =>
     server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, {}),
 }
