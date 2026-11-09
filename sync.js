@@ -178,7 +178,7 @@ const endNl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
 // An intent: { b: contentHash(base), h: [[baseStart, baseEnd, newLines]...] }. Null when the diff is too
 // big to describe (lineHunks gave up) or the hunks are larger than INTENT_MAX_LINES: no detection then,
 // exactly as before.
-const INTENT_MAX_LINES = 2000
+const INTENT_MAX_LINES = 400
 export function intentHunks(base, next) {
   const a = base.split('\n'), b = next.split('\n')
   const hs = lineHunks(a, b)
@@ -193,11 +193,26 @@ export function applyIntent(base, h) {
   for (const [bs, be, nl] of [...h].sort((x, y) => y[0] - x[0])) lines.splice(bs, be - bs, ...nl)
   return lines.join('\n')
 }
-// Do two intents change the same base line? Spans that overlap, or a line inserted strictly inside a
-// span the other replaced. Adjacent lines are NOT a clash: the character CRDT merges them correctly, and
-// calling them one is the fork gate's false positive (bigproject W1: 5 agents, 5 adjacent lines, 1 block).
-// Two insertions at the same point are not one either: the CRDT keeps each inserted line whole.
+// Can two saves made from the same text damage each other in the character CRDT? (Opus-Cloud's rule,
+// fuzzed at 0 bad over about 78k pairs.) applyDiff sends ONE character span per save, from its first
+// changed line to its last, so a save's footprint is [first hunk start, last hunk end), not its hunks:
+// A editing lines 1 and 5 while B edits line 3 lost B's line under a per-hunk rule (8,439 of 49,748
+// "no clash" pairs fused or lost an edit). Footprints that overlap clash. Footprints that only touch
+// clash too, because a pure insertion or deletion slides along repeated text into its neighbour, except
+// two same-size line replacements side by side: that is the W1 shape, and the CRDT merges it correctly
+// (0 of 915 fused), so it must not become a conflict as the fork gate makes it.
+const footprint = (h) => (h.length ? [h[0][0], h[h.length - 1][1], h.length === 1 ? h[0][2] : null] : null)
 export function hunksClash(h1, h2) {
+  const a = footprint(h1), b = footprint(h2)
+  if (!a || !b) return false
+  if (Math.max(a[0], b[0]) < Math.min(a[1], b[1])) return true
+  const rep = (f) => f[2] !== null && f[1] > f[0] && f[1] - f[0] === f[2].length
+  const touch = a[1] === b[0] || b[1] === a[0] || (a[0] === a[1] && a[0] >= b[0] && a[0] <= b[1]) || (b[0] === b[1] && b[0] >= a[0] && b[0] <= a[1])
+  return touch && !(rep(a) && rep(b))
+}
+// Do two saves change the same base LINE? The finer question, asked inside a clash: when no two saves
+// do, they can all be applied cleanly and the result needs no markers.
+export function linesOverlap(h1, h2) {
   for (const [a0, a1] of h1) for (const [b0, b1] of h2) {
     if (Math.max(a0, b0) < Math.min(a1, b1)) return true
     if (a0 === a1 && b0 < a0 && a0 < b1) return true
@@ -205,41 +220,43 @@ export function hunksClash(h1, h2) {
   }
   return false
 }
-// The clash region and everything around it, for intents (Map clientID -> h) all made from `base`.
-// [rs, re) spans every base line that two intents both changed. Outside it the intents' hunks are
-// disjoint, so the lines before and after are the base's with those hunks applied, the same for every
-// author; inside it each author has their own version. Null when nothing clashes.
+// The clash region and everything around it, for a clash group (Map clientID -> h, all made from `base`,
+// each clashing with another). [rs, re) spans every member's footprint, so outside it the base is
+// untouched; inside it each author has their own version. Null for an empty group.
 export function clashRegion(base, intents) {
   let rs = Infinity, re = -Infinity
-  const all = [...intents.values()]
-  for (let i = 0; i < all.length; i++) for (let j = 0; j < all.length; j++) {
-    if (i === j) continue
-    for (const hi of all[i]) if (hunksClash([hi], all[j])) { rs = Math.min(rs, hi[0]); re = Math.max(re, hi[1]) }
-  }
+  for (const h of intents.values()) { const f = footprint(h); if (f) { rs = Math.min(rs, f[0]); re = Math.max(re, f[1]) } }
   if (rs === Infinity) return null
   const b = base.split('\n')
-  const where = ([bs, be]) => (be <= rs && !(bs === be && bs === rs && rs === re) ? 'pre' : bs >= re && !(bs === be && bs === re && rs === re && false) ? 'post' : 'in')
-  const pre = b.slice(0, rs), post = b.slice(re)
-  for (const [bs, be, nl] of all.flat().sort((x, y) => y[0] - x[0])) {
-    const w = where([bs, be])
-    if (w === 'pre') pre.splice(bs, be - bs, ...nl)
-    else if (w === 'post') post.splice(bs - re, be - bs, ...nl)
-  }
   const sides = new Map()
   for (const id of [...intents.keys()].sort((x, y) => x - y)) {
     const r = b.slice(rs, re)
-    for (const [bs, be, nl] of [...intents.get(id)].sort((x, y) => y[0] - x[0])) if (where([bs, be]) === 'in') r.splice(bs - rs, be - bs, ...nl)
+    for (const [bs, be, nl] of [...intents.get(id)].sort((x, y) => y[0] - x[0])) r.splice(bs - rs, be - bs, ...nl)
     sides.set(id, r)
   }
-  return { rs, re, pre, post, sides }
+  return { rs, re, pre: b.slice(0, rs), post: b.slice(re), sides }
 }
-// What the file should say once these intents are folded in. Every peer computes the same text: one
-// copy of a change several authors made, and otherwise every author's version of the region, in client
-// order, inside one marker block. merge3 cannot fold a third version in: it strips existing markers so
-// blocks never nest, and the third author's line was lost that way (R6).
+// What the file should say once a clash group is folded in. Every peer computes the same text:
+//  - no two members changed the same line: every change, applied cleanly (the merge the CRDT got wrong);
+//  - otherwise one copy of a change several made, and every distinct version of the region, in client
+//    order, inside one marker block. (merge3 cannot fold a third version in: it strips existing markers
+//    so blocks never nest, and a third author's line was lost that way, R6.)
 export function clashFinal(base, intents, names = new Map()) {
   const r = clashRegion(base, intents)
-  if (!r) { let acc = base; for (const h of intents.values()) acc = applyIntent(acc, h); return acc }
+  if (!r) return base
+  const ids = [...intents.keys()].sort((x, y) => x - y)
+  let fine = false
+  for (let i = 0; i < ids.length && !fine; i++) for (let j = i + 1; j < ids.length; j++) if (linesOverlap(intents.get(ids[i]), intents.get(ids[j]))) { fine = true; break }
+  if (!fine) {
+    // Every hunk at once, each counted from the base, applied from the bottom up. At one start line a span
+    // goes before an insertion there: inserting first let the span delete the inserted line (fuzz: an
+    // added line lost in 6-14% of clashes). Insertions at one point go higher client first, so the lower
+    // client's lines end up first.
+    const all = ids.flatMap((id, k) => intents.get(id).map((h) => [...h, k]))
+    const lines = base.split('\n')
+    for (const [bs, be, nl] of all.sort((x, y) => y[0] - x[0] || (y[1] - y[0]) - (x[1] - x[0]) || y[3] - x[3])) lines.splice(bs, be - bs, ...nl)
+    return lines.join('\n')
+  }
   const distinct = []
   for (const [id, lines] of r.sides) if (!distinct.some((d) => d.lines.join('\n') === lines.join('\n'))) distinct.push({ id, lines })
   const label = (id) => String(names.get(id) || `client ${id}`).replace(/[\r\n]/g, ' ')
@@ -1512,8 +1529,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const b = rememberText(fe, from)
     rememberText(fe, to)
     const me = fe.doc.clientID
-    fe.intent.set(String(me), { b, h, n: name })
+    const v = { b, h, n: name }
+    fe.intent.set(String(me), v)
     fe.intents.set(me, { b, h, n: name, at: Date.now() })
+    // An intent only matters while a race could still be arriving. Left in place it stays in the file's
+    // history forever, and a client gets a new id on every start (review F3), so take ours out after the
+    // window, unless a later save has replaced it.
+    const t = setTimeout(() => {
+      if (stopped || !fileDocs.has(relPath) || fe.intent.get(String(me)) !== v) return
+      try { fe.doc.transact(() => fe.intent.delete(String(me))) } catch { }
+    }, CLASH_WINDOW_MS + 1000)
+    if (t.unref) t.unref()
   }
   // A remote transaction arrived. If it carries an intent made from the same text as another recent
   // intent, and the two changed the same line, the shared text now holds their character union.
@@ -3040,7 +3066,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
             return
           }
         }
-        if (r0.text !== docText) { fe.doc.transact(() => applyDiff(yt, r0.text)); signPublished(relPath, docText, r0.text, disk) }
+        if (r0.text !== docText) { fe.doc.transact(() => { applyDiff(yt, r0.text); if (!FORK_GATE) recordIntent(relPath, fe, docText, r0.text) }); signPublished(relPath, docText, r0.text, disk) }
         if (r0.text !== disk) writeToDisk(relPath, r0.text)
         if (r0.conflict) conflicted.add(relPath)
         bases.set(relPath, r0.text); forkBases.set(relPath, r0.text); shadow.set(relPath, r0.text)
@@ -3109,7 +3135,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // the local side first so the pre-merge bytes are recoverable regardless of outcome.
         captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy before rejoin merge' })
         const rj = icrMerge3(anc, disk, docText, relPath)
-        if (rj.text !== docText) { fe.doc.transact(() => applyDiff(yt, rj.text)); signPublished(relPath, docText, rj.text, disk) }
+        if (rj.text !== docText) { fe.doc.transact(() => { applyDiff(yt, rj.text); if (!FORK_GATE) recordIntent(relPath, fe, docText, rj.text) }); signPublished(relPath, docText, rj.text, disk) }
         if (rj.text !== disk) writeToDisk(relPath, rj.text)
         if (rj.conflict) conflicted.add(relPath)
         bases.set(relPath, rj.text); forkBases.set(relPath, rj.text); shadow.set(relPath, rj.text)

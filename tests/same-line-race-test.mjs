@@ -134,6 +134,22 @@ console.log('\n# R6 three clients, same line, saved at the same moment')
   T('R6 no disk ever held fused text', fusedSeen.length === 0, fusedSeen.join('; '))
 }
 
+// ---- R7 (Opus-Cloud's review F1) ----
+// A save that edits lines 1 and 5 sends ONE character span from line 1 to line 5, so B's line 3 inside it
+// was lost under a per-hunk rule: no line both changed, yet the CRDT damaged it. Both must land, clean.
+console.log('\n# R7 one save edits lines 1 and 5, another edits line 3, at the same moment')
+for (let t = 0; t < 2; t++) {
+  const body = ['l0', 'const v1 = 7', 'l2', 'const v3 = 21', 'l4', 'const v5 = 35', 'l6', ''].join('\n')
+  const f = await seed(body)
+  const a = body.replace('const v1 = 7', 'const v1 = 8').replace('const v5 = 35', 'const v5 = 36')
+  const b = body.replace('const v3 = 21', 'const v3 = 22')
+  write(A, f, a); write(B, f, b)
+  await settled(f); await sleep(2500)
+  const want = a.replace('const v3 = 21', 'const v3 = 22')
+  const texts = clients.map((x) => read(x, f))
+  T(`R7.${t} all three changes kept, no markers, everywhere`, texts.every((s) => s === want), JSON.stringify(texts[0]))
+}
+
 console.log(`\n=== SAME-LINE RACE: ${pass} passed, ${fail} failed ===`)
 for (const x of clients) try { x.c.stop() } catch { }
 relay.kill(); fs.rmSync(TMP, { recursive: true, force: true })
