@@ -10,6 +10,10 @@
 //         with exactly ONE await (not two, and not zero: the two removals are of the same chars)
 //   B2    a comment that quotes "await await" is left alone, in the room and on disk
 //   B3    `await (await x)` written on purpose is left alone
+//   B4    the union itself, put in the shared text by a raw Yjs client (no signed write behind it, as in
+//         the room's server.js): both engines remove the extra await at once, the room and both
+//         folders end with ONE (not two, not zero). B1 alone could not show the fix: two identical
+//         SIGNED writes are also settled by the fork rule (VM-ANTI-G-1's mutant Z1 left B1 green).
 
 import { spawn } from 'child_process'
 import net from 'net'
@@ -42,6 +46,10 @@ const freePort = () => new Promise((resolve, reject) => {
   s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)) })
 })
 const { startSync } = await import(pathToFileURL(path.join(ROOT, 'sync.js')).href)
+const { fileRoom } = await import(pathToFileURL(path.join(ROOT, 'token.js')).href)
+const Y = (await import('yjs')).default ?? (await import('yjs'))
+const { WebsocketProvider } = await import('y-websocket')
+const { WebSocket } = await import('ws')
 const port = await freePort()
 const relay = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(port), HIVE_PERSIST_DIR: 'off' }, stdio: ['ignore', 'pipe', 'pipe'] })
 await new Promise((resolve, reject) => {
@@ -89,6 +97,34 @@ try {
   const r3 = A.edit('n.js', ON_PURPOSE, 'on purpose')
   T('B3 setup: written', r3 && r3.ok, JSON.stringify(r3))
   T('B3 `await (await p)` reaches the peer unchanged', !!(await until(() => readOr(path.join(dB, 'n.js')) === ON_PURPOSE)), JSON.stringify(readOr(path.join(dB, 'n.js'))))
+
+  console.log('\n# B4 the union, injected: both engines remove it at once')
+  {
+    const room4 = 'room-stacked-b4', d4a = tmp('4a'), d4b = tmp('4b')
+    fs.writeFileSync(path.join(d4a, 'm.js'), UPGRADED)
+    const A4 = join(room4, d4a, 'peer-a')
+    await until(() => A4.provider.synced)
+    const B4 = join(room4, d4b, 'peer-b')
+    await until(() => B4.provider.synced)
+    T('B4 setup: both folders hold the single-await copy', !!(await until(() => readOr(path.join(d4b, 'm.js')) === UPGRADED && A4._fileText('m.js') === UPGRADED)))
+    await sleep(800)
+    // A raw participant inserts a second `await ` before the call, exactly what the union of two
+    // peers' identical inserts looks like, with no signed write of its own behind it.
+    const xd = new Y.Doc()
+    const xp = new WebsocketProvider(URL_, fileRoom(room4, 'm.js'), xd, { WebSocketPolyfill: WebSocket, disableBc: true })
+    await until(() => xp.synced, 10000)
+    const xt = xd.getText('content') && xd.getText('content').toString() === UPGRADED ? xd.getText('content') : null
+    const at = xt ? xt.toString().indexOf('await f()') : -1
+    T('B4 setup: the raw participant sees the file', at > 0, `text name or content differs: ${JSON.stringify(xd.share ? [...xd.share.keys()] : [])}`)
+    if (at > 0) xt.insert(at, 'await ')
+    T('B4 setup: the shared text now has the stacked await', !!xt && xt.toString().includes('await await f()'))
+    const done = await until(() =>
+      readOr(path.join(d4a, 'm.js')) === UPGRADED && readOr(path.join(d4b, 'm.js')) === UPGRADED &&
+      A4._fileText('m.js') === UPGRADED && B4._fileText('m.js') === UPGRADED && xt && xt.toString() === UPGRADED, 20000)
+    T('B4 the room and both folders end with exactly one await (removed once, not twice)', !!done,
+      JSON.stringify({ a: (readOr(path.join(d4a, 'm.js')) || '').split('\n')[4], b: (readOr(path.join(d4b, 'm.js')) || '').split('\n')[4], room: xt ? xt.toString().split('\n')[4] : null }))
+    try { xp.destroy() } catch { }
+  }
 } catch (e) {
   fail++; console.log(`  FAIL the suite ran: ${e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e}`)
 } finally {
