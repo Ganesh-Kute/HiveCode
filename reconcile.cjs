@@ -257,9 +257,13 @@ function merge3(base, mine, theirs) {
 
   const cleanBase = hasConflictMarkers(base) ? stripConflictMarkers(base, 'local') : (base || '')
   const cleanMine = hasConflictMarkers(mine) ? stripConflictMarkers(mine, 'local') : (mine || '')
-  // The room's copy holding a conflict block: keep EVERY version in it. Keeping one side dropped the
-  // other author's work whenever a late save merged against the block (P0-F, late-save-merge-test).
-  const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, 'all') : (theirs || '')
+  // A LATE SAVE: the author edited a clean copy and the room's copy now holds a conflict block. Keep
+  // EVERY version in the block: keeping one side dropped the other authors' work (P0-F,
+  // late-save-merge-test). Only then: when the base or the author's copy holds the block too, all three
+  // are stripped alike, as before, or the extra versions read as new lines every round and pile up
+  // (merge-balloon-test).
+  const lateSave = !hasConflictMarkers(base) && !hasConflictMarkers(mine)
+  const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, lateSave ? 'all' : 'theirs') : (theirs || '')
 
   const nm = norm(cleanMine), nt = norm(cleanTheirs), nb = norm(cleanBase)
   if (nm === nt) return { text: nt, conflict: false }
