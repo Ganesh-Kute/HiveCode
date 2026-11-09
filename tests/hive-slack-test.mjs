@@ -58,7 +58,8 @@ const slack = http.createServer((req, res) => {
     const method = req.url.split('/').pop().split('?')[0]
     // Arguments as REAL Slack reads them: a JSON body on a read method is not read (0.14.3 P0-4).
     const j = slackArgs(method, req.headers['content-type'], body, req.url)
-    calls.push({ method, auth: req.headers.authorization, ct: String(req.headers['content-type'] || ''), raw: body, at: Date.now(), ...j })
+    const entry = { method, auth: req.headers.authorization, ct: String(req.headers['content-type'] || ''), raw: body, at: Date.now(), ...j }
+    calls.push(entry)
     const defaultHeaders = { 'Content-Type': 'application/json', 'x-oauth-scopes': DEFAULT_SCOPES }
     if (nextResponses.length) {
       const custom = nextResponses.shift()
@@ -93,8 +94,12 @@ const slack = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` }))
       return
     }
+    // The ts this call was answered with, kept on its record: a test that needs a message's ts reads
+    // it here instead of counting calls (counting broke whenever another method fell through to this
+    // default answer -- 0.14.3, both `slack check` tests, 108/110).
+    entry.tsOut = String(tsSeq++)
     res.writeHead(200, defaultHeaders)
-    res.end(JSON.stringify({ ok: true, ts: String(tsSeq++) }))
+    res.end(JSON.stringify({ ok: true, ts: entry.tsOut }))
   })
 })
 await new Promise((r) => slack.listen(SLACK_PORT, '127.0.0.1', r))
@@ -1036,13 +1041,12 @@ try {
   // (a) Events arrive (exit 0): prompt says "reply anything in this thread", says up front it posts in #dev-agents, and a reply of "ok" passes
   {
     const logs = [], errs = []
+    const callsFrom = calls.length // only THIS check's prompt, never an earlier run's
     const checkWatcher = setInterval(() => {
-      const promptPost = calls.slice().reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
+      const promptPost = calls.slice(callsFrom).reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
       if (promptPost && activeSock && activeSock.readyState === 1) {
         clearInterval(checkWatcher)
-        // Find the ts returned for that prompt (tsSeq - 1 at the time it was answered)
-        const promptIdx = calls.filter((c) => c.method === 'chat.postMessage').length
-        const promptTs = String(1000 + promptIdx - 1)
+        const promptTs = promptPost.tsOut // the ts the fake actually answered the prompt with
         activeSock.send(JSON.stringify({
           envelope_id: 'env-check-ok',
           payload: {
@@ -1187,12 +1191,12 @@ try {
     let checkRetry = 0
     helloNumConnections = () => (++checkRetry === 1 ? 2 : 1)
     const logs = [], errs = []
+    const callsFrom = calls.length // only THIS check's prompt, never an earlier run's
     const checkWatcher = setInterval(() => {
-      const promptPost = calls.slice().reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
+      const promptPost = calls.slice(callsFrom).reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
       if (promptPost && activeSock && activeSock.readyState === 1) {
         clearInterval(checkWatcher)
-        const promptIdx = calls.filter((c) => c.method === 'chat.postMessage').length
-        const promptTs = String(1000 + promptIdx - 1)
+        const promptTs = promptPost.tsOut // the ts the fake actually answered the prompt with
         activeSock.send(JSON.stringify({
           envelope_id: 'env-check-retry-ok',
           payload: {
