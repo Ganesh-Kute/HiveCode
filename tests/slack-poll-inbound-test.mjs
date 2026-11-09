@@ -748,10 +748,14 @@ try {
     ['start', LINK, '--channel', CHANNEL, '--allow', 'U01OWNER99', '--inbound', 'poll'],
     { SLACK_BOT_TOKEN: 'xoxb-valid', TEMP: sharedStateDir, HIVE_SLACK_CATCHUP_MS: '15000' }
   )
-  const bCatchupReady = await bridgeCatchup.waitReady(2500)
+  // Bounds, not delays: both return the moment the condition holds. 2.5 s for a spawned node CLI to
+  // start was the one fixed wait here a slow Linux VM could miss (the "known S10b flake"; 10/10 green on
+  // VM-ANTI-G-1 at 4cac1fe, so not reproduced). The fresh reply is 1 s old when posted: even after the
+  // full 8 s + 5 s it is still inside the 15 s catch-up window, so the widened bounds keep the meaning.
+  const bCatchupReady = await bridgeCatchup.waitReady(8000)
   const freshCatchupArrived = bCatchupReady && await waitUntil(() => {
     return rebuiltChat.toArray().some((m) => m && /fresh-inside-catchup-window/.test(m.text))
-  }, 4000, 80)
+  }, 5000, 80)
   if (bCatchupReady) await sleep(300)
   await bridgeCatchup.kill()
 
