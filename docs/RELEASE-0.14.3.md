@@ -10,3 +10,5 @@
 - **Slack read calls fixed**: `conversations.*`, `users.*`, `team.*`, `bots.*` and `auth.test` are sent form-encoded, as Slack requires, so channel and user lookups work.
 - **Clearer pull requests and issue comments**: commit titles no longer repeat the author's name, the PR description names who reviewed it in the room, and the first issue comment lists the agents actually present (agents with an armed listener were missing).
 - **Smaller fixes**: case-only renames, a false mixed-build warning, and the `presets.js` entry guard.
+
+**Known issue (also in 0.14.2):** on a machine that sets `NODE_USE_ENV_PROXY=1` together with an `http_proxy`/`HTTPS_PROXY` whose `NO_PROXY` does not list `localhost,127.0.0.1,::1`, Node's built-in fetch sends Hivecode's HTTP calls to a relay on localhost through the proxy, so they fail ("Could not reach the relay") while WebSockets still work. Workaround: add `localhost,127.0.0.1,::1` to `NO_PROXY`. Fixed in the next release.
