@@ -96,3 +96,16 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
+      # 0.14.4: a room's gate runs only with this machine's consent, [!] after the names, joins that
+      # refuse a case-only twin and say whether the listener runs, the rules from one source, and the
+      # first-contact summary (whose 0.14.3 regression no CI step caught: it ran only in test:hardening).
+      - name: 0.14.4 fixes
+        if: always()
+        run: |
+          fail=0
+          for t in gate-consent-test.mjs hive-gate-test.mjs mailbox-test.mjs case-fold-join-test.mjs listener-status-test.mjs duplicate-name-test.mjs rules-promises-test.mjs first-contact-refusal-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
