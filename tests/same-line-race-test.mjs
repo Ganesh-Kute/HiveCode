@@ -10,6 +10,8 @@
 //   R4 40 ms apart                       -> markers, as before
 //   R5 lines far apart, 0 ms             -> clean merge
 //   R6 three clients, same line, 0 ms    -> every version kept, nothing fused
+//   R8 a deleted line beside a changed one, code lines sharing a prefix, 0 ms -> clean merge (Opus-Cloud)
+//   R9 two clients on one line, a third elsewhere in the file, 0 ms -> the third edit survives the resolution (Opus-Cloud)
 //
 //   node tests/same-line-race-test.mjs
 import fs from 'fs'
@@ -148,6 +150,34 @@ for (let t = 0; t < 2; t++) {
   const want = a.replace('const v3 = 21', 'const v3 = 22')
   const texts = clients.map((x) => read(x, f))
   T(`R7.${t} all three changes kept, no markers, everywhere`, texts.every((s) => s === want), JSON.stringify(texts[0]))
+}
+
+// ---- R8 ---- a deleted line slides along the prefix its neighbour shares: "const valpha()".
+console.log('\n# R8 a deleted line beside a changed line, at the same moment')
+{
+  const body = ['const v0 = 0', 'const v1 = 7', 'const v2 = 14', 'const v3 = 21', 'const v4 = 28', 'const v5 = 35', ''].join('\n')
+  const want = body.replace('const v3 = 21\n', '').replace('const v4 = 28', 'alpha()')
+  const f = await seed(body)
+  const stop = watchDisks(f, /const valpha|alpha\(\)4/)
+  write(A, f, body.replace('const v3 = 21\n', '')); write(B, f, body.replace('const v4 = 28', 'alpha()'))
+  await settled(f); await sleep(2500)
+  const bad = stop(), texts = clients.map((x) => read(x, f))
+  T('R8 every folder holds both edits, merged cleanly', texts.every((s) => s === want), JSON.stringify(texts[0]))
+  T('R8 no disk ever held fused text', bad.length === 0, bad.join('; '))
+}
+
+// ---- R9 ---- the resolution is built from every save made from that text, not only the clashing ones.
+console.log('\n# R9 two clients on one line and a third elsewhere, at the same moment')
+{
+  const body = 'plan\nship friday\nowner: team\nnotes\n'
+  const f = await seed(body)
+  const stop = watchDisks(f, /montues|tuesmon/)
+  write(A, f, body.replace('friday', 'monday')); write(B, f, body.replace('friday', 'tuesday')); write(C, f, body.replace('notes', 'notes by Carol'))
+  await settled(f); await sleep(2500)
+  const bad = stop(), texts = clients.map((x) => read(x, f))
+  T('R9 every folder holds one block with both versions', new Set(texts).size === 1 && texts.every((s) => markers(s) && s.includes('ship monday') && s.includes('ship tuesday')), JSON.stringify(texts[0]))
+  T("R9 ...and Carol's edit elsewhere is still there", texts.every((s) => s.includes('notes by Carol')), JSON.stringify(texts[0]))
+  T('R9 no disk ever held fused text', bad.length === 0, bad.join('; '))
 }
 
 console.log(`\n=== SAME-LINE RACE: ${pass} passed, ${fail} failed ===`)

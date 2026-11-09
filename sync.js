@@ -220,71 +220,99 @@ export function linesOverlap(h1, h2) {
   }
   return false
 }
-// The clash region and everything around it, for a clash group (Map clientID -> h, all made from `base`,
-// each clashing with another). [rs, re) spans every member's footprint, so outside it the base is
-// untouched; inside it each author has their own version. Null for an empty group.
+// Two hunks share a base line: spans that overlap, or a line inserted strictly inside the other's span.
+function spansMeet([a0, a1], [b0, b1]) {
+  if (Math.max(a0, b0) < Math.min(a1, b1)) return true
+  if (a0 === a1 && b0 < a0 && a0 < b1) return true
+  if (b0 === b1 && a0 < b0 && b0 < a1) return true
+  return false
+}
+// The clash region and everything around it, for intents (Map clientID -> h) all made from `base`.
+// [rs, re) spans every base line that two intents both changed. Outside it the intents' hunks are
+// disjoint, so the lines before and after are the base's with those hunks applied, the same for every
+// author; inside it each author has their own version. Null when nothing clashes.
 export function clashRegion(base, intents) {
   let rs = Infinity, re = -Infinity
-  for (const h of intents.values()) { const f = footprint(h); if (f) { rs = Math.min(rs, f[0]); re = Math.max(re, f[1]) } }
+  const all = [...intents.values()]
+  for (let i = 0; i < all.length; i++) for (let j = 0; j < all.length; j++) {
+    if (i === j) continue
+    for (const hi of all[i]) if (hunksClash([hi], all[j])) { rs = Math.min(rs, hi[0]); re = Math.max(re, hi[1]) }
+  }
   if (rs === Infinity) return null
   const b = base.split('\n')
+  // Before the region, inside it, or after. An insertion AT either edge is inside: it touches the clash.
+  const where = ([bs, be]) => (be < rs || (be === rs && bs < rs) ? 'pre' : bs > re || (bs === re && be > re) ? 'post' : 'in')
+  const hs = tagged(intents)
+  const pre = applyTagged(b.slice(0, rs), hs.filter((x) => where(x) === 'pre'))
+  const post = applyTagged(b.slice(re), hs.filter((x) => where(x) === 'post'), re)
+  const inside = hs.filter((x) => where(x) === 'in')
   const sides = new Map()
-  for (const id of [...intents.keys()].sort((x, y) => x - y)) {
-    const r = b.slice(rs, re)
-    for (const [bs, be, nl] of [...intents.get(id)].sort((x, y) => y[0] - x[0])) r.splice(bs - rs, be - bs, ...nl)
-    sides.set(id, r)
-  }
-  return { rs, re, pre: b.slice(0, rs), post: b.slice(re), sides }
+  for (const id of [...intents.keys()].sort((x, y) => x - y)) sides.set(id, applyTagged(b.slice(rs, re), inside.filter((x) => x[3] === id), rs))
+  return { rs, re, pre, post, sides, inside }
 }
-// What the file should say once a clash group is folded in. Every peer computes the same text:
-//  - no two members changed the same line: every change, applied cleanly (the merge the CRDT got wrong);
-//  - otherwise one copy of a change several made, and every distinct version of the region, in client
-//    order, inside one marker block. (merge3 cannot fold a third version in: it strips existing markers
-//    so blocks never nest, and a third author's line was lost that way, R6.)
+// Every hunk tagged with its author, in the one order every peer applies them: from the bottom up; at one
+// start line a span before an insertion there (inserting first let the span delete the inserted line);
+// insertions at one point higher client first, so the lower client's lines come first. Never arrival order.
+function tagged(intents) {
+  return [...intents].flatMap(([id, h]) => h.map((x) => [x[0], x[1], x[2], id])).sort((x, y) => y[0] - x[0] || (y[1] - y[0]) - (x[1] - x[0]) || y[3] - x[3])
+}
+function applyTagged(lines, hs, off = 0) { for (const [bs, be, nl] of hs) lines.splice(bs - off, be - bs, ...nl); return lines }
+// What the file should say once these intents (every save made from `base` at that moment) are folded in.
+// Every peer computes the same text:
+//  - no two authors changed the same line: every change applied cleanly (the merge the CRDT got wrong);
+//  - otherwise one marker block over the region where they did, holding each distinct version once, in
+//    client order; an author who left that region as it was is not a version. Changes elsewhere, by
+//    anyone, are applied around the block. (merge3 cannot fold a third version in: it strips existing
+//    markers so blocks never nest, and the third author's line was lost that way, R6.)
 export function clashFinal(base, intents, names = new Map()) {
   const r = clashRegion(base, intents)
-  if (!r) return base
-  const ids = [...intents.keys()].sort((x, y) => x - y)
-  let fine = false
-  for (let i = 0; i < ids.length && !fine; i++) for (let j = i + 1; j < ids.length; j++) if (linesOverlap(intents.get(ids[i]), intents.get(ids[j]))) { fine = true; break }
-  if (!fine) {
-    // Every hunk at once, each counted from the base, applied from the bottom up. At one start line a span
-    // goes before an insertion there: inserting first let the span delete the inserted line (fuzz: an
-    // added line lost in 6-14% of clashes). Insertions at one point go higher client first, so the lower
-    // client's lines end up first.
-    const all = ids.flatMap((id, k) => intents.get(id).map((h) => [...h, k]))
-    const lines = base.split('\n')
-    for (const [bs, be, nl] of all.sort((x, y) => y[0] - x[0] || (y[1] - y[0]) - (x[1] - x[0]) || y[3] - x[3])) lines.splice(bs, be - bs, ...nl)
-    return lines.join('\n')
-  }
-  const distinct = []
-  for (const [id, lines] of r.sides) if (!distinct.some((d) => d.lines.join('\n') === lines.join('\n'))) distinct.push({ id, lines })
-  const label = (id) => String(names.get(id) || `client ${id}`).replace(/[\r\n]/g, ' ')
+  if (!r) return applyTagged(base.split('\n'), tagged(intents)).join('\n')
+  const reg = base.split('\n').slice(r.rs, r.re)
+  const changed = [...r.sides].filter(([, l]) => J(l) !== J(reg))
+  const meet = r.inside.some((p, i) => r.inside.some((q, j) => j > i && p[3] !== q[3] && J(p.slice(0, 3)) !== J(q.slice(0, 3)) && spansMeet(p, q)))
   let mid
-  if (distinct.length === 1) mid = distinct[0].lines
-  else if (distinct.length === 2) mid = [`<<<<<<< ${label(distinct[0].id)}`, ...distinct[0].lines, '=======', ...distinct[1].lines, `>>>>>>> ${label(distinct[1].id)}`]
-  else {
-    mid = [`<<<<<<< ${label(distinct[0].id)}`, ...distinct[0].lines]
-    for (const d of distinct.slice(1)) mid.push(`======= ${label(d.id)}`, ...d.lines)
-    mid.push(`>>>>>>> ${distinct.length} versions`)
+  if (!changed.length) mid = reg
+  else if (!meet) {
+    const seen = new Set()
+    mid = applyTagged(reg.slice(), r.inside.filter((x) => { const k = J(x.slice(0, 3)); if (seen.has(k)) return false; seen.add(k); return true }), r.rs)
+  } else {
+    const distinct = []
+    for (const [id, lines] of changed) if (!distinct.some((d) => J(d.lines) === J(lines))) distinct.push({ id, lines })
+    const label = (id) => String(names.get(id) || `client ${id}`).replace(/[\r\n]/g, ' ')
+    if (distinct.length === 1) mid = distinct[0].lines
+    else if (distinct.length === 2) mid = [`<<<<<<< ${label(distinct[0].id)}`, ...distinct[0].lines, '=======', ...distinct[1].lines, `>>>>>>> ${label(distinct[1].id)}`]
+    else {
+      mid = [`<<<<<<< ${label(distinct[0].id)}`, ...distinct[0].lines]
+      for (const d of distinct.slice(1)) mid.push(`======= ${label(d.id)}`, ...d.lines)
+      mid.push(`>>>>>>> ${distinct.length} versions`)
+    }
   }
   return [...r.pre, ...mid, ...r.post].join('\n')
 }
-// May `final` replace `current` without losing anything? Only when the two differ inside the clash
-// region alone. The char-CRDT's union of the same saves differs from `final` only there; any other
-// difference is an edit someone made since, and writing `final` over it would delete that edit.
+const J = (x) => JSON.stringify(x)
+// The text every folder holds once these saves (Map clientID -> hunks, all made from `base`) have crossed:
+// their character union. It depends only on the base text, each author's text and their client ids, not on
+// the history that built the base (tests/same-line-intent-unit-test.mjs, CU rows), so every peer can
+// rebuild it exactly from the intents alone.
+export function clashUnion(base, intents) {
+  const root = new Y.Doc(); root.clientID = 0; root.getText('t').insert(0, base)
+  const seed = Y.encodeStateAsUpdate(root)
+  const docs = [...intents].sort((x, y) => x[0] - y[0]).map(([id, h]) => { const d = new Y.Doc(); d.clientID = id; Y.applyUpdate(d, seed); applyDiff(d.getText('t'), applyIntent(base, h)); return d })
+  if (!docs.length) return base
+  const ups = docs.map((d) => Y.encodeStateAsUpdate(d))
+  for (const u of ups) Y.applyUpdate(docs[0], u)
+  const out = docs[0].getText('t').toString()
+  for (const d of docs) d.destroy(); root.destroy()
+  return out
+}
+// May `final` replace `current` without losing anything? Exactly when `current` is nothing but these saves'
+// union: then nobody has changed the file since, anywhere in it. (Framing the clash region was not enough:
+// the union also mangles lines around the region, so half of all real clashes were refused and their fused
+// text landed; and an edit made since INSIDE the region passed the frames and was overwritten.)
 export function clashOnlyRegion(base, intents, final, current) {
   if (final === current) return true
-  const r = clashRegion(base, intents)
-  if (!r) return false
-  const frames = (t) => {
-    const l = t.split('\n')
-    if (l.length < r.pre.length + r.post.length) return false
-    for (let i = 0; i < r.pre.length; i++) if (l[i] !== r.pre[i]) return false
-    for (let i = 0; i < r.post.length; i++) if (l[l.length - r.post.length + i] !== r.post[i]) return false
-    return true
-  }
-  return frames(final) && frames(current)
+  if (!clashRegion(base, intents)) return false
+  return current === clashUnion(base, intents)
 }
 
 // HIV-P17. Why a creation race of relPath must NOT land, '' when it may: 'CONFLICT' when two whole
@@ -1588,7 +1616,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!group) { fe.clashHold = null; reconcile(relPath, 'remote'); return }
     const ids = [...group.keys()].sort((x, y) => x - y)
     const key = `${b}|${ids.join(',')}`
-    const final = clashFinal(base, group, new Map(ids.map((i) => [i, (fe.intents.get(i) || {}).n])))
+    // Every save made from this text at the same moment is in the shared text's union, the ones that
+    // clash and the ones that do not: the resolution is computed from all of them, or it would delete a
+    // non-clashing author's edit (and be refused, since the union would not match: R9).
+    const all = new Map([...fe.intents].filter(([, v]) => v.b === b).map(([c, v]) => [c, v.h]))
+    const final = clashFinal(base, all, new Map([...all.keys()].map((i) => [i, (fe.intents.get(i) || {}).n])))
     const current = fe.text.toString()
     const who = ids.map((i) => (fe.intents.get(i) || {}).n || String(i)).join(', ')
     if (fe.clashDone.has(key) || current === final) { fe.clashHold = null; reconcile(relPath, 'remote'); return }
@@ -1597,7 +1629,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // the resolution would overwrite it, so do not resolve; say so.
     const since = Math.min(...ids.map((i) => (fe.intents.get(i) || {}).at || Infinity))
     const later = [...fe.intents].some(([, v]) => v.b !== b && v.at > since)
-    if (later || !clashOnlyRegion(base, group, final, current)) {
+    if (later || !clashOnlyRegion(base, all, final, current)) {
       // The file changed outside the clash since: writing the resolution would delete that change.
       log(`[${name}] same-line race in ${relPath} (${who}) not resolved: the file changed since`)
       try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
@@ -1619,7 +1651,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const t = setTimeout(() => {
       if (stopped || fe.clashHold == null || fe.clashHold.final !== final) return
       const cur = fe.text.toString()
-      if (cur !== final && participant && clashOnlyRegion(base, group, final, cur)) {
+      if (cur !== final && participant && clashOnlyRegion(base, all, final, cur)) {
         log(`[${name}] same-line race in ${relPath}: no resolution arrived in ${CLASH_HOLD_MS / 1000} s, writing it`)
         fe.doc.transact(() => applyDiff(fe.text, final))
       }
