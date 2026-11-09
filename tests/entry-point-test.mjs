@@ -30,6 +30,11 @@ const BROKEN = /import\.meta\.url\s*===\s*`file:\/\/\//
 console.log('# E1 no string-built file:/// entry checks in shipped files')
 const offenders = shipped.filter((f) => BROKEN.test(fs.readFileSync(path.join(ROOT, f), 'utf8')))
 T(`E1 ${shipped.length} shipped files checked; none compares import.meta.url to a file:/// string`, offenders.length === 0, offenders.join(', '))
+// Not only shipped files: presets.js is not in package.json "files" but is run as `node presets.js`
+// from a checkout, and kept the broken check after 5c24d7d (0.14.3 P1-12).
+const rootJs = fs.readdirSync(ROOT).filter((f) => /\.(m?js|cjs)$/.test(f))
+const rootOffenders = rootJs.filter((f) => BROKEN.test(fs.readFileSync(path.join(ROOT, f), 'utf8')))
+T(`E1b ${rootJs.length} top-level programs checked, shipped or not; none uses the file:/// string check`, rootOffenders.length === 0, rootOffenders.join(', '))
 
 // E2: programs a user starts directly, each with arguments that make main() say something and stop
 // without a network: missing tokens or a bad flag. What matters is that main() RAN.
@@ -38,6 +43,9 @@ const PROGRAMS = [
   ['hive-slack-agent.js', ['ws://127.0.0.1:9|room-entrypoint', '--channel', 'D-TEST'], { SLACK_BOT_TOKEN: '', SLACK_APP_TOKEN: '' }],
   ['hive-slack.js', ['start', 'ws://127.0.0.1:9|room-entrypoint', '--channel', 'C-TEST'], { SLACK_BOT_TOKEN: '', SLACK_APP_TOKEN: '' }],
 ].filter(([f]) => shipped.includes(f))
+// Run from a checkout, not shipped: still a program somebody starts directly. It exits 0 on --list,
+// so for it "main() ran" is exit 0 WITH output (the broken check exited 0 with none).
+PROGRAMS.push(['presets.js', ['--list'], {}, 0])
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-entry-'))
 const link = path.join(tmp, 'pkg')
 let linked = false
@@ -50,7 +58,9 @@ for (const [file, args, env] of PROGRAMS) {
       env: { ...process.env, ...env, HIVE_NO_UPDATE_CHECK: '1' },
     })
     const said = `${r.stdout || ''}${r.stderr || ''}`.trim()
-    T(`E2 ${file} via ${how}: main() ran (non-zero exit with a message)`, r.status !== 0 && said.length > 0,
+    const wantExit = PROGRAMS.find((p) => p[0] === file)[3]
+    const exitOk = wantExit === undefined ? r.status !== 0 : r.status === wantExit
+    T(`E2 ${file} via ${how}: main() ran (${wantExit === undefined ? 'non-zero exit' : `exit ${wantExit}`} with a message)`, exitOk && said.length > 0,
       `exit=${r.status} out=${JSON.stringify(said.slice(0, 160))}`)
   }
 }
