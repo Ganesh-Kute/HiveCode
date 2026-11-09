@@ -270,11 +270,15 @@ try {
   for (const [tag, ownChange] of [['W10a', false], ['W10b', true]]) {
     console.log(`\n# ${tag} a disk write (not hive_edit) while the file's channel is held at OPEN${ownChange ? ', on top of a local change the room never saw' : ''}`)
     const room = `room-pollexit-${tag.toLowerCase()}`, dB = tmp(`${tag}b`), dA = tmp(`${tag}a`)
-    fs.writeFileSync(path.join(dB, 'r3.txt'), 'v0\n')
+    // Five lines, so a change at the top and one at the bottom are far apart: a merge then settles
+    // them cleanly, with no markers to hide behind (VM-ANTI-G-1's mutant R2 survived an adjacent pair).
+    const V0 = 'a\nb\nc\nd\ne\n'
+    fs.writeFileSync(path.join(dB, 'r3.txt'), V0)
     const B = join(relay.url, room, dB, 'peer-ws'); live.push(B)
     await synced(B)
-    // W10b: the folder carries L, a change the room never saw (review R1): it must not be merged away.
-    fs.writeFileSync(path.join(dA, 'r3.txt'), ownChange ? 'v0\nL\n' : 'v0\n')
+    // W10b: the folder carries L at the top, a change the room never saw (review R1): it must not be
+    // merged away when the edit at the bottom goes out.
+    fs.writeFileSync(path.join(dA, 'r3.txt'), ownChange ? 'L\n' + V0 : V0)
     proxy.gate.holdOpen = 'r3.txt'
     const muxWas = process.env.HIVE_MUX
     process.env.HIVE_MUX = '0'
@@ -284,7 +288,7 @@ try {
     await synced(A)
     const held = await until(() => proxy.gate.heldOpen.length >= 1, 10000, 20)
     T(`${tag} setup: the file's channel is open-pending`, !!held)
-    const want = ownChange ? 'v0\nL\nv1\n' : 'v1\n'
+    const want = ownChange ? 'L\n' + V0 + 'v1\n' : V0 + 'v1\n'
     fs.writeFileSync(path.join(dA, 'r3.txt'), want) // the agent's own file tool, not hive_edit
     await sleep(1200) // the watcher reports it while the file still cannot sync
     proxy.releaseOpen()
@@ -294,8 +298,11 @@ try {
     } else {
       await sleep(4000)
       const peer = readOr(path.join(dB, 'r3.txt')), agent = readOr(path.join(dA, 'r3.txt'))
-      T(`${tag} L (never in the room) is not merged away: it survives on the agent's disk or in the room`, /\nL\n/.test(agent || '') || /\nL\n/.test(peer || ''), JSON.stringify({ peer, agent }))
-      T(`${tag} ...and so does the edit made on top of it`, /v1/.test(agent || '') || /v1/.test(peer || ''), JSON.stringify({ peer, agent }))
+      // The room never held L, so there is no proven ancestor: the folder keeps its copy as it is
+      // (announced, not sent). With the ancestor taken on trust, the merge would read the room as
+      // "L removed" and delete it from the folder too, cleanly, no markers.
+      T(`${tag} L (never in the room) is not merged away: the agent's copy is kept whole`, agent === want, JSON.stringify({ peer, agent }))
+      T(`${tag} ...with no conflict markers anywhere`, !/^<<<<<<< /m.test(agent || '') && !/^<<<<<<< /m.test(peer || ''), JSON.stringify({ peer, agent }))
     }
   }
 
