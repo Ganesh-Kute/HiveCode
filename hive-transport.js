@@ -24,7 +24,8 @@
 // set when node started, so the WebSocket died with ENOTFOUND, the long-poll probe died the same
 // way, and hive_join said "the relay refused the connection" about a relay it never reached. Now:
 //   - proxyFor(url) picks the proxy: HIVE_PROXY (a URL, or off), else HTTPS_PROXY for wss:/https:
-//     and HTTP_PROXY for ws:/http:. NO_PROXY is honoured; loopback never goes through a proxy.
+//     and HTTP_PROXY for ws:/http:. NO_PROXY is honoured; loopback never goes through a proxy,
+//     including where node's env-proxy mode would send it there (directFetch).
 //   - Both pipes ride an HTTP CONNECT tunnel through it: the WebSocket (an agent for `ws`) and the
 //     long-poll requests (fetchFor). Through a tunnel to a wss:// relay the proxy sees only
 //     "CONNECT host:443"; the path and query -- where the room token rides -- stay inside TLS.
@@ -184,13 +185,46 @@ function tunnelAgent(proxy, secure, kind = 'fetch') {
 
 /** A fetch-shaped call carried over the tunnel agent: just what offersPoll and PollSocket use. */
 function proxyFetch(proxy, url, init = {}) {
+  return agentFetch(url, init, (secure) => tunnelAgent(proxy, secure))
+}
+
+// DIRECT MEANS DIRECT, EVEN WHERE NODE APPLIES THE ENV PROXY ITSELF. With env-proxy mode on
+// (NODE_USE_ENV_PROXY=1 or --use-env-proxy, what Antigravity's VMs run), the built-in fetch AND http's
+// global agent send every request through http(s)_proxy unless node's own NO_PROXY exempts it. So a
+// call proxyFor() had decided was direct -- loopback, a NO_PROXY match, HIVE_PROXY=off -- went to the
+// proxy anyway: a self-hosted relay on localhost was "unreachable" for an invite revoke or the /health
+// probe while its WebSockets worked (antigravity-VM, 9 Nov 2026; tests/loopback-direct-fetch-test.mjs).
+// Measured on node 22.23 and 24.22: an agent of our own is never proxied. Used only in env-proxy mode,
+// so everywhere else a direct call is still the built-in fetch, exactly as before.
+// Node fixes the mode ONCE, AT STARTUP: clearing NODE_USE_ENV_PROXY later does not turn it off (a
+// first version read it per call, and proxy-fetch-test, which clears it mid-run, still went to the
+// proxy). So the mode is read when this module loads -- the nearest point to node's own decision --
+// and a per-call env can only add it, never take it away.
+const envProxyIn = (env) => {
+  if (/^(1|true|yes|on)$/i.test(String((env && env.NODE_USE_ENV_PROXY) || '').trim())) return true
+  return /(^|\s)--use-env-proxy(\s|=|$)/.test(String((env && env.NODE_OPTIONS) || ''))
+}
+const ENV_PROXY_AT_START = envProxyIn(process.env) || process.execArgv.includes('--use-env-proxy')
+const envProxyMode = (env = process.env) => ENV_PROXY_AT_START || envProxyIn(env)
+const directAgents = new Map()
+function directAgent(secure) {
+  let a = directAgents.get(secure)
+  if (!a) { a = new (secure ? https.Agent : http.Agent)({ keepAlive: true, maxFreeSockets: 4 }); directAgents.set(secure, a) }
+  return a
+}
+function directFetch(url, init = {}) {
+  return agentFetch(url, init, directAgent)
+}
+
+/** The request behind proxyFetch and directFetch: `agentFor(secure)` picks the agent that carries it. */
+function agentFetch(url, init, agentFor) {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
     const secure = u.protocol === 'https:'
     const body = init.body == null ? null : Buffer.from(init.body)
     const headers = { ...(init.headers || {}) }
     if (body) headers['content-length'] = String(body.length)
-    const req = (secure ? https : http).request(u, { method: init.method || 'GET', headers, agent: tunnelAgent(proxy, secure) }, (res) => {
+    const req = (secure ? https : http).request(u, { method: init.method || 'GET', headers, agent: agentFor(secure) }, (res) => {
       const chunks = []
       res.on('data', (c) => chunks.push(c))
       res.on('error', reject)
@@ -218,10 +252,11 @@ function proxyFetch(proxy, url, init = {}) {
   })
 }
 
-/** The fetch to reach `url` with: through the proxy tunnel when one applies, else the built-in one. */
+/** The fetch to reach `url` with: through the proxy tunnel when one applies, else direct (see directFetch). */
 export function fetchFor(url, env = process.env) {
   const p = proxyFor(url, env)
-  return p ? (u, init) => proxyFetch(p, u, init) : globalThis.fetch
+  if (p) return (u, init) => proxyFetch(p, u, init)
+  return envProxyMode(env) ? directFetch : globalThis.fetch
 }
 
 /**
