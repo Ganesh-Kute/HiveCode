@@ -1619,6 +1619,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     scheduleEvictRecheck()
     return e
   }
+  // `await await f()` THAT NOBODY WROTE (0.14.3 P0-5-3). Two peers making the same sync -> async change
+  // at once each insert `await ` before the same call (each merge is right on its own), and the shared
+  // text keeps both inserts. Remove the outer one, here, before the room's copy reaches the disk:
+  // pure deletes of the spans lang.stackedAwaits finds (AST-level, whitespace-only between, so a
+  // comment or a string that says "await await" is never touched). On the same converged text every
+  // peer deletes the same characters, so two peers doing it at once remove them once. Never a
+  // whole-text diff: that would delete and re-insert everything between two such spots, and two
+  // peers re-inserting the same middle is the fusion this engine exists to prevent. Skipped when
+  // this folder's own copy has one (its author wrote it) and for a file this member cannot write.
+  function dropStackedAwaits(relPath, fe, disk) {
+    try {
+      if (!supports(relPath) || !canWrite(relPath)) return false
+      const lang = languageFor(relPath)
+      if (!lang || typeof lang.stackedAwaits !== 'function') return false
+      const t = fe.text.toString()
+      if (!/\bawait\s+await\b/.test(t)) return false
+      if (typeof disk === 'string' && /\bawait\s+await\b/.test(disk) && lang.stackedAwaits(disk).length) return false
+      const spans = lang.stackedAwaits(t)
+      if (!spans.length) return false
+      fe.doc.transact(() => { for (let i = spans.length - 1; i >= 0; i--) fe.text.delete(spans[i][0], spans[i][1] - spans[i][0]) })
+      log(`[${name}] ${relPath}: removed ${spans.length} stacked \`await\` left by two peers making the same change at once`)
+      return true
+    } catch { return false }
+  }
   /** Has the relay accepted every local change to this file? (See unsentLocal.) */
   function isSentNow(relPath) {
     if (!unsentLocal.has(relPath)) return true
@@ -2722,6 +2746,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // clean again -> a resolution landed elsewhere; adopt it (order-independent w/ observer).
       if (disk !== null && hasConflictMarkers(disk) && !hasConflictMarkers(fe.text.toString())) { adoptResolved(relPath); return }
     }
+    dropStackedAwaits(relPath, fe, disk) // before anything reads the room's copy (0.14.3 P0-5-3)
     const docText = fe.text.toString()
     // An empty shared doc is authoritative ONLY if we have history for this path.
     // A file's NAME lives in the parent doc and its CONTENT in the file's own doc, on two

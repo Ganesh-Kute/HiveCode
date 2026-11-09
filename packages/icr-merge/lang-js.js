@@ -297,6 +297,31 @@ function upgradeCallSitesToAwait(src, fnName) {
   }
 }
 
+// STACKED AWAITS LEFT BY A CRDT UNION (0.14.3 P0-5-3). Two peers making the same sync -> async
+// change at once each insert `await ` before the same call; the shared text keeps BOTH inserts, so
+// the room reads `await await f()`. No merge can prevent that (each peer's merge is right on its own),
+// so the engine removes it afterwards. Returns the [start, end) spans to delete: for every
+// `await await x`, the OUTER `await` and the whitespace after it, and only when nothing but whitespace
+// separates the two (so `await (await x)`, a comment, or a string is never touched). On the same
+// converged text every peer computes the same spans, so their deletes are of the same characters.
+function stackedAwaits(src) {
+  let ast
+  try { ast = parse(src) } catch { return [] }
+  const spans = []
+  const walk = (node) => {
+    if (!node || typeof node.type !== 'string') return
+    if (node.type === 'AwaitExpression' && node.argument && node.argument.type === 'AwaitExpression' &&
+        /^await\s+$/.test(src.slice(node.start, node.argument.start))) spans.push([node.start, node.argument.start])
+    for (const k of Object.keys(node)) {
+      if (k === 'type' || k === 'start' || k === 'end' || k === 'loc' || k === 'range') continue
+      const v = node[k]
+      if (Array.isArray(v)) { for (const c of v) walk(c) } else if (v && typeof v.type === 'string') walk(v)
+    }
+  }
+  walk(ast)
+  return spans.sort((a, b) => a[0] - b[0])
+}
+
 // Find callers of `fnName` that are synchronous (cannot be auto-awaited without changing the caller's signature)
 function syncCallSitesOf(src, fnName) {
   const syncCallers = []
@@ -659,6 +684,7 @@ export const javascript = {
   declBody,
   isAsyncDecl,
   upgradeCallSitesToAwait,
+  stackedAwaits,        // spans of `await await` a CRDT union left (P0-5-3)
   syncCallSitesOf,
   renameRefs,           // rewrites every matching identifier (kept for reference)
   renameFreeRefs,       // scope-aware â€” only rewrites references that resolve to the binding
