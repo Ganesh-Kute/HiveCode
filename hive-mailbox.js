@@ -19,6 +19,7 @@
 // relay, a room, or a network.
 
 import { formatTime } from './hive-time.js'
+import { isYArray, itemsOf, makeFrontier, frontierOfPrefix, covers } from './hive-seen.js'
 
 /** A chat message as stored in the room: { by, kind, at, text }. */
 
@@ -431,17 +432,57 @@ export function collapseRepeats(messages) {
 /**
  * A read cursor over the room chat.
  *
- * @param {{me: string, startAt?: number}} options
- *   me      this participant's display name
- *   startAt where to begin. On a first join this is the current chat length, so an agent is
- *           not handed the room's entire history; on a resume it is the persisted cursor, so
- *           nothing posted while the process was down is lost.
+ * @param {{me: string, startAt?: number, frontier?: object}} options
+ *   me       this participant's display name
+ *   startAt  where to begin. On a first join this is the current chat length, so an agent is
+ *            not handed the room's entire history; on a resume it is the persisted cursor, so
+ *            nothing posted while the process was down is lost.
+ *   frontier a persisted read frontier (hive-seen.js), which outranks startAt when present.
+ *
+ * TWO MODES, ONE SHAPE (0.14.4). Given the room's Y.Array, "read" is a FRONTIER of Yjs ids: a
+ * message is unread iff its id is not covered, wherever it sits, so a late push that integrates
+ * BEHIND messages already read is still delivered (hive-seen.js has the incident). Given a plain JS
+ * array -- which can only ever be appended to -- the count cursor below is exact, and is kept as it
+ * was. Every product caller passes the Y.Array; a plain array is for tests and tools.
  */
-export function createMailbox({ me, startAt = 0 }) {
+export function createMailbox({ me, startAt = 0, frontier = null }) {
   let cursor = Math.max(0, Number(startAt) || 0)
+  // null until the first Y.Array read, which seeds it from `cursor` once (the migration from a count)
+  let read = frontier && typeof frontier === 'object' ? makeFrontier(frontier) : null
+  // What this agent's LISTENER handed over (A6). It never marks anything read: a mention it covers is
+  // delivered once more, tagged; ambient lines it already scanned stay skipped, as before 0.14.4.
+  let handed = null // { frontier: {client: clock}, at: 'hh:mm' }
+
+  function collectY(yarr, { advance }) {
+    const items = itemsOf(yarr)
+    if (!read && cursor > items.length) cursor = 0 // a rebuilt room: see the comment in collect()
+    const f = read || frontierOfPrefix(yarr, cursor)
+    const incoming = []
+    for (const { id, value: m } of items) {
+      if (f.has(id)) continue
+      if (advance) f.add(id) // seen = walked, whatever it was and wherever it landed
+      if (!m || m.by === me) continue
+      const wasHanded = handed && covers(handed.frontier, id)
+      if (wasHanded && !mentionsName(m.text, me)) continue
+      incoming.push(wasHanded ? { ...m, handed: handed.at || true } : m)
+    }
+    if (advance) { read = f; cursor = items.length }
+    const messages = collapseRepeats(incoming)
+    const mentions = messages.filter((m) => mentionsName(m.text, me))
+    const urgent = mentions.filter((m) => priorityOf(m.text) === 'stop')
+    return {
+      messages,
+      mentions,
+      mentioned: mentions.length > 0,
+      priority: urgent.length ? 'stop' : 'normal',
+      unreadCount: incoming.length,
+      cursor,
+    }
+  }
 
   /** Read without consuming. `advance` is what `take` does; kept separate so a peek is safe. */
   function collect(all, { advance }) {
+    if (isYArray(all)) return collectY(all, { advance })
     const list = Array.isArray(all) ? all : []
     // A cursor past the end means this position belongs to a different document — a room
     // rebuilt from scratch, which the recovery procedure for a poisoned room requires. Reset
@@ -475,6 +516,26 @@ export function createMailbox({ me, startAt = 0 }) {
   return {
     /** Current position, for persisting across process restarts. */
     get cursor() { return cursor },
+    /** The read frontier ({client: clock}), or null before the first Y.Array read. `prune`: a Y.Array. */
+    frontier({ prune = null } = {}) { return read ? read.toJSON({ prune }) : null },
+    /** Counts real advances of the read frontier, so a publisher can skip writes that change nothing. */
+    get version() { return read ? read.version : 0 },
+    /**
+     * Merge a frontier in (resume, or this agent's own read position as the room has it). Only ever
+     * moves forward. Before the first read it is seeded from the count cursor over `yarr`, once.
+     */
+    seedFrontier(json, yarr = null) {
+      if (!read) read = yarr ? frontierOfPrefix(yarr, cursor) : makeFrontier()
+      read.merge(json)
+      return read.toJSON()
+    },
+    /** What this agent's listener handed over: delivered once more, tagged, but never counted as read. */
+    handedBy(json, at = '') {
+      if (!json || typeof json !== 'object') return
+      const merged = makeFrontier(handed ? handed.frontier : null)
+      merged.merge(json)
+      handed = { frontier: merged.toJSON(), at: String(at || (handed && handed.at) || '') }
+    },
     /** Move the cursor without delivering anything (used at join). */
     seek(n) { cursor = Math.max(0, Number(n) || 0); return cursor },
     /** Deliver everything unread and mark it read. Every return path must go through this. */
@@ -490,7 +551,9 @@ export function createMailbox({ me, startAt = 0 }) {
 export function formatMessage(m) {
   const times = m.repeated > 1 ? `  (×${m.repeated})` : ''
   const atStr = m.at ? formatTime(m.at) : ''
-  return `${atStr} ${m.by}(${m.kind || 'ai'}): ${m.text}${times}`
+  // A mention a listener already handed over is shown once more, marked, never as new mail (A6).
+  const handed = m.handed ? `  (already handed to you${typeof m.handed === 'string' && m.handed ? ` at ${m.handed}` : ''}: it may be done)` : ''
+  return `${atStr} ${m.by}(${m.kind || 'ai'}): ${m.text}${times}${handed}`
 }
 
 /**

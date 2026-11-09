@@ -459,9 +459,12 @@ try {
   const lines = deliveredOut.split('\n')
   const wakeDeliveryLine = lines.find((l) => /wake up over long-poll!/.test(l)) || ''
 
+  // HANDED, not READ (0.14.4, A6): the listener took it, the agent itself has not read it. What this
+  // row proves is unchanged -- the listener's cursor write reached the relay before it exited -- and a
+  // flush that dropped it leaves no HANDED here.
   T(
-    'V8 exit cursor flush (350ms /send RTT > 200ms sleep): hive-await held exit via bufferedAmount until READ cursor committed on relay',
-    /VMAgent=READ/.test(wakeDeliveryLine),
+    'V8 exit cursor flush (350ms /send RTT > 200ms sleep): hive-await held exit via bufferedAmount until its HANDED cursor committed on relay',
+    /VMAgent=HANDED/.test(wakeDeliveryLine),
     wakeDeliveryLine || deliveredOut.slice(0, 220)
   )
 
@@ -480,14 +483,19 @@ try {
   const l2After2s = await listener2.waitExit(l2Ready ? 2000 : 500)
   const mcpCheckAfter = await vmAgent.call('hive_check', {})
 
+  // The MCP side shows the listener's hand-over ONCE more, marked, never as new mail (0.14.4, A6): it
+  // cannot know whether the app was woken with it, and one that was not would otherwise never see it.
+  const asNewMail = /📣[^\n]*\n[^\n]*wake up over long-poll!/.test(mcpCheckAfter)
   T(
-    'V9 anti-livelock: re-armed hive-await (even with fresh TEMP) stays blocked and MCP hive_check does not re-announce delivered mail',
+    'V9 anti-livelock: re-armed hive-await (even with fresh TEMP) stays blocked, and MCP hive_check shows the delivered mail once, marked as already handed, never as new',
     l2Ready &&
       l2After2s.running === true &&
-      /(?:no new mail|nothing waiting)/.test(mcpCheckAfter) &&
-      !/wake up over long-poll!/.test(mcpCheckAfter),
+      !asNewMail &&
+      /wake up over long-poll!/.test(mcpCheckAfter) && /already handed to you/.test(mcpCheckAfter),
     `l2Ready=${l2Ready} running=${l2After2s.running} out=${l2After2s.out.slice(0, 120)} mcpCheck=${mcpCheckAfter.split('\n')[0]}`
   )
+  const mcpCheckAgain = await vmAgent.call('hive_check', {})
+  T('V9b ...and the next hive_check is quiet: never a third time', /(?:no new mail|nothing waiting)/.test(mcpCheckAgain) && !/wake up over long-poll!/.test(mcpCheckAgain), mcpCheckAgain.split('\n')[0])
 } finally {
   if (vmAgent) await vmAgent.close()
   if (peerWS) await peerWS.close()

@@ -35,6 +35,7 @@ import fs from 'fs'
 import path from 'path'
 import { startSync, parseLink } from './sync.js'
 import * as RC from './hive-receipts.js'
+import * as SEEN from './hive-seen.js' // what this listener has seen, by Yjs id (0.14.4)
 import { awaitDir, armedFile, BEAT_MS } from './hive-listen.js'
 
 const [, , LINK = '', NAME = '', IDLE_MIN = '10', APP_ARG = ''] = process.argv
@@ -131,10 +132,25 @@ async function finish(reason, payload, flushMs = 0) {
 // room's per-member cursor (hive-receipts.js), which only moves forward. Publishing it here is also
 // what lets a sender's hive_delivered say READ for mail this listener handed over.
 const cursors = hive.doc.getMap('cursors')
-const roomCursor = (len) => {
-  try { const c = RC.cursorOf(cursors, NAME); const at = (c && Number(c.at)) || 0; return at <= len ? at : 0 } catch { return 0 }
+// HANDED, NEVER READ (0.14.4, Claude-cloud's attack 6, incident I-1). This used to publish the
+// agent's READ cursor, so a mention that woke this listener counted as read -- and when the app was
+// never actually woken (Antigravity has no wake on a background task) or crashed before its turn, the
+// next session's catch-up skipped it for good while the sender's hive_delivered said READ. Now this
+// listener publishes only the HANDED frontier; only the agent's own hive_wait / hive_check moves READ.
+// The room record (hive-receipts.js publishFrontier) is read for both: what the agent already read,
+// and what an earlier listener already handed over, is not news here.
+const roomFrontier = (yarr) => {
+  const f = SEEN.makeFrontier()
+  try {
+    const c = RC.cursorOf(cursors, NAME)
+    if (c && c.ver >= 2) { f.merge(c.read); f.merge(c.handed); return f }
+    const at = (c && Number(c.at)) || 0
+    if (at > 0 && at <= yarr.length) f.merge(SEEN.frontierOfPrefix(yarr, at).toJSON())
+  } catch { /* a room that predates receipts */ }
+  return f
 }
-const publish = (n) => { try { RC.publishCursor(cursors, NAME, n) } catch { /* a room that predates receipts */ } }
+const hhmm = () => new Date().toTimeString().slice(0, 5)
+const publish = (f) => { try { RC.publishFrontier(cursors, NAME, { handed: f.toJSON({ prune: chat }), handedAt: hhmm() }) } catch { /* a room that predates receipts */ } }
 
 // A PERSISTED CURSOR, not just "my last message".
 //
@@ -176,33 +192,51 @@ if (process.env.HIVE_AWAIT_KEEP_ALIVE !== '1' && PARENT > 1 && !parentGone()) {
 // (tests/await-rebuilt-room-test.mjs)
 const cursorFile = path.join(dir, `.await-cursor-${room}.json`)
 const headOf = (msgs) => { const m = msgs[0]; return m ? `${m.by}|${m.at}|${String(m.text || '').slice(0, 80)}` : '' }
-const readCursor = (msgs) => {
+// The file holds a FRONTIER (v 2) beside the old count, which an older build still reads. A v 1 file
+// (a count only) is migrated once, by prefix -- the same moment-in-time answer it always gave.
+// Returns null when the file says nothing usable about this room.
+const readCursor = (yarr, msgs) => {
   try {
     const c = JSON.parse(fs.readFileSync(cursorFile, 'utf8'))
+    if (typeof c.head === 'string' && c.head && c.head !== headOf(msgs)) return null
+    if (c.v >= 2 && c.frontier && typeof c.frontier === 'object') return SEEN.makeFrontier(c.frontier)
     const at = Number(c.at) || 0
-    if (at > msgs.length) return 0
-    if (typeof c.head === 'string' && c.head && c.head !== headOf(msgs)) return 0
-    return at
-  } catch { return 0 }
+    if (at <= 0 || at > msgs.length) return null
+    return SEEN.frontierOfPrefix(yarr, at)
+  } catch { return null }
 }
-const writeCursor = (n, msgs) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ at: n, head: headOf(msgs) }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
+const writeCursor = (f, msgs) => { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cursorFile, JSON.stringify({ v: 2, frontier: f.toJSON({ prune: chat }), at: SEEN.coveredPrefix(chat, f.toJSON()), head: headOf(msgs) }), 'utf8') } catch { /* a cursor we cannot persist must not break the wait */ } }
+
+// Where this listener starts: its own file, plus what the room says the agent read or was handed.
+// Only when none of those knows anything (a first listener, ever) is "everything up to my last
+// message" taken as handled -- once, as a seed. As a permanent floor that position is exactly what
+// skipped a late mention that integrated before it.
+const startFrontier = (yarr, msgs) => {
+  const f = roomFrontier(yarr)
+  const own = readCursor(yarr, msgs)
+  if (own) f.merge(own.toJSON())
+  if (f.size) return f
+  let lastMine = -1
+  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i] && msgs[i].by === NAME) { lastMine = i; break } }
+  return SEEN.frontierOfPrefix(yarr, lastMine + 1)
+}
 
 function check() {
   if (superseded()) return // the newer listener delivers it; consuming it here would hide it from that one
-  const msgs = chat.toArray()
-  let lastMine = -1
-  for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].by === NAME) { lastMine = i; break } }
-  const from = Math.max(readCursor(msgs), lastMine + 1, roomCursor(msgs.length))
+  const items = SEEN.itemsOf(chat)
+  const msgs = items.map((x) => x.value)
+  const f = startFrontier(chat, msgs)
   const hits = []
-  for (let i = from; i < msgs.length; i++) {
-    const m = msgs[i]
-    if (rx.test(String(m.text || '')) && m.by !== NAME) hits.push(m)
+  for (const { id, value: m } of items) {
+    if (f.has(id)) continue
+    f.add(id) // seen = scanned, wherever it landed
+    if (m && rx.test(String(m.text || '')) && m.by !== NAME) hits.push(m)
   }
-  // Advance past everything READ, not just everything matched — an unaddressed message I have
+  // Advance past everything SCANNED, not just everything matched — an unaddressed message I have
   // already seen must not be re-scanned on the next call either.
   if (hits.length) {
-    writeCursor(msgs.length, msgs)
-    publish(msgs.length)
+    writeCursor(f, msgs)
+    publish(f)
     // THE ORDER TO START AGAIN RIDES ON EVERY WAKE. It used to be said once, on the agent's first
     // quiet hive_wait, and an agent had to remember it after every wake; agents forget (4 Oct 2026).
     finish('mention', { messages: hits.map((m) => `${m.by}(${m.kind}): ${m.text}`), next: `When you have answered, start this listener again in the background, the same way you started it, or you stop hearing the room when your turn ends: ${AGAIN}` }, 1500)
@@ -223,8 +257,10 @@ hive.provider.on('sync', (s) => {
 // An idle timeout also advances the cursor. Without this, a quiet window followed by a loud one
 // would re-deliver everything that arrived during the quiet window too.
 setTimeout(() => {
-  try { writeCursor(chat.length, chat.toArray()) } catch {}
-  publish(chat.length) // nothing in the window named us, so nothing in it is mail the MCP should raise
+  const f = startFrontier(chat, chat.toArray())
+  for (const { id } of SEEN.itemsOf(chat)) f.add(id)
+  try { writeCursor(f, chat.toArray()) } catch {}
+  publish(f) // nothing in the window named us: HANDED (scanned), so the MCP raises none of it as new
   finish('idle', { note: `nothing addressed to ${NAME} in ${IDLE_MIN} min. Run this same command again in the background to keep listening: ${AGAIN}` }, 1500)
 }, Number(IDLE_MIN) * 60 * 1000)
 process.on('SIGINT', () => { try { hive.stop() } catch {}; process.exit(0) })

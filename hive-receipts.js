@@ -53,11 +53,18 @@
 // and exactly the shape that already bit this repo once as a duplicated reconcile(): two
 // descriptions of one thing, only one of which is ever checked against reality.
 import { mentionedNames, mentionsAll } from './hive-mailbox.js'
+import { covers, makeFrontier } from './hive-seen.js'
 
 export const READ = 'READ'
 export const UNREAD = 'UNREAD'
 export const UNKNOWN = 'UNKNOWN'
 export const UNREACHABLE = 'UNREACHABLE'
+// HANDED (0.14.4): the recipient's LISTENER took it and woke (or tried to wake) their app, but the
+// agent itself has not read it. Before 0.14.4 the listener published the agent's read cursor, so this
+// was reported as READ -- and an app that was never woken, or crashed first, lost the mail on its next
+// session while the sender was told it had been read (Claude-cloud's attack 6, incident I-1).
+// HANDED is not delivered: a listener holding a message is not an agent knowing it.
+export const HANDED = 'HANDED'
 
 /** Only these count as delivered. Anything else is an absence of evidence, not evidence. */
 export const DELIVERED_STATES = [READ]
@@ -80,6 +87,31 @@ export function publishCursor(cursors, name, at, now = Date.now) {
   // Writing an identical value would still be a CRDT update, waking every observer in the room
   // on every tool call for no information. Only a real advance is published.
   if (prev && prev.at === highest) return prev
+  cursors.set(String(name), rec)
+  return rec
+}
+
+/**
+ * Publish my read and handed FRONTIERS (hive-seen.js) into the room: record version 2.
+ *
+ *   read    advanced only by the agent's own hive_wait / hive_check / hive_read_chat
+ *   handed  advanced by its listener as well; a read is also handed, so read is merged into it
+ *   at      how many leading messages `read` covers without a gap. Kept so a peer on an older build,
+ *           which only knows counts, is never told more than was read. It CAN go down, when a late
+ *           message integrates inside that prefix, and that is the honest answer: no clamp here.
+ *
+ * Both frontiers only move forward (merged with what is already published). Writes nothing when
+ * nothing changed, for the same reason as publishCursor: an identical write wakes every observer.
+ */
+export function publishFrontier(cursors, name, { read = null, handed = null, at = null, handedAt = '' } = {}, now = Date.now) {
+  if (!cursors || !name) return null
+  const prev = cursors.get(String(name))
+  const p = prev && prev.ver >= 2 ? prev : null
+  const r = makeFrontier(p && p.read); if (read) r.merge(read)
+  const h = makeFrontier(p && p.handed); if (handed) h.merge(handed); h.merge(r.toJSON())
+  const nextAt = at == null ? ((prev && Number(prev.at)) || 0) : Math.max(0, Number(at) || 0)
+  const rec = { ver: 2, at: nextAt, read: r.toJSON(), handed: h.toJSON(), handedAt: handed ? String(handedAt || '') : ((p && p.handedAt) || ''), ts: now() }
+  if (p && p.at === rec.at && JSON.stringify(p.read) === JSON.stringify(rec.read) && JSON.stringify(p.handed) === JSON.stringify(rec.handed)) return prev
   cursors.set(String(name), rec)
   return rec
 }
@@ -117,12 +149,26 @@ export function findIndex(chat, msg) {
  * Absence outranks a stale cursor for the same reason it does in hive-busy.js: it is the more
  * actionable of the two.
  */
-export function stateFor({ cursors, name, index, present = true, connected = true }) {
+/**
+ * With a message's Yjs id and a version-2 record, the answer comes from the frontiers, so a message
+ * that integrated behind a reader's position is UNREAD, never a false READ. Without either, the count
+ * rule below still answers -- for a peer on an older build that only publishes counts.
+ */
+function byFrontier(cur, id, name) {
+  if (!id || !cur || !(cur.ver >= 2) || !cur.read) return null
+  if (covers(cur.read, id)) return { name, state: READ, at: cur.ts, why: `@${name} has read it` }
+  if (covers(cur.handed, id)) return { name, state: HANDED, at: cur.ts, why: `@${name}'s listener took it${cur.handedAt ? ` at ${cur.handedAt}` : ''}, but ${name} has NOT read it yet` }
+  return null
+}
+
+export function stateFor({ cursors, name, index, id = null, present = true, connected = true }) {
   if (!connected) return { name, state: UNREACHABLE, why: 'this client is offline — the message is in your local copy only and has not left this machine' }
   if (!present) return { name, state: UNREACHABLE, why: `@${name} is not in the room, so nobody is going to read it` }
   if (index < 0) return { name, state: UNKNOWN, why: 'that message is not in the room log — it may not have synced' }
   const cur = cursorOf(cursors, name)
   if (!cur) return { name, state: UNKNOWN, why: `@${name} publishes no read position (an older build, a bridge, or a human client) — silence from them means nothing either way` }
+  const f = byFrontier(cur, id, name); if (f) return f
+  if (id && cur.ver >= 2 && cur.read) return { name, state: UNREAD, at: cur.ts, why: `@${name} has NOT been handed this one` }
   // A cursor of N means N messages consumed, i.e. indexes 0..N-1. So the message at `index` has
   // been handed over exactly when the cursor is strictly greater than it.
   if (Number(cur.at) > index) return { name, state: READ, at: cur.ts, why: `@${name} has read it` }
@@ -161,10 +207,15 @@ export function stateFor({ cursors, name, index, present = true, connected = tru
  * design argued in the room over four rounds. Tests are antigravity1's, written before the code
  * existed and verified red first: tests/transcript-receipts-test.mjs.
  */
-export function transcriptStateFor({ cursors, name, index, present = true }) {
+export function transcriptStateFor({ cursors, name, index, id = null, present = true }) {
   if (index < 0) return { name, state: UNKNOWN, why: 'that message is not in the room log — it may not have synced' }
   const cur = cursorOf(cursors, name)
   if (!cur) return { name, state: UNKNOWN, why: `@${name} publishes no read position (an older build, a bridge, or a human client) — silence from them means nothing either way` }
+  const f = byFrontier(cur, id, name); if (f) return f
+  if (id && cur.ver >= 2 && cur.read) {
+    if (!present) return { name, state: UNREACHABLE, at: cur.ts, why: `@${name} is not in the room, and left without reading this message` }
+    return { name, state: UNREAD, at: cur.ts, why: `@${name} has NOT been handed this one` }
+  }
   // A cursor of N means N messages consumed, i.e. indexes 0..N-1. So the message at `index` has
   // been handed over exactly when the cursor is STRICTLY greater than it. A cursor sitting exactly
   // at `index` means NOT read; an off-by-one here is a receipt that lies quietly.
@@ -185,7 +236,7 @@ export const countDelivered = (states) => states.filter((s) => DELIVERED_STATES.
  * `@all` is skipped for the same reason a broadcast creates no reply debt in hive-mailbox.js --
  * one message obliging eight receipts is the storm, not the signal.
  */
-export function receipts({ chat, cursors, me, present = () => true, connected = true, limit = 10 }) {
+export function receipts({ chat, ids = null, cursors, me, present = () => true, connected = true, limit = 10 }) {
   const list = Array.isArray(chat) ? chat : []
   const out = []
   for (let i = list.length - 1; i >= 0 && out.length < limit; i--) {
@@ -197,13 +248,13 @@ export function receipts({ chat, cursors, me, present = () => true, connected = 
     out.push({
       at: m.at,
       text: String(m.text || '').slice(0, 120),
-      to: named.map((n) => stateFor({ cursors, name: n, index: i, present: present(n), connected })),
+      to: named.map((n) => stateFor({ cursors, name: n, index: i, id: ids ? ids[i] : null, present: present(n), connected })),
     })
   }
   return out.reverse()
 }
 
-const MARK = { [READ]: '✓', [UNREAD]: '…', [UNKNOWN]: '?', [UNREACHABLE]: '✗' }
+const MARK = { [READ]: '✓', [HANDED]: '↪', [UNREAD]: '…', [UNKNOWN]: '?', [UNREACHABLE]: '✗' }
 
 /** One line per message. The marks make a column a human can scan; the words carry the meaning. */
 export function describe(r) {

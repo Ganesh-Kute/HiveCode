@@ -22,6 +22,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import * as SEEN from './hive-seen.js' // replies since the post, by Yjs id (0.14.4)
 import { startSync, parseLink } from './sync.js'
 import * as ACT from './hive-activity.js'
 import { LABEL, HUMAN_LABEL, PUSHERS } from './hive-github.js'
@@ -193,7 +194,7 @@ export function makeRoomWatcher(o) {
       log(`#${n}: withdrawn`)
       return
     }
-    const peek = await deps.peek({ issueNumber: n, taskId: a.taskId, since: a.postedAt })
+    const peek = await deps.peek({ issueNumber: n, taskId: a.taskId, since: a.postedAt, postFrontier: a.postFrontier || null })
     if (peek && peek.ok && peek.engaged && !a.engagedAt) a.engagedAt = now()
 
     // A LONE AGENT CANNOT GET A SECOND AGENT'S REVIEW. When the work is done and the only thing
@@ -395,7 +396,7 @@ export function makeRoomWatcher(o) {
         return { postFailed: n }
       }
       it.status = 'active'
-      state.active = { n, taskId: p.taskId, postedAt: now(), engagedAt: 0, runs: 0, fallback: null, lastFailedFingerprint: '' }
+      state.active = { n, taskId: p.taskId, postedAt: now(), postFrontier: p.postFrontier || null, engagedAt: 0, runs: 0, fallback: null, lastFailedFingerprint: '' }
       // Commands already on the issue (a "/hivecode stop" from before this run) are history: only
       // what is said from now on stops it.
       try { await commands(n, 0) } catch { /* read again next tick */ }
@@ -583,7 +584,30 @@ export async function runRoomMode({ f, opt, gh, id, info, root, gitDir, label, l
 }
 
 /** A passive look at the room: who can hear, and whether anyone has engaged with this issue. */
-export async function peekRoom({ link, issueNumber, taskId, since = 0, token = '', timeoutMs = 60000 }) {
+/**
+ * Has an agent said something about this issue since the room's post of it?
+ *
+ * BY IDENTITY WHEN WE CAN (0.14.4). "After the post" by POSITION missed an agent reply that was in
+ * flight when the issue was posted: it integrates BEFORE the post and read as "nobody replied". With
+ * the frontier the poster held right after posting (postIssue returns it), a reply counts if its Yjs id
+ * is not in it, wherever it landed. A run posted by an older build has no frontier and keeps the
+ * position rule: lines after the LAST post of this issue (a retry is "Issue #12 (attempt 2): ...").
+ */
+export function agentRepliedSince({ chat, issueNumber, taskId = '', postFrontier = null }) {
+  const ref = new RegExp(`#${Number(issueNumber)}(?!\\d)`)
+  const isAgent = (m) => m && m.kind !== 'human' && !/^GitHub/.test(String(m.by || ''))
+  const replies = (m) => isAgent(m) && (ref.test(String(m.text || '')) || (taskId && String(m.text || '').includes(taskId)))
+  if (postFrontier && typeof postFrontier === 'object' && SEEN.isYArray(chat)) {
+    return SEEN.itemsOf(chat).some(({ id, value }) => !SEEN.covers(postFrontier, id) && replies(value))
+  }
+  const list = SEEN.isYArray(chat) ? chat.toArray() : (Array.isArray(chat) ? chat : [])
+  const posted = new RegExp(`Issue #${Number(issueNumber)}(?: \\(attempt \\d+\\))?:`)
+  let from = -1
+  for (let i = list.length - 1; i >= 0; i--) if (/^GitHub/.test(String(list[i].by || '')) && posted.test(String(list[i].text || ''))) { from = i; break }
+  return from >= 0 && list.slice(from + 1).some(replies)
+}
+
+export async function peekRoom({ link, issueNumber, taskId, since = 0, postFrontier = null, token = '', timeoutMs = 60000 }) {
   const { relay, room } = parseLink(link)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-room-peek-'))
   const peek = startSync({ relay, room, dir, name: 'GitHub-peek', kind: 'ai', passive: true, syncFiles: false, token, log: () => {} })
@@ -598,15 +622,9 @@ export async function peekRoom({ link, issueNumber, taskId, since = 0, token = '
     const members = peek.members().filter((m) => m && m.name && !/^GitHub/.test(m.name) && m.kind !== 'human' && !m.passive)
     const reachable = members.filter((m) => ACT.describe(activity.get(m.name), { present: true, listener: m.listener, app: m.app, now: Date.now() }).reachable).map((m) => m.name)
     const chat = peek.doc.getArray('chat').toArray()
-    // Chat times are clock strings ("21:04:39") with no date, so "since the issue was posted" is
-    // told by POSITION: lines after the room's own post of this issue.
-    const ref = new RegExp(`#${Number(issueNumber)}(?!\\d)`)
-    const isAgent = (m) => m && m.kind !== 'human' && !/^GitHub/.test(String(m.by || ''))
-    let from = -1
-    // The LAST post of this issue: a retry is posted as "Issue #12 (attempt 2): ...".
-    const posted = new RegExp(`Issue #${Number(issueNumber)}(?: \\(attempt \\d+\\))?:`)
-    for (let i = chat.length - 1; i >= 0; i--) if (/^GitHub/.test(String(chat[i].by || '')) && posted.test(String(chat[i].text || ''))) { from = i; break }
-    const said = from >= 0 && chat.slice(from + 1).some((m) => isAgent(m) && (ref.test(String(m.text || '')) || (taskId && String(m.text || '').includes(taskId))))
+    // Chat times are clock strings ("21:04:39") with no date, so "since the issue was posted" is told
+    // by Yjs identity when the post's frontier is known, else by position (agentRepliedSince).
+    const said = agentRepliedSince({ chat: peek.doc.getArray('chat'), issueNumber, taskId, postFrontier })
     const t = peek.doc.getMap('tasks').get(taskId)
     const claimed = [...peek.doc.getMap('claims').values()].some((c) => c && c.by && Number(c.since || c.at || 0) >= since)
     return {

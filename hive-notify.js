@@ -27,6 +27,7 @@ import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 import { makeNotifier, scrub } from './hive-webhook.js'
 import { relayFetch } from './hive-transport.js'
+import * as SEEN from './hive-seen.js' // what was already looked at, by Yjs id (0.14.4)
 
 const oneLine = (s, n = 200) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t }
 const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -99,7 +100,14 @@ export function makeWatch({ hive, forNames, title, send, now = () => Date.now(),
   const owners = hive.doc.getMap('owners')
   const chat = hive.doc.getArray('chat')
   const sent = loadSent(stateFile)
-  let seenChat = chat.length // what was said before this started is not news
+  // SEEN BY IDENTITY, NOT BY COUNT (0.14.4). A count missed a late message: one a peer pushed while
+  // its update was in flight integrates BEHIND what was already counted, and `slice(seenChat)` never
+  // looked there, so a mention of someone away was never notified (hive-seen.js has the incident).
+  // A plain array (a test double) is append-only, so the count stays exact for it.
+  const ych = SEEN.isYArray(chat)
+  const seen = ych ? SEEN.makeFrontier() : null
+  if (ych) for (const { id } of SEEN.itemsOf(chat)) seen.add(id) // what was said before this started is not news
+  let seenChat = chat.length
   const buffer = []
   let lastFlush = 0
   let lostSince = 0
@@ -142,13 +150,21 @@ export function makeWatch({ hive, forNames, title, send, now = () => Date.now(),
     }
 
     // MESSAGES NAMING THEM, from agents, while they are away: batched.
-    const all = chat.toArray()
-    if (all.length < seenChat) seenChat = 0 // the relay restarted and the room's history went with it
-    for (const m of all.slice(seenChat)) {
+    let fresh
+    if (ych) {
+      // A rebuilt room needs no special case: its messages carry ids this frontier has never seen.
+      fresh = []
+      for (const { id, value } of SEEN.itemsOf(chat)) { if (seen.has(id)) continue; seen.add(id); fresh.push(value) }
+    } else {
+      const all = chat.toArray()
+      if (all.length < seenChat) seenChat = 0 // the relay restarted and the room's history went with it
+      fresh = all.slice(seenChat)
+      seenChat = all.length
+    }
+    for (const m of fresh) {
       if (!m || m.kind !== 'ai') continue
       for (const p of people) if (addresses(m.text, p) && !here(p)) { buffer.push({ by: m.by, to: p, text: m.text }); break }
     }
-    seenChat = all.length
     if (buffer.length && t - lastFlush >= every * 60000) {
       const shown = buffer.slice()
       const to = [...new Set(shown.map((b) => b.to))].join(', ')

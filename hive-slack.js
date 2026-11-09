@@ -31,6 +31,7 @@ import path from 'path'
 import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
 import { scrub } from './hive-webhook.js'
+import * as SEEN from './hive-seen.js' // what was already forwarded, by Yjs id (0.14.4)
 import { realpathSync as __hiveRealpath } from 'fs'
 import { resolve as __hiveResolve } from 'path'
 import { fileURLToPath as __hiveFileURLToPath } from 'url'
@@ -38,6 +39,25 @@ import { fileURLToPath as __hiveFileURLToPath } from 'url'
 const DEFAULT_API = 'https://slack.com/api'
 const ROOM_THREAD_KEY = '__room__'
 const CURSOR_KEY = '__cursor__'
+
+/**
+ * The room->Slack observer: hands `onChat` every chat message not yet forwarded, by Yjs id, wherever it
+ * integrated (0.14.4; see runBridge for why not by count). `forwarded` is a Y.Map of frontiers keyed by
+ * channel, `at` the old count cursor (used to seed a frontier once, when none was saved), `threads` the
+ * map that keeps that count for older bridges. Returns the function to pass to chat.observe.
+ */
+export function makeChatForwarder({ chat, forwarded, key, at, threads, onChat }) {
+  const saved = forwarded.get(key)
+  const fwd = saved && typeof saved === 'object' ? SEEN.makeFrontier(saved) : SEEN.frontierOfPrefix(chat, at)
+  return () => {
+    const fresh = []
+    for (const { id, value } of SEEN.itemsOf(chat)) { if (fwd.has(id)) continue; fwd.add(id); fresh.push(value) }
+    if (!fresh.length) return
+    onChat(fresh)
+    try { forwarded.set(key, fwd.toJSON({ prune: chat })) } catch { }
+    try { const n = SEEN.coveredPrefix(chat, fwd.toJSON()); if (n > (Number(threads.get(CURSOR_KEY)) || 0)) threads.set(CURSOR_KEY, n) } catch { }
+  }
+}
 const MAX_SEEN_EVENTS = 500
 
 export const USAGE = `usage:
@@ -2396,8 +2416,13 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   }
   const chat = hive.doc.getArray('chat')
   const savedCursor = Number(bridge.threads.get(CURSOR_KEY)) || 0
-  let at = savedCursor > 0 && savedCursor <= chat.length ? savedCursor : chat.length
-  chat.observe(() => { const all = chat.toArray(); bridge.onChat(all.slice(at), at); at = all.length })
+  const at = savedCursor > 0 && savedCursor <= chat.length ? savedCursor : chat.length
+  // FORWARDED BY IDENTITY, NOT BY COUNT (0.14.4). `all.slice(at)` never looked behind `at`, so a message
+  // a peer pushed while its update was in flight -- which integrates BEHIND what was already counted --
+  // was never sent to Slack (hive-seen.js has the incident). What was forwarded is now a frontier of
+  // Yjs ids, kept in its own room map: the thread map's other keys are Slack thread ids, and an older
+  // bridge would try to poll any new key there as a thread. The count stays beside it, for those.
+  chat.observe(makeChatForwarder({ chat, forwarded: hive.doc.getMap('slack_forwarded'), key: String(CHANNEL), at, threads: bridge.threads, onChat: bridge.onChat }))
   await bridge.watchRoom()
   log(`READY: [hive-slack] @${pre.botUser} bridging ${room} -> #${pre.channelName} (${CHANNEL}) — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}`)
   return 0
