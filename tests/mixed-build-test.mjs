@@ -22,7 +22,7 @@ const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${ex
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mixed-'))
 const room = 'mb-' + crypto.randomBytes(5).toString('hex')
 const relay = await new Promise((res) => {
-  const p = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off' } })
+  const p = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off', HIVE_SEATS: '32' } })
   p.stdout.on('data', (d) => { if (/listening on/.test(d)) res(p) })
 })
 const clients = []
@@ -67,6 +67,35 @@ try {
   const same = mixed(alpha).find((t) => t.includes('Beta'))
   T('a different release is not called "the same release"', !/same release/.test(same || ''))
   T('VERSION_LABEL is shown as the local build', !!same && same.includes(`hivecode ${VERSION_LABEL}`))
+
+  console.log('# listeners do not sync files and must not trigger false mixed build alarms')
+  const delta = join('Delta', 'ai', { syncFiles: false, listener: true })
+  await sleep(1500)
+  pose(delta, { hv: '0.12.9+deadbee', listener: true })
+  await sleep(2000)
+  T('a standalone listener on an older build does NOT trigger mixed builds alarm', !mixed(alpha).some((t) => t.includes('Delta')))
+
+  console.log('# an agent on current build with an associated older listener keeps its current build')
+  const kappa = join('Kappa', 'ai')
+  await sleep(1500)
+  const kappaListener = join('Kappa', 'ai', { syncFiles: false, listener: true })
+  await sleep(1000)
+  pose(kappaListener, { hv: '0.12.9+deadbee', listener: true })
+  await sleep(2000)
+  T('an associated listener does NOT trigger mixed builds alarm against Kappa', !mixed(alpha).some((t) => t.includes('Kappa')))
+  const kappaMember = alpha.members().find((m) => m.name === 'Kappa')
+  T('members() preserves engine build over listener build for Kappa', kappaMember && kappaMember.hv === VERSION_LABEL, `Kappa.hv=${kappaMember?.hv}`)
+
+  console.log('# dual non-listener engines under one name MUST alarm (data loss risk)')
+  const echo = join('Echo', 'ai')
+  const echoOld = startSync({ relay: `ws://localhost:${PORT}`, room, dir: path.join(tmp, 'Echo-old'), name: 'Echo', kind: 'ai', log: () => {} })
+  clients.push(echoOld)
+  await sleep(1500)
+  pose(echoOld, { hv: '0.12.9+deadbee' })
+  await sleep(3000)
+  const echoWarn = mixed(alpha).filter((t) => t.includes('Echo'))
+  T('dual non-listener engine triggers mixed builds alarm', echoWarn.length >= 1, echoWarn.join(' | ') || 'no warning')
+  T('...and warns that an older connection is still open', echoWarn.some((t) => /older connection from Echo is still open/.test(t)), echoWarn.join(' | '))
 } catch (e) {
   T('the suite ran', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {

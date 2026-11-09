@@ -3892,20 +3892,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function checkBuilds() {
     // An old engine cannot speak for itself, so SOMEBODY current must -- but only one: the reporting
     // client whose name sorts first. Otherwise every current client in the room says the same thing.
+    // Listeners (listener: true, syncFiles: false) do not sync or edit files and do not report builds.
     const reporters = [name]
-    for (const s of provider.awareness.getStates().values()) { const u = s && s.user; if (u && u.name && u.hv) reporters.push(u.name) }
-    const speakForOld = reporters.sort()[0] === name
+    const currentEngines = new Set()
     for (const s of provider.awareness.getStates().values()) {
       const u = s && s.user
-      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION) continue
+      if (!u || !u.name || u.v !== PROTOCOL_VERSION || u.listener) continue
+      if (u.hv) reporters.push(u.name)
+      if (u.hv === VERSION_LABEL) currentEngines.add(u.name)
+    }
+    const speakForOld = reporters.sort()[0] === name
+
+    for (const s of provider.awareness.getStates().values()) {
+      const u = s && s.user
+      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION || u.listener) continue
       const human = String(u.kind || '').toLowerCase() === 'human'
       let theirs = ''
       if (u.hv) {
         if (u.hv === VERSION_LABEL || name > u.name) continue
-        theirs = `hivecode ${u.hv}`
+        const olderOpen = currentEngines.has(u.name) ? ` (an older connection from ${u.name} is still open)` : ''
+        theirs = `hivecode ${u.hv}${olderOpen}`
       } else if (!human) {
         if (!speakForOld) continue
-        theirs = `a hivecode build older than build reporting (before ${VERSION})`
+        const olderOpen = currentEngines.has(u.name) ? ` (an older connection from ${u.name} is still open)` : ''
+        theirs = `a hivecode build older than build reporting (before ${VERSION})${olderOpen}`
       } else continue
       const key = `${u.name}|${u.hv || '-'}`
       if (buildWarned.has(key)) continue
@@ -5186,7 +5196,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         const u = s.user
         if (!u || !u.name) continue
         const prev = seen.get(u.name) || {}
-        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined, app: u.app || prev.app || undefined })
+        const hv = (prev.hv === VERSION_LABEL || u.hv === VERSION_LABEL)
+          ? VERSION_LABEL
+          : ((prev.listener && !u.listener && u.hv) || (!prev.listener && u.listener && prev.hv) || u.hv || prev.hv)
+        seen.set(u.name, {
+          ...prev,
+          ...u,
+          hv,
+          editing: u.editing || prev.editing,
+          owner: u.owner || prev.owner,
+          passive: !!(u.passive || prev.passive),
+          listener: !!(u.listener || prev.listener) || undefined,
+          app: u.app || prev.app || undefined
+        })
       }
       return [...seen.values()]
     },
