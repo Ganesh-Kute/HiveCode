@@ -1,0 +1,53 @@
+name: Publish to npm
+
+# Publishes hivecode-mcp with npm Trusted Publishing: npm trusts this repository and this workflow
+# file (configured on npmjs.com, package settings -> Trusted Publisher), so no npm token and no
+# one-time code are involved, and the package carries a signed provenance record of the commit
+# it was built from.
+#
+# Run it by hand: Actions -> "Publish to npm" -> Run workflow, with the commit or tag to publish.
+# It refuses to publish a version that is already on npm, and anything that is not on main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA or tag on main to publish
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # the OIDC identity npm checks instead of a token
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Only what main already holds
+        run: |
+          git fetch --quiet origin main
+          git merge-base --is-ancestor HEAD origin/main || { echo "::error::${{ inputs.ref }} is not on main"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@^11.5.1
+
+      - name: Version not already published
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if npm view "hivecode-mcp@$v" version >/dev/null 2>&1; then echo "::error::hivecode-mcp@$v is already on npm"; exit 1; fi
+          echo "Publishing hivecode-mcp@$v from $(git rev-parse --short HEAD)"
+
+      - run: npm ci
+
+      # prepublishOnly (scripts/check-files.mjs) runs here too.
+      - run: npm publish --provenance --access public
