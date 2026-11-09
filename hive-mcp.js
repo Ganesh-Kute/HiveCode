@@ -41,7 +41,7 @@ import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from '.
 import { newPersonalRoom, saveRoomKey, loadRoomKey, hostToken, main as roomKeyMain } from './hive-room-key.js'
 import { isSecuredRoom } from './token.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
-import { INSTRUCTIONS, JOIN_RULES } from './hive-instructions.js'
+import { INSTRUCTIONS, joinCard, REACH_BY_WAIT } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
@@ -543,7 +543,7 @@ was not written. Fix the relay and call hive_join again.`
   // THE CORE, NOT THE WHOLE FILE. This reply stays in the agent's transcript for the rest of its
   // session, so every character is paid again on every later turn: pasting all of HIVE_RULES.md made
   // the join ~1,900 tokens (27 Sep 2026, bench/token-cost.mjs). The full text is on disk in the folder.
-  const rulesText = JOIN_RULES
+  const rulesText = joinCard(reachLine(session))
   // A TOKEN IS A PERSON (3 Oct 2026). The invite link used to carry the joiner's own token, labelled
   // as the thing to forward, so an agent that shared it handed whoever read it the joiner's identity
   // and access -- in the README's own flow, the host's maintainer token to the outside agent scoped to
@@ -879,13 +879,13 @@ function withheldNotice(s) {
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join a Hivecode room, or host a new one, for a folder. Uses the join link if given, else <dir>/.hive.json, else hosts. Returns the room details and the rules you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch (npx -y hivecode-mcp@latest branch <name>)' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' }, private: { type: 'boolean', description: 'host a NEW room only people you invite can join' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' }, private: { type: 'boolean', description: 'host a NEW room only people you invite can join' } } } },
   { name: 'hive_assign', description: 'Give a task to a participant by name. A task for an AI with an owner stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name' }, text: { type: 'string', description: 'the task' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Tasks aimed at you (act only on accepted ones) and all pending tasks awaiting approval.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_wait', description: 'Your idle state. Blocks until there is approved work, mail for you, or a state flag you named reaches its value, then returns all of it; returns at once if any is already true. Loop: hive_wait -> work -> hive_complete -> hive_wait.',
-    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, 110 in Claude Code and Antigravity; max 300, kept under your app\'s own tool deadline)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: '"any" (default), or "mention" = wake only when @mentioned or assigned; other mail still arrives on the next wake' }, until: { type: 'object', description: 'wake when a project state key reaches a value: {key, is}, {key, in: [...]}, {key, not} (unset counts as not), or {key} = set at all. The result carries stateReached.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
+  { name: 'hive_wait', description: 'Blocks until there is approved work, mail for you, or a state flag you named reaches its value, then returns all of it; returns at once if any is already true. Idle with it on clients that have no listener (hive_join says which).',
+    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60; 110 in Claude Code and Antigravity; max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: '"any" (default), or "mention" = wake only when @mentioned or assigned; other mail still arrives on the next wake' }, until: { type: 'object', description: 'wake when a project state key reaches a value: {key, is}, {key, in: [...]}, {key, not} (unset counts as not), or {key} = set at all. The result carries stateReached.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
   { name: 'hive_check', description: 'Non-blocking check for use mid-task: unread mail for you and approved work, returned at once. Call it between edits; if it reports priority "stop", handle that first.',
     inputSchema: { type: 'object', properties: { peek: { type: 'boolean', description: 'true = look without marking messages read' } } } },
   { name: 'hive_approve', description: 'Approve a pending task for an AI you own; it may then act on it.',
@@ -896,8 +896,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: 'manifest files to review' }, verdict: { type: 'string', enum: ['pass', 'fail'], description: 'review verdict: pass or fail' }, note: { type: 'string', description: 'review notes explaining verdict' } }, required: ['files', 'verdict'] } },
   { name: 'hive_complete', description: 'Mark a task you were doing as done, with an optional note.',
     inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'task id' }, note: { type: 'string', description: 'what was done' } }, required: ['id'] } },
-  { name: 'hive_say', description: 'Post to the room chat. Put @Name on anything meant for someone: a message naming nobody is ambient and gets skipped. Announce a file before you edit it.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = [!]: the recipient handles it before continuing' }, needsReply: { type: 'boolean', description: 'true = a question: tracked until YOU close it with hive_answered; you are told at once if someone you named is not here' }, replyWithinMinutes: { type: 'number', description: 'remind you after this many minutes (default 10)' } }, required: ['text'] } },
+  { name: 'hive_say', description: 'Post to the room chat. Put @Name on anything meant for someone: a message naming nobody is ambient and gets skipped.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = [!]: the recipient handles it before continuing' }, needsReply: { type: 'boolean', description: 'true = a question: tracked until you close it with hive_answered' }, replyWithinMinutes: { type: 'number', description: 'remind you after this many minutes (default 10)' } }, required: ['text'] } },
   { name: 'hive_delivered', description: 'Did recipients actually READ what you said? Per recipient: READ; UNREAD (here, behind); UNKNOWN (no read position, e.g. a human client, so silence means nothing); UNREACHABLE (left, or you are offline). Check before concluding someone is ignoring you.',
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'recent addressed messages to check (default 10)' } } } },
   { name: 'hive_answered', description: 'Close a question you asked with needsReply once you have what you needed. Only the asker can close it; a reply alone does not.',
@@ -907,13 +907,13 @@ const TOOLS = [
   { name: 'hive_busy', description: 'Mark yourself mid-task: whoever @mentions you is told to expect a delay. Posts nothing, silences nothing, expires by itself. Clear it when you finish.',
     inputSchema: { type: 'object', properties: { what: { type: 'string', description: 'what you are doing, in a few words' }, minutes: { type: 'number', description: 'how long (default 10)' }, clear: { type: 'boolean', description: 'true = free again' } } } },
   { name: 'hive_read_chat', description: 'Read recent room chat: what people and agents are doing and saying.',
-    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many recent messages (default 30)' }, mentioningMe: { type: 'boolean', description: 'true = only messages that @mention you, across all history' }, unreadOnly: { type: 'boolean', description: 'true = only what you have not been handed yet (does not mark it read)' }, full: { type: 'boolean', description: 'true = long messages whole (other people\'s are cut at 280 chars by default)' } } } },
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many recent messages (default 30)' }, mentioningMe: { type: 'boolean', description: 'true = only messages that @mention you, across all history' }, unreadOnly: { type: 'boolean', description: 'true = only what you have not been handed yet (does not mark it read)' }, full: { type: 'boolean', description: 'true = long messages whole (else cut at 280 chars)' } } } },
   { name: 'hive_read_board', description: 'Recent whole-file rewrites: who, which file, which symbols. If a file you plan to edit was just rewritten, re-read it first.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_claim', description: 'Claim a file (or region) before you edit it. Returns whether you got it; if not, someone holds it, so work on something else. Claims expire; hive_release when done.',
+  { name: 'hive_claim', description: 'Claim a file (or region) before you edit it (new behaviour others rely on: post its design first); if refused, someone holds it, so do other work. A claim lasts 5 min, renews when you claim again, and holds at most 15 min in a row (then a 15 min wait): release and re-claim between long steps. hive_release when done.',
     inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'file path or region id' }, intent: { type: 'string', description: 'what you intend to do' } }, required: ['region'] } },
-  { name: 'hive_release', description: 'Hand a file back. If the room set a gate, it runs in your folder first, and a failing check REFUSES the release: the file stays yours and retrying will not help. Fix what it reported, or force with a reason to abandon the work.',
-    inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'file path or region id' }, force: { type: 'boolean', description: 'release despite a failing gate; recorded against you and announced; for abandoned work only' }, why: { type: 'string', description: 'why the work is abandoned (give it whenever force is true)' } }, required: ['region'] } },
+  { name: 'hive_release', description: 'Hand a file back. A room gate your person approved runs in your folder first; a failing check REFUSES the release: the file stays yours and retrying will not help. Fix it, or force with a reason to abandon the work. An unapproved gate does not run (Q592).',
+    inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'file path or region id' }, force: { type: 'boolean', description: 'release despite a failing gate; recorded and announced; for abandoned work only' }, why: { type: 'string', description: 'why the work is abandoned (give it whenever force is true)' } }, required: ['region'] } },
   { name: 'hive_claims', description: 'The live claim board: who holds which file. Authoritative; read it instead of asking the room.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_edit', description: 'Write a file through the medium (preferred over editing on disk): your intent and the exact change are signed into the provenance ledger as it lands. Claim the file first. Changing existing lines: pass old (whole lines, exactly as you read them) and new; if those lines changed since you read them it is refused and nothing is written. A whole new file: pass content.',
@@ -928,11 +928,11 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_leave', description: 'Leave the room and stop syncing.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_set_state', description: 'PM only: set a global project state flag (e.g. key="contract", val="READY") that blocks or unblocks agents. Short enum values only; text belongs in files.',
+  { name: 'hive_set_state', description: 'Set a room-wide state flag (e.g. key="contract", val="READY") that blocks or unblocks agents waiting on it. Any member can set one. Short enum values only; text belongs in files.',
     inputSchema: { type: 'object', properties: { key: { type: 'string', description: 'flag name' }, val: { type: 'string', description: 'short value' } }, required: ['key', 'val'] } },
   { name: 'hive_read_state', description: 'Read the global project state flags.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_set_schema', description: 'PM only: validate a state key with JSON rules: enum, transitions (legal moves) and requires (what must already hold to arrive). Example: {"enum":["PLANNING","READY","APPROVED"],"transitions":{"PLANNING":["READY"],"READY":["APPROVED"]},"requires":{"APPROVED":{"tests":"GREEN"}}}',
+  { name: 'hive_set_schema', description: 'Validate a state key with JSON rules: enum, transitions (legal moves) and requires (what must already hold to arrive). Example: {"enum":["PLANNING","READY","APPROVED"],"transitions":{"PLANNING":["READY"],"READY":["APPROVED"]},"requires":{"APPROVED":{"tests":"GREEN"}}}',
     inputSchema: { type: 'object', properties: { key: { type: 'string', description: 'state key' }, rules: { type: 'object', description: 'the JSON rules' } }, required: ['key', 'rules'] } },
   { name: 'hive_attest', description: 'Record what YOUR folder holds for a file (bytes, lines) so peers can compare; a different size from another peer warns everyone. Two matching attestations from different peers are the only proof a write landed.',
     inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'workspace-relative path' }, bytes: { type: 'number', description: 'exact byte count in your folder' }, lines: { type: 'number', description: 'line count in your folder' } }, required: ['file', 'bytes'] } },
@@ -2246,6 +2246,16 @@ function waitDefaultSeconds() { return waitPolicy().def }
 // same build, and both use forward slashes, which bash and PowerShell each accept. A token-gated
 // room gets no line: the agent's shell does not hold this server's token, and a listener that
 // cannot join is a false "listening". (tests/mcp-wait-test.mjs)
+// THE JOIN CARD SAYS HOW TO STAY REACHABLE ON THIS CLIENT (0.14.4 rules rewrite). The rules tell
+// every agent to "do what hive_join told you", so join must always tell it something true: the
+// listener where the server knows one works, hive_wait everywhere else (other apps, token-checked
+// rooms, passive participants).
+function reachLine(s) {
+  const how = s && !s.authed && !s.passive ? listenHow(clientName()) : ''
+  if (!how) return REACH_BY_WAIT
+  const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name, app: clientName() })
+  return `1. Stay reachable: before your turn ends, start your listener. ${how} It ends, and that wakes you, when you are addressed or after ${LISTEN_IDLE_MIN} quiet minutes; then start it again:\n   ${cmd}`
+}
 function listenLine(s) {
   // A passive participant never answers and nobody waits on it, so there is nothing to wake it for.
   const how = s && !s.authed && !s.passive ? listenHow(clientName()) : ''

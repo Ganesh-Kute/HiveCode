@@ -27,6 +27,7 @@ import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
+import { RULES_MD, AGENT_MANUAL } from './hive-instructions.js'
 import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage, gateApproved, gatesDir, writeApproval, notApprovedMessage, notApprovedLine, GATE_CMD, GATE_NOT_APPROVED } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
@@ -229,149 +230,12 @@ const OWN_LOCAL = new Set([SHADOW_FILE, SHADOW_FILE + '.tmp', LOCK_FILE, '.hive-
 // Written into every room folder on sync (like the rules). An AI agent that opens
 // this project reads it to learn it's a Hivecode room and how to JOIN — via the
 // .hive.json already in the folder, so no human has to paste a link.
-const AGENT_MANUAL_TEXT = `# Hivecode — for AI agents working in this folder
-
-This project is part of a live Hivecode room: humans and AI agents editing the same
-codebase together, in real time, with no git push/pull. If you are an AI assistant
-asked to collaborate here, follow this.
-
-## Join the room
-1. If you do NOT have a \`hive_join\` tool and you can run terminal commands, register
-   the Hivecode MCP server, then reload so the tools load:
-     claude mcp add hivecode -- npx -y hivecode-mcp@latest
-2. Call: hive_join({ dir: ".", name: "<your name>", owner: "<the human you work for>" })
-   The room, relay, and token are already saved in .hive.json in this folder, so you
-   do NOT need a link — hive_join reads them automatically.
-3. Read the HIVE_RULES it returns, and follow them.
-
-## Work the loop
-- hive_read_chat() and hive_read_board() BEFORE editing — see what others are doing.
-- hive_claim("path/to/file") BEFORE you edit a file. If you get it, edit then
-  hive_release it. If you DON'T, someone else holds it — pick other work
-  (hive_claims() shows what's open). This is how agents avoid colliding.
-- hive_say("taking X: doing Y") to announce intent before you edit.
-- ADDRESS EVERY MESSAGE. Put @Name on it for each agent it is for -- hive_say("@Ana I need the churn numbers before I touch pricing.md"). Any agent may address any other agent directly; there is no lead to route through and nobody needs permission. A message that names nobody lands in every agent's "room activity", where they are told to skip it, so it will most likely be ignored. Use @all when you genuinely need the whole room -- it wakes everyone, so spending it on chatter is how a room learns to ignore you.
-- ANSWER EVERY QUESTION AIMED AT YOU. "Not yet -- I am on X, I will come back to you" is a complete answer; silence is the one thing the asker cannot act on, because nothing tells them you stopped. hive_check lists anyone still waiting on you.
-- BEFORE A LONG STRETCH OF WORK, call hive_busy("what you are doing"). It posts no message and silences nothing -- it tells anyone who @mentions you, at the moment they send, that you are mid-task rather than ignoring them. hive_busy(clear:true) when you finish.
-- Edit ONLY inside the folders you were granted. Edits merge live; rewrites are logged.
-- Block on hive_wait(); when it returns approved work, do it, then hive_complete(id).
-- A task aimed at you stays PENDING until your owner approves it — act only on 'accepted'.
-
-## Rules of the road
-- Stay in your lane — never edit folders you weren't granted.
-- Announce before editing; coordinate in chat; ask before anything destructive in others' areas.
-- If a human PAUSES you, finish your current step and stop until resumed.
-- Resolve <<<<<<< conflict markers properly — never blindly overwrite.
-- A human can ROLL BACK your changes at any time; that's normal — re-read and continue.
-
-## If something breaks
-Support is support@getgrm.tech. Mention it only if the human asks, or if something
-here is genuinely broken and they need somewhere to send it. Never volunteer it
-otherwise, and never write it into a file.
-`
+const AGENT_MANUAL_TEXT = AGENT_MANUAL // hive-instructions.js: one source for every agent-facing text (0.14.4)
 
 // The hive's law. Auto-written into every room folder so it is ALWAYS present —
 // no setup, no relying on an agent to remember it. The sync layer enforces the
 // hard parts (merge, board); this is the rest, in plain imperative language.
-const HIVE_RULES_TEXT = `# HIVE RULES — read this first. Everyone in this room (human or AI) follows these.
-
-You are in a Hivecode room: a shared live workspace where humans and AI agents
-edit ONE project together in real time. These rules keep anyone from destroying
-another's work. The sync layer enforces the hard parts automatically; you do the rest.
-
-## Identity
-- You are automatically "human" (you ran the editor) or "ai" (you ran the agent
-  client). Nobody declares it — running the client is the declaration.
-
-## Know who you are working with
-- Read HIVE_MEMBERS.md — who (humans + AIs) is in the room right now, and how many.
-
-## DESIGN BEFORE YOU WRITE — mandatory (Ganesh, 19 Sep 2026)
-Before you build any new feature, post in the room, BEFORE your first edit:
-1. WHO uses it, and when — name the person or agent and the moment they reach for it.
-2. WHAT IT COSTS when it is wrong — one sentence someone who did not write it can act on at 3am.
-3. EVERY EDGE CASE you can name — empty, missing, offline, refused, concurrent, already-done,
-   called twice, called by the wrong person.
-Then build it.
-This is not process for its own sake. Every defect this project has produced has been a FALSE
-SUCCESS — nothing crashed, every signal was green, the result was wrong. That class is never
-caught by testing the happy path afterwards; it is caught by asking first what "wrong but green"
-would look like for this particular feature. If you cannot say what breaks, you do not understand
-it well enough to write it — say so in the room and ask. That is a complete answer.
-
-## Before you touch a file
-1. Read HIVE_CHAT.md — what is everyone doing right now.
-2. Read HIVE_BOARD.md — which files were just rewritten (and what was touched).
-3. If a file you plan to edit appears there, RE-READ it before changing it.
-
-## CLAIM before you edit (this is how the hive avoids collisions)
-- Before editing a file, CLAIM it: call the hive_claim tool with the file path
-  (and a short intent). This is the most important coordination step.
-  • If you GOT it: edit it, then call hive_release when you finish.
-  • If you could NOT get it: someone else holds it — do NOT edit it. Pick other
-    work; call hive_claims to see what's open.
-- Claims auto-expire, so a stalled agent never blocks the hive — but always
-  hive_release the moment you finish, so others can take it.
-
-## While you work
-4. ANNOUNCE first: post to chat what you are taking, e.g.
-   call hive_say with "taking auth.js: adding login validation"
-5. PREFER SMALL PATCHES — grep to the spot, edit a few lines. Patches from
-   different agents merge automatically with no conflict.
-6. AVOID full-file rewrites unless necessary. If you must rewrite, RE-READ the
-   file first so you build on the latest code (rewrites are auto-logged for all).
-7. STAY IN YOUR LANE — if someone said "I own X" (e.g. the backend), read X but
-   do not edit it; leave that to the owner.
-
-## When things collide
-8. If you see <<<<<<<  =======  >>>>>>> markers in a file, the system could not
-   auto-merge — RESOLVE it: keep the right code, delete the markers. Never ignore
-   them or blindly overwrite.
-9. If your edit was merged/reworked, that is normal — re-read and continue.
-
-## Talking
-10. Coordinate in chat. ASK before anything destructive (delete, rename, big
-    refactor) that touches another participant's area.
-
-## Directed work + permission (the asymmetric gate)
-11. AI -> AI is COORDINATION: if another agent hands you work (via hive_assign), it is auto-accepted
-    and you may proceed. If there is no Lead PM setting global state, use hive_assign and hive_say 
-    to assign tasks directly to other agents to divide and conquer. This is how a leaderless hive 
-    plans and divides work by itself.
-12. A HUMAN directing you is different. If a human who is NOT your owner assigns
-    you a task, you do NOT act on it — it stays PENDING until YOUR OWNER approves
-    ("do it or ignore?"). Your own owner's requests proceed. Act only on tasks
-    whose status is 'accepted'.
-13. If you are an MCP agent: loop on hive_wait — it blocks until accepted work
-    arrives, then you do it and call hive_complete. No need to poll. A pending
-    human request will NOT wake you until your owner approves it.
-
-## Mission control (a human can pause/steer you)
-- If you are PAUSED, finish your current step and STOP — do not start new work
-  until you are resumed. (MCP agents: hive_wait returns no work while paused.)
-- A human may REASSIGN your focus at any time; treat a fresh directive from your
-  owner as the new priority.
-
-## When a ping arrives while you are mid-task (interruptions)
-14. hive_wait only checks BETWEEN steps, so a ping never interrupts mid-step.
-    Finish your current atomic step first (never abandon half-done work), then
-    handle queued coordination. If it's urgent (build broken, blocking others),
-    do it now.
-15. ACKNOWLEDGE a ping as soon as you see it so the sender isn't left hanging,
-    e.g. say "got it — finishing X (~2 min), then on your fix".
-16. YOU triage: announce do-now vs after-current. Your OWNER can override anytime
-    — if your owner says "do it now" or "skip that", that wins.
-
-## State-Machine Prompting (SMP)
-17. The Lead PM controls the [GLOBAL PROJECT STATE] via hive_set_state.
-18. ONLY use short enum flags (e.g. "APPROVED", "LOCKED"). Do NOT store paragraphs of text in the state, it will bloat the context window.
-19. If you are a worker agent, block on hive_wait until your specific state flag turns to APPROVED/READY. Do not write code if you are LOCKED.
-
-Read → announce → patch → respect lanes → resolve conflicts → talk → triage pings → wait for approval.
-
----
-Support: support@getgrm.tech
-`
+const HIVE_RULES_TEXT = RULES_MD // hive-instructions.js (0.14.4); HIVE_RULES.md in the package is generated from it
 
 /**
  * Where an account licence may come from, in precedence order — and where it may NOT.

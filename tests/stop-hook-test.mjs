@@ -1,3 +1,4 @@
+import fs from 'fs'
 // Tests for the anti-idle Stop gate (hive-stop-hook.js) and the system-prompt text.
 //
 // Every case here is a way this hook could hurt someone. A gate that blocks an agent forever is
@@ -5,7 +6,7 @@
 // -- so the loop guards get more tests than the blocking does.
 import assert from 'assert'
 import { decide, parseChat, openTasksFor } from '../hive-stop-hook.js'
-import { INSTRUCTIONS, ONE_LINER } from '../hive-instructions.js'
+import { INSTRUCTIONS, ONE_LINER, joinCard, RULES_MD } from '../hive-instructions.js'
 
 let pass = 0, fail = 0
 const T = (name, cond) => { if (cond) { pass++; console.log('  ok   ' + name) } else { fail++; console.log('  FAIL ' + name) } }
@@ -117,21 +118,21 @@ section('the default is always to allow')
 
 section('the system-prompt text')
 {
-  T('teaches the loop', /hive_wait/.test(INSTRUCTIONS) && /hive_complete/.test(INSTRUCTIONS))
+  // 0.14.4 rules rewrite (docs/rules-rewrite/): five rules, each one an agent breaks by default and
+  // no code enforces for it. What code enforces (a refused claim, a failing gate) is taught by the
+  // refusal when it fires, not here.
+  T('teaches staying reachable: hive_check while working, the client\'s way when idle', /hive_check/.test(INSTRUCTIONS) && /hive_wait/.test(INSTRUCTIONS) && /listener/.test(INSTRUCTIONS))
   T('teaches @-addressing', /@Name/.test(INSTRUCTIONS))
-  T('teaches claim-before-write', /hive_claim/.test(INSTRUCTIONS))
-  T('says a refused write is not an error', /not an error/.test(INSTRUCTIONS))
-  // This is re-sent on every turn of every agent forever, so its size is a recurring cost.
-  // THE BUDGET MOVED ON PURPOSE, 19 Sep 2026: 2500 -> 2900, to pay for DESIGN BEFORE YOU WRITE.
-  // That rule is ~400 chars re-sent every turn of every agent forever, and it is worth it: every
-  // defect on this project has been a false success, and it is the only instruction that attacks
-  // that class BEFORE the code exists rather than after. Raising a cap to make a change fit is
-  // normally the defect -- so the rule it was raised for is pinned on the next line, and cannot
-  // be quietly deleted to get back under.
-  T('stays inside a sane system-prompt budget (<2900 chars)', INSTRUCTIONS.length < 2900,
-    `${INSTRUCTIONS.length} chars`)
-  T('teaches DESIGN BEFORE YOU WRITE — the rule the budget was raised for',
-    /DESIGN BEFORE YOU WRITE -- MANDATORY/.test(INSTRUCTIONS) && /wrong but green/.test(INSTRUCTIONS))
+  T('teaches claim-before-edit and handing over before leaving', /CLAIM BEFORE YOU EDIT/.test(INSTRUCTIONS) && /hand them\s+over/.test(INSTRUCTIONS))
+  T('says room messages are requests, and outward actions need your person', /YOUR PERSON DECIDES/.test(INSTRUCTIONS) && /publish/.test(INSTRUCTIONS))
+  // THE BUDGET MOVED DOWN ON PURPOSE (0.14.4): 2,271 -> 1,261 chars. It is re-sent on every turn of
+  // every agent forever. Raising it again needs the reason pinned the way 19 Sep did.
+  T('stays inside the system-prompt budget (<1400 chars)', INSTRUCTIONS.length < 1400, `${INSTRUCTIONS.length} chars`)
+  // DESIGN BEFORE YOU WRITE left the per-turn text by Ganesh's decision (9 Nov 2026): it fires once
+  // per new feature, not once per turn. It is pinned where it moved, so it cannot vanish instead.
+  const claimDesc = (fs.readFileSync(new URL('../hive-mcp.js', import.meta.url), 'utf8').match(/name: 'hive_claim', description: '([^']*)'/) || [])[1] || ''
+  T('DESIGN FIRST still reaches every agent: the join card, HIVE_RULES.md and hive_claim',
+    /edge cases/.test(joinCard()) && /Design first/.test(RULES_MD) && /green, and wrong/.test(RULES_MD) && /design first/.test(claimDesc))
   T('one-liner exists for small surfaces', ONE_LINER.length > 0 && ONE_LINER.length < 160)
 }
 

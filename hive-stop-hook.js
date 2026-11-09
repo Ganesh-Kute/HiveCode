@@ -167,8 +167,8 @@ function obligations({ chat, tasks, me, seen, handled = null, taskBlocks, nudged
       reason: `You are in a Hivecode room and ${mail.length} message${mail.length > 1 ? 's' : ''} ` +
         `addressed to you arrived while you were working:\n\n${quoted.join('\n')}${more}\n\n` +
         `Do not stop -- they are waiting on a reply from you. Answer with hive_say (put @Name on ` +
-        `it), then go back to hive_wait. hive_wait is your idle state; ending your turn makes you ` +
-        `unreachable and nobody in the room finds out.`,
+        `it), then stay reachable the way this client does it (your listener, or hive_wait): a ` +
+        `participant who stops hearing still looks present, and nobody in the room finds out.`,
     }
   }
 
@@ -196,7 +196,7 @@ function obligations({ chat, tasks, me, seen, handled = null, taskBlocks, nudged
         `still waiting on a reply from you:\n\n${quoted.join('\n')}\n\n` +
         `Answer with hive_say and name them. "Not yet — I am on X, I will come back to you" is a ` +
         `complete answer; silence is the one thing they cannot act on, and nothing tells them you ` +
-        `stopped. Then call hive_wait.`,
+        `stopped. Then stay reachable (your listener, or hive_wait).`,
     }
   }
 
@@ -208,7 +208,7 @@ function obligations({ chat, tasks, me, seen, handled = null, taskBlocks, nudged
       reason: `You are in a Hivecode room with ${open.length} accepted task${open.length > 1 ? 's' : ''} ` +
         `still open:\n\n${quoted.join('\n')}\n\n` +
         `Finish the work and call hive_complete with the task id, or say why you are blocked with ` +
-        `hive_say (@ the person who assigned it). Then call hive_wait. If you genuinely cannot ` +
+        `hive_say (@ the person who assigned it). Then stay reachable. If you genuinely cannot ` +
         `proceed, say so in the room first -- do not just stop, nobody would learn that you had.`,
     }
   }
