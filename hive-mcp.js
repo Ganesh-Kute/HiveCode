@@ -2021,9 +2021,37 @@ function missingRequired(req) {
   return lines.join('\n')
 }
 
+// [!] MEANS "BEFORE YOU CONTINUE", SO IT IS CHECKED BEFORE THE CALL, NOT AFTER IT (P1-8, 9 Nov 2026).
+// Mail reached an agent only as a notice appended to a tool's RESULT, after the tool had run. In the
+// 9 Nov mock run Claude sent "[!] @antigravity-VM Stand down on test.js: ... Don't edit it."; the
+// agent's next call was hive_edit test.js, the file was written, and "[!] URGENT MAIL" came back in
+// the reply to that very write. The room read it as "delivered to one of two agents". So a call that
+// writes, takes work or lands it is refused while urgent mail addressed to this agent is unread, and
+// the refusal shows the message. Reading it (hive_check or hive_wait) is the decision; then retry.
+// Releasing, talking and reading are never held: a stand-down usually asks for exactly those.
+const URGENT_GATED = new Set(['hive_edit', 'hive_claim', 'hive_resolve', 'hive_fork', 'hive_pr', 'hive_set_state'])
+function urgentGate(name) {
+  try {
+    if (!URGENT_GATED.has(name) || !session || !session.mailbox) return ''
+    catchUp(session)
+    const m = session.mailbox.peek(chatArray())
+    const urgent = (m.mentions || []).filter((x) => x && priorityOf(x.text) === 'stop')
+    if (!urgent.length) return ''
+    const shown = urgent.slice(-3).map((x) => `  ${formatMessage(x)}`.slice(0, 600)).join('\n')
+    return [
+      `REFUSED -- ${urgent.length} URGENT message(s) ([!]) addressed to you are unread, and [!] means: handle it before you continue.`,
+      `Nothing was done. This ${name} call did NOT happen.`,
+      shown,
+      `Read it with hive_check (that marks it read), do what it asks, then call ${name} again if it still applies.`,
+    ].join('\n')
+  } catch { return '' }
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const bad = missingRequired(req)
   if (bad) return { content: [{ type: 'text', text: bad }], isError: true }
+  const held = urgentGate(req.params && req.params.name)
+  if (held) return { content: [{ type: 'text', text: held }], isError: true }
   const res = await dispatch(req)
   // Never let the banner break a tool: append only to a well-formed text result, and skip the two
   // tools that already deliver mail themselves (appending would double-report the same messages).

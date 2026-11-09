@@ -27,7 +27,7 @@ jobs:
         run: |
           echo "TEMP=${TEMP:-unset} TMPDIR=${TMPDIR:-unset} os.tmpdir()=$(node -p 'require("os").tmpdir()')"
           fail=0
-          for t in hive-await-test.mjs stop-hook-test.mjs mcp-wait-test.mjs setup-test.mjs session-resume-test.mjs shared-launch-folder-test.mjs task-authority-test.mjs; do
+          for t in hive-await-test.mjs stop-hook-test.mjs mcp-wait-test.mjs urgent-gate-test.mjs setup-test.mjs session-resume-test.mjs shared-launch-folder-test.mjs task-authority-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"
