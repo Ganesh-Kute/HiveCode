@@ -2163,6 +2163,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const fold = (r) => isCaseInsensitive ? r.toLowerCase() : r
 
   const canonicalCaseKeys = new Map() // fold(r) -> canonical relPath
+  const recentlyLocallyRemovedCase = new Map() // fold(r) -> { path: r, at: Date.now() }
   const collided = new Map()          // collided relPath -> { with: canonical relPath }
   const collidedWarned = new Set()    // relPath announced to room
   const collidedTimers = new Map()    // relPath -> Timeout (debounced room announcement)
@@ -2764,6 +2765,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     if (disk === docText) {
       ensureExactDiskCasing(relPath)
+      if (!inManifest(relPath) && origin === 'local') {
+        const key = fold(relPath)
+        const prevCase = recentlyLocallyRemovedCase.get(key)
+        if (prevCase && (Date.now() - prevCase.at < 60000)) {
+          recentlyLocallyRemovedCase.delete(key)
+          queueManifestSet(relPath)
+        }
+      }
       // CREATING a file is editing it. This branch is where a locally-authored NEW file
       // lands: scan() finds it, openFile() syncs the content up, and by the time reconcile
       // runs disk and doc already agree -- so it returns below, before the markEditing() at
@@ -4118,7 +4127,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!send.length) return
     for (const r of send) queueManifestDelete(r)
     flushRoomDoc()
+    const now = Date.now()
+    for (const [k, v] of recentlyLocallyRemovedCase) { if (now - v.at > 60000) recentlyLocallyRemovedCase.delete(k) }
     for (const r of send) {
+      recentlyLocallyRemovedCase.set(fold(r), { path: r, at: now })
       closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
       if (isCaseInsensitive) {
         const cf = fold(r)
@@ -4369,6 +4381,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           }
         }
       }
+      recentlyLocallyRemovedCase.delete(fold(key))
       pendingManifestOps.delete(key)
       newRemote.delete(key); arrivedNew.delete(key) // deleted while new or queued: nothing to wait for
       closeFile(key)
