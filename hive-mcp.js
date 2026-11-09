@@ -2004,6 +2004,9 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           ...(conn && conn.unwritable && conn.unwritable.length ? { unwritable: { files: conn.unwritable.map((u) => `${u.path} (${u.code})`), meaning: 'read-only or locked in your folder, so your copy is older than the room\'s; each is written as soon as it can be' } } : {}),
           ...(conn && conn.collided && conn.collided.length ? { collided: { files: conn.collided.map((c) => `${c.path} (your folder has ${c.with})`), meaning: 'in the room, but this disk cannot hold both names, so not in your folder; editing yours never changes it' } } : {}),
           ...(conn && conn.withheld && conn.withheld.length ? { withheld: { files: conn.withheld.map((w) => `${w.path}: ${w.kind}, line ${w.line}`), meaning: 'NOT shared: each contains a key or token the room does not have. Read it from the environment (.env is never shared); the file is shared on its next save without it' } } : {}),
+          // What only THIS folder needed to know, kept off the room's chat (0.14.4, C5): a local copy kept after
+          // a room write, a file that differed at join, a teammate on the same release from another commit.
+          ...((() => { try { const n = s.hive.notices ? s.hive.notices() : []; return n.length ? { thisFolderOnly: n.slice(-8).map((x) => `${new Date(x.at).toISOString().slice(11, 19)}Z ${x.text}`) } : {} } catch { return {} } })()),
         })
       }
       // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity

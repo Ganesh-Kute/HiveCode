@@ -827,7 +827,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // Carry each side's SIGNED intent into the announcement: the WHY is what lets any
       // agent in the room reconcile the fork (via hive_resolve) instead of picking a winner.
       const why = rec.versions.map((v) => `${v.name}: "${versionIntent(fe, rec, v.hash) || 'no stated intent'}"`).join(' | ')
-      try { say(`⚠ SILENT FORK in ${relPath}: ${who} changed the same region concurrently. Signed intents — ${why}. Surfaced ALL ${rec.versions.length} versions with <<<<<<< markers. ANY agent may reconcile BOTH intents: call hive_resolve with the full resolved file — it is validated (parses, no dangling refs) before it lands.`) } catch { }
+      try { postOnce(`fork:${relPath}:${contentHash(rec.versions.map((v) => v.hash).sort().join(',')).slice(0, 16)}`, `⚠ SILENT FORK in ${relPath}: ${who} changed the same region concurrently. Signed intents — ${why}. Surfaced ALL ${rec.versions.length} versions with <<<<<<< markers. ANY agent may reconcile BOTH intents: call hive_resolve with the full resolved file — it is validated (parses, no dangling refs) before it lands.`, { observer: true }) } catch { }
     }
   }
   // A resolution landed elsewhere: the shared text is clean again. Adopt it to disk.
@@ -1308,7 +1308,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
               `Do not trust this folder's contents meanwhile.`,
           })).text
       log(`[${name}] !! ${msg}`)
-      try { say(`[!] @all ${msg}`) } catch { /* chat may itself be unreachable — the log still carries it */ }
+      try { postOnce(`notsyncing:${code || 'stuck'}`, `[!] @all ${msg}`, { observer: true, ttlMs: 10 * 60 * 1000 }) } catch { /* chat may itself be unreachable — the log still carries it */ }
     }, 4000)
     if (refusalTimer.unref) refusalTimer.unref()
   }
@@ -2224,7 +2224,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           if (keptAs) {
             log(`[${name}] local unshared file ${relPath} overwritten by room write; copy preserved in ${keptAs}`)
             try {
-              say(`· ${relPath} on ${name}'s disk was ${unshared.reason} and was overwritten by a room write — local copy preserved in ${keptAs}.`)
+              note(`· ${relPath} on ${name}'s disk was ${unshared.reason} and was overwritten by a room write — local copy preserved in ${keptAs}.`)
             } catch { }
           }
         }
@@ -2385,7 +2385,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         `In ${name}'s folder ${one ? 'it still holds' : 'they still hold'} ${name}'s version. To make one the room's version, claim it and hive_edit it with the full file. ` +
         `Don't delete a local copy to get the room's: a deletion syncs, and removes the file for everyone.`)
     }
-    try { say(parts.join(' ')) } catch { }
+    // What concerns THIS folder only (line endings, older copies it now has) is a note for hive_status; only
+    // content the room has never seen is the room's business, because nobody else has it (0.14.4, C5).
+    note(parts.join(' '))
+    if (kept.length) { try { say([parts[0], parts[parts.length - 1]].join(' ')) } catch { } } // the kept part is pushed last
   }
 
   function reconcileBinary(relPath, origin = 'local') {
@@ -2489,7 +2492,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (keptAs) {
         log(`[${name}] local binary ${relPath} overwritten by remote write (winner: ${remoteBy || 'teammate'}); copy preserved in ${keptAs}`)
         try {
-          say(`· ${relPath} updated from room (winner: ${remoteBy || 'teammate'}). Your local copy saved to ${keptAs}.`)
+          note(`· ${relPath} updated from room (winner: ${remoteBy || 'teammate'}). Your local copy saved to ${keptAs}.`)
         } catch { }
       }
     }
@@ -2822,7 +2825,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         if (r0.conflict) conflicted.add(relPath)
         bases.set(relPath, r0.text); forkBases.set(relPath, r0.text); shadow.set(relPath, r0.text)
         if (!inManifest(relPath)) queueManifestSet(relPath)
-        try { say(`⚠ ${relPath} was created by two participants at once — both versions were merged${r0.conflict ? ', and CONFLICT markers need resolving' : ''}.`) } catch { }
+        try { postOnce(`race:${relPath}`, `⚠ ${relPath} was created by two participants at once — both versions were merged${r0.conflict ? ', and CONFLICT markers need resolving' : ''}.`, { ttlMs: 10 * 60 * 1000 }) } catch { }
         return
       }
       // REJOIN, NOT A FIRST JOIN. If a previous session of this client wrote this file in
@@ -3122,10 +3125,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (hasMarkers && !conflicted.has(relPath)) {
       conflicted.add(relPath)
       log(`[${name}] ⚠ merge conflict in ${relPath} — kept BOTH versions with <<<<<<< markers`)
-      try { say(`⚠ MERGE CONFLICT in ${relPath} — it has <<<<<<< markers. Whoever owns it: resolve before continuing, by saving the file without them or by passing the marked block as old to hive_edit old/new.`) } catch { }
+      try { postOnce(`conflict:${relPath}`, `⚠ MERGE CONFLICT in ${relPath} — it has <<<<<<< markers. Whoever owns it: resolve before continuing, by saving the file without them or by passing the marked block as old to hive_edit old/new.`, { observer: !res.conflict, clear: `resolved:${relPath}` }) } catch { }
     } else if (!hasMarkers && conflicted.has(relPath)) {
       conflicted.delete(relPath)
-      try { say(`✓ conflict in ${relPath} resolved.`) } catch { }
+      try { postOnce(`resolved:${relPath}`, `✓ conflict in ${relPath} resolved.`, { observer: origin !== 'local', clear: `conflict:${relPath}` }) } catch { }
     } else if (reAdded) {
       log(`[${name}] protected ${relPath}: your edit was based on an older version — re-added changes that arrived since (nobody's work lost)`)
       try { say(`↺ ${relPath}: ${name}'s edit was based on an older copy — kept the changes that landed in between (nothing lost).`) } catch { }
@@ -3143,7 +3146,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (res.icrWarning && icrWarned.get(relPath) !== res.icrWarning) {
       icrWarned.set(relPath, res.icrWarning)
       log(`[${name}] ⚠ ICR flag in ${relPath} — ${res.icrWarning}`)
-      try { say(`⚠ ICR flag in ${relPath}: ${res.icrWarning}. It merged, but review — this is a break a plain merge can't see.`) } catch { }
+      try { postOnce(`icr:${relPath}:${contentHash(String(res.icrWarning)).slice(0, 16)}`, `⚠ ICR flag in ${relPath}: ${res.icrWarning}. It merged, but review — this is a break a plain merge can't see.`, { observer: origin !== 'local' }) } catch { }
     } else if (!res.icrWarning && icrWarned.has(relPath)) {
       icrWarned.delete(relPath)
     }
@@ -3378,6 +3381,66 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function say(text) {
     if (!text) return
     chat.push([{ by: name, kind, at: fmtTime(), text: String(text) }])
+  }
+  // ONE LINE PER EVENT, NOT ONE PER OBSERVER (0.14.4, C5). Most system lines are said by whoever
+  // caused them (a task, a review, a revert): one poster by nature. But an OBSERVED event -- a conflict
+  // in a shared file, a client on another build, a divergence -- is detected by every peer's own code,
+  // and each posted it: one conflict gave four MERGE CONFLICT lines and then four "resolved" lines
+  // (incident I-16, #722-#725); one odd client gave a MIXED BUILDS line from every other (I-8, #822-#823).
+  // postOnce(id, text): `id` names the event the same way on every peer. The peer that caused it posts
+  // at once. An observer waits 1.5 s plus 1 s per rank among present engines (sorted by name) and posts
+  // only if nobody has; the key lives in the room (`sys_events`) and expires. A peer that cannot write
+  // the key still posts: a missed alarm hides a conflict, a duplicate is only noise.
+  const sysEvents = doc.getMap('sys_events')
+  const SYS_TTL_MS = 6 * 3600 * 1000
+  const sysTimers = new Set()
+  // What only THIS folder needs to know (a local copy kept, a file that differed at join) goes here, to
+  // the log and hive_status, and not to the whole room (C5).
+  const notices = []
+  function note(text) {
+    const t = String(text || '')
+    if (!t) return
+    log(`[${name}] ${t}`)
+    notices.push({ at: Date.now(), text: t })
+    if (notices.length > 50) notices.shift()
+  }
+  function sysRank() {
+    const names = new Set([name])
+    try {
+      for (const st of provider.awareness.getStates().values()) {
+        const u = st && st.user
+        if (u && u.name && !u.listener && !u.passive && u.v === PROTOCOL_VERSION) names.add(u.name)
+      }
+    } catch { }
+    return [...names].sort().indexOf(name)
+  }
+  function pruneSysEvents(now) {
+    let n = 0
+    for (const [k, v] of sysEvents.entries()) {
+      if (++n > 500) break
+      if (!v || now - (Number(v.at) || 0) > (Number(v.ttl) || SYS_TTL_MS)) sysEvents.delete(k)
+    }
+  }
+  function postOnce(id, text, { observer = false, ttlMs = SYS_TTL_MS, clear = null } = {}) {
+    if (!text) return null
+    if (observer && (passive || listener)) return null // a client nobody waits on never speaks for the room
+    const fire = () => {
+      try {
+        const prev = sysEvents.get(id)
+        if (prev && Date.now() - (Number(prev.at) || 0) < (Number(prev.ttl) || SYS_TTL_MS)) return false
+        doc.transact(() => {
+          sysEvents.set(id, { by: name, at: Date.now(), ttl: ttlMs })
+          if (clear) for (const c of [].concat(clear)) sysEvents.delete(c)
+          pruneSysEvents(Date.now())
+        })
+      } catch { /* fail open: the line is said even if the key could not be written */ }
+      say(text)
+      return true
+    }
+    if (!observer) return fire()
+    const t = setTimeout(() => { sysTimers.delete(t); if (!stopped) { try { fire() } catch { } } }, 1500 + 1000 * Math.max(0, sysRank()))
+    sysTimers.add(t)
+    return null
   }
   function renderChat() {
     const out = [
@@ -3726,7 +3789,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const now = Date.now()
     if (others.length && now - (warnedAt.get(relPath) || 0) > 30000) {
       warnedAt.set(relPath, now)
-      try { say(`⚠ heads-up: ${name} is also editing ${relPath} (with ${others.join(', ')}). Small patches auto-merge; coordinate before a full rewrite.`) } catch { }
+      try { postOnce(`coedit:${relPath}:${[name, ...others].sort().join(',')}`, `⚠ heads-up: ${name} is also editing ${relPath} (with ${others.join(', ')}). Small patches auto-merge; coordinate before a full rewrite.`, { ttlMs: 10 * 60 * 1000 }) } catch { } // the one who just started editing is the cause: it says it at once
     }
   }
   function memberList() {
@@ -3795,7 +3858,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       versionWarned.add(u.name)
       const theirs = u.v ? `v${u.v}` : 'an older build'
       log(`[${name}] ⚠ ${u.name} is on ${theirs} (incompatible with v${PROTOCOL_VERSION}) — they won't sync correctly until everyone updates.`)
-      try { say(`⚠ ${u.name} is on an incompatible version — files won't sync with them until everyone updates Hivecode.`) } catch { }
+      try { postOnce(`proto:${u.name}:${u.v || '-'}`, `⚠ ${u.name} is on an incompatible version — files won't sync with them until everyone updates Hivecode.`, { observer: true }) } catch { }
     }
     checkBuilds()
   }
@@ -3809,40 +3872,69 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   //   - humans are not flagged: the extension and the browser panel carry no engine build
   //   - one side of each pair speaks (the name that sorts first), once per build it sees
   const buildWarned = new Set()
+  // ONE ALARM PER ROOM, AND ONLY FOR ANOTHER RELEASE (0.14.4, C5). The rule used to be "one side of
+  // each pair speaks", which is still one line per PAIR: two clients on 0.14.2 each posted about the one
+  // on 0.14.3 (#822 + #823), and a client on the same release from another commit raised the same alarm
+  // (I-8). Now the event is the set of releases in the room: it is said once, by whoever sees it first,
+  // naming who runs what. The same release from another commit is a note for this folder (hive_status).
   function checkBuilds() {
-    // An old engine cannot speak for itself, so SOMEBODY current must -- but only one: the reporting
-    // client whose name sorts first. Otherwise every current client in the room says the same thing.
-    // Listeners (listener: true, syncFiles: false) do not sync or edit files and do not report builds.
-    const reporters = [name]
-    const currentEngines = new Set()
-    for (const s of provider.awareness.getStates().values()) {
-      const u = s && s.user
-      if (!u || !u.name || u.v !== PROTOCOL_VERSION || u.listener) continue
-      if (u.hv) reporters.push(u.name)
-      if (u.hv === VERSION_LABEL) currentEngines.add(u.name)
-    }
-    const speakForOld = reporters.sort()[0] === name
-
-    for (const s of provider.awareness.getStates().values()) {
-      const u = s && s.user
+    // Per CONNECTION, not per name: one participant with two engines open on different builds is its own
+    // alarm (0.14.3 Q-2: "an older connection is still open"), and a map keyed by name would hide it.
+    const labelsOf = new Map() // name -> Set of what its engines run
+    const add = (n, label) => { if (!labelsOf.has(n)) labelsOf.set(n, new Set()); labelsOf.get(n).add(label) }
+    add(name, VERSION_LABEL)
+    for (const st of provider.awareness.getStates().values()) {
+      const u = st && st.user
       if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION || u.listener) continue
-      const human = String(u.kind || '').toLowerCase() === 'human'
-      let theirs = ''
-      if (u.hv) {
-        if (u.hv === VERSION_LABEL || name > u.name) continue
-        const olderOpen = currentEngines.has(u.name) ? ` (an older connection from ${u.name} is still open)` : ''
-        theirs = `hivecode ${u.hv}${olderOpen}`
-      } else if (!human) {
-        if (!speakForOld) continue
-        const olderOpen = currentEngines.has(u.name) ? ` (an older connection from ${u.name} is still open)` : ''
-        theirs = `a hivecode build older than build reporting (before ${VERSION})${olderOpen}`
-      } else continue
-      const key = `${u.name}|${u.hv || '-'}`
-      if (buildWarned.has(key)) continue
-      buildWarned.add(key)
-      const same = u.hv && u.hv.split('+')[0] === VERSION ? ' (the same release from different commits)' : ''
-      log(`[${name}] ⚠ MIXED BUILDS: ${u.name} runs ${theirs}, this client runs ${VERSION_LABEL}${same}`)
-      try { say(`⚠ MIXED BUILDS: ${u.name} runs ${theirs}, ${name} runs hivecode ${VERSION_LABEL}${same}. Two builds in one room can lose file content with no error on either side -- everyone should run the same build.`) } catch { }
+      if (u.hv) add(u.name, String(u.hv))
+      // An AI on this protocol reporting no build is an engine older than build reporting: the rollout
+      // case, and it cannot warn itself. Humans carry no engine build (the extension, the browser panel).
+      else if (String(u.kind || '').toLowerCase() !== 'human') add(u.name, `a build older than build reporting (before ${VERSION})`)
+    }
+    const older = (label) => /^a build older/.test(label)
+    const releaseOf = (label) => (older(label) ? label : String(label).split('+')[0])
+    const on = (label) => (older(label) ? `on ${label}` : `on hivecode ${label}`)
+    // The same release from another commit: a note for this folder, not a room alarm.
+    for (const [n, labels] of labelsOf) {
+      if (n === name) continue
+      for (const label of labels) {
+        if (label === VERSION_LABEL || releaseOf(label) !== VERSION) continue
+        const key = `note|${n}|${label}`
+        if (buildWarned.has(key)) continue
+        buildWarned.add(key)
+        note(`${n} runs hivecode ${label}: the same release as this client (${VERSION_LABEL}), from another commit.`)
+      }
+    }
+    // One name, two engines on different builds: they write over each other's files.
+    for (const [n, labels] of labelsOf) {
+      if (n === name || labels.size < 2) continue
+      const all = [...labels].sort()
+      const id = `dual:${n}:${all.join('|')}`
+      if (buildWarned.has(id)) continue
+      buildWarned.add(id)
+      log(`[${name}] ⚠ MIXED BUILDS: ${n} has engines ${all.map(on).join(' and ')}`)
+      try { postOnce(id, `⚠ MIXED BUILDS: ${n} has two engines open, ${all.map(on).join(' and ')} (an older connection from ${n} is still open). Two engines under one name can lose file content with no error on either side -- close the older one.`, { observer: true }) } catch { }
+    }
+    // An OLDER RELEASE in the room: one alarm per participant and build, for the whole room. The event
+    // is "X runs B, older than the newest release here": every observer sees the same newest release, so
+    // they name the same event, and presence churn (an agent's state re-published) never re-raises it.
+    const parts = (r) => (older(r) ? [-1] : String(r).split('.').map((x) => parseInt(x, 10) || 0))
+    const cmp = (a, b) => { const x = parts(a), y = parts(b); for (let k = 0; k < Math.max(x.length, y.length); k++) { const d = (x[k] || 0) - (y[k] || 0); if (d) return d } return 0 }
+    const releases = new Set()
+    for (const labels of labelsOf.values()) for (const label of labels) releases.add(releaseOf(label))
+    if (releases.size < 2) return
+    const newest = [...releases].sort(cmp).pop()
+    const current = []
+    for (const [n, labels] of labelsOf) for (const label of labels) if (releaseOf(label) === newest) current.push(`${n} ${on(label)}`)
+    for (const [n, labels] of labelsOf) {
+      for (const label of labels) {
+        if (releaseOf(label) === newest) continue
+        const id = `builds:${n}:${label}`
+        if (buildWarned.has(id)) continue
+        buildWarned.add(id)
+        log(`[${name}] ⚠ MIXED BUILDS: ${n} runs ${older(label) ? label : `hivecode ${label}`}`)
+        try { postOnce(id, `⚠ MIXED BUILDS: ${n} runs ${older(label) ? label : `hivecode ${label}`}, older than the room's newest release (${current.sort().join(', ')}). Two releases in one room can lose file content with no error on either side -- ${n} should update (npx -y hivecode-mcp@latest setup, then restart).`, { observer: true }) } catch { }
+      }
     }
   }
   if (syncFiles) provider.awareness.on('change', () => { renderMembers(); renderClaims(); checkVersions() })
@@ -4729,6 +4821,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     try { flushFirstContact() } catch { } // before `stopped`: a join cut short still says what it kept
     try { settleLocalDeletes() } catch { } // a delete made just before leaving still leaves, judged like any other
     stopped = true
+    for (const t of sysTimers) clearTimeout(t)
+    sysTimers.clear()
     try { flushRoomDoc() } catch { }
     if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
     if (renderBoardTimer) { clearImmediate(renderBoardTimer); renderBoardTimer = null }
@@ -4947,7 +5041,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           if (v.stuckLagging) return `${v.peer}:${v.bytes}b/${v.lines}L[STUCK:${v.stuckReason || 'not catching up'}]`
           return `${v.peer}:${v.bytes}b/${v.lines}L`
         }).join('  ')
-        say(`[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
+        postOnce(`diverge:${p}:${contentHash(detail).slice(0, 16)}`, `[!] DIVERGENCE on ${p} — peers hold DIFFERENT content: ${detail}. Nobody may write this path until it is reconciled; mark it path:${p}=POISONED if it cannot be.`)
       }
 
       return {
@@ -4980,6 +5074,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
     },
     say,                 // post a coordination message
+    postOnce,            // a system line said once per event in the room, whoever sees it (0.14.4, C5)
+    notices: () => notices.slice(), // what only this folder needs to know (hive_status shows it)
     assign,              // direct a task at a participant (needs approval if target AI has an owner)
     decide,              // approve/deny a task (owner only, if set)
     complete,            // mark a task done
