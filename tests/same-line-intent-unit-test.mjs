@@ -18,6 +18,8 @@
 //   CF  clashFinal: one block, every version once, the same bytes on every peer
 //   CU  clashUnion: every peer rebuilds the real union from the intents alone
 //   CO  clashOnlyRegion: the resolution may replace the union, never a later edit
+//   EB  explainBase (F5): a later save made from one side, or a clean merge of sides, is recognised
+//   CL  clashUnion with later saves: the rebuilt union equals the real one
 //   K   KNOWN, not a failure: intents made from different texts are not compared
 
 import * as Y from 'yjs'
@@ -309,6 +311,54 @@ sec('CO clashOnlyRegion')
   for (const x of [d2, d3]) Y.applyUpdate(d1, Y.encodeStateAsUpdate(x))
   const m3 = new Map([[1, H(base, a)], [2, H(base, b)], [3, H(base, c)]])
   T('CO7 three saves: the resolution may replace their real union', clashOnlyRegion(base, m3, clashFinal(base, m3), d1.getText('t').toString()) === true, J(d1.getText('t').toString()))
+}
+
+sec('EB explainBase (F5)')
+if (typeof SYNC.explainBase !== 'function') T('EB0 sync.js exports explainBase(base, firsts, hash)', false, 'missing')
+else {
+  const { contentHash } = await import('../substrate.js')
+  const base = lines('plan', 'ship friday', 'owner: team', 'notes')
+  const A = H(base, edit(base, 1, 'ship monday')), B = H(base, edit(base, 1, 'ship tuesday')), C = H(base, edit(base, 3, 'notes!'))
+  const firsts = new Map([[10, A], [20, B], [30, C]])
+  const sideA = applyIntent(base, A)
+  const e1 = SYNC.explainBase(base, firsts, contentHash(sideA))
+  T('EB1 a save made from one side -> that side', e1 && J(e1.after) === J([10]) && e1.text === sideA, J(e1))
+  const ac = edit(edit(base, 1, 'ship monday'), 3, 'notes!')
+  const e2 = SYNC.explainBase(base, firsts, contentHash(ac))
+  T('EB2 a save made from the clean merge of two sides that do not clash -> both', e2 && J(e2.after) === J([10, 30]) && e2.text === ac, J(e2))
+  const fused = SYNC.clashUnion(base, new Map([[10, A], [20, B]]))
+  T('EB3 a save made from the FUSED union of a clash -> not explained (its fused line is nobody\'s version)', SYNC.explainBase(base, firsts, contentHash(fused)) === null, J(fused))
+  T('EB4 a save made from some other text -> not explained', SYNC.explainBase(base, firsts, contentHash('something else\n')) === null)
+}
+
+sec('CL clashUnion with later saves (F5)')
+if (typeof SYNC.clashUnion !== 'function' || SYNC.clashUnion.length < 2) T('CL0 clashUnion(base, intents, laters)', false, 'missing')
+else {
+  // Real: A and B save from base at the same moment; C already held A's save and saved from that text.
+  let n = 0, diff = 0, ex = null
+  for (let k = 0; k < 600; k++) {
+    const bl = codeBase(4 + Math.floor(rnd() * 8)), base = bl.join('\n') + '\n'
+    const ta = oneEdit(bl).join('\n') + '\n', tb = oneEdit(bl).join('\n') + '\n'
+    const ha = H(base, ta), hb = H(base, tb)
+    if (!ha || !hb) continue
+    const ids = [1000 + Math.floor(rnd() * 9e5), 2000000 + Math.floor(rnd() * 9e5), 4000000 + Math.floor(rnd() * 9e5)].sort(() => rnd() - 0.5)
+    const [ia, ib, ic] = ids
+    const root = new Y.Doc(); root.clientID = 77; root.getText('t').insert(0, base)
+    const mk = (id) => { const d = new Y.Doc(); d.clientID = id; Y.applyUpdate(d, Y.encodeStateAsUpdate(root)); return d }
+    const da = mk(ia), db = mk(ib), dc = mk(ic)
+    applyDiff(da.getText('t'), ta); applyDiff(db.getText('t'), tb)
+    Y.applyUpdate(dc, Y.encodeStateAsUpdate(da))
+    const from = dc.getText('t').toString(), tc = oneEdit(from.split('\n').slice(0, -1)).join('\n') + '\n'
+    applyDiff(dc.getText('t'), tc)
+    for (const x of [db, dc]) Y.applyUpdate(da, Y.encodeStateAsUpdate(x))
+    const real = da.getText('t').toString()
+    const hc = H(from, tc)
+    if (!hc) continue
+    n++
+    const p = SYNC.clashUnion(base, new Map([[ia, ha], [ib, hb]]), [{ id: ic, after: [ia], h: hc }])
+    if (p !== real) { diff++; if (!ex) ex = { base, ta, tb, tc, p, real } }
+  }
+  T(`CL1 a later save is placed in the rebuilt union exactly as in the real one (${n} races)`, n > 0 && diff === 0, `${diff}; first ${J(ex)}`)
 }
 
 sec('K known, not detected (design: "an old client", "bases differ")')
