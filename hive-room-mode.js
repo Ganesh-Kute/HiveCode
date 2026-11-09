@@ -1034,6 +1034,9 @@ export async function whenDone(opts = {}) {
     // 4. Review status check for every planned file
     const reasons = []
     const unreviewedFiles = []
+    // Who reviewed each landing file, from the reviews bound to the exact content that lands: the PR
+    // body names them (0.14.3 P1-10; the mock run's PR #7 did not say who reviewed it).
+    const reviewed = []
     let hasHardBlock = false
 
     for (const rel of plannedFiles) {
@@ -1050,6 +1053,9 @@ export async function whenDone(opts = {}) {
           unreviewedFiles.push(rel)
           if (!allowUnreviewed) reasons.push(`${rel} has not been reviewed`)
         }
+      } else if (revStatus.verdict === 'pass') {
+        const by = [...new Set((revStatus.reviews || []).filter((r) => r && r.verdict === 'pass' && r.by).map((r) => String(r.by)))]
+        reviewed.push({ file: rel, by })
       } else if (revStatus.verdict === 'fail') {
         hasHardBlock = true
         reasons.push(`${rel} has an unresolved fail review`)
@@ -1084,6 +1090,7 @@ export async function whenDone(opts = {}) {
     return {
       ready: true,
       unreviewedFiles,
+      reviewed,
       files: plannedFiles,
       deletions,
       task,
@@ -1195,6 +1202,13 @@ async function landIssueOn(opts = {}) {
   }
   if (wd.unreviewedFiles && wd.unreviewedFiles.length > 0) {
     summary += `\n\nNot reviewed by a second agent: ${wd.unreviewedFiles.join(', ')}`
+  }
+  if (wd.reviewed && wd.reviewed.length > 0) {
+    // Names in code spans with any leading @ dropped: a room name like "@someone" must not ping a
+    // GitHub user from a PR body.
+    const who = (n) => `\`${String(n).replace(/^@+/, '').replace(/`/g, "'").slice(0, 60)}\``
+    summary += '\n\nReviewed in the room (hive_review, bound to the exact content that lands):\n' +
+      wd.reviewed.map((r) => `- ${r.file}: ${r.by.length ? r.by.map(who).join(', ') : 'a reviewer the room could not name'}`).join('\n')
   }
 
   const landFn = landRunner || landAndOpen

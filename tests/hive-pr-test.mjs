@@ -150,6 +150,26 @@ console.log('\n# grouping logic')
   T('subject comes from committing agent only', msgCoauthor.startsWith('AgentA: final agent work'))
   T('co-author intent attributed by name in body', msgCoauthor.includes('AgentB: coauthor contribution'))
 
+  // 0.14.3 P1-9: the mock run's commit read "Claude-cloud: Claude-cloud: Issue #6 ...", because the
+  // agent's intent already began with its own name and the subject prefixed it again.
+  const fSelfNamed = {
+    rel: 'temp.js',
+    last: { author: 'idC', name: 'Claude-cloud' },
+    contributors: [{ author: 'idC', name: 'Claude-cloud' }, { author: 'idB', name: 'AgentB' }],
+    first: 100,
+    receipts: [
+      { author: 'idB', name: 'AgentB', at: 90, intent: 'AgentB: tests for isFreezing' },
+      { author: 'idC', name: 'Claude-cloud', at: 110, intent: 'Claude-cloud: Issue #6 add isFreezing' },
+    ],
+  }
+  const msgSelf = commitMessage(planCommits([fSelfNamed])[0], ROOM)
+  T('P1-9 subject never repeats the agent name ("X: X: ...")', msgSelf.split('\n')[0] === 'Claude-cloud: Issue #6 add isFreezing', msgSelf.split('\n')[0])
+  T('P1-9 ...nor does a co-author line in the body', msgSelf.includes('  - AgentB: tests for isFreezing') && !msgSelf.includes('AgentB: AgentB:'))
+  const fCase = { ...fSelfNamed, receipts: [{ author: 'idC', name: 'Claude-cloud', at: 110, intent: 'claude-cloud:Issue #6 add isFreezing' }] }
+  T('P1-9 ...whatever the case or spacing of the repeated name', commitMessage(planCommits([fCase])[0], ROOM).split('\n')[0] === 'Claude-cloud: Issue #6 add isFreezing')
+  const fOnlyName = { ...fSelfNamed, receipts: [{ author: 'idC', name: 'Claude-cloud', at: 110, intent: 'Issue #6: Claude-cloud: keep this' }] }
+  T('P1-9 ...and a name later in the intent is left alone', commitMessage(planCommits([fOnlyName])[0], ROOM).split('\n')[0] === 'Claude-cloud: Issue #6: Claude-cloud: keep this')
+
   // Reverted intent ignored (receipts up to held content only)
   const OLD_DOC = 'version 1\n', NEW_DOC = 'version 2\n'
   const rsRevert = [

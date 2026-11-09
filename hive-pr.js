@@ -109,7 +109,20 @@ export function sanitizeIntent(raw) {
   return clean.length > 200 ? clean.slice(0, 200).trim() : clean
 }
 
+// An intent that already starts with the agent's own name ("Claude-cloud: Issue #6 ...", the way
+// agents often phrase them) must not be prefixed again: the mock run's commit read
+// "Claude-cloud: Claude-cloud: Issue #6 ..." (0.14.3 P1-9). Case-insensitive, repeated prefixes too.
+export function withoutOwnName(agent, intent) {
+  let s = String(intent || '')
+  const a = String(agent || '').trim()
+  if (!a) return s
+  const re = new RegExp(`^\\s*@?${a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*`, 'i')
+  for (let i = 0; i < 5 && re.test(s); i++) s = s.replace(re, '')
+  return s.trim() || String(intent || '').trim()
+}
+
 export function truncateSubject(agent, intent, max = 72) {
+  intent = withoutOwnName(agent, intent)
   const prefix = `${agent}: `
   const full = `${prefix}${intent}`
   if (full.length <= max) return full
@@ -232,7 +245,7 @@ export function commitMessage(g, room) {
       lines.push(`  - ${intent}`)
     }
     for (const ci of coauthorIntents) {
-      lines.push(`  - ${ci.name}: ${ci.intent}`)
+      lines.push(`  - ${ci.name}: ${withoutOwnName(ci.name, ci.intent)}`)
     }
     lines.push('')
     lines.push('Files:')

@@ -300,6 +300,11 @@ try {
 
   T('T2.5 successful landing returns ok: true and pr info',
     Boolean(liSuccess && liSuccess.ok === true && liSuccess.pr && liSuccess.pr.number === 99))
+  // 0.14.3 P1-10: the mock run's PR #7 did not say who reviewed it. The body names the reviewer of
+  // each landing file, from the review bound to the content that lands, as a code span (no @-ping).
+  const sum = (liSuccess && liSuccess.opts && liSuccess.opts.summary) || ''
+  T('T2.7 the PR body names who reviewed each landing file',
+    /Reviewed in the room/.test(sum) && /- buffer\.js: `PeerReviewer`/.test(sum))
   T('T2.6 PR title formatted with issue title and number',
     Boolean(liSuccess && liSuccess.opts && liSuccess.opts.title === 'Fix memory leak in buffer (#77)'))
 
