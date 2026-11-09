@@ -1779,9 +1779,14 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           firstTime('withheld:' + r.file) // said here, so the next hive_wait does not say it again
           return text(`⛔ wrote ${r.file} in YOUR folder only. It was NOT shared, because it contains ${r.withheld}, and Hivecode does not send keys to the room or the relay. Nobody else has this change. Read the key from the environment instead (put it in .env, which is never shared); the file is shared on its next save without the key.`)
         }
-        return text(r.conflicted
-          ? `wrote ${r.file}, but it now carries <<<<<<< conflict markers (a concurrent edit collided). Read the file and resolve before continuing.`
-          : `✓ wrote ${r.file} through the medium — your intent is signed into its provenance ledger and the change is syncing to every peer.`)
+        if (r.conflicted) return text(`wrote ${r.file}, but it now carries <<<<<<< conflict markers (a concurrent edit collided). Read the file and resolve before continuing.`)
+        // SAY WHETHER IT REACHED THE RELAY, never just "syncing" (0.14.3 P0-1). Over HTTPS long-poll an
+        // edit waits in this process until the relay accepts it; an agent that left on "syncing" lost it.
+        const hiveS = requireSession().hive
+        const sent = typeof hiveS.whenSent === 'function' ? await hiveS.whenSent(r.file, 3000) : true
+        return text(sent
+          ? `✓ wrote ${r.file} through the medium — your intent is signed into its provenance ledger and the relay has the change; every peer gets it from there.`
+          : `⏳ wrote ${r.file} in your folder, but the relay has NOT accepted the change yet (slow or reconnecting link). It is still being sent: stay in the room (do not exit or leave) and check hive_status before you report it done.`)
       }
       case 'hive_fork': {
         const file = String(args.file || ''); if (!file) return err('need a file path')
@@ -1876,7 +1881,17 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
       // row is dropped rather than left to read as GONE. GONE means "stopped without saying so",
       // and diluting it with agents that signed off correctly is how a signal stops being read.
       case 'hive_pr': return text(await runHivePr(args))
-      case 'hive_leave': { try { ACT.forget(activityMap(), requireSession().name) } catch { }; requireSession().hive.stop(); session = null; forgetSession(); return text('left the room') }
+      case 'hive_leave': {
+        try { ACT.forget(activityMap(), requireSession().name) } catch { }
+        const h = requireSession().hive
+        // Leave waits until the relay has every edit and message (0.14.3 P0-1), and names what it did not get.
+        const r = typeof h.leave === 'function' ? await h.leave({ timeoutMs: 10000 }) : (h.stop(), null)
+        session = null; forgetSession()
+        const missed = r ? [...r.unsent, ...(r.roomUnsent ? ['your last room messages'] : [])] : []
+        return missed.length
+          ? text(`left the room, but the relay had NOT accepted these when it stopped waiting (10 s): ${missed.join(', ')}. Nobody else has those changes. Rejoin and check them before you report the work done.`)
+          : text('left the room')
+      }
       default: return err(`unknown tool: ${name}`)
     }
   } catch (e) { return err(`error: ${e.message}`) }
@@ -2078,8 +2093,18 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // room and exit. The SDK kept this process alive on its open sockets instead, holding a seat
   // and a presence entry for a member that was gone, until something killed it.
   server.onclose = () => {
-    try { if (session) session.hive.stop() } catch { /* leaving is best-effort; exiting is not */ }
-    setTimeout(() => process.exit(0), 500)
+    // Leave, not stop: the last edits and messages go out before the process does (0.14.3 P0-1). Over
+    // HTTPS long-poll they are still in this process; a 500 ms exit dropped them. Capped, so a dead
+    // link cannot hold a departed agent's seat for long; whatever did not go is named on stderr.
+    const done = () => process.exit(0)
+    setTimeout(done, 12000).unref()
+    const s = session
+    if (!s) return setTimeout(done, 500)
+    Promise.resolve()
+      .then(() => (typeof s.hive.leave === 'function' ? s.hive.leave({ timeoutMs: 10000 }) : (s.hive.stop(), null)))
+      .then((r) => { if (r && (r.unsent.length || r.roomUnsent)) console.error(`[hive-mcp] left before the relay accepted: ${[...r.unsent, ...(r.roomUnsent ? ['(room messages)'] : [])].join(', ')}`) })
+      .catch(() => { /* leaving is best-effort; exiting is not */ })
+      .finally(() => setTimeout(done, 200))
   }
   await server.connect(transport)
   startUpdateCheck() // background, short timeout; hive_join and hive_status show what it finds

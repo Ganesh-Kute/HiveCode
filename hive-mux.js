@@ -36,11 +36,13 @@ class FileProvider extends ObservableV2 {
   }
   get synced() { return !!(this._impl && this._impl.synced) }
   get wsconnected() { return !!(this._impl && this._impl.wsconnected) }
+  /** Bytes handed to this file's socket that the relay has not accepted yet (0.14.3 P0-1). */
+  get bufferedAmount() { return (this._impl && this._impl.bufferedAmount) || 0 }
   get transport() { return this._impl ? this._impl.transport : 'pending' }
   _bindLegacy(relay, wsOpts) {
     const p = new WebsocketProvider(relay, this.docName, this.doc, wsOpts)
     for (const ev of ['sync', 'status', 'connection-error', 'connection-close']) p.on(ev, (...args) => this.emit(ev, args))
-    this._impl = { transport: 'socket', get synced() { return p.synced }, get wsconnected() { return p.wsconnected }, destroy: () => p.destroy() }
+    this._impl = { transport: 'socket', get synced() { return p.synced }, get wsconnected() { return p.wsconnected }, get bufferedAmount() { return (p.ws && p.ws.bufferedAmount) || 0 }, destroy: () => p.destroy() }
   }
   destroy() {
     if (this.destroyed) return
@@ -73,6 +75,7 @@ class Channel {
     doc.on('update', this._onUpdate)
   }
   get wsconnected() { return this.opened && this.mux.connected }
+  get bufferedAmount() { return (this.mux.ws && this.mux.ws.bufferedAmount) || 0 }
   sendOpen() {
     if (this.destroyed || !this.mux.connected) return
     clearTimeout(this.retryTimer); this.retryTimer = null

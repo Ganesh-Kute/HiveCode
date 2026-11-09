@@ -230,27 +230,34 @@ function isAsyncDecl(src, name) {
 
 // Upgrade free call sites of `fnName` to `await fnName(...)` if they are inside an async parent
 // and not already awaited.
+//
+// Left alone (0.14.3 P0-5): a call that is already under an `await`; a call that IS the value an
+// async function returns (`return f()`, `async () => f()`), since returning the promise from an async
+// function resolves to the same value, and an author who wrote it that way meant it. Each position is
+// inserted at most once.
 function upgradeCallSitesToAwait(src, fnName) {
   try {
     const ast = parse(src)
-    const spots = []
+    const spots = new Set()
 
-    function walkAST(node, parent, isAsyncScope = false) {
+    function walkAST(node, parent, isAsyncScope = false, underAwait = false) {
       if (!node || typeof node.type !== 'string') return
 
       let childAsyncScope = isAsyncScope
+      let childUnderAwait = underAwait || node.type === 'AwaitExpression'
       if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
         childAsyncScope = !!node.async
+        childUnderAwait = false // a nested function's body is not awaited by an await around the function
       }
 
       if (node.type === 'CallExpression') {
         let isTarget = false
         if (node.callee.type === 'Identifier' && node.callee.name === fnName) isTarget = true
         if (isTarget && childAsyncScope) {
-          const alreadyAwaited = parent && parent.type === 'AwaitExpression'
-          if (!alreadyAwaited) {
-            spots.push(node.start)
-          }
+          const alreadyAwaited = underAwait || (parent && parent.type === 'AwaitExpression')
+          const returnedAsIs = parent && (parent.type === 'ReturnStatement' ||
+            (parent.type === 'ArrowFunctionExpression' && parent.body === node))
+          if (!alreadyAwaited && !returnedAsIs) spots.add(node.start)
         }
       }
 
@@ -258,17 +265,19 @@ function upgradeCallSitesToAwait(src, fnName) {
         if (k === 'type' || k === 'start' || k === 'end' || k === 'loc' || k === 'range') continue
         const v = node[k]
         if (Array.isArray(v)) {
-          for (const c of v) walkAST(c, node, childAsyncScope)
+          for (const c of v) walkAST(c, node, childAsyncScope, childUnderAwait)
         } else if (v && typeof v.type === 'string') {
-          walkAST(v, node, childAsyncScope)
+          walkAST(v, node, childAsyncScope, childUnderAwait)
         }
       }
     }
 
     walkAST(ast, null, false)
-    if (!spots.length) return src
+    if (!spots.size) return src
 
-    spots.sort((a, b) => b - a)
+    const order = [...spots].sort((a, b) => b - a)
+    spots.clear()
+    for (const p of order) spots.add(p)
     let out = src
     for (const pos of spots) {
       out = out.slice(0, pos) + 'await ' + out.slice(pos)

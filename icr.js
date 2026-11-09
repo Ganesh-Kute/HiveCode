@@ -802,12 +802,17 @@ export function structuralMerge(base, a, b, opts = {}) {
   // ASYNC/AWAIT SYNCHRONIZATION (intent):
   // When a declaration was synchronous in base and became ASYNC in the merged result,
   // upgrade call sites inside async callers with `await` so the contract holds.
+  // ONLY a function that EXISTED in the base as sync (0.14.3 P0-5). A function new in this merge was
+  // written async by its author, together with its callers: nothing was "made async" under anyone.
+  // Counting it rewrote authored lines (`return f()` -> `return await f()`, credited to the author,
+  // silently), and two peers making the same insert at once stacked in the shared text: the room's
+  // own server.js read `return await await await admitMux(req, q)` (9 Nov).
   const asyncUpgrades = []
   if (lang.isAsyncDecl && lang.upgradeCallSitesToAwait) {
     for (const name of mergedNames) {
-      const wasAsyncInBase = baseNames.has(name) ? lang.isAsyncDecl(base, name) : false
+      const wasSyncInBase = baseNames.has(name) && !lang.isAsyncDecl(base, name)
       const isAsyncInMerged = lang.isAsyncDecl(merged, name)
-      if (!wasAsyncInBase && isAsyncInMerged) {
+      if (wasSyncInBase && isAsyncInMerged) {
         const upgraded = lang.upgradeCallSitesToAwait(merged, name)
         if (upgraded !== merged && lang.parses(upgraded)) {
           merged = upgraded

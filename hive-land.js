@@ -206,6 +206,7 @@ export async function landAndOpen(opts = {}) {
     if (dry) args.push('--dry-run')
     if (o.force) args.push('--force', String(o.force))
     if (o.only) args.push('--only', String(o.only))
+    if (b.base) args.push('--seed', String(b.base)) // a file unchanged since the seed is one the room started from (0.14.3 P0-3)
     // ASYNC, not spawnSync: inside the hive_pr tool this runs in the agent's MCP server, and a landing
     // that blocked its event loop for minutes would freeze that agent's own room connection too.
     const r = await runNode(args, { cwd: tmp, env: HB.noHooksEnv({ ...process.env, HIVE_PROVENANCE: 'on' }) })
