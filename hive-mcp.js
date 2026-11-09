@@ -1737,6 +1737,7 @@ Then call hive_release.`)
         const r = requireSession().hive.release(region, { force: !!args.force, why: String(args.why || '') })
         if (r && r.ok === false) return text(r.message)
         const check = await releaseCheck(requireSession(), region)
+        if (r && r.gateSkipped) return text(`released ${region}, NOT CHECKED\n${r.message}${check}`)
         if (r && r.forced) return text(`released ${region} WITHOUT passing the gate — recorded against your name in the room${check}`)
         return text(`released ${region}${r && r.gated ? ' (gate passed)' : ''}${check}`)
       }
@@ -2093,6 +2094,11 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // `npx -y hivecode-mcp@latest branch <name>` binds a room to a git branch; `pr <name>` lands its work on it.
   // A CLI run like setup: nobody is speaking JSON-RPC to it, so it never opens stdio.
   process.exit(await HB.main(process.argv.slice(2)))
+} else if (isEntryPoint && process.argv[2] === 'gate') {
+  // `gate allow --dir <folder> --cmd "<exact>"`: a person approves the room's hand-back check for this
+  // machine (0.14.4 S-1). A command, never a tool: an agent persuaded by a message cannot consent.
+  const { main: gateMain } = await import('./hive-gate.js')
+  process.exit(await gateMain(process.argv.slice(2)))
 } else if (isEntryPoint && (process.argv[2] === 'invite' || process.argv[2] === 'revoke')) {
   // `invite <name>` makes one person's link into a personal room this machine hosts; `revoke <name>`
   // takes it back. Commands rather than tools: see hive-room-key.js for why.

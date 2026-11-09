@@ -27,7 +27,7 @@ import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
-import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
+import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage, gateApproved, gatesDir, writeApproval, notApprovedMessage, notApprovedLine, GATE_CMD, GATE_NOT_APPROVED } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
 import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
@@ -461,7 +461,10 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, app = '' }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, app = '', gatesDir: gatesDirOpt = '' }) {
+  // Where this machine keeps its gate approvals (0.14.4 S-1): outside the synced folder, so no peer can write one.
+  const GATES_DIR = gatesDirOpt || gatesDir()
+  const gateSkipSaid = new Set() // (agent, command) pairs already announced as unchecked
   // BEFORE ANY DISK OR SOCKET WORK. A name outside the mention grammar joins successfully and is
   // then unreachable: its mail, its obligations and its wake-on-mention are all silently dead,
   // and the only symptom is other people being told "@X is NOT in the room" about someone who is
@@ -4945,6 +4948,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         }
       }
       swarmState.set(key, val)
+      // The session that sets a gate has chosen to run that command, so its own machine approves it
+      // (0.14.4 S-1). Nobody else's does: a gate set here runs elsewhere only after that person approves.
+      if (key === GATE_CMD && String(val == null ? '' : val).trim()) {
+        try { writeApproval(room, String(val), `set by ${name} on this machine`, GATES_DIR) } catch { /* no approval, so it simply does not run here */ }
+      }
       say(`STATE TRANSITION: [${key}] is now [${val}]`)
     },
     getState: () => {
@@ -5168,6 +5176,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         return { ok: true, gated: true, forced: true }
       }
 
+      // A COMMAND FROM THE ROOM IS DATA (0.14.4 S-1). It runs here only if this machine's person
+      // approved this exact command; otherwise the hand-back goes through UNCHECKED -- never refused,
+      // or setting a gate would be a way to stop everyone -- and that is recorded and said once.
+      const approvedBy = gateApproved({ room, cmd: g.cmd, dir: GATES_DIR })
+      if (!approvedBy) {
+        gateResults.set(`${r}|${name}`, { ...verdictRecord({ region: r, by: name, cmd: g.cmd, result: null }), skipped: 'not-approved' })
+        letGo()
+        const said = `${name}|${g.cmd}`
+        if (!gateSkipSaid.has(said)) { gateSkipSaid.add(said); try { say(notApprovedLine(name)) } catch { /* chat is not the point */ } }
+        return { ok: true, gated: false, gateSkipped: 'not-approved', code: GATE_NOT_APPROVED, cmd: g.cmd, message: notApprovedMessage({ region: r, cmd: g.cmd, dir: ROOT }) }
+      }
       const result = runGate({ cmd: g.cmd, cwd: ROOT, timeoutMs: g.timeoutMs })
       gateResults.set(`${r}|${name}`, verdictRecord({ region: r, by: name, cmd: g.cmd, result }))
       if (!result.ok) {
