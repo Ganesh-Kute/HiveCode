@@ -341,6 +341,10 @@ export function priorityOf(text) {
     .trimStart()
     .slice(0, ORDER_WINDOW)
 
+  // THE MARKER AFTER THE NAMES (0.14.4 C10). The rules say put @Name first, so "@C [!] stand down"
+  // is how people actually write it -- and it read as 'normal', so the urgent gate never fired.
+  if (/^\[!\]|^\[stop\]/i.test(head)) return 'stop'
+
   // Directives at start of head (immediate orders)
   if (/^(?:please\s+)?(?:stop\b(?!\s*\(|\.\w)|halt\b|abort\b|revert\s+(?:that|this|it|now|[\w./-]+\.\w+)\b)/i.test(head)) return 'stop'
   if (/^stop-ship\b/i.test(head)) return 'stop'
