@@ -823,6 +823,20 @@ try {
     !checkRes.running && checkRes.code === 0 && /replies reach Hivecode/i.test(checkRes.out),
     `code=${checkRes.code} out=${checkRes.out.trim().slice(-120)} err=${checkRes.err.trim().slice(-140)}`
   )
+
+  // S12: over HTTPS polling, a check nobody answers says so, and does NOT send the person off to
+  // reinstall the app for event subscriptions (polling uses none). 9 Nov, the first real check.
+  slackState.autoReplyCheckPrompt = false
+  const quietProc = spawnSlackCli(
+    ['check', '--channel', CHANNEL, '--inbound', 'poll', '--timeout', '1500'],
+    { SLACK_BOT_TOKEN: 'xoxb-valid' }
+  )
+  const quietRes = await quietProc.waitExit(6000)
+  T(
+    'S12 `slack check --inbound poll` with no reply: exits 1, says nobody replied in time, and does not blame event subscriptions',
+    !quietRes.running && quietRes.code === 1 && /no reply arrived in the thread within 2 s/.test(quietRes.err) && !/Event subscriptions/i.test(quietRes.err),
+    `code=${quietRes.code} err=${quietRes.err.trim().slice(-200)}`
+  )
 } finally {
   for (const p of [...runningProcs]) { try { p.kill() } catch {} }
   for (const c of syncClients) { try { c.stop() } catch {} }

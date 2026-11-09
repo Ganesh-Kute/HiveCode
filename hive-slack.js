@@ -2146,6 +2146,13 @@ export async function runSlackCheck({
     clearTimeout(waitTimer)
 
     if (!arrived) {
+      // Over HTTPS polling nothing is subscribed: the bridge reads the thread itself, and its read
+      // scopes were checked above. So no reply means nobody replied in time, and sending the person
+      // off to reinstall the app was wrong (9 Nov, the first real check: 0 replies in the thread).
+      if (pollInbound) {
+        logErr(`Q634 no reply arrived in the thread within ${Math.round(timeoutMs / 1000)} s. Replies are read over HTTPS, which needs no event subscription, and the read scopes are in place: reply anything in the thread of "Hivecode check: reply anything in this thread" in #${channelName} while the check waits (raise --timeout for more time).`)
+        return 1
+      }
       const manifestName = agent ? 'slack-app-manifest-agent.json' : 'slack-app-manifest-inbound.json'
       logErr(`Q634 replies did not arrive. Event subscriptions are probably missing: reinstall from ${manifestName}`)
       return 1
