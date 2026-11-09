@@ -95,3 +95,46 @@ Mutants to kill:
 - No disk hold.
 - Base hash ignored.
 - `low`/`high` swapped on one side only.
+
+## Outcome (9 Nov 2026, integrated on p0f as 5bf73f7)
+Built by Claude-cloud and Opus-Cloud, reviewed and run independently by Antigravity-Cloud and VM-ANTI-G-1.
+The design above changed during review:
+- **Clash rule (Opus-Cloud, F1).** A save is compared by its footprint, the one character span `applyDiff`
+  sends. Per-hunk comparison called 8,439 of 49,748 damaging pairs safe.
+- **Resolution.** Inside a clash, saves with no line in common are applied cleanly, with no markers. A
+  resolution is written only when the shared text equals the union the CRDT must hold, rebuilt from the
+  intents (`clashUnion`, Opus-Cloud).
+- **Settling.** Every peer waits 750 ms for the whole race before one writer resolves it (R6: three saves
+  lost a version).
+- **Later saves (Opus-Cloud, F5).** A save made after seeing one side is rebased onto the race's base and
+  joins the resolution.
+- **Late saves against a block.** When a late save is merged against a conflict block, every version in
+  the block is kept. Before, a 15 s-late save dropped three authors' versions; 0.14.3 dropped one side of
+  any 2-way block.
+
+### Evidence
+
+| Test | Result |
+|---|---|
+| `same-line-race-test` | 30/0 |
+| `same-line-later-save-test` | 18/0 |
+| `same-line-intent-unit-test` | 63/0 |
+| `same-line-fuzz-test` | 15/0 |
+| `late-save-merge-test` | 9/0 |
+| `merge-balloon` | PASS |
+| `r9-loop` | 20/20 |
+
+- **`bigproject` in default mode:**
+  - W2, the same-line collisions, fused in 4 of 4 runs on 0.14.3 and in 0 runs since the fix.
+  - With one client 5 s late, 0.14.3 produced `ship monwednesthurstuesday` in every folder. The fix gives
+    one 4-version block everywhere.
+
+### Known, not fixed here
+- **W1 false conflict.** Adjacent-line saves can still get markers from merge3's git-style
+  touching-lines rule when a save lands after its neighbour's edit. Measured: 0.14.3 1 in 4 runs, b06a5ff
+  3 in 8, 5bf73f7 3 in 8. Both versions are kept and nothing is lost. A follow-up could give reconcile's
+  local merge the footprint rule.
+- **Different bases (F4).** When the two saves were made from different texts, because one client had not
+  yet received the last change, the race is not seen.
+- **Clients on 0.14.4 or older** write no intents, so a race with them is not seen.
+- **The VS Code extension** keeps its own copy of reconcile. VM-ANTI-G-1's port has to follow 5bf73f7.
