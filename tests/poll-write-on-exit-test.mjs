@@ -11,6 +11,9 @@
 //   W3  the relay is slow to accept: whenSent() says NOT sent (never a bare ok), then sent once it is
 //   W4  leave() when the relay never accepts: reports the unsent file instead of claiming success
 //   W5  WebSocket peers unchanged: an edit then stop() still arrives (no regression)
+//   W9  deterministic M3: the proxy holds the file's poll-session OPEN, so its doc is provably unsynced
+//       when the edit is made. whenSent() must say not sent, leave() must name the file while the
+//       open is held (W9a), and wait for it then deliver once the open goes through (W9b).
 
 import http from 'http'
 import net from 'net'
@@ -48,7 +51,7 @@ async function startRelay() {
 // `gate.holdSends` holds every long-poll send until released (a slow or stalled path to the relay).
 async function vmProxy(targetPort) {
   const port = await freePort()
-  const gate = { holdSends: false, holdRecv: false, held: [], heldRecv: [] }
+  const gate = { holdSends: false, holdRecv: false, held: [], heldRecv: [], holdOpen: null, heldOpen: [] }
   const forward = (req, res, body) => {
     const p = http.request({ host: '127.0.0.1', port: targetPort, method: req.method, path: req.url, headers: req.headers }, (pr) => { res.writeHead(pr.statusCode, pr.headers); pr.pipe(res) })
     p.on('error', (e) => { try { res.writeHead(502); res.end(e.message) } catch { } })
@@ -59,6 +62,8 @@ async function vmProxy(targetPort) {
     req.on('data', (c) => chunks.push(c))
     req.on('end', () => {
       const body = Buffer.concat(chunks)
+      // holdOpen: a file name; the open of any channel whose body names it waits until releaseOpen().
+      if (gate.holdOpen && /\/_hive_poll\/open$/.test(req.url) && body.toString('utf8').includes(gate.holdOpen)) { gate.heldOpen.push(() => forward(req, res, body)); return }
       if (gate.holdSends && /\/_hive_poll\/[^/]+\/send/.test(req.url)) { gate.held.push(() => forward(req, res, body)); return }
       if (gate.holdRecv && /\/_hive_poll\/[^/]+\/recv/.test(req.url)) { gate.heldRecv.push(() => forward(req, res, body)); return }
       forward(req, res, body)
@@ -69,7 +74,7 @@ async function vmProxy(targetPort) {
     socket.destroy()
   })
   await new Promise((r) => server.listen(port, '127.0.0.1', r))
-  return { url: `ws://127.0.0.1:${port}`, gate, release: () => { gate.holdSends = false; const h = gate.held.splice(0); for (const f of h) f() }, releaseRecv: () => { gate.holdRecv = false; const h = gate.heldRecv.splice(0); for (const f of h) f() }, close: () => { try { server.closeAllConnections && server.closeAllConnections() } catch { } server.close() } }
+  return { url: `ws://127.0.0.1:${port}`, gate, release: () => { gate.holdSends = false; const h = gate.held.splice(0); for (const f of h) f() }, releaseRecv: () => { gate.holdRecv = false; const h = gate.heldRecv.splice(0); for (const f of h) f() }, releaseOpen: () => { gate.holdOpen = null; const h = gate.heldOpen.splice(0); for (const f of h) f() }, close: () => { try { server.closeAllConnections && server.closeAllConnections() } catch { } server.close() } }
 }
 
 const tmp = (tag) => fs.mkdtempSync(path.join(os.tmpdir(), `hive-pollexit-${tag}-`))
@@ -214,6 +219,38 @@ try {
       // contact (by design: the room cannot tell newer from older). Whatever the outcome, leave()
       // must never claim the room has it when the room does not.
       T(`${tag} leave() never claims a write the room does not hold`, got || (!!left && left.unsent.includes('late.txt')), JSON.stringify({ left, peer: readOr(path.join(dB, 'late.txt')), agentDisk: readOr(path.join(dA, 'late.txt')) }))
+    }
+  }
+
+  // ---- W9: deterministic M3. The file's channel cannot open, so its doc is unsynced for certain. -----
+  // W7 could not pin that state (the doc often synced before the edit), so mutant M3 -- drop
+  // `unsentLocal.add` for an edit to an open, unsynced file -- survived it (VM-ANTI-G-1, 9 Nov).
+  for (const [tag, releaseAfterMs] of [['W9a', null], ['W9b', 1500]]) {
+    console.log(`\n# ${tag} edit while the file's channel is held at OPEN, then leave() ${releaseAfterMs ? 'after the open goes through' : 'while it is still held'}`)
+    const room = `room-pollexit-${tag.toLowerCase()}`, dB = tmp(`${tag}b`), dA = tmp(`${tag}a`)
+    fs.writeFileSync(path.join(dB, 'm3.txt'), 'v0\n')
+    const B = join(relay.url, room, dB, 'peer-ws'); live.push(B)
+    await synced(B)
+    fs.writeFileSync(path.join(dA, 'm3.txt'), 'v0\n') // the agent's folder already holds the room's copy
+    proxy.gate.holdOpen = 'm3.txt'
+    const A = join(proxy.url, room, dA, 'vm-agent'); live.push(A)
+    await synced(A)
+    const held = await until(() => proxy.gate.heldOpen.length >= 1, 10000, 20)
+    T(`${tag} setup: the file's channel is open-pending (its doc cannot have synced)`, !!held, `held opens: ${proxy.gate.heldOpen.length}`)
+    const r = A.edit('m3.txt', 'v1 while the channel was opening\n', `P0-1 ${tag}`)
+    T(`${tag} the edit was accepted locally, with no room copy claimed`, r && r.ok === true && r.landed == null, JSON.stringify(r))
+    T(`${tag} whenSent() says NOT sent while the file cannot reach the relay`, (await A.whenSent('m3.txt', 0)) === false)
+    let left
+    if (releaseAfterMs == null) {
+      left = await A.leave({ timeoutMs: 800 })
+      proxy.releaseOpen()
+      T(`${tag} leave() names the file it could not send`, !!left && Array.isArray(left.unsent) && left.unsent.includes('m3.txt'), JSON.stringify(left))
+    } else {
+      setTimeout(() => proxy.releaseOpen(), releaseAfterMs)
+      left = await A.leave({ timeoutMs: 10000 })
+      proxy.releaseOpen()
+      T(`${tag} leave() waited for the file and reports nothing unsent`, !!left && Array.isArray(left.unsent) && left.unsent.length === 0, JSON.stringify(left))
+      T(`${tag} the peer got the edit`, !!(await fileReady(B, dB, 'm3.txt', 'v1 while the channel was opening\n')), `peer has ${JSON.stringify(readOr(path.join(dB, 'm3.txt')))}`)
     }
   }
 
