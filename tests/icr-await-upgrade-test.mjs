@@ -21,6 +21,8 @@
 //   U8  ...and inside a catch clause
 //   U9  `await h(f())` after sync -> async: f() is upgraded; the await belongs to h
 //   U10 `await f()` after sync -> async: still exactly one await
+//   U11 a function nested inside a try has its own frame: its `return f()` / `async () => f()` is
+//       left alone (antigravity-VM's mutant A3, "inTry not reset at a function boundary", survived U1-U10)
 // Run against both copies of the engine (root and packages/icr-merge), which must agree.
 
 import path from 'path'
@@ -77,6 +79,12 @@ for (const where of ['', 'packages/icr-merge/']) {
   const b10 = 'function f() { return 1 }\nexport async function g() {\n  const w = await f()\n  return w\n}\n'
   const r10 = M(b10, b10.replace('function f()', 'async function f()'), b10)
   T(`U10 ${where}an already-awaited call is left with ONE await`, r10.status === 'auto' && line(r10.text, 'const w') === '  const w = await f()', JSON.stringify(line(r10.text, 'const w')))
+
+  const b11 = 'function f() { return 1 }\nexport async function g() {\n  try {\n    const k = async () => {\n      return f()\n    }\n    const k2 = async () => f()\n    return await k()\n  } catch (e) {\n    return 0\n  }\n}\n'
+  const r11 = M(b11, b11.replace('function f()', 'async function f()'), b11)
+  T(`U11 ${where}a function nested in a try has its own frame: its \`return f()\` and \`async () => f()\` are left alone`,
+    r11.status === 'auto' && line(r11.text, '      return') === '      return f()' && line(r11.text, 'const k2') === '    const k2 = async () => f()',
+    JSON.stringify({ status: r11.status, ret: line(r11.text, '      return'), k2: line(r11.text, 'const k2') }))
 
   let stacked = 0
   const up = u1.replace('return f(opts)', 'return await f(opts)')
