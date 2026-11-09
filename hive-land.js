@@ -185,6 +185,15 @@ export async function landAndOpen(opts = {}) {
     if (b.base && !HB.revParse(root, `${b.base}^{commit}`)) {
       return refuse('Q563', `the commit this room was seeded from (${short(b.base)}) is not in this clone, so the room's deletions cannot be accounted for. Fetch it (git fetch origin), then land again. Nothing was changed.`)
     }
+    // THE SEED THIS CLONE RECORDED MUST BE THE ONE THE ROOM RECORDED (0.14.3 P0-3-H). --seed tells
+    // hive-pr that a branch file still equal to the seed's copy is one the room started from. If this
+    // clone's record (git config, written when the room was made or joined here) names another commit
+    // -- the room was reseeded from another clone, or the record was edited -- a file a person changed
+    // on the branch after the room's real seed could match it and be landed over without a word.
+    // Two records that disagree are not resolved by guessing which is right.
+    if (b.base && snap.seed && snap.seed !== b.base) {
+      return refuse('Q587', `this clone records that the room for ${name} was seeded from ${short(b.base)}, but the room records ${short(snap.seed)}. Landing trusts that record to tell an untouched file from one changed outside the room, so it will not guess which is right. Nothing was changed.\nIf the room was reseeded elsewhere, record the room's seed here, then land again:\n  npx -y hivecode-mcp@latest branch ${name} --join "<the room link>"`)
+    }
     if (!b.base) {
       // A binding with no seed record (a `--join` made before 0.13.1, or a room seeded before it):
       // deletions cannot be told from files added to the branch later, so none are landed -- and
@@ -461,7 +470,11 @@ async function roomSnapshot(link) {
     const holders = makeCoordinator(peek.doc.getMap('claims'), 'hive-land-peek').board()
       .filter((c) => c && c.by)
       .map((c) => ({ file: c.region, by: c.by, intent: c.intent || 'edit', leftSec: Math.max(0, Math.round(((Number(c.at) || 0) + (Number(c.ttl) || 0) - now) / 1000)) }))
-    return { paths: new Set(peek.doc.getMap('manifest').keys()), holders }
+    // The commit the room records it was seeded from (hive-branch seedRoom writes it): checked against
+    // this clone's binding before --seed is trusted (0.14.3 P0-3-H).
+    const sc = peek.doc.getMap('seed').get('commit')
+    const seed = typeof sc === 'string' && /^[0-9a-f]{40}$/i.test(sc) ? sc : ''
+    return { paths: new Set(peek.doc.getMap('manifest').keys()), holders, seed }
   } finally {
     try { peek.stop() } catch { }
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch { }
