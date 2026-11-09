@@ -24,7 +24,7 @@ import { WebsocketProvider } from 'y-websocket'
 import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
 import { HiveSocket, transportFor } from './hive-transport.js' // a WebSocket, or HTTPS long-poll where WebSockets are refused
 import ignore from 'ignore'
-import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3 } from './core.js'
+import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3, lineHunks } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
 import { RULES_MD, AGENT_MANUAL } from './hive-instructions.js'
@@ -167,6 +167,83 @@ export function fusionReason(merged, mine, theirs, lang) {
 }
 
 const endNl = (s) => (s === '' || s.endsWith('\n') ? s : s + '\n')
+
+// SAME-LINE RACE (P0-F, docs/rules-rewrite/p0f-design.md). Two saves of one line made before either
+// client saw the other reach the shared Y.Text as concurrent character edits, and the CRDT keeps both:
+// "ship friday" saved as "ship monday" and "ship tuesday" became "ship montuesday" in every folder, and
+// the same change twice became "ship monmonday". Every version from 0.6.0 to 0.14.3 did it. So each save
+// also records its INTENT -- the line hunks it changed and a hash of the text it was made from -- in the
+// same transaction, and these pure functions decide from the intents what the file should say.
+//
+// An intent: { b: contentHash(base), h: [[baseStart, baseEnd, newLines]...] }. Null when the diff is too
+// big to describe (lineHunks gave up) or the hunks are larger than INTENT_MAX_LINES: no detection then,
+// exactly as before.
+const INTENT_MAX_LINES = 2000
+export function intentHunks(base, next) {
+  const a = base.split('\n'), b = next.split('\n')
+  const hs = lineHunks(a, b)
+  if (!hs) return null
+  let n = 0
+  const out = hs.map(([bs, be, ss, se]) => { n += se - ss; return [bs, be, b.slice(ss, se)] })
+  return n > INTENT_MAX_LINES ? null : out
+}
+// The base text with one intent's hunks applied: that author's whole version.
+export function applyIntent(base, h) {
+  const lines = base.split('\n')
+  for (const [bs, be, nl] of [...h].sort((x, y) => y[0] - x[0])) lines.splice(bs, be - bs, ...nl)
+  return lines.join('\n')
+}
+// Do two intents change the same base line? Spans that overlap, or a line inserted strictly inside a
+// span the other replaced. Adjacent lines are NOT a clash: the character CRDT merges them correctly, and
+// calling them one is the fork gate's false positive (bigproject W1: 5 agents, 5 adjacent lines, 1 block).
+// Two insertions at the same point are not one either: the CRDT keeps each inserted line whole.
+export function hunksClash(h1, h2) {
+  for (const [a0, a1] of h1) for (const [b0, b1] of h2) {
+    if (Math.max(a0, b0) < Math.min(a1, b1)) return true
+    if (a0 === a1 && b0 < a0 && a0 < b1) return true
+    if (b0 === b1 && a0 < b0 && b0 < a1) return true
+  }
+  return false
+}
+// What the file should say once these intents (Map clientID -> h, all made from `base`) are folded in,
+// lowest client first. Every peer computes the same text: merge3 keeps both versions of a line two
+// authors changed differently, inside markers, and one copy of a change both made.
+export function clashFinal(base, intents) {
+  const ids = [...intents.keys()].sort((x, y) => x - y)
+  let acc = applyIntent(base, intents.get(ids[0]))
+  for (const c of ids.slice(1)) acc = merge3(base, acc, applyIntent(base, intents.get(c))).text
+  return acc
+}
+// May `final` replace `current` without losing anything? Only when the two differ inside the clash
+// region alone. The char-CRDT's union of the same saves differs from `final` only there; any other
+// difference is an edit someone made since, and writing `final` over it would delete that edit.
+export function clashOnlyRegion(base, intents, final, current) {
+  if (final === current) return true
+  let rs = Infinity, re = -Infinity
+  const all = [...intents.values()]
+  for (let i = 0; i < all.length; i++) for (let j = 0; j < all.length; j++) {
+    if (i === j) continue
+    for (const hi of all[i]) if (hunksClash([hi], all[j])) { rs = Math.min(rs, hi[0]); re = Math.max(re, hi[1]) }
+  }
+  if (rs === Infinity) return false
+  // Outside [rs, re) every intent's hunks are disjoint, so the lines before the region and after it are
+  // the base's with those hunks applied. Both texts must begin and end with exactly those lines.
+  const b = base.split('\n')
+  const pre = b.slice(0, rs), post = b.slice(re)
+  const hs = all.flat().sort((x, y) => y[0] - x[0])
+  for (const [bs, be, nl] of hs) {
+    if (be <= rs && !(bs === be && bs === rs && rs === re)) pre.splice(bs, be - bs, ...nl)
+    else if (bs >= re) post.splice(bs - re, be - bs, ...nl)
+  }
+  const frames = (t) => {
+    const l = t.split('\n')
+    if (l.length < pre.length + post.length) return false
+    for (let i = 0; i < pre.length; i++) if (l[i] !== pre[i]) return false
+    for (let i = 0; i < post.length; i++) if (l[l.length - post.length + i] !== post[i]) return false
+    return true
+  }
+  return frames(final) && frames(current)
+}
 
 // HIV-P17. Why a creation race of relPath must NOT land, '' when it may: 'CONFLICT' when two whole
 // files collide in a file with a language, else fusionReason's answer when a clean-looking union
