@@ -12,6 +12,7 @@
 // first, then replies oldest-first from `oldest` (inclusive).
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
+import { slackArgs, slackArgsError } from './fake-slack-args.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { makeSlackPoller } = await import(pathToFileURL(path.join(ROOT, 'hive-slack.js')).href)
@@ -24,10 +25,12 @@ function fakeSlack() {
   const add = (ts, text, thread_ts) => { msgs.push({ ts: ts.toFixed(6), text, user: 'U_ALICE', ...(thread_ts ? { thread_ts: thread_ts.toFixed(6) } : {}) }) }
   const n = (s) => Number(s) || 0
   const fetchImpl = async (url, init) => {
-    const method = url.split('/').pop()
-    const body = JSON.parse(init.body || '{}')
-    let out
-    if (method === 'conversations.history') {
+    const method = url.split('/').pop().split('?')[0]
+    // Arguments as REAL Slack reads them (0.14.3 P0-4): a JSON body on a read method is not read.
+    const h = (init && init.headers) || {}
+    const body = slackArgs(method, h['Content-Type'] || h['content-type'], init.body, url)
+    let out = slackArgsError(method, body)
+    if (out) { /* answered as Slack answers a call with no arguments */ } else if (method === 'conversations.history') {
       const top = msgs.filter((m) => !m.thread_ts || m.thread_ts === m.ts).map((m) => {
         const reps = msgs.filter((r) => r.thread_ts === m.ts && r.ts !== m.ts)
         const { ...copy } = m

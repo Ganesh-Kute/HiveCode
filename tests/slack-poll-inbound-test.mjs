@@ -19,6 +19,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 import { startSync } from '../sync.js'
+import { slackArgs, slackArgsError } from './fake-slack-args.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const SLACK_BIN = path.join(ROOT, 'hive-slack.js')
@@ -149,15 +150,8 @@ function addThreadReply({ thread_ts, user = 'U01OWNER99', text = '', ts = nextTs
   return reply
 }
 
-function parseBody(raw, contentType = '') {
-  if (!raw) return {}
-  if (contentType.includes('application/x-www-form-urlencoded')) {
-    return Object.fromEntries(new URLSearchParams(raw))
-  }
-  try { return JSON.parse(raw) } catch {
-    return Object.fromEntries(new URLSearchParams(raw))
-  }
-}
+// Arguments as REAL Slack reads them (tests/fake-slack-args.mjs): a JSON body on a read method is
+// not read, so a client that sends one fails here as it fails against Slack (0.14.3 P0-4).
 
 const fakeSlack = http.createServer((req, res) => {
   if (/websocket/i.test(String(req.headers.upgrade || ''))) {
@@ -173,7 +167,7 @@ const fakeSlack = http.createServer((req, res) => {
   req.on('end', () => {
     const u = new URL(req.url || '/', `http://127.0.0.1:${SLACK_PORT}`)
     const method = u.pathname.replace(/^\/api\//, '').replace(/^\//, '')
-    const params = { ...Object.fromEntries(u.searchParams), ...parseBody(raw, String(req.headers['content-type'] || '')) }
+    const params = slackArgs(method, String(req.headers['content-type'] || ''), raw, req.url)
     const authHeader = String(req.headers.authorization || '')
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : String(params.token || '')
     const headers = { 'content-type': 'application/json', 'x-oauth-scopes': slackState.scopes }
@@ -192,6 +186,14 @@ const fakeSlack = http.createServer((req, res) => {
     if (method === 'auth.test') {
       res.writeHead(200, headers)
       res.end(JSON.stringify({ ok: true, user: 'hivecode', user_id: 'U00HIVEBOT', team: 'TestTeam', team_id: 'T01OURTEAM' }))
+      return
+    }
+
+    // A read method whose arguments did not arrive answers as real Slack does (0.14.3 P0-4).
+    const argErr = slackArgsError(method, params)
+    if (argErr) {
+      res.writeHead(200, headers)
+      res.end(JSON.stringify(argErr))
       return
     }
 

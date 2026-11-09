@@ -18,6 +18,7 @@ import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync } from '../sync.js'
 import * as HSA from '../hive-slack-agent.js'
+import { slackArgs, slackArgsError } from './fake-slack-args.mjs'
 const { makeAgent, planChunks, route, snapshot, taskState, taskTitle, stopAll, preflightSlackAgent } = HSA
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -65,9 +66,13 @@ const slack = http.createServer((req, res) => {
   let body = ''
   req.on('data', (d) => { body += d })
   req.on('end', () => {
-    calls.push({ method: req.url.split('/').pop(), ...JSON.parse(body || '{}') })
+    // Arguments as REAL Slack reads them (0.14.3 P0-4): a JSON body on a read method is not read.
+    const method = req.url.split('/').pop().split('?')[0]
+    const args = slackArgs(method, req.headers['content-type'], body, req.url)
+    calls.push({ method, ...args })
+    const argErr = slackArgsError(method, args)
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, ts: String(tsSeq++) }))
+    res.end(JSON.stringify(argErr || { ok: true, ts: String(tsSeq++) }))
   })
 })
 await new Promise((r) => slack.listen(SLACK_PORT, '127.0.0.1', r))

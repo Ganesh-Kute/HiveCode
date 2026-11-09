@@ -180,6 +180,28 @@ export function makeQueue({
 
 export const SLACK_TIMEOUT_MS = 15000
 
+// HOW SLACK READS A CALL'S ARGUMENTS (0.14.3 P0-4). Read methods take their arguments only from the
+// query string or a form body: a JSON body is ignored, so on 0.14.2 conversations.info answered
+// invalid_arguments and users.info user_not_found in a real workspace (measured 9 Nov 2026), which
+// broke `slack check`, the --slack-channel preflight, inbound stop/retry and stop verification.
+// Every fake Slack in the tests accepted JSON, so all of it was green. Write methods (chat.*,
+// agents.*, reactions.*...) take JSON and stay JSON: their blocks and metadata are nested objects.
+const FORM_METHOD = /^(?:(?:conversations|users|team|bots)\.[A-Za-z.]+|auth\.test)$/
+export function slackEncoding(method) {
+  return FORM_METHOD.test(String(method || '')) ? 'form' : 'json'
+}
+
+/** A form body Slack reads: undefined and null are LEFT OUT (never the text "undefined", which Slack
+ *  would read as a real channel or user id); a nested value is JSON inside its field, as Slack takes it. */
+export function slackForm(body = {}) {
+  const p = new URLSearchParams()
+  for (const [k, v] of Object.entries(body || {})) {
+    if (v === undefined || v === null) continue
+    p.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v))
+  }
+  return p.toString()
+}
+
 /** POST to Slack's Web API. Kept tiny and injectable so the bridge can be tested without a
  *  workspace -- the thing worth testing is our routing, not Slack's HTTP.
  *  Applies a 15s AbortSignal timeout by default so a hung TCP socket never stalls the queue. */
@@ -191,10 +213,14 @@ export async function slackPost(
   apiBase = process.env.HIVE_SLACK_API || DEFAULT_API,
   timeoutMs = Number(process.env.HIVE_SLACK_TIMEOUT_MS) || SLACK_TIMEOUT_MS,
 ) {
+  const form = slackEncoding(method) === 'form'
   const r = await fetchImpl(`${apiBase}/${method}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
+    headers: {
+      'Content-Type': form ? 'application/x-www-form-urlencoded; charset=utf-8' : 'application/json; charset=utf-8',
+      Authorization: `Bearer ${token}`,
+    },
+    body: form ? slackForm(body) : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   })
   const retryHeader = r.headers && typeof r.headers.get === 'function' ? Number(r.headers.get('retry-after') || 0) : 0
