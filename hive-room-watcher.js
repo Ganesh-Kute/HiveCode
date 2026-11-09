@@ -68,7 +68,7 @@ export function saveRoomState(file, s) {
 export function makeRoomWatcher(o) {
   const {
     gh, link, branch, label = LABEL, stateFile, deps,
-    ackMinutes = 10, maxMinutes = 120, maxRuns = 6, maxRunsPerDay = 20, soloGraceMinutes = 2,
+    ackMinutes = 10, maxMinutes = 120, maxRuns = 6, maxRunsPerDay = 20, soloGraceMinutes = 2, refusalRetryMinutes = 10,
     fallbackAgent = '', host = os.hostname(),
     now = () => Date.now(), log = () => {},
   } = o
@@ -100,9 +100,22 @@ export function makeRoomWatcher(o) {
     .split(roomId).join('[room id removed]')
     .replace(/wss?:\/\/[^\s|)'"`]+(\|[^\s)'"`]*)?/g, '[relay link removed]')
     .replace(/\broom-[A-Za-z0-9_-]{12,}/g, '[room id removed]')
+    // LOCAL PATHS: a refusal's "why" names files on the watcher's machine (a home folder, a temp
+    // checkout); the issue is public (0.14.3 P0-2, Claude's review). Not inside URLs.
+    .replace(/(?<![\w.:/\\-])(?:[A-Za-z]:[\\/]|\\\\|\/(?:home|Users|tmp|var|root|private|opt|mnt|srv|workspace|data)\/)[^\s'"`)\]]*/g, '[local path removed]')
   const comment = (n, body) => { try { gh.comment(n, scrubRoom(body)) } catch (e) { log(`#${n}: could not comment on GitHub: ${e.message}`) } }
   const today = () => new Date(now()).toISOString().slice(0, 10)
   const runsToday = () => { if (state.day.date !== today()) state.day = { date: today(), runs: 0 }; return state.day.runs }
+
+  // A room line that may not arrive: deps.say is roomSay, confirmed by a second client. When it is
+  // not confirmed (or throws) the watcher logs it and carries on; the caller has already put the
+  // same news on GitHub, so nobody is left with neither (0.14.3 P0-2).
+  async function sayChecked(n, text) {
+    let r = null
+    try { r = await deps.say(text) } catch (e) { r = { ok: false, why: e && e.message } }
+    if (!r || !r.ok) log(`#${n}: could not confirm the room heard it (${(r && (r.why || r.code)) || 'no answer'}); the GitHub comment stands`)
+    return r
+  }
 
   function needsHuman(n, why, lines = []) {
     const it = state.issues[n]
@@ -197,9 +210,15 @@ export function makeRoomWatcher(o) {
     const solo = (a.agentsSeen || []).length <= 1
     const graceMs = (solo ? soloGraceMinutes : ackMinutes) * 60000
     const allowUnreviewed = !!(a.unreviewedSince && now() - a.unreviewedSince >= graceMs && peek && peek.ok && peek.reachable.length <= 1)
-    const r = await deps.landIssue({ taskId: a.taskId, issue: { number: n, title: it.title }, lastFailedFingerprint: a.lastFailedFingerprint || '', allowUnreviewed })
+    // A REFUSAL IS TRIED AGAIN AFTER A PAUSE even when nothing changed (a push answered 503, a lock
+    // on the remote): once per refusalRetryMinutes, never every tick, and a repeat of the same
+    // refusal is neither said again nor counted again (antigravity-VM's attack 1). Failing tests
+    // are not retried this way: they wait for the room to change.
+    let lastFp = a.lastFailedFingerprint || ''
+    if (lastFp && a.lastRefusal && now() - (a.refusalTriedAt || a.lastRefusal.at) >= refusalRetryMinutes * 60000) { lastFp = ''; a.refusalTriedAt = now() }
+    const r = await deps.landIssue({ taskId: a.taskId, issue: { number: n, title: it.title }, lastFailedFingerprint: lastFp, allowUnreviewed })
     if (r && !r.ok && r.blocked === 'unreviewed') {
-      if (!a.unreviewedSince) {
+      if (!a.unreviewedSince && !a.unreviewedSaid) {
         a.unreviewedSince = now()
         const files = (r.files || []).slice(0, 6).join(', ') || 'the changed files'
         if (solo) {
@@ -208,8 +227,16 @@ export function makeRoomWatcher(o) {
         } else {
           await deps.say(`@all issue #${n} is done and waiting for a review of ${files} by someone who did not write them (hive_review). Nothing lands until then.`)
         }
+        a.unreviewedSaid = true
       }
-    } else if (r && !r.ok) a.unreviewedSince = 0
+      if (!a.unreviewedSince) a.unreviewedSince = now()
+    } else if (r && !r.ok && !r.skipped && !r.code && !r.fingerprint) {
+      // Only "not ready" (work reopened, a claim taken) restarts the review wait. A refusal or a
+      // skipped landing is not a change in the work: resetting here made a refused solo landing
+      // re-announce "nobody else to review" every grace period (antigravity-VM's attack 3).
+      a.unreviewedSince = 0
+      a.unreviewedSaid = false
+    }
     if (r && r.state && 'lastFailedFingerprint' in r.state) a.lastFailedFingerprint = r.state.lastFailedFingerprint || ''
     if (r && r.ok && a.kind === 'review') {
       const pr = r.pr || {}
@@ -234,8 +261,38 @@ export function makeRoomWatcher(o) {
     }
     if (r && r.code === 'Q576' && !r.skipped) {
       a.runs = (a.runs || 0) + 1
+      a.lastRefusal = null // failing tests wait for the room to change; they are not retried on a timer
       if (a.runs >= maxRuns) return needsHuman(n, `the tests failed ${a.runs} times in a row (the limit is ${maxRuns}).`, (peek && peek.lastLines) || [])
       comment(n, `The tests failed on the agents' work, so nothing was pushed. It went back to the room (attempt ${a.runs} of ${maxRuns}).\n\n${MARK('room', { kind: 'tests-failed', run: a.runs })}`)
+      // SAID BY THE WATCHER, CONFIRMED: landIssue's own room line went through a connection that
+      // whenDone had already stopped, so the room never heard its tests failed (0.14.3 P0-2).
+      await sayChecked(n, `@all the tests failed when landing issue #${n} (attempt ${a.runs} of ${maxRuns}): ${oneLine(r.why, 300)} Nothing was pushed. Fix them in the room; the landing is tried again when the room's files or the branch change.`)
+    }
+    // A LANDING REFUSED FOR ANY OTHER REASON IS SAID, never swallowed (0.14.3 P0-2). On 0.14.2 a
+    // refusal (Q506, a push refused, no git identity...) matched no branch here: nothing in the
+    // room, nothing on the issue, and the next tick's identical fingerprint was a silent skip, so
+    // issue #9 sat "done" and landed nothing with no word anywhere. Said once per refusal (same
+    // code, same fingerprint), counted like failing tests, then a person. The issue comment goes
+    // FIRST: an unreachable room must never mean nobody heard (Claude's review).
+    if (r && !r.ok && !r.skipped && r.blocked !== 'unreviewed' && r.code !== 'Q576' && (r.code || r.fingerprint)) {
+      const fp = r.fingerprint || (r.state && r.state.lastFailedFingerprint) || ''
+      const key = `${r.code || ''}|${fp || oneLine(r.why, 120)}`
+      if (a.refusedKey !== key) {
+        a.refusedKey = key
+        a.refusals = (a.refusals || 0) + 1
+        const code = r.code || 'refused'
+        const why = oneLine(r.why, 300) || 'no reason given'
+        a.lastRefusal = { code, why, at: now() }
+        log(`#${n}: landing refused (${code}): ${why}`)
+        if (a.refusals >= maxRuns) return needsHuman(n, `the landing was refused ${a.refusals} times (the limit is ${maxRuns}); the last time ${code}: ${why}`, (peek && peek.lastLines) || [])
+        comment(a.kind === 'review' ? a.pr : n, `The agents' work is done, but Hivecode refused to land it (${code}): ${oneLine(r.why, 400) || 'no reason given'} Nothing was pushed. It went back to the room (refusal ${a.refusals} of ${maxRuns}); it is tried again when the room's files or the branch change.\n\n${MARK('room', { kind: 'refused', code })}`)
+        await sayChecked(n, `@all issue #${n} is done, but its landing was REFUSED (${code}): ${why} Nothing was pushed. Fix the cause in the room; the landing is tried again when the room's files or the branch change.`)
+      } else if (a.lastRefusal) {
+        // The same refusal again (a retry after the pause): not said or counted again, but
+        // `github status` shows it is still happening, so a silent wait is never mistaken for
+        // progress (Claude's review).
+        a.lastRefusal.seen = now()
+      }
     }
     if (now() - a.postedAt > maxMinutes * 60000) return needsHuman(n, `the room worked on it for more than ${maxMinutes} minutes without a landing.`, (peek && peek.lastLines) || [])
 
@@ -395,6 +452,10 @@ export function describeRoomState(s, { now = Date.now(), maxRunsPerDay = (s && s
     out.push(`  working on ${what} for ${mins(a.postedAt)} min; ${a.engagedAt ? 'an agent has taken it' : 'NO agent has taken it yet'}${a.runs ? `; tests failed ${a.runs} time(s)` : ''}`)
     if (a.fallback) out.push(`  fallback agent started ${mins(a.fallback.at)} min ago (${a.fallback.why})`)
     if (a.unreviewedSince) out.push(`  done, waiting ${mins(a.unreviewedSince)} min for a review by an agent that did not write it`)
+    if (a.lastRefusal) {
+      const still = a.lastRefusal.seen ? `; still refused (same reason) for ${mins(a.lastRefusal.at)} min, last tried ${mins(a.lastRefusal.seen)} min ago` : ''
+      out.push(`  landing refused ${mins(a.lastRefusal.at)} min ago (${a.lastRefusal.code}): ${oneLine(a.lastRefusal.why, 200)}${still}`)
+    }
   } else if (s.openPr) {
     out.push(`  waiting for PR #${s.openPr} to be merged or closed before the next issue (one open PR per room)`)
   } else {
