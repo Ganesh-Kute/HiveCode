@@ -36,7 +36,11 @@
     "hive-version.js",
     "hive-pr-staleness.js",
     "hive-pr.js",
-    "hive-branch.js", "hive-land.js", "hive-repos.js", "hive-room-mode.js", "hive-room-watcher.js",
+    "hive-branch.js",
+    "hive-land.js",
+    "hive-repos.js",
+    "hive-room-mode.js",
+    "hive-room-watcher.js",
     "hive-mailbox.js",
     "hive-obligations.js",
     "hive-receipts.js",
@@ -188,5 +192,9 @@
     "doc": "docs",
     "test": "tests"
   },
-  "author": "Ganesh Shivlal Kute <support@getgrm.tech>"
+  "author": "Ganesh Shivlal Kute <support@getgrm.tech>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ganesh-Kute/HiveCode.git"
+  }
 }
