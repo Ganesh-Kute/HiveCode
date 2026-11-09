@@ -342,6 +342,28 @@ try {
 
   // I6: agentLine tells each agent to pick a name of its own without angle brackets
   T('I6 agentLine instructs each agent to pick a name of its own', a1.code === 0 && a1.out.includes('as a name of your own (each agent picks a different one)') && !a1.out.includes('<a name of its own>'))
+
+  // ─── J. A STALE LOCAL MAIN (P1-7) ──────────────────────────────────────────────────────────
+  // `branch <name>` cut from HEAD, and HEAD was a local main last pulled before a teammate pushed:
+  // the room was seeded with old files. Now it fetches, and cuts from origin/main when local is
+  // strictly behind it (which loses nothing), and says so. A local bare origin; nothing leaves here.
+  console.log('\n# J. a new branch is not cut from a stale local main')
+  const up2 = path.join(tmp, 'origin-stale.git')
+  g(tmp, 'init', '-q', '--bare', '-b', 'main', up2)
+  const staleSrc = path.join(tmp, 'stale-src')
+  repo(staleSrc, { 'app.js': 'export const v = 1\n' })
+  g(staleSrc, 'remote', 'add', 'origin', up2); g(staleSrc, 'push', '-q', 'origin', 'main')
+  const staleA = path.join(tmp, 'stale-a'), staleB = path.join(tmp, 'stale-b')
+  g(tmp, 'clone', '-q', up2, staleA); g(tmp, 'clone', '-q', up2, staleB)
+  for (const d of [staleA, staleB]) { g(d, 'config', 'user.email', 'dev@example.com'); g(d, 'config', 'user.name', 'Dev') }
+  fs.writeFileSync(path.join(staleB, 'new.js'), 'export const added = true\n'); g(staleB, 'add', '-A'); g(staleB, 'commit', '-qm', 'teammate'); g(staleB, 'push', '-q', 'origin', 'main')
+  const oldMain = g(staleA, 'rev-parse', 'main').out, newMain = g(staleB, 'rev-parse', 'main').out
+  const sj1 = await cli(staleA, 'branch', 'fresh-x')
+  T('J1 a local main behind origin: the new branch is cut from origin/main', sj1.code === 0 && g(staleA, 'rev-parse', 'fresh-x').out === newMain && oldMain !== newMain, sj1.out.split('\n').slice(0, 2).join(' | '))
+  T('J2 ...and the output says so, with the count', /1 commit\(s\) behind origin\/main/.test(sj1.out), sj1.out.split('\n')[0])
+  const seedJ = g(staleA, 'config', '--get', 'hivecode.fresh-x.seed').out
+  T('J3 ...so the room holds the teammate\'s file', !!seedJ && read(seedJ, 'new.js') === 'export const added = true\n', seedJ)
+  T('J4 ...and the developer\'s own main and checkout are untouched', g(staleA, 'rev-parse', 'main').out === oldMain && g(staleA, 'symbolic-ref', '--short', 'HEAD').out === 'main')
 } catch (e) {
   T('the suite ran', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e))
 } finally {

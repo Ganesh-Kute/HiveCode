@@ -40,7 +40,7 @@ jobs:
         if: always()
         run: |
           fail=0
-          for t in test.js eol-mixed-peers-test.mjs merge3-eol-test.mjs personal-room-test.mjs branch-test.mjs case-rename-test.mjs case-collision-test.mjs secured-invite-test.mjs self-host-test.mjs relay-pin-test.mjs; do
+          for t in test.js eol-mixed-peers-test.mjs merge3-eol-test.mjs personal-room-test.mjs branch-test.mjs branch-fresh-test.mjs case-rename-test.mjs case-collision-test.mjs secured-invite-test.mjs self-host-test.mjs relay-pin-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"
