@@ -19,6 +19,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 import { startSync } from '../sync.js'
+import { slackArgs, slackArgsError } from './fake-slack-args.mjs'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const SLACK_BIN = path.join(ROOT, 'hive-slack.js')
@@ -149,15 +150,8 @@ function addThreadReply({ thread_ts, user = 'U01OWNER99', text = '', ts = nextTs
   return reply
 }
 
-function parseBody(raw, contentType = '') {
-  if (!raw) return {}
-  if (contentType.includes('application/x-www-form-urlencoded')) {
-    return Object.fromEntries(new URLSearchParams(raw))
-  }
-  try { return JSON.parse(raw) } catch {
-    return Object.fromEntries(new URLSearchParams(raw))
-  }
-}
+// Arguments as REAL Slack reads them (tests/fake-slack-args.mjs): a JSON body on a read method is
+// not read, so a client that sends one fails here as it fails against Slack (0.14.3 P0-4).
 
 const fakeSlack = http.createServer((req, res) => {
   if (/websocket/i.test(String(req.headers.upgrade || ''))) {
@@ -173,7 +167,7 @@ const fakeSlack = http.createServer((req, res) => {
   req.on('end', () => {
     const u = new URL(req.url || '/', `http://127.0.0.1:${SLACK_PORT}`)
     const method = u.pathname.replace(/^\/api\//, '').replace(/^\//, '')
-    const params = { ...Object.fromEntries(u.searchParams), ...parseBody(raw, String(req.headers['content-type'] || '')) }
+    const params = slackArgs(method, String(req.headers['content-type'] || ''), raw, req.url)
     const authHeader = String(req.headers.authorization || '')
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : String(params.token || '')
     const headers = { 'content-type': 'application/json', 'x-oauth-scopes': slackState.scopes }
@@ -192,6 +186,14 @@ const fakeSlack = http.createServer((req, res) => {
     if (method === 'auth.test') {
       res.writeHead(200, headers)
       res.end(JSON.stringify({ ok: true, user: 'hivecode', user_id: 'U00HIVEBOT', team: 'TestTeam', team_id: 'T01OURTEAM' }))
+      return
+    }
+
+    // A read method whose arguments did not arrive answers as real Slack does (0.14.3 P0-4).
+    const argErr = slackArgsError(method, params)
+    if (argErr) {
+      res.writeHead(200, headers)
+      res.end(JSON.stringify(argErr))
       return
     }
 
@@ -746,10 +748,14 @@ try {
     ['start', LINK, '--channel', CHANNEL, '--allow', 'U01OWNER99', '--inbound', 'poll'],
     { SLACK_BOT_TOKEN: 'xoxb-valid', TEMP: sharedStateDir, HIVE_SLACK_CATCHUP_MS: '15000' }
   )
-  const bCatchupReady = await bridgeCatchup.waitReady(2500)
+  // Bounds, not delays: both return the moment the condition holds. 2.5 s for a spawned node CLI to
+  // start was the one fixed wait here a slow Linux VM could miss (the "known S10b flake"; 10/10 green on
+  // VM-ANTI-G-1 at 4cac1fe, so not reproduced). The fresh reply is 1 s old when posted: even after the
+  // full 8 s + 5 s it is still inside the 15 s catch-up window, so the widened bounds keep the meaning.
+  const bCatchupReady = await bridgeCatchup.waitReady(8000)
   const freshCatchupArrived = bCatchupReady && await waitUntil(() => {
     return rebuiltChat.toArray().some((m) => m && /fresh-inside-catchup-window/.test(m.text))
-  }, 4000, 80)
+  }, 5000, 80)
   if (bCatchupReady) await sleep(300)
   await bridgeCatchup.kill()
 
@@ -816,6 +822,20 @@ try {
     'S11 `slack check` behind 403 proxy falls back to HTTPS polling, receives thread reply, and exits 0',
     !checkRes.running && checkRes.code === 0 && /replies reach Hivecode/i.test(checkRes.out),
     `code=${checkRes.code} out=${checkRes.out.trim().slice(-120)} err=${checkRes.err.trim().slice(-140)}`
+  )
+
+  // S12: over HTTPS polling, a check nobody answers says so, and does NOT send the person off to
+  // reinstall the app for event subscriptions (polling uses none). 9 Nov, the first real check.
+  slackState.autoReplyCheckPrompt = false
+  const quietProc = spawnSlackCli(
+    ['check', '--channel', CHANNEL, '--inbound', 'poll', '--timeout', '1500'],
+    { SLACK_BOT_TOKEN: 'xoxb-valid' }
+  )
+  const quietRes = await quietProc.waitExit(6000)
+  T(
+    'S12 `slack check --inbound poll` with no reply: exits 1, says nobody replied in time, and does not blame event subscriptions',
+    !quietRes.running && quietRes.code === 1 && /no reply arrived in the thread within 2 s/.test(quietRes.err) && !/Event subscriptions/i.test(quietRes.err),
+    `code=${quietRes.code} err=${quietRes.err.trim().slice(-200)}`
   )
 } finally {
   for (const p of [...runningProcs]) { try { p.kill() } catch {} }

@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { slackArgs, slackArgsError } from './fake-slack-args.mjs'
 
 const ROOT = path.dirname(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')))
 // A mutant run points this at a changed copy beside the real one (scripts/github-mutants.mjs).
@@ -344,9 +345,10 @@ try {
       req.on('data', (c) => { raw += c })
       req.on('end', () => {
         const m = req.url.replace(/^\/api\//, '')
-        let body = {}
-        try { body = JSON.parse(raw || '{}') } catch { }
-        const out = m === 'auth.test' ? (mode === 'badtoken' ? { ok: false, error: 'invalid_auth' } : { ok: true, user: 'hivecode', user_id: 'U1', team: 'Acme', team_id: 'T1' })
+        // Arguments as REAL Slack reads them (0.14.3 P0-4): a JSON body on a read method is not read.
+        const body = slackArgs(m, req.headers['content-type'], raw, req.url)
+        const argErr = slackArgsError(m, body)
+        const out = argErr ? argErr : m === 'auth.test' ? (mode === 'badtoken' ? { ok: false, error: 'invalid_auth' } : { ok: true, user: 'hivecode', user_id: 'U1', team: 'Acme', team_id: 'T1' })
           : m === 'conversations.info' ? { ok: true, channel: { id: 'C1', name: 'eng', is_member: mode !== 'notmember', is_private: privateChannel } }
             : m === 'apps.connections.open' ? { ok: true, url: sockUrl() }
               : m === 'conversations.history' ? {

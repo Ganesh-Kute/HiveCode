@@ -29,6 +29,10 @@
 // trade than no night shift at all. A roster that stops and says "this is ready for you" is
 // finished; one that keeps going is accruing a bill.
 
+import { realpathSync as __hiveRealpath } from 'fs'
+import { resolve as __hiveResolve } from 'path'
+import { fileURLToPath as __hiveFileURLToPath } from 'url'
+
 export const PRESETS = {
   'review-loop': {
     title: 'Review loop',
@@ -165,7 +169,15 @@ export function applyPreset(hive, name, { gate = '' } = {}) {
 }
 
 // ---- main -------------------------------------------------------------------------------
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+// Run directly? Compared by real path, as every shipped program does since 5c24d7d: the old
+// `file:///${argv[1]}` test built "file:////..." on macOS and Linux and never matched, so
+// `node presets.js --list` exited 0 having printed nothing (0.14.3 P1-12; not shipped, still used).
+function __hiveIsEntry() {
+  if (!process.argv[1]) return false
+  const me = __hiveFileURLToPath(import.meta.url)
+  try { return __hiveRealpath(process.argv[1]) === __hiveRealpath(me) } catch { return __hiveResolve(process.argv[1]) === __hiveResolve(me) }
+}
+if (__hiveIsEntry()) {
   const argv = process.argv.slice(2)
   const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || '') }
   if (argv.includes('--list') || !argv.length) {

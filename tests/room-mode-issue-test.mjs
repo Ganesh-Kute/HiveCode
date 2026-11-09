@@ -144,6 +144,20 @@ console.log('\n# B2 & B2.1: Room-Mode Issue Posting & Queue Processing')
   T('T4.2 filterRoomMembers separates active AI agents from humans',
     Boolean(filtered && filtered.agents.includes('Claude') && filtered.agents.includes('antigravity-4') && filtered.humans.includes('Ganesh')))
 
+  // P1-6: presence is merged by name, so an agent whose listener is armed (hive-await: listener,
+  // NOT passive) comes back with listener: true. It is in the room; it used to be dropped.
+  const withListeners = frm ? frm([
+    { name: 'GitHub', kind: 'ai', passive: true },
+    { name: 'Claude-cloud', kind: 'ai', listener: true, app: 'claude-code-cloud' },
+    { name: 'VM-ANTI-G-1', kind: 'ai', listener: true },
+    { name: 'Ganesh', kind: 'human' },
+  ]) : { agents: [], humans: [] }
+  T('T4.5 an agent with its listener armed is in the room (P1-6: was "none yet")',
+    withListeners.agents.includes('Claude-cloud') && withListeners.agents.includes('VM-ANTI-G-1') && !withListeners.agents.includes('GitHub'),
+    JSON.stringify(withListeners))
+  T('T4.6 ...and the comment names them instead of "none yet"',
+    /In the room now: Claude-cloud, VM-ANTI-G-1; humans: Ganesh/.test(fgc ? fgc({ issue: { number: 7 }, members: withListeners, branch: 'b' }) : ''))
+
   const roomId = 'room-6UlP1vRk4V9P-w6fEQ'
   const relayUrl = 'wss://hivecode-relay.onrender.com'
   const comment = fgc ? fgc({

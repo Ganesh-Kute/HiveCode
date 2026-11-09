@@ -753,6 +753,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       })
     } catch { /* provenance must never break the sync path */ }
   }
+  // NOTHING THIS CLIENT PUBLISHES ENTERS THE ROOM UNSIGNED (0.14.3 P0-3). With the fork gate on, a
+  // local edit is signed by captureLocal, which needs a baseline (`shadow`) to diff against. An edit
+  // made before the file first synced on a fresh join has none, and the rejoin and creation-race
+  // merges publish without passing through it at all. The content still landed, so the file's chain
+  // broke: `pr` then refused with a false Q506 ("the branch holds content this room has never seen")
+  // on a branch nobody had touched, and credited the file to the last agent that HAD signed (8-9 Nov
+  // mock run, test.js in demo-3). So after any local publish: if no receipt yields exactly what was
+  // published, sign it now, from the room's copy it replaced -- the state the room provably held.
+  // Only when THIS client's own edit went out unsigned: if captureLocal signed the authored text (or
+  // anyone signed what was published), nothing is added, so the fork gate sees exactly what it saw
+  // before. A receipt for a merged result is never added beside a signed edit: detectFork stops at a
+  // current text that has a receipt, and that must not hide a real fork.
+  function signPublished(relPath, roomBefore, published, authored = published) {
+    if (!PROVENANCE || !identity || published == null || published === roomBefore) return
+    const fe = fileDocs.get(relPath); if (!fe || !fe.ledger) return
+    const hp = contentHash(published), ha = authored == null ? null : contentHash(authored)
+    const rc = fe.ledger.toArray()
+    if (rc.some((r) => r && (r.contentHash === hp || (ha && r.author === identity.id && r.contentHash === ha)))) return
+    stampIntent(relPath, roomBefore == null ? '' : roomBefore, published)
+  }
   function attestHead(relPath, landed, base) {
     if (!PROVENANCE || !identity || landed == null) return
     const fe = fileDocs.get(relPath); if (!fe || !fe.head) return
@@ -1052,6 +1072,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!canWrite(relPath)) return { error: `${relPath} is read-only for you` }
     if (intent) myIntents.set(relPath, String(intent)) // my declared WHY — what my receipt will sign
     const full = path.join(ROOT, relPath)
+    // Written before this file synced: remember what it replaced, the edit's real ancestor (P0-1b).
+    // The OLDEST text this folder had since the file started waiting (diskAtOpen) when there is one: an
+    // earlier edit with the agent's own file tool sits between it and this write, and the room can only
+    // have held the older text (0.14.3 P0-1b-R3).
+    { const fe0 = fileDocs.get(relPath); if (!(fe0 && fe0.synced) && !preSyncBase.has(relPath)) { try { preSyncBase.set(relPath, fe0 && typeof fe0.diskAtOpen === 'string' ? fe0.diskAtOpen : readDiskText(full)) } catch { } } }
     // An authored write keeps this disk's ending for the file, like every engine write (readText).
     try { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, crlfSet().has(relPath) ? toLF(content).replace(/\n/g, '\r\n') : content) }
     catch (e) { return { error: 'write failed: ' + e.message } }
@@ -1061,7 +1086,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (FORK_GATE) captureLocal(relPath)
     reconcile(relPath, 'local')
     const fe = fileDocs.get(relPath)
-    const landed = fe && fe.synced ? fe.text.toString() : content
+    // The room's copy is known only once the file synced; before that, say nothing about it rather
+    // than echo the content back as if it had landed (0.14.3 P0-1). hive_edit asks whenSent().
+    const landed = fe && fe.synced ? fe.text.toString() : null
     let disk = content; try { disk = readDiskText(full) } catch { }
     // A new file's doc has not synced yet when this returns, so the gate in reconcile has not run:
     // judge the content here too, or the answer would be "syncing to every peer" for a file that
@@ -1333,6 +1360,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // "not pulled yet", NOT "new file", so we must not re-seed it from disk (that
   // would create a second CRDT history and duplicate/garble content on rejoin).
   const fileDocs = new Map() // relPath -> { doc, provider, text, synced }
+  // EDITS NOT YET ACCEPTED BY THE RELAY (0.14.3 P0-1). A file enters on any local change to its doc
+  // and leaves once its channel is connected, synced and its socket holds no unsent bytes. Synced
+  // means the sync exchange ran after the change (it carries anything the socket missed), so
+  // "connected + synced + nothing buffered" is "the relay has it". Over HTTPS long-poll the bytes sit
+  // in the client until the relay accepts them; an agent that left in that window lost the edit while
+  // hive_edit said it was syncing (8-9 Nov mock run). leave() waits on this set, hive_edit reports it,
+  // and eviction never closes a file that is still in it.
+  const unsentLocal = new Set()
 
   // REFUSED FILE-ROOMS. y-websocket retries a failed upgrade forever, with backoff and in
   // silence. That is right for a flaky network and badly wrong for a relay that is full: on
@@ -1524,8 +1559,15 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // each peer's DISK — never into the shared text — so conflict markers can't fuse.
     const conflict = fdoc.getMap('conflict')
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
-    e = { doc: fdoc, provider: fprovider, text, bin, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
+    // diskAtOpen: this folder's copy when the file started waiting for the room. An edit made before
+    // the file syncs -- through hive_edit OR the agent's own file tool -- was made on top of it, so it
+    // is that edit's ancestor at first contact, if the room held it (0.14.3 P0-1b-R3). Dropped once synced.
+    let diskAtOpen
+    try { const f0 = path.join(ROOT, relPath); if (fs.statSync(f0).size <= MAX_BYTES) diskAtOpen = readDiskText(f0) } catch { diskAtOpen = undefined }
+    e = { doc: fdoc, provider: fprovider, text, bin, snap, ledger, head, versions, forkmark, conflict, undo, synced: false, diskAtOpen }
     fileDocs.set(relPath, e)
+    // A local transaction is one this client made; a peer's arrives through applyUpdate (local false).
+    fdoc.on('update', (_u, _origin, _doc, txn) => { if (!txn || txn.local) unsentLocal.add(relPath) })
     // From the mtime scan() already took, not two more syscalls per open: a 1,000-file join opens
     // 1,000 files, and fileCreationTs() still falls back to a stat for any file this missed.
     if (!createdTimes.has(relPath) && mtimes.has(relPath)) createdTimes.set(relPath, mtimes.get(relPath))
@@ -1547,6 +1589,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           reconcile(relPath, 'remote')
           detectFork(relPath)
         }
+        preSyncBase.delete(relPath) // used by the first reconcile or not at all, never by a later reopen (review R4)
+        e.diskAtOpen = undefined
         // A new file that has just landed on disk frees its place for the next one (a burst of new
         // files moves at sync speed, not at the 30 s grace), and lets waiting new files in.
         if (arrivedNew.has(relPath)) {
@@ -1583,6 +1627,88 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     evictIfOverCap(relPath)
     scheduleEvictRecheck()
     return e
+  }
+  // `await await f()` THAT NOBODY WROTE (0.14.3 P0-5-3). Two peers making the same sync -> async change
+  // at once each insert `await ` before the same call (each merge is right on its own), and the shared
+  // text keeps both inserts. Remove the outer one, here, before the room's copy reaches the disk:
+  // pure deletes of the spans lang.stackedAwaits finds (AST-level, whitespace-only between, so a
+  // comment or a string that says "await await" is never touched). On the same converged text every
+  // peer deletes the same characters, so two peers doing it at once remove them once. Never a
+  // whole-text diff: that would delete and re-insert everything between two such spots, and two
+  // peers re-inserting the same middle is the fusion this engine exists to prevent. Skipped when
+  // this folder's own copy has one (its author wrote it) and for a file this member cannot write.
+  function dropStackedAwaits(relPath, fe, disk) {
+    try {
+      if (!supports(relPath) || !canWrite(relPath)) return false
+      const lang = languageFor(relPath)
+      if (!lang || typeof lang.stackedAwaits !== 'function') return false
+      const t = fe.text.toString()
+      if (!/\bawait\s+await\b/.test(t)) return false
+      if (typeof disk === 'string' && /\bawait\s+await\b/.test(disk) && lang.stackedAwaits(disk).length) return false
+      const spans = lang.stackedAwaits(t)
+      if (!spans.length) return false
+      fe.doc.transact(() => { for (let i = spans.length - 1; i >= 0; i--) fe.text.delete(spans[i][0], spans[i][1] - spans[i][0]) })
+      log(`[${name}] ${relPath}: removed ${spans.length} stacked \`await\` left by two peers making the same change at once`)
+      return true
+    } catch { return false }
+  }
+  /** Has the relay accepted every local change to this file? (See unsentLocal.) */
+  function isSentNow(relPath) {
+    if (!unsentLocal.has(relPath)) return true
+    const fe = fileDocs.get(relPath)
+    if (!fe) return false
+    const p = fe.provider
+    if (!(p && p.wsconnected && p.synced && !(p.bufferedAmount > 0))) return false
+    // Delivered is not enough: the room must HOLD what this folder has. On first contact a local edit
+    // the room cannot prove it has seen is kept here and deliberately NOT published (and a refused
+    // fused merge publishes nothing); calling that "sent" told an agent its work was in the room when
+    // the room still had the old copy. A deleted file, or one this side cannot read as text, is judged
+    // on delivery alone.
+    // A BINARY file's content is in fe.bin, not fe.text (which is "" for it): compared as text it never
+    // matched, so a binary this member added was never "sent" -- leave() waited its full timeout and
+    // named it as lost, and eviction never closed it (Opus-Cloud's review of 0.14.3). The room holds
+    // what this folder has when the bytes' sha256 is the one the room records, as reconcileBinary writes it.
+    if (fe.bin && fe.bin.has('data')) {
+      let bytes = null
+      try { bytes = fs.readFileSync(path.join(ROOT, relPath)) } catch { }
+      if (bytes && crypto.createHash('sha256').update(bytes).digest('hex') !== fe.bin.get('sha')) return false
+      unsentLocal.delete(relPath)
+      return true
+    }
+    let disk = null
+    try { disk = readDiskText(path.join(ROOT, relPath)) } catch { }
+    if (disk != null && !hasConflictMarkers(disk) && toLF(disk) !== toLF(fe.text.toString())) return false
+    unsentLocal.delete(relPath)
+    return true
+  }
+  /** Resolves true once the relay has this file's local changes, false if not within timeoutMs. */
+  async function whenSent(relPath, timeoutMs = 3000) {
+    relPath = String(relPath || '').replace(/\\/g, '/')
+    const end = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+    for (;;) {
+      if (isSentNow(relPath)) return true
+      if (stopped || Date.now() >= end) return false
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
+  const roomBuffered = () => { try { return (provider.ws && provider.ws.bufferedAmount) || 0 } catch { return 0 } }
+  // LEAVE WITHOUT LOSING WHAT WAS JUST WRITTEN. stop() tears everything down at once; leave() first
+  // hands the pending work over (debounced disk edits, deletes, the room doc), waits until the relay
+  // has accepted every local change -- files and chat/claims alike -- and only then stops. Whatever
+  // did not make it within timeoutMs is NAMED in the answer instead of vanishing (0.14.3 P0-1).
+  async function leave({ timeoutMs = 10000 } = {}) {
+    if (stopped) return { unsent: [], roomUnsent: false }
+    try { if (debounce) { clearTimeout(debounce); flushFsEvents() } } catch { }
+    try { flushFirstContact() } catch { }
+    try { settleLocalDeletes() } catch { }
+    try { flushRoomDoc() } catch { }
+    const end = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+    const pendingNow = () => [...unsentLocal].filter((r) => !isSentNow(r))
+    while (Date.now() < end && (pendingNow().length || roomBuffered() > 0)) await new Promise((r) => setTimeout(r, 50))
+    const unsent = pendingNow()
+    const roomUnsent = roomBuffered() > 0
+    stopAll()
+    return { unsent, roomUnsent }
   }
   function closeFile(relPath) {
     const e = fileDocs.get(relPath)
@@ -1675,6 +1801,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const cand = []
     for (const [r, e] of fileDocs) {
       if (r === keep || !e.synced) continue
+      if (!isSentNow(r)) continue // closing it would drop an edit the relay has not accepted yet
       if (conflicted.has(r)) continue
       try { if (e.conflict && e.conflict.size) continue } catch { }
       if (isClaimed(r)) continue
@@ -1705,6 +1832,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const cand = []
     for (const [r, e] of fileDocs) {
       if (conflicted.has(r) || isClaimed(r)) continue
+      if (unsentLocal.has(r)) continue // a local edit the relay has not accepted: closing it loses work
       try { if (e.conflict && e.conflict.size) continue } catch { }
       cand.push([r, touched.get(r) || 0])
     }
@@ -1877,6 +2005,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // merge. Keyed by room — the same folder rejoined against a different room must not
   // inherit an ancestor from unrelated history.
   const priorShadow = new Map()
+  // relPath -> the disk text an authored write (editFile) replaced while the file had not synced yet:
+  // that write's true ancestor, used by first contact (0.14.3 P0-1b).
+  const preSyncBase = new Map()
   const bases = new Map()      // last synced content per file (advances on every reconcile)
   const forkBases = new Map()  // FORK POINT: what THIS author last saw/authored per file.
   // forkBases advances only on local authorship / first adoption — NOT when a
@@ -2076,6 +2207,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   const fold = (r) => isCaseInsensitive ? r.toLowerCase() : r
 
   const canonicalCaseKeys = new Map() // fold(r) -> canonical relPath
+  const recentlyLocallyRemovedCase = new Map() // fold(r) -> { path: r, at: Date.now() }
   const collided = new Map()          // collided relPath -> { with: canonical relPath }
   const collidedWarned = new Set()    // relPath announced to room
   const collidedTimers = new Map()    // relPath -> Timeout (debounced room announcement)
@@ -2555,8 +2687,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // (duplicated/garbled content on rejoin). So: open if needed, then defer until
     // the 'sync' handler re-runs us. Once synced, "" genuinely means empty.
     fe = fileDocs.get(relPath)
-    if (!fe) { if (disk === null) return; openFile(relPath); return }
-    if (!fe.synced) return
+    // A local change waiting for its file to sync is an unsent edit too: the sync handler sends it,
+    // and until then leave() must wait for it (0.14.3 P0-1: a new file written just before leaving).
+    if (!fe) { if (disk === null) return; openFile(relPath); if (origin === 'local') unsentLocal.add(relPath); return }
+    if (!fe.synced) { if (origin === 'local' && disk !== null) unsentLocal.add(relPath); return }
     // A KEPT UNSENT EDIT IS FROZEN until its author saves the file again. Merging it against the
     // room in either direction would decide something nobody decided: the room's next change would
     // be written over it, and an unchanged save merged against itself pulled the room's old copy over
@@ -2632,6 +2766,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // clean again -> a resolution landed elsewhere; adopt it (order-independent w/ observer).
       if (disk !== null && hasConflictMarkers(disk) && !hasConflictMarkers(fe.text.toString())) { adoptResolved(relPath); return }
     }
+    dropStackedAwaits(relPath, fe, disk) // before anything reads the room's copy (0.14.3 P0-5-3)
     const docText = fe.text.toString()
     // An empty shared doc is authoritative ONLY if we have history for this path.
     // A file's NAME lives in the parent doc and its CONTENT in the file's own doc, on two
@@ -2675,6 +2810,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     if (disk === docText) {
       ensureExactDiskCasing(relPath)
+      if (!inManifest(relPath) && origin === 'local') {
+        const key = fold(relPath)
+        const prevCase = recentlyLocallyRemovedCase.get(key)
+        if (prevCase && (Date.now() - prevCase.at < 60000)) {
+          recentlyLocallyRemovedCase.delete(key)
+          queueManifestSet(relPath)
+        }
+      }
       // CREATING a file is editing it. This branch is where a locally-authored NEW file
       // lands: scan() finds it, openFile() syncs the content up, and by the time reconcile
       // runs disk and doc already agree -- so it returns below, before the markEditing() at
@@ -2806,7 +2949,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
             return
           }
         }
-        if (r0.text !== docText) fe.doc.transact(() => applyDiff(yt, r0.text))
+        if (r0.text !== docText) { fe.doc.transact(() => applyDiff(yt, r0.text)); signPublished(relPath, docText, r0.text, disk) }
         if (r0.text !== disk) writeToDisk(relPath, r0.text)
         if (r0.conflict) conflicted.add(relPath)
         bases.set(relPath, r0.text); forkBases.set(relPath, r0.text); shadow.set(relPath, r0.text)
@@ -2819,6 +2962,26 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // local copy may be newer than the room's (edited while disconnected, or the room
       // came back stale). This is the data-loss case that was seen live.
       let anc = priorShadow.get(relPath)
+      // An edit THIS session made through the medium before the file had synced has a known ancestor:
+      // the disk text it replaced (0.14.3 P0-1b). Without it, a fresh folder's first contact had no
+      // ancestor, refused to publish the edit, and a later merge wrote the room's copy back over it.
+      // ONLY when the room held that text (Claude-cloud's review R1): a folder carrying a local change L
+      // the room never saw, edited before sync, would otherwise merge with ancestor L, read the room as
+      // "removed L", and delete L from disk and room. Not proven held -> no ancestor -> the frozen keep.
+      let preSync = false
+      // An edit made with the agent's OWN file tool before the file synced left no record (only hive_edit
+      // writes one), so first contact had no ancestor and froze it as a kept, unsent edit (P0-1b-R3).
+      // What the disk held when the file opened is that ancestor, under the same rule: only if the room
+      // provably held it.
+      if (anc === undefined && !preSyncBase.has(relPath) && typeof fe.diskAtOpen === 'string' && disk !== null && fe.diskAtOpen !== disk) {
+        preSyncBase.set(relPath, fe.diskAtOpen)
+      }
+      if (anc === undefined && preSyncBase.has(relPath)) {
+        const pre = preSyncBase.get(relPath)
+        const held = accountFor({ rel: relPath, branchText: pre, roomText: docText, receipts: fe.ledger ? fe.ledger.toArray() : [] }).state
+        if (held === DESCENDS || held === IDENTICAL) { anc = pre; preSync = true }
+      }
+      preSyncBase.delete(relPath)
       // ...unless the room never got it. Capturing a local edit moves the ancestor to the edited
       // bytes BEFORE the relay accepts them. A write held behind someone else's claim
       // (HIVE_ENFORCE_CLAIMS=queue) is discarded when its writer disconnects, so on rejoin
@@ -2855,7 +3018,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         // the local side first so the pre-merge bytes are recoverable regardless of outcome.
         captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy before rejoin merge' })
         const rj = icrMerge3(anc, disk, docText, relPath)
-        if (rj.text !== docText) fe.doc.transact(() => applyDiff(yt, rj.text))
+        if (rj.text !== docText) { fe.doc.transact(() => applyDiff(yt, rj.text)); signPublished(relPath, docText, rj.text, disk) }
         if (rj.text !== disk) writeToDisk(relPath, rj.text)
         if (rj.conflict) conflicted.add(relPath)
         bases.set(relPath, rj.text); forkBases.set(relPath, rj.text); shadow.set(relPath, rj.text)
@@ -2864,7 +3027,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           say(unsent
             ? `⚠ ${relPath}: ${name}'s last edit never reached the room — it was held while someone else had the file, and ${name}'s connection dropped. ` +
               `It has been sent again, merged with the room's copy${rj.conflict ? ', and CONFLICT markers need resolving' : ''}; if the file is still claimed, it waits for the release. Pre-merge local copy is in the file's history.`
-            : `⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`)
+            : preSync
+              ? `${relPath}: ${name} edited it before the room's copy had loaded here — the edit was merged with the room's copy and sent${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`
+              : `⚠ ${relPath} changed locally while ${name} was disconnected — the local edit and the room copy were merged${rj.conflict ? ', and CONFLICT markers need resolving' : ''}. Pre-merge local copy is in the file's history.`)
         } catch { }
         return
       }
@@ -2891,7 +3056,22 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // Refuse adoption: keep local disk untouched, keep room doc untouched, snapshot local, and announce loudly.
       captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: `local copy preserved at join (${st.state}: room copy refused)` })
       bases.set(relPath, disk); forkBases.set(relPath, disk)
-      log(`[${name}] ⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted; local disk preserved`)
+      // FROZEN, not merely kept (0.14.3 P0-1b). With bases = the local copy and nothing else, the NEXT
+      // reconcile of this file (the watcher seeing the agent's own write, the scan, any remote change)
+      // merged (base local, ours local, theirs room) = the room's copy, wrote it over the local edit
+      // and told the room "kept the changes that landed in between (nothing lost)": the edit was gone
+      // from the room AND the disk (5 of 8 poll runs on 0.14.2, tests/diag/presync-edit-race.mjs;
+      // traced by Claude-cloud). Frozen like a kept unsent edit: nothing syncs for this file until its
+      // author saves it again, and that save replaces the room's copy. The worst case is now "kept,
+      // and said", never "lost".
+      let keptAt = 0; try { keptAt = fs.statSync(full).mtimeMs } catch { }
+      keptUnsent.set(relPath, keptAt)
+      // Said in the room, not only logged (review R5): the agent has to act on it.
+      try {
+        say(`⚠ ${relPath}: ${name}'s copy differs from the room's, and the room cannot tell which is newer (${st.state}: ${name} changed it before the room's copy had loaded here). ` +
+          `Neither was written over the other: ${name}'s is kept on disk, both are in the file's history, and nothing syncs for this file until ${name} saves it again. That save replaces the room's copy. Claim ${relPath} first.`)
+      } catch { }
+      log(`[${name}] ⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted; local disk preserved and frozen until saved again`)
       noteFirstContact('kept', relPath)
       return
     }
@@ -2982,7 +3162,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         res = { text: disk, conflict: false } // author built on the latest or cleanly rewrote — trust it
       } else {
         res = icrMerge3(fork, disk, docText, relPath)
-        reAdded = !res.conflict && res.text !== disk // we restored remote lines a stale write had dropped
+        reAdded = !res.conflict && res.text !== disk && res.text !== docText // we restored remote lines a stale write had dropped
+        // ...and when the merge gives back exactly the room's copy, the local edit did NOT survive:
+        // never call that "nothing lost" (review R2). Keep the local copy and say so.
+        if (!res.conflict && res.text === docText && disk !== docText) {
+          captureSnapshot(relPath, disk, name, { force: true, kind: 'manual', label: 'local copy replaced by the room\'s copy in a merge' })
+          try { say(`⚠ ${relPath}: ${name}'s local change did not survive the merge with the room's copy (the room's version was taken). ${name}'s copy is in the file's history.`) } catch { }
+        }
         // OPEN (1 Nov 2026): a clean handover onto the same lines still shows markers. Four rounds of
         // rules that decided it from the texts (a claim-time fork, who-holds-it, line counts, shared
         // tokens) each silently deleted someone's work in a case antigravity-3 then built: from the
@@ -3055,7 +3241,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // Gate ON: the author's INTENT was already captured at the source (captureLocal, top
       // of this pass) — here we only advance the authority head to the landed content.
       // Gate OFF (default): the proven landed-transition stamp, unchanged.
-      if (FORK_GATE) { if (res.text !== docText) attestHead(relPath, res.text, docText) }
+      if (FORK_GATE) { if (res.text !== docText) { signPublished(relPath, docText, res.text, disk); attestHead(relPath, res.text, docText) } }
       else if (res.text !== docText) stampProvenance(relPath, docText, res.text)
     }
     if (res.text !== disk) writeToDisk(relPath, res.text)
@@ -3758,20 +3944,30 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function checkBuilds() {
     // An old engine cannot speak for itself, so SOMEBODY current must -- but only one: the reporting
     // client whose name sorts first. Otherwise every current client in the room says the same thing.
+    // Listeners (listener: true, syncFiles: false) do not sync or edit files and do not report builds.
     const reporters = [name]
-    for (const s of provider.awareness.getStates().values()) { const u = s && s.user; if (u && u.name && u.hv) reporters.push(u.name) }
-    const speakForOld = reporters.sort()[0] === name
+    const currentEngines = new Set()
     for (const s of provider.awareness.getStates().values()) {
       const u = s && s.user
-      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION) continue
+      if (!u || !u.name || u.v !== PROTOCOL_VERSION || u.listener) continue
+      if (u.hv) reporters.push(u.name)
+      if (u.hv === VERSION_LABEL) currentEngines.add(u.name)
+    }
+    const speakForOld = reporters.sort()[0] === name
+
+    for (const s of provider.awareness.getStates().values()) {
+      const u = s && s.user
+      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION || u.listener) continue
       const human = String(u.kind || '').toLowerCase() === 'human'
       let theirs = ''
       if (u.hv) {
         if (u.hv === VERSION_LABEL || name > u.name) continue
-        theirs = `hivecode ${u.hv}`
+        const olderOpen = currentEngines.has(u.name) ? ` (an older connection from ${u.name} is still open)` : ''
+        theirs = `hivecode ${u.hv}${olderOpen}`
       } else if (!human) {
         if (!speakForOld) continue
-        theirs = `a hivecode build older than build reporting (before ${VERSION})`
+        const olderOpen = currentEngines.has(u.name) ? ` (an older connection from ${u.name} is still open)` : ''
+        theirs = `a hivecode build older than build reporting (before ${VERSION})${olderOpen}`
       } else continue
       const key = `${u.name}|${u.hv || '-'}`
       if (buildWarned.has(key)) continue
@@ -3993,7 +4189,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!send.length) return
     for (const r of send) queueManifestDelete(r)
     flushRoomDoc()
+    const now = Date.now()
+    for (const [k, v] of recentlyLocallyRemovedCase) { if (now - v.at > 60000) recentlyLocallyRemovedCase.delete(k) }
     for (const r of send) {
+      recentlyLocallyRemovedCase.set(fold(r), { path: r, at: now })
       closeFile(r); known.delete(r); mtimes.delete(r); bases.delete(r); forkBases.delete(r); shadow.delete(r)
       if (isCaseInsensitive) {
         const cf = fold(r)
@@ -4244,6 +4443,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           }
         }
       }
+      recentlyLocallyRemovedCase.delete(fold(key))
       pendingManifestOps.delete(key)
       newRemote.delete(key); arrivedNew.delete(key) // deleted while new or queued: nothing to wait for
       closeFile(key)
@@ -4657,6 +4857,41 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
   }
 
+  function stopAll() {
+    try { flushFirstContact() } catch { } // before `stopped`: a join cut short still says what it kept
+    try { settleLocalDeletes() } catch { } // a delete made just before leaving still leaves, judged like any other
+    stopped = true
+    try { flushRoomDoc() } catch { }
+    if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
+    if (renderBoardTimer) { clearImmediate(renderBoardTimer); renderBoardTimer = null }
+    openQueue.length = 0
+    openQueueSet.clear()
+    if (scanTimer) clearTimeout(scanTimer)
+    if (debounce) { clearTimeout(debounce); debounce = null }
+    for (const tm of collidedTimers.values()) clearTimeout(tm)
+    collidedTimers.clear()
+    pendingFsEvents.clear()
+    pendingFsFullScan = false
+    if (editingClearTimer) clearTimeout(editingClearTimer)
+    try { watcher && watcher.close() } catch { }
+    // The shared socket first: closing it ends every channel at once on the relay, instead of
+    // one CLOSE frame per file down a socket that is about to go anyway.
+    try { fileTransport.stop() } catch { }
+    for (const r of [...fileDocs.keys()]) closeFile(r) // tear down every per-file provider
+    try { provider.awareness.setLocalState(null) } catch { } // announce departure now (don't wait for timeout)
+    try { provider.destroy() } catch { }
+    try { doc.destroy() } catch { }
+    // A room you have left should stop colouring what your agents recall.
+    if (memoryLinked && grmLink) try { grmLink.unlinkRoom(ROOT, log) } catch { }
+    // Last, so a crash anywhere above still frees the folder on the next run via the
+    // stale-PID path rather than leaving it locked.
+    try { releaseLock() } catch { }
+    // A final flush of the ancestor record. The debounced save may still be pending, and
+    // losing it would make the next join see no common ancestor -- the exact condition
+    // that produced the rejoin clobber.
+    try { if (shadowTimer) { clearTimeout(shadowTimer); shadowTimer = null } saveShadow() } catch { }
+  }
+
   return {
     doc,
     provider,
@@ -5013,7 +5248,19 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         const u = s.user
         if (!u || !u.name) continue
         const prev = seen.get(u.name) || {}
-        seen.set(u.name, { ...prev, ...u, editing: u.editing || prev.editing, owner: u.owner || prev.owner, passive: !!(u.passive || prev.passive), listener: !!(u.listener || prev.listener) || undefined, app: u.app || prev.app || undefined })
+        const hv = (prev.hv === VERSION_LABEL || u.hv === VERSION_LABEL)
+          ? VERSION_LABEL
+          : ((prev.listener && !u.listener && u.hv) || (!prev.listener && u.listener && prev.hv) || u.hv || prev.hv)
+        seen.set(u.name, {
+          ...prev,
+          ...u,
+          hv,
+          editing: u.editing || prev.editing,
+          owner: u.owner || prev.owner,
+          passive: !!(u.passive || prev.passive),
+          listener: !!(u.listener || prev.listener) || undefined,
+          app: u.app || prev.app || undefined
+        })
       }
       return [...seen.values()]
     },
@@ -5140,40 +5387,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     connection: () => ({ connected: !!provider.wsconnected, connecting: !!provider.wsconnecting, ...(folderLost ? { folderLost: folderLost.message } : {}) }),
     _openTurns: () => openTurns,
     _scanCount: () => scanCount,
-    stop: () => {
-      try { flushFirstContact() } catch { } // before `stopped`: a join cut short still says what it kept
-      try { settleLocalDeletes() } catch { } // a delete made just before leaving still leaves, judged like any other
-      stopped = true
-      try { flushRoomDoc() } catch { }
-      if (openTimer) { clearImmediate(openTimer); clearTimeout(openTimer); openTimer = null }
-      if (renderBoardTimer) { clearImmediate(renderBoardTimer); renderBoardTimer = null }
-      openQueue.length = 0
-      openQueueSet.clear()
-      if (scanTimer) clearTimeout(scanTimer)
-      if (debounce) { clearTimeout(debounce); debounce = null }
-      for (const tm of collidedTimers.values()) clearTimeout(tm)
-      collidedTimers.clear()
-      pendingFsEvents.clear()
-      pendingFsFullScan = false
-      if (editingClearTimer) clearTimeout(editingClearTimer)
-      try { watcher && watcher.close() } catch { }
-      // The shared socket first: closing it ends every channel at once on the relay, instead of
-      // one CLOSE frame per file down a socket that is about to go anyway.
-      try { fileTransport.stop() } catch { }
-      for (const r of [...fileDocs.keys()]) closeFile(r) // tear down every per-file provider
-      try { provider.awareness.setLocalState(null) } catch { } // announce departure now (don't wait for timeout)
-      try { provider.destroy() } catch { }
-      try { doc.destroy() } catch { }
-      // A room you have left should stop colouring what your agents recall.
-      if (memoryLinked && grmLink) try { grmLink.unlinkRoom(ROOT, log) } catch { }
-      // Last, so a crash anywhere above still frees the folder on the next run via the
-      // stale-PID path rather than leaving it locked.
-      try { releaseLock() } catch { }
-      // A final flush of the ancestor record. The debounced save may still be pending, and
-      // losing it would make the next join see no common ancestor -- the exact condition
-      // that produced the rejoin clobber.
-      try { if (shadowTimer) { clearTimeout(shadowTimer); shadowTimer = null } saveShadow() } catch { }
-    },
+    stop: stopAll,
+    leave,     // async: hand pending work over, wait for the relay to accept it, then stop (0.14.3 P0-1)
+    whenSent,  // async (file, ms): has the relay accepted this file's local changes yet?
   }
 }
 

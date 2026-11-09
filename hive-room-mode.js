@@ -460,7 +460,11 @@ export function filterRoomMembers(rawMembers = []) {
 
   for (const m of rawMembers) {
     if (!m || !m.name) continue
-    if (m.name === 'GitHub' || m.passive || m.listener) continue
+    // A LISTENER IS THE AGENT, NOT A BOT (P1-6, 9 Nov 2026). hive-await joins under the agent's own
+    // name, tagged `listener` and deliberately NOT passive, and presence is merged by name: every
+    // agent that keeps its listener armed (the room's rule) came back with listener: true and was
+    // dropped here, so the first issue comment said "In the room now: none yet" with agents present.
+    if (m.name === 'GitHub' || m.passive) continue
     // Exclude Recorder or ControlRoom viewer
     if (/recorder|control[-_ ]?room/i.test(m.name) || /control[-_ ]?room/i.test(m.app || '')) continue
 
@@ -843,6 +847,76 @@ function evaluateFileReview(hive, rel, plan = [], hashes = null) {
 }
 
 /**
+ * The passive "GitHub-done" connection whenDone reads the room through. Its own function so that
+ * landIssue can open it, hand it to whenDone, and keep it open for the Q576 fix task: whenDone
+ * stops a connection it opened itself, and 0.14.2 then wrote the fix task and the room warning
+ * into that stopped doc, so the room never got them (0.14.3 P0-2 (b)).
+ */
+export async function openDoneHive({ link, token } = {}) {
+  const parsed = parseLink(link)
+  if (!parsed || !parsed.room) return { error: 'invalid room link' }
+  const tempDir = path.join(os.tmpdir(), `hive-done-${crypto.randomBytes(6).toString('hex')}`)
+  fs.mkdirSync(tempDir, { recursive: true })
+  const hive = startSync({
+    relay: parsed.relay,
+    room: parsed.room,
+    dir: tempDir,
+    name: 'GitHub-done',
+    kind: 'ai',
+    passive: true,
+    syncFiles: false,
+    token: parsed.token || token,
+    log: () => {},
+  })
+  // Wait for sync to establish
+  await new Promise((res) => {
+    const timer = setTimeout(res, 15000)
+    if (hive.provider) {
+      if (hive.provider.synced) {
+        clearTimeout(timer)
+        return res()
+      }
+      hive.provider.on('sync', (synced) => {
+        if (synced) {
+          clearTimeout(timer)
+          res()
+        }
+      })
+    } else {
+      res()
+    }
+  })
+  const close = async ({ settleMs = 0 } = {}) => {
+    // A write made just before close must get the chance to leave this process (the same family
+    // as P0-1); the watcher's own confirmed room line is the guarantee, this is best effort.
+    if (settleMs > 0) await new Promise((r) => setTimeout(r, settleMs))
+    try { hive.stop() } catch {}
+    try { fs.rmSync(tempDir, { recursive: true, force: true }) } catch {}
+  }
+  return { hive, tempDir, close }
+}
+
+/**
+ * The branch's head on origin, for the landing fingerprint: a Q506 says the branch moved, and a
+ * push that fixes the branch must earn a new landing even when the room did not change (0.14.3
+ * P0-2, Claude's review). ls-remote first (the local ref is only as new as the last fetch), the
+ * local origin ref when the network does not answer, '' when neither exists.
+ */
+export function branchHeadOf(root, branch) {
+  if (!root || !branch) return ''
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' }
+  try {
+    const r = spawnSync('git', ['ls-remote', '--heads', 'origin', `refs/heads/${branch}`], { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true, env })
+    const m = r.status === 0 && String(r.stdout || '').match(/^([0-9a-f]{40,64})\s/m)
+    if (m) return m[1]
+    const l = spawnSync('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true, env })
+    return l.status === 0 ? String(l.stdout || '').trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * B3: Done Detection
  * Evaluates whether an issue task in the room is ready for landing.
  * Ready only when ALL of the following hold:
@@ -872,42 +946,13 @@ export async function whenDone(opts = {}) {
     if (syncRunner) {
       hive = await syncRunner()
     } else {
-      const parsed = parseLink(link)
-      if (!parsed || !parsed.room) {
-        return { ready: false, why: 'invalid room link', reasons: ['invalid room link'] }
+      const opened = await openDoneHive({ link, token })
+      if (opened.error) {
+        return { ready: false, why: opened.error, reasons: [opened.error] }
       }
-      tempDir = path.join(os.tmpdir(), `hive-done-${crypto.randomBytes(6).toString('hex')}`)
-      fs.mkdirSync(tempDir, { recursive: true })
-      hive = startSync({
-        relay: parsed.relay,
-        room: parsed.room,
-        dir: tempDir,
-        name: 'GitHub-done',
-        kind: 'ai',
-        passive: true,
-        syncFiles: false,
-        token: parsed.token || token,
-        log: () => {},
-      })
+      hive = opened.hive
+      tempDir = opened.tempDir
       ownedHive = true
-      // Wait for sync to establish
-      await new Promise((res) => {
-        const timer = setTimeout(res, 15000)
-        if (hive.provider) {
-          if (hive.provider.synced) {
-            clearTimeout(timer)
-            return res()
-          }
-          hive.provider.on('sync', (synced) => {
-            if (synced) {
-              clearTimeout(timer)
-              res()
-            }
-          })
-        } else {
-          res()
-        }
-      })
     }
 
     // 1. Task check
@@ -975,6 +1020,11 @@ export async function whenDone(opts = {}) {
       const why = dryRes ? dryRes.why : 'dry landing returned false'
       return {
         ready: false,
+        // A DRY REFUSAL IS A REFUSAL, with its code. Once the dry run answers what the real one will
+        // (0.14.3 P0-3), Q506 arrives HERE, before any real landing: dropping the code made it read as
+        // "not ready yet", and the watcher stays quiet on that by design, so issue #9's silence came
+        // back by the other door (Claude-cloud's review of P0-3).
+        ...(dryRes && dryRes.code ? { refused: true, code: dryRes.code } : {}),
         why: `dry landing check refused: ${why}`,
         reasons: [why],
         task,
@@ -988,6 +1038,9 @@ export async function whenDone(opts = {}) {
     // 4. Review status check for every planned file
     const reasons = []
     const unreviewedFiles = []
+    // Who reviewed each landing file, from the reviews bound to the exact content that lands: the PR
+    // body names them (0.14.3 P1-10; the mock run's PR #7 did not say who reviewed it).
+    const reviewed = []
     let hasHardBlock = false
 
     for (const rel of plannedFiles) {
@@ -1004,6 +1057,9 @@ export async function whenDone(opts = {}) {
           unreviewedFiles.push(rel)
           if (!allowUnreviewed) reasons.push(`${rel} has not been reviewed`)
         }
+      } else if (revStatus.verdict === 'pass') {
+        const by = [...new Set((revStatus.reviews || []).filter((r) => r && r.verdict === 'pass' && r.by).map((r) => String(r.by)))]
+        reviewed.push({ file: rel, by })
       } else if (revStatus.verdict === 'fail') {
         hasHardBlock = true
         reasons.push(`${rel} has an unresolved fail review`)
@@ -1038,6 +1094,7 @@ export async function whenDone(opts = {}) {
     return {
       ready: true,
       unreviewedFiles,
+      reviewed,
       files: plannedFiles,
       deletions,
       task,
@@ -1062,6 +1119,19 @@ export async function whenDone(opts = {}) {
  * Implements plan fingerprint caching to avoid retry loops on failing tests.
  */
 export async function landIssue(opts = {}) {
+  if (opts.syncRunner) return await landIssueOn(opts)
+  const opened = await openDoneHive({ link: opts.link, token: opts.token })
+  if (opened.error) return { ok: false, why: `Not ready to land: ${opened.error}`, reasons: [opened.error] }
+  let res = null
+  try {
+    res = await landIssueOn({ ...opts, syncRunner: async () => opened.hive })
+    return res
+  } finally {
+    await opened.close({ settleMs: res && res.toldRoom ? 1500 : 0 })
+  }
+}
+
+async function landIssueOn(opts = {}) {
   const {
     link,
     taskId,
@@ -1073,6 +1143,7 @@ export async function landIssue(opts = {}) {
     allowUnreviewed = false,
     state = {},
     token,
+    headOf = branchHeadOf,
   } = opts
 
   // 1. Check readiness
@@ -1088,6 +1159,11 @@ export async function landIssue(opts = {}) {
   })
 
   if (!wd.ready) {
+    // Refused at the dry run (a coded refusal, not "not done yet"): handed back WITH its code, so the
+    // watcher says it once, on the issue and in the room, like a refusal of the real landing.
+    if (wd.refused && wd.code) {
+      return { ok: false, code: wd.code, why: wd.why, reasons: wd.reasons, refusedAt: 'dry' }
+    }
     return {
       ok: false,
       ...(wd.blocked === 'unreviewed' ? { blocked: 'unreviewed', files: wd.unreviewedFiles || wd.files || [] } : {}),
@@ -1098,7 +1174,10 @@ export async function landIssue(opts = {}) {
 
   // 2. Plan fingerprint (Claude addition a: NO RETRY LOOP)
   const hive = wd.hive
-  const fingerprint = computePlanFingerprint(wd.plan, wd.files, hive, wd.hashes)
+  // The branch head is part of it: the same room work against a branch that moved (or was fixed)
+  // is a new landing, not a repeat of the failed one.
+  const head = (() => { try { return headOf(root, branch) || '' } catch { return '' } })()
+  const fingerprint = `${computePlanFingerprint(wd.plan, wd.files, hive, wd.hashes)}${head ? `@${head}` : ''}`
 
   if (state.lastFailedFingerprint === fingerprint) {
     return {
@@ -1127,6 +1206,13 @@ export async function landIssue(opts = {}) {
   }
   if (wd.unreviewedFiles && wd.unreviewedFiles.length > 0) {
     summary += `\n\nNot reviewed by a second agent: ${wd.unreviewedFiles.join(', ')}`
+  }
+  if (wd.reviewed && wd.reviewed.length > 0) {
+    // Names in code spans with any leading @ dropped: a room name like "@someone" must not ping a
+    // GitHub user from a PR body.
+    const who = (n) => `\`${String(n).replace(/^@+/, '').replace(/`/g, "'").slice(0, 60)}\``
+    summary += '\n\nReviewed in the room (hive_review, bound to the exact content that lands):\n' +
+      wd.reviewed.map((r) => `- ${r.file}: ${r.by.length ? r.by.map(who).join(', ') : 'a reviewer the room could not name'}`).join('\n')
   }
 
   const landFn = landRunner || landAndOpen
@@ -1159,6 +1245,7 @@ export async function landIssue(opts = {}) {
         why: landRes.why,
         fingerprint,
         state: nextState,
+        toldRoom: Boolean(hive && (hive.assign || hive.say)),
       }
     }
 
@@ -1296,7 +1383,13 @@ export function collectPrFeedback(opts = {}) {
     )
   }
   if (issueNumber) {
-    streams.push(['ic', () => (gh && gh.comments ? gh.comments(issueNumber) : []), 'comment on the issue'])
+    // A DELETED ISSUE answers 404 on its comments forever; 0.14.2 threw here on every tick, so the
+    // watcher jammed with Q603 until restart while the PR was still open (0.14.3 P1). Gone means
+    // no comments; any other failure (rate limit, 5xx) still throws and is retried next tick.
+    streams.push(['ic', () => {
+      if (!gh || !gh.comments) return []
+      try { return gh.comments(issueNumber) } catch (e) { if (e && e.status === 404) return []; throw e }
+    }, 'comment on the issue'])
   }
 
   const fresh = []

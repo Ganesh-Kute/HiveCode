@@ -437,5 +437,148 @@ console.log('\n# I. nothing written to GitHub carries the room id or link')
   T('I1 no comment contains the room id', all.length > 0 && !all.some((b) => b.includes(ROOM_ID) || b.includes('relay.example')), all.find((b) => b.includes(ROOM_ID)) || '')
 }
 
+// ─── R. A REFUSED LANDING IS SAID, NEVER SWALLOWED (0.14.3 P0-2) ─────────────────────────────
+// Issue #9 of the 8-9 Nov mock run: done, reviewed, landing refused with Q506, and on 0.14.2 the
+// watcher said nothing anywhere -- no room line, no issue comment -- and skipped it silently after.
+console.log('\n# R. a landing refused for a reason other than tests is said in the room AND on the issue')
+{
+  const h = harness({ maxRuns: 2 })
+  h.file(1)
+  await h.w.tick()
+  h.behave.land = () => ({ ok: false, code: 'Q506', why: 'Q506 the branch holds content this room has never seen (test.js)', fingerprint: 'fpA', state: { lastFailedFingerprint: 'fpA' } })
+  const s0 = h.calls.say.length
+  await h.w.tick()
+  T('R1 the room is told the landing was refused, with its code', h.calls.say.slice(s0).some((s) => /issue #1/.test(s) && /Q506/.test(s) && /refused/i.test(s)), h.calls.say.slice(s0).join(' | '))
+  T('R2 ...and the issue gets ONE comment with the code, saying nothing was pushed', comments(h.S, 1).filter((b) => /Q506/.test(b) && /Nothing was pushed/.test(b)).length === 1)
+  h.behave.land = () => ({ ok: false, skipped: true, why: 'no changes since last failed landing', fingerprint: 'fpA', state: { lastFailedFingerprint: 'fpA' } })
+  const c1 = comments(h.S, 1).length, s1 = h.calls.say.length
+  await h.w.tick(); await h.w.tick()
+  T('R3 the skipped ticks after it add no comment and no room line', comments(h.S, 1).length === c1 && h.calls.say.length === s1)
+  T('R4 `github status` shows the refusal and its code', /landing refused .*Q506/.test(W.describeRoomState(h.w.state, { now: h.clock.t })), W.describeRoomState(h.w.state, { now: h.clock.t }))
+  T('R5 ...and the fingerprint is still passed on, so an unchanged room is not re-run', h.calls.land[h.calls.land.length - 1].lastFailedFingerprint === 'fpA')
+  h.behave.land = () => ({ ok: false, code: 'Q506', why: 'Q506 again', fingerprint: 'fpB', state: { lastFailedFingerprint: 'fpB' } })
+  await h.w.tick()
+  T('R6 refused again after the room or branch changed, at the limit: handed to a person, nothing active', h.S.labels.some((l) => l.n === 1 && l.name === 'hivecode:needs-human') && !h.w.state.active && h.calls.say.some((s) => /handed to a person/.test(s)))
+}
+{
+  // A refusal with no code (landAndOpen answered ok:false without one) is still a refusal.
+  const h = harness()
+  h.file(1)
+  await h.w.tick()
+  h.behave.land = () => ({ ok: false, why: 'push rejected', fingerprint: 'fpX', state: { lastFailedFingerprint: 'fpX' } })
+  await h.w.tick()
+  T('R7 a refusal without a code is said too', comments(h.S, 1).some((b) => /push rejected/.test(b) && /Nothing was pushed/.test(b)) && h.calls.say.some((s) => /push rejected/.test(s)))
+  // "Not ready yet" is waiting, not a refusal: it must stay quiet.
+  const h2 = harness()
+  h2.file(1)
+  await h2.w.tick()
+  const c0 = comments(h2.S, 1).length, sq = h2.calls.say.length
+  await h2.w.tick(); await h2.w.tick()
+  T('R8 "not ready yet" (no code, no fingerprint) stays quiet', comments(h2.S, 1).length === c0 && h2.calls.say.length === sq)
+}
+{
+  // The issue is public: the refusal's why must not carry the room id, the relay link or a local path.
+  const h = harness()
+  h.file(1)
+  await h.w.tick()
+  h.behave.land = () => ({ ok: false, code: 'Q506', why: `Q506 ${LINK} refused; see /home/alice/work/hivecode/test.js and C:\\Users\\alice\\proj\\test.js`, fingerprint: 'fpS', state: { lastFailedFingerprint: 'fpS' } })
+  await h.w.tick()
+  const body = comments(h.S, 1).find((b) => /Q506/.test(b)) || ''
+  T('R9 the refusal comment has no room id, relay link or local path', !!body && !body.includes(ROOM_ID) && !body.includes('relay.example') && !body.includes('/home/alice') && !body.includes('Users\\alice'), body)
+}
+{
+  // The room line is confirmed (roomSay); when it is not, the issue comment still happens: never neither.
+  for (const [name, say] of [['answers ok:false', async () => ({ ok: false, code: 'Q657', why: 'Q657 the line did not reach the room.' })], ['throws', async () => { throw new Error('relay down') }]]) {
+    const h = harness()
+    h.deps.say = async (text) => { h.calls.say.push(text); return say(text) }
+    h.file(1)
+    await h.w.tick()
+    h.behave.land = () => ({ ok: false, code: 'Q506', why: 'Q506 branch moved', fingerprint: 'fpU', state: { lastFailedFingerprint: 'fpU' } })
+    let threw = null
+    try { await h.w.tick() } catch (e) { threw = e }
+    T(`R10 the room is unreachable (say ${name}): the issue still gets the refusal comment`, !threw && comments(h.S, 1).some((b) => /Q506/.test(b) && /Nothing was pushed/.test(b)), threw ? threw.message : '')
+  }
+}
+{
+  // Failing tests: 0.14.2 told the room only through landIssue's connection, which whenDone had
+  // already stopped. The watcher says it itself now.
+  const h = harness({ maxRuns: 3 })
+  h.file(1)
+  await h.w.tick()
+  h.behave.land = () => ({ ok: false, code: 'Q576', why: 'npm test: 1 failing', fingerprint: 'fp1', state: { lastFailedFingerprint: 'fp1' } })
+  const s0 = h.calls.say.length
+  await h.w.tick()
+  T('R11 failing tests are said in the room by the watcher (a confirmed line), with the reason', h.calls.say.slice(s0).some((s) => /issue #1/.test(s) && /tests failed/i.test(s) && /1 failing/.test(s)))
+}
+
+{
+  // antigravity-VM's attack 1: a transient refusal (a push answered 503) must neither burn the run
+  // limit tick by tick nor be remembered forever. Same refusal: said once, counted once; tried again
+  // only after the pause, with no fingerprint, then the fingerprint is used again.
+  const h = harness({ maxRuns: 2 })
+  h.file(1)
+  await h.w.tick()
+  h.behave.land = (a) => (a.lastFailedFingerprint === 'fpT'
+    ? { ok: false, skipped: true, why: 'no changes since last failed landing', fingerprint: 'fpT', state: { lastFailedFingerprint: 'fpT' } }
+    : { ok: false, code: 'Q580', why: 'Q580 git push answered HTTP 503', fingerprint: 'fpT', state: { lastFailedFingerprint: 'fpT' } })
+  for (let i = 0; i < 6; i++) { await h.w.tick(); h.clock.t += 15000 }
+  T('R12 six quick ticks of the same transient refusal: counted once, not handed to a person', h.w.state.active && h.w.state.active.refusals === 1 && !h.S.labels.some((l) => l.name === 'hivecode:needs-human'))
+  T('R13 ...and only the first of those ticks re-ran the landing (the rest passed the fingerprint)', h.calls.land.slice(-5).every((x) => x.lastFailedFingerprint === 'fpT'))
+  h.clock.t += 10 * 60000
+  await h.w.tick()
+  T('R14 after the pause it is tried once more without the fingerprint (a transient refusal can still land)', h.calls.land[h.calls.land.length - 1].lastFailedFingerprint === '')
+  await h.w.tick()
+  T('R15 ...the tick after uses the fingerprint again, and the repeat was neither said nor counted again', h.calls.land[h.calls.land.length - 1].lastFailedFingerprint === 'fpT' && h.w.state.active.refusals === 1 && comments(h.S, 1).filter((b) => /Q580/.test(b)).length === 1)
+  const st = W.describeRoomState(h.w.state, { now: h.clock.t })
+  T('R17 ...and `github status` says it is STILL refused for the same reason, and for how long', /still refused \(same reason\) for 12 min/.test(st), st)
+}
+{
+  // antigravity-VM's attack 3: a solo landing that is refused must not restart the review wait,
+  // or the room and the issue hear "nobody else is here to review" again every grace period.
+  const h = harness()
+  h.behave.peek = () => ({ ok: true, agents: ['Claude'], reachable: ['Claude'], engaged: true, lastLines: [] })
+  h.file(1)
+  await h.w.tick()
+  h.behave.land = (a) => (a.allowUnreviewed
+    ? (a.lastFailedFingerprint === 'fpR' ? { ok: false, skipped: true, why: 'no changes', fingerprint: 'fpR', state: { lastFailedFingerprint: 'fpR' } } : { ok: false, code: 'Q506', why: 'Q506 branch moved', fingerprint: 'fpR', state: { lastFailedFingerprint: 'fpR' } })
+    : { ok: false, blocked: 'unreviewed', files: ['a.js'], why: 'Not ready to land: unreviewed' })
+  for (let i = 0; i < 8; i++) { await h.w.tick(); h.clock.t += 60000 }
+  T('R16 a refused solo landing announces the solo wait once, not once per grace period', comments(h.S, 1).filter((b) => /No second agent is in the room/.test(b)).length === 1 && h.calls.say.filter((s) => /nobody else is in the room to review/.test(s)).length === 1)
+}
+
+{
+  // A refusal at the DRY run (landIssue's shape: a code, no fingerprint, refusedAt 'dry') is said once,
+  // not every tick: every tick re-runs the dry check and gets the same answer.
+  const h = harness({ maxRuns: 3 })
+  h.file(1)
+  await h.w.tick()
+  h.behave.land = () => ({ ok: false, code: 'Q506', why: 'dry landing check refused: Q506 the branch holds content this room has never seen', refusedAt: 'dry' })
+  for (let i = 0; i < 5; i++) await h.w.tick()
+  T('R18 a dry-run refusal is said once in the room and once on the issue, over five ticks', h.calls.say.filter((s) => /REFUSED \(Q506\)/.test(s)).length === 1 && comments(h.S, 1).filter((b) => /refused to land it \(Q506\)/.test(b)).length === 1 && h.w.state.active && h.w.state.active.refusals === 1)
+}
+
+// ─── P. A DELETED ISSUE DOES NOT JAM THE WATCHER (0.14.3 P1) ─────────────────────────────────
+// The mock run: issue deleted while its PR was open -> GitHub 404 on its comments -> every tick
+// failed with Q603 until the watcher was restarted.
+console.log('\n# P. a deleted issue does not jam the watcher')
+{
+  let RM = null
+  try { RM = await import(url('hive-room-mode.js')) } catch (e) { T(`P0 hive-room-mode.js loads`, false, e.message) }
+  if (RM) {
+    const gone = Object.assign(new Error('Q603 GitHub answered GET repos/o/r/issues/8/comments with HTTP 404: Not Found'), { code: 'Q603', status: 404 })
+    const busy = Object.assign(new Error('Q603 GitHub answered GET repos/o/r/issues/8/comments with HTTP 502: Bad Gateway'), { code: 'Q603', status: 502 })
+    const base = { reviewComments: () => [], reviews: () => [], pull: () => ({ number: 9, state: 'open', head: { sha: 'abc' } }), permission: () => 'admin' }
+    let r = null, err = null
+    try { r = RM.collectPrFeedback({ gh: { ...base, comments: (n) => { if (n === 8) throw gone; return [] } }, issueNumber: 8, prNumber: 9, state: {}, quietMs: 0 }) } catch (e) { err = e }
+    T('P1 a 404 on the deleted issue\'s comments is "no comments", not a failed tick', !err && !!r, err ? err.message : '')
+    let err2 = null
+    try { RM.collectPrFeedback({ gh: { ...base, comments: () => { throw busy } }, issueNumber: 8, prNumber: 9, state: {}, quietMs: 0 }) } catch (e) { err2 = e }
+    T('P2 ...but a busy GitHub (502) still throws: it is not a deleted issue', !!err2 && err2.status === 502)
+    let err3 = null
+    try { RM.collectPrFeedback({ gh: { ...base, comments: (n) => { if (n === 9) throw gone; return [] } }, issueNumber: 8, prNumber: 9, state: {}, quietMs: 0 }) } catch (e) { err3 = e }
+    T('P3 ...and a 404 on the PR\'s own comments is not hidden', !!err3 && err3.status === 404)
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

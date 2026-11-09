@@ -247,7 +247,12 @@ setInterval(() => {}, 1000)`
       parent.stdout.on('data', (d) => { o += d; const m = /PID (\d+)/.exec(o); if (m) res(Number(m[1])) })
       setTimeout(() => res(0), 20000)
     })
-    const alive = (p) => { try { process.kill(p, 0); return true } catch (e) { return e.code === 'EPERM' } }
+    // A process that has exited but not been reaped is a ZOMBIE, and kill(pid, 0) still succeeds on it.
+    // An orphan is reaped by init; in a container whose PID 1 does not reap (antigravity-VM, 9 Nov:
+    // 3/3 on 0.14.3 and on 0.14.2-era code alike) the exited listener stays 'Z' and read as alive.
+    // On Linux, /proc says which: state Z means it is gone.
+    const zombie = (p) => { try { return /^\d+ \(.*\) Z/.test(fs.readFileSync(`/proc/${p}/stat`, 'utf8')) } catch { return false } }
+    const alive = (p) => { try { process.kill(p, 0); return !zombie(p) } catch (e) { return e.code === 'EPERM' } }
     const listed = () => [...P2.provider.awareness.getStates().values()].some((s) => s && s.user && s.user.name === who && s.user.listener)
     for (let t = 0; t < 15000 && !listed(); t += 250) await sleep(250)
     const listedBefore = listed()

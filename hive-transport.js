@@ -373,6 +373,7 @@ export class PollSocket extends SocketShape {
   _lost(reason, code = 1006) {
     if (this.readyState === CLOSED) return
     this.readyState = CLOSED
+    clearTimeout(this._closeTimer)
     if (this._sid) this._req('close', undefined, {}, 5000).catch(() => { })
     fire(this, 'close', { type: 'close', code, reason, wasClean: false, target: this })
   }
@@ -392,7 +393,7 @@ export class PollSocket extends SocketShape {
     // A proxy that cuts long requests shows up as a failure after a long wait: hold shorter.
     if (startedAt && now - startedAt > 5000 && this._hold > 4000) this._hold = Math.max(4000, Math.floor(this._hold / 2))
     await sleep(Math.min(2000, 250 * 2 ** Math.min(3, Math.floor((now - this._troubleSince) / 5000))))
-    return this.readyState === OPEN
+    return this.readyState === OPEN || this.readyState === CLOSING
   }
   _ok() { this._troubleSince = 0 }
   async _recvLoop() {
@@ -429,17 +430,18 @@ export class PollSocket extends SocketShape {
     if (!this._flushQueued) { this._flushQueued = true; setImmediate(() => { this._flushQueued = false; this._flush() }) }
   }
   async _flush() {
-    if (this._sending || !this._outbox.length || this.readyState !== OPEN) return
+    const live = () => this.readyState === OPEN || this.readyState === CLOSING
+    if (this._sending || !this._outbox.length || !live()) { this._closeIfDrained(); return }
     this._sending = true
     try {
-      while (this._outbox.length && this.readyState === OPEN) {
+      while (this._outbox.length && live()) {
         let n = 0, bytes = 0
         while (n < this._outbox.length && n < 512 && (n === 0 || bytes + this._outbox[n].length <= 4 * 1048576)) { bytes += this._outbox[n].length; n++ }
         const batch = this._outbox.slice(0, n)
         const first = this._outSeq
         const body = packFrames(batch)
         for (;;) {
-          if (this.readyState !== OPEN) return
+          if (!live()) return
           const started = Date.now()
           let r
           try { r = await this._req('send', body, { 'content-type': 'application/octet-stream', 'x-hive-seq': String(first) }, 60000) }
@@ -455,17 +457,54 @@ export class PollSocket extends SocketShape {
         this._outbox.splice(0, n)
         this._outSeq = first + n
       }
-    } finally { this._sending = false }
+    } finally { this._sending = false; this._closeIfDrained() }
   }
+  // CLOSE DELIVERS WHAT WAS SENT FIRST, as a WebSocket's does (0.14.3 P0-1). A WebSocket hands its
+  // bytes to the OS on send(), so ws.close() still delivers them; this socket keeps them in _outbox
+  // until the relay accepts them, and close() used to drop that array: an edit made just before the
+  // agent left never reached the room while hive_edit had already said it was syncing (8-9 Nov mock
+  // run, both Antigravity VM agents). Now close() keeps sending for up to CLOSE_DRAIN_MS, then ends
+  // the session. The pending request keeps the process alive meanwhile, so an exit waits for it.
   close(code = 1000, reason = '') {
     if (this.readyState === CLOSING || this.readyState === CLOSED) return
+    if (this.readyState === OPEN && (this._outbox.length || this._sending)) {
+      this.readyState = CLOSING
+      this._closeWith = { code, reason }
+      this._closeTimer = setTimeout(() => this._endClose(false), PollSocket.CLOSE_DRAIN_MS)
+      this._flush()
+      return
+    }
+    this._closeWith = { code, reason }
+    this._endClose(true)
+  }
+  _closeIfDrained() {
+    if (this.readyState === CLOSING && !this._sending && !this._outbox.length) this._endClose(true)
+  }
+  _endClose(drained) {
+    if (this.readyState === CLOSED) return
+    clearTimeout(this._closeTimer)
     const had = !!this._sid
+    const { code, reason } = this._closeWith || { code: 1000, reason: '' }
     this.readyState = CLOSED
     if (had) this._req('close', undefined, {}, 5000).catch(() => { })
-    setImmediate(() => fire(this, 'close', { type: 'close', code, reason, wasClean: true, target: this }))
+    setImmediate(() => fire(this, 'close', { type: 'close', code, reason, wasClean: drained, target: this }))
   }
-  terminate() { this.close(1006, 'terminated') }
+  /** Resolves once nothing is waiting to reach the relay (or the socket is gone): the drain, observable. */
+  drained(timeoutMs = PollSocket.CLOSE_DRAIN_MS) {
+    const end = Date.now() + timeoutMs
+    return new Promise((resolve) => {
+      const tick = () => {
+        if (this.readyState === CLOSED || (!this._outbox.length && !this._sending)) return resolve(!this._outbox.length)
+        if (Date.now() >= end) return resolve(false)
+        setTimeout(tick, 25)
+      }
+      tick()
+    })
+  }
+  // terminate is for a dead link (the liveness check): nothing can be delivered on it, so no drain.
+  terminate() { this._closeWith = { code: 1006, reason: 'terminated' }; this._endClose(false) }
 }
+PollSocket.CLOSE_DRAIN_MS = 10000
 
 /**
  * The socket every provider gets: a WebSocket, or long-poll where WebSockets are refused (above).

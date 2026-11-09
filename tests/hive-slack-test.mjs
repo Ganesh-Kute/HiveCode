@@ -15,6 +15,7 @@ import { spawn, spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync } from '../sync.js'
 import * as HS from '../hive-slack.js'
+import { slackArgs, slackArgsError } from './fake-slack-args.mjs'
 
 const {
   makeBridge,
@@ -55,14 +56,21 @@ const slack = http.createServer((req, res) => {
   req.on('data', (d) => { body += d })
   req.on('end', () => {
     const method = req.url.split('/').pop().split('?')[0]
-    let j = {}
-    try { j = JSON.parse(body || '{}') } catch { j = {} }
-    calls.push({ method, auth: req.headers.authorization, at: Date.now(), ...j })
+    // Arguments as REAL Slack reads them: a JSON body on a read method is not read (0.14.3 P0-4).
+    const j = slackArgs(method, req.headers['content-type'], body, req.url)
+    const entry = { method, auth: req.headers.authorization, ct: String(req.headers['content-type'] || ''), raw: body, at: Date.now(), ...j }
+    calls.push(entry)
     const defaultHeaders = { 'Content-Type': 'application/json', 'x-oauth-scopes': DEFAULT_SCOPES }
     if (nextResponses.length) {
       const custom = nextResponses.shift()
       res.writeHead(custom.status || 200, { ...defaultHeaders, ...(custom.headers || {}) })
       res.end(JSON.stringify(custom.body))
+      return
+    }
+    const argErr = slackArgsError(method, j)
+    if (argErr) {
+      res.writeHead(200, defaultHeaders)
+      res.end(JSON.stringify(argErr))
       return
     }
     if (method === 'auth.test') {
@@ -86,13 +94,49 @@ const slack = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: true, url: `ws://127.0.0.1:${SOCK_PORT}` }))
       return
     }
+    // The ts this call was answered with, kept on its record: a test that needs a message's ts reads
+    // it here instead of counting calls (counting broke whenever another method fell through to this
+    // default answer -- 0.14.3, both `slack check` tests, 108/110).
+    entry.tsOut = String(tsSeq++)
     res.writeHead(200, defaultHeaders)
-    res.end(JSON.stringify({ ok: true, ts: String(tsSeq++) }))
+    res.end(JSON.stringify({ ok: true, ts: entry.tsOut }))
   })
 })
 await new Promise((r) => slack.listen(SLACK_PORT, '127.0.0.1', r))
 process.env.HIVE_SLACK_API = `http://127.0.0.1:${SLACK_PORT}/api`
 const { slackPost } = await import('../hive-slack.js?fresh=1')
+
+// ---- 0.14.3 P0-4: read methods go form-encoded, as the real API reads them --------------------
+console.log('\n# P0-4 slackPost encodes each method the way Slack reads it')
+{
+  T('E1 read methods are sent as a form, write methods as JSON',
+    typeof HS.slackEncoding === 'function' && ['conversations.info', 'conversations.replies', 'conversations.history', 'users.info', 'auth.test'].every((m) => HS.slackEncoding(m) === 'form') &&
+    ['chat.postMessage', 'chat.update', 'agents.sessions.setStatus'].every((m) => HS.slackEncoding(m) === 'json'))
+  let info = null, infoErr = null
+  try { info = await slackPost('conversations.info', { channel: 'C-P04' }, 'xoxb-t') } catch (e) { infoErr = e }
+  T('E2 conversations.info reaches Slack with its channel (0.14.2: invalid_arguments)', !!(info && info.channel && info.channel.id === 'C-P04'), infoErr ? infoErr.message : '')
+  let who = null, whoErr = null
+  try { who = await slackPost('users.info', { user: 'U_GUEST' }, 'xoxb-t') } catch (e) { whoErr = e }
+  T('E3 users.info reaches Slack with its user (0.14.2: user_not_found)', !!(who && who.user && who.user.name === 'guest_bob'), whoErr ? whoErr.message : '')
+  const lastInfo = [...calls].reverse().find((c) => c.method === 'users.info')
+  T('E4 ...sent application/x-www-form-urlencoded, the token only in the header', !!lastInfo && /x-www-form-urlencoded/.test(lastInfo.ct) && !/xoxb/.test(lastInfo.raw) && /Bearer xoxb-t/.test(lastInfo.auth))
+  let missErr = null
+  try { await slackPost('conversations.info', { channel: undefined }, 'xoxb-t') } catch (e) { missErr = e }
+  const lastMiss = [...calls].reverse().find((c) => c.method === 'conversations.info')
+  T('E5 an undefined value is left out, never sent as the text "undefined" (Claude\'s attack 2)', !!missErr && missErr.code === 'invalid_arguments' && !!lastMiss && !/undefined/.test(lastMiss.raw), missErr ? missErr.code : 'no error')
+  await slackPost('chat.postMessage', { channel: 'C-P04', text: 'hi', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'x' } }] }, 'xoxb-t')
+  const lastPost = [...calls].reverse().find((c) => c.method === 'chat.postMessage')
+  T('E6 chat.postMessage is still JSON, with its blocks intact', !!lastPost && /application\/json/.test(lastPost.ct) && Array.isArray(lastPost.blocks) && lastPost.blocks[0].type === 'section')
+  let reps = null, repsErr = null
+  // Answered from the queue, NOT the default handler: the default answers with ts = tsSeq++, and the
+  // `slack check` tests below work out the prompt's ts by counting chat.postMessage calls from 1000.
+  // A replies call through the default handler shifted that count by one, so their reply never
+  // matched the prompt: Q634 "replies did not arrive" (Claude's release-branch run, 108/110).
+  nextResponses.push({ body: { ok: true, messages: [], has_more: false } })
+  try { reps = await slackPost('conversations.replies', { channel: 'C-P04', ts: '1700000000.000100', limit: 100, oldest: '1700000000.000050' }, 'xoxb-t') } catch (e) { repsErr = e }
+  const lastReps = [...calls].reverse().find((c) => c.method === 'conversations.replies')
+  T('E7 conversations.replies: ts and oldest arrive as the exact strings (no float rounding), limit as "100"', !repsErr && !!lastReps && lastReps.ts === '1700000000.000100' && lastReps.oldest === '1700000000.000050' && lastReps.limit === '100', repsErr ? repsErr.message : '')
+}
 
 // ---- pure: pacing, rendering, routing ------------------------------------------------------
 console.log('\n# routing + pacing')
@@ -997,13 +1041,12 @@ try {
   // (a) Events arrive (exit 0): prompt says "reply anything in this thread", says up front it posts in #dev-agents, and a reply of "ok" passes
   {
     const logs = [], errs = []
+    const callsFrom = calls.length // only THIS check's prompt, never an earlier run's
     const checkWatcher = setInterval(() => {
-      const promptPost = calls.slice().reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
+      const promptPost = calls.slice(callsFrom).reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
       if (promptPost && activeSock && activeSock.readyState === 1) {
         clearInterval(checkWatcher)
-        // Find the ts returned for that prompt (tsSeq - 1 at the time it was answered)
-        const promptIdx = calls.filter((c) => c.method === 'chat.postMessage').length
-        const promptTs = String(1000 + promptIdx - 1)
+        const promptTs = promptPost.tsOut // the ts the fake actually answered the prompt with
         activeSock.send(JSON.stringify({
           envelope_id: 'env-check-ok',
           payload: {
@@ -1148,12 +1191,12 @@ try {
     let checkRetry = 0
     helloNumConnections = () => (++checkRetry === 1 ? 2 : 1)
     const logs = [], errs = []
+    const callsFrom = calls.length // only THIS check's prompt, never an earlier run's
     const checkWatcher = setInterval(() => {
-      const promptPost = calls.slice().reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
+      const promptPost = calls.slice(callsFrom).reverse().find((c) => c.method === 'chat.postMessage' && /reply anything in this thread/i.test(c.text || ''))
       if (promptPost && activeSock && activeSock.readyState === 1) {
         clearInterval(checkWatcher)
-        const promptIdx = calls.filter((c) => c.method === 'chat.postMessage').length
-        const promptTs = String(1000 + promptIdx - 1)
+        const promptTs = promptPost.tsOut // the ts the fake actually answered the prompt with
         activeSock.send(JSON.stringify({
           envelope_id: 'env-check-retry-ok',
           payload: {

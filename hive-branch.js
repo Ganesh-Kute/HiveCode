@@ -385,6 +385,67 @@ async function roomSeed(link, you) {
   }
 }
 
+// A NEW BRANCH IS CUT FROM WHAT THE TEAM HAS, NOT FROM A STALE COPY OF IT (P1-7, 9 Nov 2026).
+// `branch fix-x` cuts from HEAD, and HEAD is usually a local main that was last pulled days ago: the
+// room was then seeded with old files, agents worked on them, and landing met the newer main as a
+// conflict (or a Q506) nobody had caused. So when the source is a LOCAL branch, its remote copy is
+// fetched first, and:
+//   - local strictly BEHIND remote: cut from the remote. Nothing is lost (the remote holds every
+//     local commit) and the note says so, with the count.
+//   - local AHEAD of remote: cut from local. Those commits are the developer's own work.
+//   - DIVERGED: cut from local, and the note says how far behind and how to choose the remote.
+//   - the fetch failed (offline, no access): cut from local, and the note says it could not check.
+// A sha or a remote ref (`origin/main`) is taken exactly as given: whoever names one chose it, and
+// the GitHub watcher fetches before it passes one. HIVE_BRANCH_FETCH=0 skips the fetch and compares
+// against the remote ref as last fetched.
+function fetchBranch(root, remote, rb) {
+  if (process.env.HIVE_BRANCH_FETCH === '0') return { ok: false, skipped: true, err: 'HIVE_BRANCH_FETCH=0' }
+  const r = spawnSync('git', ['fetch', '--quiet', '--no-tags', remote, `+refs/heads/${rb}:refs/remotes/${remote}/${rb}`], {
+    cwd: root, encoding: 'utf8', timeout: 30000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  })
+  if (r.error) return { ok: false, err: r.error.code === 'ETIMEDOUT' ? 'timed out after 30 s' : r.error.message }
+  if (r.status === 0) return { ok: true }
+  const err = String(r.stderr || '').trim()
+  // The remote has no such branch (a main never pushed): nothing to be behind, nothing to say.
+  if (/couldn't find remote ref|could not find remote ref/i.test(err)) return { ok: false, absent: true, err }
+  return { ok: false, err: err.split('\n').pop() || `exit ${r.status}` }
+}
+
+/** Where a new branch is cut from: { sha, src, note }. See the comment above. */
+export function freshCutPoint(root, from = '') {
+  const src = from || 'HEAD'
+  const sha = revParse(root, `${src}^{commit}`)
+  if (!sha) return { sha: '', src, note: '' }
+  let local = ''
+  if (src === 'HEAD') { const c = git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD']); local = c.code === 0 ? c.out : '' }
+  else if (!/^[0-9a-f]{7,40}$/i.test(src) && revParse(root, `refs/heads/${src}`)) local = src
+  if (!local) return { sha, src, note: '' } // detached HEAD, a sha, a tag or a remote ref: exactly as given
+  // Its remote copy: the configured upstream, else the same name on origin.
+  let remote = '', rb = ''
+  const up = git(root, ['for-each-ref', '--format=%(upstream:remotename)%09%(upstream:short)', `refs/heads/${local}`])
+  const [upRemote, upShort] = (up.code === 0 ? up.out : '').split('\t')
+  if (upRemote && upShort && upShort.startsWith(`${upRemote}/`)) { remote = upRemote; rb = upShort.slice(upRemote.length + 1) }
+  else if (git(root, ['remote']).out.split('\n').includes('origin')) { remote = 'origin'; rb = local }
+  if (!remote) return { sha, src, note: '' } // a repository with no remote: local is all there is
+  const rref = `${remote}/${rb}`
+  const f = fetchBranch(root, remote, rb)
+  const rsha = revParse(root, `refs/remotes/${rref}^{commit}`)
+  if (!rsha) {
+    return { sha, src, note: f.ok || f.skipped || f.absent ? '' : `could not fetch ${rref} (${f.err}), so ${local} was not checked against it.` }
+  }
+  const unchecked = f.ok || f.skipped ? '' : ` (could not fetch it just now: ${f.err}; this is ${rref} as last fetched)`
+  if (rsha === sha) return { sha, src, note: unchecked ? `${local} matches ${rref}${unchecked}.` : '' }
+  const isAnc = (a, b) => git(root, ['merge-base', '--is-ancestor', a, b]).code === 0
+  const count = (range) => Number(git(root, ['rev-list', '--count', range]).out) || 0
+  if (isAnc(sha, rsha)) {
+    const n = count(`${sha}..${rsha}`)
+    return { sha: rsha, src: rref, behind: n, note: `your ${local} was ${n} commit(s) behind ${rref}${unchecked}, so the branch was cut from ${rref} (${rsha.slice(0, 7)}) instead. Nothing of yours is left out: ${rref} has every commit your ${local} has.` }
+  }
+  if (isAnc(rsha, sha)) return { sha, src, ahead: count(`${rsha}..${sha}`), note: unchecked ? `cut from your ${local}${unchecked}.` : '' }
+  const behind = count(`${sha}..${rsha}`), ahead = count(`${rsha}..${sha}`)
+  return { sha, src, behind, ahead, note: `your ${local} and ${rref} have diverged (${behind} behind, ${ahead} ahead)${unchecked}. The branch was cut from your ${local}; to cut from ${rref} instead, delete the branch and the room binding and run again with --from ${rref}.` }
+}
+
 /** The branch a PR from `name` goes into: the checkout's current branch, else origin's default. */
 function defaultBase(root, name) {
   const cur = git(root, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
@@ -461,9 +522,13 @@ export async function bindBranch({ cwd, branch, from = '', relay = '', you = '',
   let tip = revParse(root, `refs/heads/${name}`)
   // The PR's base is a BRANCH NAME for `gh`: a sha names no branch, and origin/main means main.
   let fromName = from && !/^[0-9a-f]{7,40}$/i.test(from) ? from.replace(/^origin\//, '') : ''
+  let cutNote = ''
   if (!tip) {
     const src = from || 'HEAD'
-    const sha = revParse(root, `${src}^{commit}`)
+    const cut = freshCutPoint(root, from)
+    const sha = cut.sha
+    cutNote = cut.note || ''
+    if (cutNote) log(cutNote)
     if (!sha) {
       if (src === 'HEAD' && !revParse(root, 'HEAD')) {
         throw coded('Q562', `repository "${root}" has no commits yet, so there's nothing to put in a room. Commit your files first, then run this again.`)
@@ -502,7 +567,7 @@ export async function bindBranch({ cwd, branch, from = '', relay = '', you = '',
   }
   writeBinding(root, name, { room: link, from: fromName, base: tip, seed: seeded.dir, files: String(seeded.count) })
   await registerLocal(root, name, link)
-  return { root, branch: name, link, you: me, from: fromName, commit: tip, created, reseeded: reseed, files: seeded.count, total: seeded.total, seedDir: seeded.dir }
+  return { root, branch: name, link, you: me, from: fromName, commit: tip, created, cutNote, reseeded: reseed, files: seeded.count, total: seeded.total, seedDir: seeded.dir }
 }
 
 // ---- landing: the room's work becomes commits on the branch ---------------------------------
@@ -594,6 +659,7 @@ export async function main(argv, { cwd = process.cwd(), log = console.log, logEr
       const shown = dirtyFiles.slice(0, 5).join(', ')
       const more = dirtyFiles.length > 5 ? ` (+${dirtyFiles.length - 5} more)` : ''
       const uncommittedPart = dirtyFiles.length ? `\n  ${dirtyFiles.length} file(s) with uncommitted changes are not in the room: ${shown}${more}` : ''
+      if (r.cutNote) log(`Note: ${r.cutNote}`)
       log(`${r.reseeded ? 'Room refilled' : 'Room ready'} for branch ${r.branch} @ ${r.commit.slice(0, 7)}${r.created ? ` (new branch, cut from ${r.from || 'HEAD'}; your checkout was not switched)` : ''}\n  ${r.files} file(s) in the room: the branch as committed${uncommittedPart}${r.total > r.files ? `\n  ${r.total - r.files} more (binary, over 1 MB, or never synced) are filled in from git for agents on this machine` : ''}\n  room: ${r.link}`)
       if (/onrender\.com/.test(r.link)) log('  This is the public relay: anyone who has this link can read these files.')
       const roomName = parseLink(r.link).room

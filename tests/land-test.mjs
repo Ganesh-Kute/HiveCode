@@ -380,6 +380,29 @@ try {
     T('J3 with it, the room\'s deletion lands from the clone', j3.code === 0 && g(clone, 'cat-file', '-e', 'j1:README.md').code !== 0 && g(clone, 'show', 'j1:app.js').out === 'export const answer = 42', j3.out.split('\n').slice(-1)[0])
   }
 
+  // ─── S. THIS CLONE AND THE ROOM DISAGREE ABOUT THE SEED (0.14.3 P0-3-H) ─────────────────────
+  // --seed tells hive-pr that a branch file still equal to the seed's copy is one the room started
+  // from. A record naming another commit could let a person's change on the branch be landed over.
+  console.log('\n# S. the seed this clone recorded must be the one the room recorded')
+  if (want('S')) {
+    const a = await setup('s1')
+    const link = g(project, 'config', '--get', 'hivecode.s1.room').out
+    const realSeed = g(project, 'config', '--get', 'hivecode.s1.base').out
+    await edit(a, 'app.js', 'export const answer = 42\n')
+    // Another commit with the same tree: present in this clone, but not what the room was seeded from.
+    const other = g(project, 'commit-tree', `${realSeed}^{tree}`, '-p', realSeed, '-m', 'not the seed').out
+    g(project, 'config', 'hivecode.s1.base', other)
+    const before = tipOf('s1')
+    const s1 = await cli(project, 'pr', 's1', '--dry-run')
+    T('S1 a dry run refuses (Q587) when the records disagree, naming both commits', s1.code !== 0 && /Q587/.test(s1.out) && s1.out.includes(realSeed.slice(0, 7)) && s1.out.includes(other.slice(0, 7)), (s1.out.match(/Q\d{3}[^\n]*/) || [s1.out.slice(-160)])[0].slice(0, 200))
+    const s2 = await cli(project, 'pr', 's1')
+    T('S2 ...and so does the landing, and the branch does not move', s2.code !== 0 && /Q587/.test(s2.out) && tipOf('s1') === before)
+    const s3 = await cli(project, 'branch', 's1', '--join', link)
+    T('S3 --join with the room link records the room\'s seed', s3.code === 0 && g(project, 'config', '--get', 'hivecode.s1.base').out === realSeed, g(project, 'config', '--get', 'hivecode.s1.base').out)
+    const s4 = await cli(project, 'pr', 's1')
+    T('S4 ...after which it lands', s4.code === 0 && g(project, 'show', 's1:app.js').out === 'export const answer = 42', s4.out.split('\n').slice(-1)[0])
+  }
+
   // ─── V. TESTS THAT NEED WHAT GIT DOES NOT HAVE ───────────────────────────────────────────────
   console.log('\n# V. a test needing an uncommitted file: said how to fix, then --test-copy / --test-setup')
   if (want('V')) {

@@ -36,7 +36,7 @@ import path from 'path'
 import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { startSync, parseLink } from './sync.js'
-import { accountFor, verdict, explain, DIVERGED, sameText } from './hive-pr-staleness.js'
+import { accountFor, verdict, explain, DIVERGED, DESCENDS, UNPROVEN, sameText } from './hive-pr-staleness.js'
 const toLF = (s) => (typeof s === 'string' && s.indexOf('\r\n') !== -1 ? s.replace(/\r\n/g, '\n') : s)
 import { contentHash } from './substrate.js'
 
@@ -48,6 +48,8 @@ const has = (k) => argv.includes('--' + k)
 // required reason has to be written down, ends up in the PR body, and is the thing somebody asks
 // about later. hive_release already works this way for exactly the same argument.
 const FORCE = flag('force')
+// --seed <commit>: the commit a branch room was seeded from (hive-land passes the binding's record).
+const SEED = flag('seed')
 
 const REPO = flag('repo')
 const DRY = has('dry-run')
@@ -107,7 +109,20 @@ export function sanitizeIntent(raw) {
   return clean.length > 200 ? clean.slice(0, 200).trim() : clean
 }
 
+// An intent that already starts with the agent's own name ("Claude-cloud: Issue #6 ...", the way
+// agents often phrase them) must not be prefixed again: the mock run's commit read
+// "Claude-cloud: Claude-cloud: Issue #6 ..." (0.14.3 P1-9). Case-insensitive, repeated prefixes too.
+export function withoutOwnName(agent, intent) {
+  let s = String(intent || '')
+  const a = String(agent || '').trim()
+  if (!a) return s
+  const re = new RegExp(`^\\s*@?${a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*`, 'i')
+  for (let i = 0; i < 5 && re.test(s); i++) s = s.replace(re, '')
+  return s.trim() || String(intent || '').trim()
+}
+
 export function truncateSubject(agent, intent, max = 72) {
+  intent = withoutOwnName(agent, intent)
   const prefix = `${agent}: `
   const full = `${prefix}${intent}`
   if (full.length <= max) return full
@@ -230,7 +245,7 @@ export function commitMessage(g, room) {
       lines.push(`  - ${intent}`)
     }
     for (const ci of coauthorIntents) {
-      lines.push(`  - ${ci.name}: ${ci.intent}`)
+      lines.push(`  - ${ci.name}: ${withoutOwnName(ci.name, ci.intent)}`)
     }
     lines.push('')
     lines.push('Files:')
@@ -391,7 +406,21 @@ if (isMain) {
         const sha = git(['rev-parse', `${base}:${f.rel}`])
         const branchText = sha.code === 0 ? gitRaw(['cat-file', 'blob', sha.out]).out : null
         const roomText = toLF(fs.readFileSync(f.abs, 'utf8'))
-        decisions.push({ ...accountFor({ rel: f.rel, branchText, roomText, receipts: hive.provenanceOf(f.rel) || [] }), _f: f })
+        let d = accountFor({ rel: f.rel, branchText, roomText, receipts: hive.provenanceOf(f.rel) || [] })
+        // UNCHANGED ON THE BRANCH SINCE THE ROOM WAS SEEDED FROM IT (0.14.3 P0-3). A branch room
+        // starts as the branch at the seed commit, so a file whose branch copy is still that exact blob
+        // is one the room provably held at its start: writing the room's copy over it deletes nothing
+        // the room has not seen, whatever its receipts say. demo-3 (9 Nov) was refused here (Q506) on
+        // an untouched branch because one unsigned edit had cut test.js's chain off from the seed.
+        // Only a broken or missing chain is overruled; a file the branch changed since is still judged
+        // by its chain alone, so a real change under the room is still refused.
+        if (SEED && (d.state === DIVERGED || d.state === UNPROVEN) && sha.code === 0) {
+          const atSeed = git(['rev-parse', `${SEED}:${f.rel}`])
+          if (atSeed.code === 0 && atSeed.out === sha.out) {
+            d = { ...d, state: DESCENDS, why: `unchanged on the branch since the room was seeded from it (${SEED.slice(0, 7)}), so the room started from exactly this copy` }
+          }
+        }
+        decisions.push({ ...d, _f: f })
       }
     }
     const v = verdict(decisions)
@@ -417,7 +446,7 @@ if (isMain) {
       }
     }
 
-    if (DRY) {
+    if (DRY && !groups.length) {
       writePlanJson()
       console.log('\n--dry-run: nothing written')
       return finish(0)
@@ -428,6 +457,9 @@ if (isMain) {
       return finish(1)
     }
 
+    // A DRY RUN ANSWERS WHAT THE REAL ONE WILL (0.14.3). It used to return "would land" before this
+    // check, so the watcher's dry pass went green and the real landing then refused with Q506, and
+    // nobody heard (9 Nov, issue #9). The same verdict, the same refusal, nothing written either way.
     if (!v.ok) {
       writePlanJson()
       const lastTouch = (rel) => git(['log', '-1', '--format=%h %an %ad %s', '--date=short', base, '--', rel]).out
@@ -437,7 +469,12 @@ if (isMain) {
       // A forced run is still reported in full, and the reason travels into the PR body. The
       // point is not to make forcing hard, it is to make it visible.
       console.error('')
-      console.error(`--force given: "${FORCE}" -- overwriting ${v.blocked.length} file(s) anyway. This is recorded in the PR body.`)
+      console.error(`--force given: "${FORCE}" -- ${DRY ? 'would overwrite' : 'overwriting'} ${v.blocked.length} file(s) anyway. This is recorded in the PR body.`)
+    }
+    if (DRY) {
+      writePlanJson()
+      console.log('\n--dry-run: nothing written')
+      return finish(0)
     }
 
     const co = git(['checkout', '-b', BRANCH, base])
