@@ -17,6 +17,10 @@
 //   U4  sync -> async on one side, a caller the OTHER side added concurrently: upgraded (kept)
 //   U5  `return f()` after sync -> async: left alone (an async function returning a promise is the same)
 //   U6  never two awaits on one call, whatever is merged with what
+//   U7  `return f()` inside a try block, after sync -> async: upgraded (else a rejection escapes the catch)
+//   U8  ...and inside a catch clause
+//   U9  `await h(f())` after sync -> async: f() is upgraded; the await belongs to h
+//   U10 `await f()` after sync -> async: still exactly one await
 // Run against both copies of the engine (root and packages/icr-merge), which must agree.
 
 import path from 'path'
@@ -55,6 +59,24 @@ for (const where of ['', 'packages/icr-merge/']) {
   const o5 = b5.replace('function f()', 'async function f()')
   const r5 = M(b5, o5, b5)
   T(`U5 ${where}\`return f()\` after sync -> async is left alone`, r5.status === 'auto' && line(r5.text, 'return f') === '  return f()', JSON.stringify(line(r5.text, 'return f')))
+
+  // Claude-cloud's review of the first P0-5 fix: `return f()` is the same only OUTSIDE a try, and an
+  // await around a call is not an await of that call's arguments.
+  const b7 = 'function f() { return 1 }\nexport async function g() {\n  try {\n    return f()\n  } catch (e) {\n    return 0\n  }\n}\n'
+  const r7 = M(b7, b7.replace('function f()', 'async function f()'), b7)
+  T(`U7 ${where}sync -> async: \`return f()\` inside a try is upgraded (a rejection must reach the catch)`, r7.status === 'auto' && line(r7.text, '    return') === '    return await f()', JSON.stringify(line(r7.text, '    return')))
+
+  const b8 = 'function f() { return 1 }\nexport async function g() {\n  try {\n    work()\n  } catch (e) {\n    return f()\n  } finally {\n    done()\n  }\n}\n'
+  const r8 = M(b8, b8.replace('function f()', 'async function f()'), b8)
+  T(`U8 ${where}...and inside a catch clause too`, r8.status === 'auto' && line(r8.text, '    return') === '    return await f()', JSON.stringify(line(r8.text, '    return')))
+
+  const b9 = 'function f() { return 1 }\nexport async function g() {\n  const v = await h(f())\n  return v\n}\n'
+  const r9 = M(b9, b9.replace('function f()', 'async function f()'), b9)
+  T(`U9 ${where}sync -> async: \`await h(f())\` -> \`await h(await f())\` (the outer await is h's, not f's)`, r9.status === 'auto' && line(r9.text, 'const v') === '  const v = await h(await f())', JSON.stringify(line(r9.text, 'const v')))
+
+  const b10 = 'function f() { return 1 }\nexport async function g() {\n  const w = await f()\n  return w\n}\n'
+  const r10 = M(b10, b10.replace('function f()', 'async function f()'), b10)
+  T(`U10 ${where}an already-awaited call is left with ONE await`, r10.status === 'auto' && line(r10.text, 'const w') === '  const w = await f()', JSON.stringify(line(r10.text, 'const w')))
 
   let stacked = 0
   const up = u1.replace('return f(opts)', 'return await f(opts)')
