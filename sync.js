@@ -1073,7 +1073,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (intent) myIntents.set(relPath, String(intent)) // my declared WHY — what my receipt will sign
     const full = path.join(ROOT, relPath)
     // Written before this file synced: remember what it replaced, the edit's real ancestor (P0-1b).
-    { const fe0 = fileDocs.get(relPath); if (!(fe0 && fe0.synced) && !preSyncBase.has(relPath)) { try { preSyncBase.set(relPath, readDiskText(full)) } catch { } } }
+    // The OLDEST text this folder had since the file started waiting (diskAtOpen) when there is one: an
+    // earlier edit with the agent's own file tool sits between it and this write, and the room can only
+    // have held the older text (0.14.3 P0-1b-R3).
+    { const fe0 = fileDocs.get(relPath); if (!(fe0 && fe0.synced) && !preSyncBase.has(relPath)) { try { preSyncBase.set(relPath, fe0 && typeof fe0.diskAtOpen === 'string' ? fe0.diskAtOpen : readDiskText(full)) } catch { } } }
     // An authored write keeps this disk's ending for the file, like every engine write (readText).
     try { fs.mkdirSync(path.dirname(full), { recursive: true }); fs.writeFileSync(full, crlfSet().has(relPath) ? toLF(content).replace(/\n/g, '\r\n') : content) }
     catch (e) { return { error: 'write failed: ' + e.message } }
@@ -1556,7 +1559,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // each peer's DISK — never into the shared text — so conflict markers can't fuse.
     const conflict = fdoc.getMap('conflict')
     const undo = new Y.UndoManager(text, { captureTimeout: 350 }) // default tracks local-origin txns
-    e = { doc: fdoc, provider: fprovider, text, bin, snap, ledger, head, versions, forkmark, conflict, undo, synced: false }
+    // diskAtOpen: this folder's copy when the file started waiting for the room. An edit made before
+    // the file syncs -- through hive_edit OR the agent's own file tool -- was made on top of it, so it
+    // is that edit's ancestor at first contact, if the room held it (0.14.3 P0-1b-R3). Dropped once synced.
+    let diskAtOpen
+    try { const f0 = path.join(ROOT, relPath); if (fs.statSync(f0).size <= MAX_BYTES) diskAtOpen = readDiskText(f0) } catch { diskAtOpen = undefined }
+    e = { doc: fdoc, provider: fprovider, text, bin, snap, ledger, head, versions, forkmark, conflict, undo, synced: false, diskAtOpen }
     fileDocs.set(relPath, e)
     // A local transaction is one this client made; a peer's arrives through applyUpdate (local false).
     fdoc.on('update', (_u, _origin, _doc, txn) => { if (!txn || txn.local) unsentLocal.add(relPath) })
@@ -1582,6 +1590,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           detectFork(relPath)
         }
         preSyncBase.delete(relPath) // used by the first reconcile or not at all, never by a later reopen (review R4)
+        e.diskAtOpen = undefined
         // A new file that has just landed on disk frees its place for the next one (a burst of new
         // files moves at sync speed, not at the 30 s grace), and lets waiting new files in.
         if (arrivedNew.has(relPath)) {
@@ -2949,6 +2958,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // the room never saw, edited before sync, would otherwise merge with ancestor L, read the room as
       // "removed L", and delete L from disk and room. Not proven held -> no ancestor -> the frozen keep.
       let preSync = false
+      // An edit made with the agent's OWN file tool before the file synced left no record (only hive_edit
+      // writes one), so first contact had no ancestor and froze it as a kept, unsent edit (P0-1b-R3).
+      // What the disk held when the file opened is that ancestor, under the same rule: only if the room
+      // provably held it.
+      if (anc === undefined && !preSyncBase.has(relPath) && typeof fe.diskAtOpen === 'string' && disk !== null && fe.diskAtOpen !== disk) {
+        preSyncBase.set(relPath, fe.diskAtOpen)
+      }
       if (anc === undefined && preSyncBase.has(relPath)) {
         const pre = preSyncBase.get(relPath)
         const held = accountFor({ rel: relPath, branchText: pre, roomText: docText, receipts: fe.ledger ? fe.ledger.toArray() : [] }).state

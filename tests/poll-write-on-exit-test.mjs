@@ -14,6 +14,8 @@
 //   W9  deterministic M3: the proxy holds the file's poll-session OPEN, so its doc is provably unsynced
 //       when the edit is made. whenSent() must say not sent, leave() must name the file while the
 //       open is held (W9a), and wait for it then deliver once the open goes through (W9b).
+//   W10 an edit with the agent's own file tool (not hive_edit) before the file synced is SENT, not
+//       kept local (P0-1b-R3); a local change the room never saw is still never merged away (W10b).
 
 import http from 'http'
 import net from 'net'
@@ -258,6 +260,42 @@ try {
       proxy.releaseOpen()
       T(`${tag} leave() waited for the file and reports nothing unsent`, !!left && Array.isArray(left.unsent) && left.unsent.length === 0, JSON.stringify(left))
       T(`${tag} the peer got the edit`, !!(await fileReady(B, dB, 'm3.txt', 'v1 while the channel was opening\n')), `peer has ${JSON.stringify(readOr(path.join(dB, 'm3.txt')))}`)
+    }
+  }
+
+  // ---- W10: an edit with the agent's OWN file tool before the file synced is SENT (P0-1b-R3) ---------
+  // hive_edit records what it replaced; a plain disk write records nothing, so first contact had no
+  // ancestor and froze the edit as kept-local: never lost, but never sent either. The open is held,
+  // so the folder's copy is read (v0) before the write, and the room provably holds v0.
+  for (const [tag, ownChange] of [['W10a', false], ['W10b', true]]) {
+    console.log(`\n# ${tag} a disk write (not hive_edit) while the file's channel is held at OPEN${ownChange ? ', on top of a local change the room never saw' : ''}`)
+    const room = `room-pollexit-${tag.toLowerCase()}`, dB = tmp(`${tag}b`), dA = tmp(`${tag}a`)
+    fs.writeFileSync(path.join(dB, 'r3.txt'), 'v0\n')
+    const B = join(relay.url, room, dB, 'peer-ws'); live.push(B)
+    await synced(B)
+    // W10b: the folder carries L, a change the room never saw (review R1): it must not be merged away.
+    fs.writeFileSync(path.join(dA, 'r3.txt'), ownChange ? 'v0\nL\n' : 'v0\n')
+    proxy.gate.holdOpen = 'r3.txt'
+    const muxWas = process.env.HIVE_MUX
+    process.env.HIVE_MUX = '0'
+    let A
+    try { A = join(proxy.url, room, dA, 'vm-agent') } finally { if (muxWas === undefined) delete process.env.HIVE_MUX; else process.env.HIVE_MUX = muxWas }
+    live.push(A)
+    await synced(A)
+    const held = await until(() => proxy.gate.heldOpen.length >= 1, 10000, 20)
+    T(`${tag} setup: the file's channel is open-pending`, !!held)
+    const want = ownChange ? 'v0\nL\nv1\n' : 'v1\n'
+    fs.writeFileSync(path.join(dA, 'r3.txt'), want) // the agent's own file tool, not hive_edit
+    await sleep(1200) // the watcher reports it while the file still cannot sync
+    proxy.releaseOpen()
+    if (!ownChange) {
+      T(`${tag} the disk edit reaches the room`, !!(await fileReady(B, dB, 'r3.txt', want)), `peer has ${JSON.stringify(readOr(path.join(dB, 'r3.txt')))}, agent has ${JSON.stringify(readOr(path.join(dA, 'r3.txt')))}`)
+      T(`${tag} ...and the agent's disk keeps it`, readOr(path.join(dA, 'r3.txt')) === want, JSON.stringify(readOr(path.join(dA, 'r3.txt'))))
+    } else {
+      await sleep(4000)
+      const peer = readOr(path.join(dB, 'r3.txt')), agent = readOr(path.join(dA, 'r3.txt'))
+      T(`${tag} L (never in the room) is not merged away: it survives on the agent's disk or in the room`, /\nL\n/.test(agent || '') || /\nL\n/.test(peer || ''), JSON.stringify({ peer, agent }))
+      T(`${tag} ...and so does the edit made on top of it`, /v1/.test(agent || '') || /v1/.test(peer || ''), JSON.stringify({ peer, agent }))
     }
   }
 
