@@ -84,3 +84,15 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
+      # 0.14.3 (9 Nov 2026): writes over long-poll that survive leaving, edits made before a file synced,
+      # the seed-aware staleness check, the ICR await upgrade, case-only renames, the mixed-build alarm.
+      - name: 0.14.3 fixes
+        if: always()
+        run: |
+          fail=0
+          for t in poll-write-on-exit-test.mjs presync-edit-test.mjs seed-staleness-test.mjs provenance-presync-test.mjs icr-await-upgrade-test.mjs delete-resurrect-test.mjs mixed-build-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
