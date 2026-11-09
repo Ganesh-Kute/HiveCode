@@ -233,7 +233,14 @@ try {
     await synced(B)
     fs.writeFileSync(path.join(dA, 'm3.txt'), 'v0\n') // the agent's folder already holds the room's copy
     proxy.gate.holdOpen = 'm3.txt'
-    const A = join(proxy.url, room, dA, 'vm-agent'); live.push(A)
+    // A socket per file (HIVE_MUX=0) for this agent only: the relay offers mux, and over mux every
+    // file rides one stream, so there is no per-file OPEN for the proxy to hold (antigravity-VM, 9 Nov:
+    // "held opens: 0"). The transport is decided inside startSync, so W1-W8 stay on the default mux.
+    const muxWas = process.env.HIVE_MUX
+    process.env.HIVE_MUX = '0'
+    let A
+    try { A = join(proxy.url, room, dA, 'vm-agent') } finally { if (muxWas === undefined) delete process.env.HIVE_MUX; else process.env.HIVE_MUX = muxWas }
+    live.push(A)
     await synced(A)
     const held = await until(() => proxy.gate.heldOpen.length >= 1, 10000, 20)
     T(`${tag} setup: the file's channel is open-pending (its doc cannot have synced)`, !!held, `held opens: ${proxy.gate.heldOpen.length}`)
