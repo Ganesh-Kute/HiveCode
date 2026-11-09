@@ -2382,7 +2382,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (kept.length) {
       const one = kept.length === 1
       parts.push(`${one ? '1 holds' : `${kept.length} hold`} content the room has never seen, so neither copy was changed and the room's copy was NOT adopted: ${names(kept)}. ` +
-        `In ${name}'s folder ${one ? 'it still holds' : 'they still hold'} ${name}'s version. To make one the room's version, claim it and hive_edit it with the full file. ` +
+        `In ${name}'s folder ${one ? 'it still holds' : 'they still hold'} ${name}'s version, and nothing syncs for ${one ? 'it' : 'them'} until ${name} saves ${one ? 'it' : 'them'} again. To make one the room's version, claim it and hive_edit it with the full file. ` +
         `Don't delete a local copy to get the room's: a deletion syncs, and removes the file for everyone.`)
     }
     // What concerns THIS folder only (line endings, older copies it now has) is a note for hive_status; only
@@ -2937,11 +2937,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // and said", never "lost".
       let keptAt = 0; try { keptAt = fs.statSync(full).mtimeMs } catch { }
       keptUnsent.set(relPath, keptAt)
-      // Said in the room, not only logged (review R5): the agent has to act on it.
-      try {
-        say(`⚠ ${relPath}: ${name}'s copy differs from the room's, and the room cannot tell which is newer (${st.state}: ${name} changed it before the room's copy had loaded here). ` +
-          `Neither was written over the other: ${name}'s is kept on disk, both are in the file's history, and nothing syncs for this file until ${name} saves it again. That save replaces the room's copy. Claim ${relPath} first.`)
-      } catch { }
+      // Said in the room (review R5: the agent has to act on it), but ONCE PER JOIN, in the first-contact
+      // summary below -- not one line per file in engine words. A teammate rejoining with 40 such files
+      // filled the chat with 40 lines (9 Nov 2026; first-contact-summary-test, red since 0.14.3).
       log(`[${name}] ⚠ ${relPath} already existed in room with different content (${st.state}) — room copy was NOT adopted; local disk preserved and frozen until saved again`)
       noteFirstContact('kept', relPath)
       return
