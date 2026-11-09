@@ -1552,6 +1552,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
   // Called inside the transaction that sends a change from `from` to `to`.
   function recordIntent(relPath, fe, from, to) {
+    // A text holding conflict markers is a merge's verdict, not one author's edit, and the room has been
+    // told about it already. As an intent it made a neighbour's edit look like a clash (bigproject W1).
+    if (hasConflictMarkers(to)) return
     const h = intentHunks(from, to)
     if (!h) return
     const b = rememberText(fe, from)
@@ -1632,7 +1635,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (later || !clashOnlyRegion(base, all, final, current)) {
       // The file changed outside the clash since: writing the resolution would delete that change.
       log(`[${name}] same-line race in ${relPath} (${who}) not resolved: the file changed since`)
-      try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
+      // Markers already in the file: a merge has flagged it and said so. A second line is noise.
+      if (!hasConflictMarkers(current)) try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
       fe.clashHold = null; reconcile(relPath, 'remote'); return
     }
     const writer = ids[0] === fe.doc.clientID
