@@ -1664,6 +1664,17 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // fused merge publishes nothing); calling that "sent" told an agent its work was in the room when
     // the room still had the old copy. A deleted file, or one this side cannot read as text, is judged
     // on delivery alone.
+    // A BINARY file's content is in fe.bin, not fe.text (which is "" for it): compared as text it never
+    // matched, so a binary this member added was never "sent" -- leave() waited its full timeout and
+    // named it as lost, and eviction never closed it (Opus-Cloud's review of 0.14.3). The room holds
+    // what this folder has when the bytes' sha256 is the one the room records, as reconcileBinary writes it.
+    if (fe.bin && fe.bin.has('data')) {
+      let bytes = null
+      try { bytes = fs.readFileSync(path.join(ROOT, relPath)) } catch { }
+      if (bytes && crypto.createHash('sha256').update(bytes).digest('hex') !== fe.bin.get('sha')) return false
+      unsentLocal.delete(relPath)
+      return true
+    }
     let disk = null
     try { disk = readDiskText(path.join(ROOT, relPath)) } catch { }
     if (disk != null && !hasConflictMarkers(disk) && toLF(disk) !== toLF(fe.text.toString())) return false

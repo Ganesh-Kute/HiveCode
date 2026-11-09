@@ -14,6 +14,7 @@
 //   W9  deterministic M3: the proxy holds the file's poll-session OPEN, so its doc is provably unsynced
 //       when the edit is made. whenSent() must say not sent, leave() must name the file while the
 //       open is held (W9a), and wait for it then deliver once the open goes through (W9b).
+//   W11 a binary file this member adds counts as sent once the room holds its bytes (whenSent, leave)
 //   W10 an edit with the agent's own file tool (not hive_edit) before the file synced is SENT, not
 //       kept local (P0-1b-R3); a local change the room never saw is still never merged away (W10b).
 
@@ -21,6 +22,7 @@ import http from 'http'
 import net from 'net'
 import { spawn } from 'child_process'
 import fs from 'fs'
+import crypto from 'crypto'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -304,6 +306,29 @@ try {
       T(`${tag} L (never in the room) is not merged away: the agent's copy is kept whole`, agent === want, JSON.stringify({ peer, agent }))
       T(`${tag} ...with no conflict markers anywhere`, !/^<<<<<<< /m.test(agent || '') && !/^<<<<<<< /m.test(peer || ''), JSON.stringify({ peer, agent }))
     }
+  }
+
+  // ---- W11: a BINARY file this member adds counts as sent once the room holds its bytes ------------
+  // isSentNow compared the disk, decoded as text, with fe.text, which is "" for a binary: it never
+  // matched, so leave() waited its full timeout and named the file as lost, and eviction never closed
+  // it (Opus-Cloud's review of 0.14.3, reproduced on a62fd75: unsent ["logo.png"] after 5052 ms).
+  console.log('\n# W11 a binary file written, the peer has it, then whenSent() and leave()')
+  {
+    const room = 'room-pollexit-w11', dB = tmp('w11b'), dA = tmp('w11a')
+    const B = join(relay.url, room, dB, 'peer-ws'); live.push(B)
+    await synced(B)
+    const A = join(relay.url, room, dA, 'agent'); live.push(A)
+    await synced(A)
+    await sleep(500)
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), crypto.randomBytes(64)])
+    fs.writeFileSync(path.join(dA, 'logo.png'), png)
+    const arrived = await until(() => { try { return fs.readFileSync(path.join(dB, 'logo.png')).equals(png) } catch { return false } }, 15000)
+    T('W11 setup: the peer has the binary, byte for byte', !!arrived)
+    T('W11 whenSent() says the binary is sent', (await A.whenSent('logo.png', 3000)) === true)
+    const t0 = Date.now()
+    const left = await A.leave({ timeoutMs: 5000 })
+    const ms = Date.now() - t0
+    T('W11 leave() reports nothing unsent, without waiting out its timeout', !!left && left.unsent.length === 0 && ms < 4000, JSON.stringify({ left, ms }))
   }
 
   // ---- W8: eviction never closes a file whose edit the relay has not accepted (surviving mutant M6) ---
