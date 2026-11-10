@@ -141,6 +141,13 @@ The design above changed during review:
     other author had changed. Clients forgot a save after the 15 s race window, so only the two authors
     still knew of both, and the others wrote `const v4 = "carol-r1""alice-r1"` to disk until the block
     landed. Every client now remembers a save for as long as a held save still counts as a race (2 min).
+  - *A file's author did not know its own text* (seed 2). A first publish records no intent, so the
+    text was never remembered; two later saves of one line looked like no race to that client, and
+    their fused line went to its disk. Every text a client puts in the room is now remembered.
+  - *A far-line edit stopped the late repair* (seed 3). `lateOverBlock` wanted the block's versions to
+    differ from the base on the save's lines and nowhere else. It now asks only that each edits those
+    lines; the late-save merge carries the other change into every version.
+  - *An unresolved race said nothing* (seed 2). See the first known limit below.
 
 ### Evidence
 
@@ -153,6 +160,8 @@ The design above changed during review:
 | `late-save-merge-test` | 19/0 (RED on f051913: unmarked fusion in 962 of 1,500 fuzz cases; on 0.14.4: lines lost in 1,310) |
 | `same-line-very-late-test` | 12/0 (6 failing before: `wednes<<<<<<< Bob` at 8, 17 and 30 s) |
 | `adjacent-lines-merge-test` | 23/0 (9 failing before; 408 of 4,000 fuzz cases merge only under the new rule, each exactly both sides' edits) |
+| `same-line-soak-test` | seeds 1 to 3, 3 rounds each: 9 of 9 rounds (5 rounds failing before P0-F-13) |
+| `same-line-late-unit-test` | 11/0 |
 | `merge-balloon` | PASS |
 | `r9-loop` | 20/20 |
 
@@ -166,6 +175,11 @@ The design above changed during review:
     .py went through the structural merge); 0 of 3 since #17.
 
 ### Known, not fixed here
+- **Two races in one file, both with late saves.** The second race cannot be resolved: the file changed
+  since its base (the first race's block), so no client can compute the text it should replace. Its line
+  stays fused. It is never silent: the room is told to check that file by hand, also when the file
+  already holds markers (before P0-F-13 that case said nothing). The sound fix is for a late save to be
+  merged against the exact text the room held before it arrived, which every receiving client has.
 - **A late save's repair needs its author online** (its client writes it). If it is not, the others
   let the text through after 8 s and say "check by hand". A save held for more than 2 min is treated as
   an offline edit (F4).

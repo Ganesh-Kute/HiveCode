@@ -23,12 +23,15 @@ changed, so a same-line save from it is still not seen.
   run-together line.
 - **A late save is repaired by its author's client.** If that client has gone offline, the others wait
   8 seconds, let the text through, and say "check it by hand".
+- **Two separate same-line conflicts in one file, both with late saves.** The second cannot be
+  repaired, and its line can stay run together. The room is always told which file to check by hand.
 - **Two saves made from different texts** (one client had not yet received the last change) are not
   seen as the same moment.
 
 ## How it was checked
 - A soak test, new in this release: four clients on a local relay save the same, neighbouring and
   separate lines of six files at once, each with its traffic held for a random 0 to 25 seconds. On
-  every disk, during the run and after it, every line must be one somebody wrote. Its first run found
-  two late-save cases the fixed scenarios had missed; both are fixed.
+  every disk, during the run and after it, every line must be one somebody wrote, or the room must
+  have been told to check that file. Its first runs found five late-save cases the fixed scenarios
+  had missed. Four are fixed; the fifth is the known limit above, which used to be silent.
 - The line-level merge is checked against `git merge-file`.
