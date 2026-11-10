@@ -117,6 +117,10 @@ The design above changed during review:
   applies two touching edits side by side when both replace lines one for one, as the footprint rule
   and the character CRDT already do. Overlap, an insertion or deletion at the edge, and a change of
   line count still conflict. Plain `merge3`, git-clash and the extension keep git's rule.
+- **Blank lines (#19, 10 Nov).** Found on the way: the structural merge added a blank line after every
+  edited one-line top-level statement in .py, .rb and .yaml files, and left a deleted line's blank
+  lines behind. Fixed in `spliceUnits`, and the sync merge takes the clean line merge when the two
+  differ only in blank lines (`icr-blank-lines-test` 11/0).
 
 ### Evidence
 
@@ -145,7 +149,6 @@ The design above changed during review:
   the room's copy changed elsewhere) still merges into one coarse 2-sided block, and a 3-version block
   has its later sections glued inside it. Everything stays inside markers and nothing is lost.
   Pre-existing.
-- **ICR's YAML merge** adds blank lines that no author wrote. Pre-existing, whitespace only.
 - **Different bases (F4).** When the two saves were made from different texts, because one client had not
   yet received the last change, the race is not seen.
 - **Clients on 0.14.4 or older** write no intents, so a race with them is not seen.
