@@ -235,45 +235,63 @@ function isAsyncDecl(src, name) {
 
 // Upgrade free call sites of `fnName` to `await fnName(...)` if they are inside an async parent
 // and not already awaited.
+//
+// Left alone (0.14.3 P0-5): a call that is already awaited (`await f()`, `await (f())`); a call that
+// IS the value an async function returns (`return f()`, `async () => f()`) -- OUTSIDE a try, where
+// returning the promise resolves to the same value. Inside a try (its block or its catch) `return f()`
+// is NOT the same once f is async: a rejection escapes the catch and a finally runs before f settles,
+// so there it is upgraded, which is what the feature is for (Claude-cloud's review). A call that is an
+// argument of an awaited call (`await g(f())`) is NOT awaited by that await and is upgraded too.
+// Each position is inserted at most once.
 function upgradeCallSitesToAwait(src, fnName) {
   try {
     const ast = parse(src)
-    const spots = []
+    const spots = new Set()
 
-    function walkAST(node, parent, isAsyncScope = false) {
+    // awaited: this node IS the operand of an await (through parentheses or an optional chain only).
+    // inTry: this node sits in a try block or catch clause of the current function.
+    function walkAST(node, parent, isAsyncScope = false, awaited = false, inTry = false) {
       if (!node || typeof node.type !== 'string') return
 
       let childAsyncScope = isAsyncScope
+      let childInTry = inTry
       if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
         childAsyncScope = !!node.async
+        childInTry = false // a nested function has its own try scopes
       }
+      const passAwait = node.type === 'AwaitExpression' ? true
+        : (node.type === 'ParenthesizedExpression' || node.type === 'ChainExpression') ? awaited : false
 
       if (node.type === 'CallExpression') {
         let isTarget = false
         if (node.callee.type === 'Identifier' && node.callee.name === fnName) isTarget = true
         if (isTarget && childAsyncScope) {
-          const alreadyAwaited = parent && parent.type === 'AwaitExpression'
-          if (!alreadyAwaited) {
-            spots.push(node.start)
-          }
+          const alreadyAwaited = awaited || (parent && parent.type === 'AwaitExpression')
+          const returnedAsIs = !inTry && parent && (parent.type === 'ReturnStatement' ||
+            (parent.type === 'ArrowFunctionExpression' && parent.body === node))
+          if (!alreadyAwaited && !returnedAsIs) spots.add(node.start)
         }
       }
 
       for (const k of Object.keys(node)) {
         if (k === 'type' || k === 'start' || k === 'end' || k === 'loc' || k === 'range') continue
         const v = node[k]
+        // A try's block and its catch clause are "in try"; its finally is not (a return there is final).
+        const kInTry = node.type === 'TryStatement' ? (k === 'block' || k === 'handler') || childInTry : childInTry
         if (Array.isArray(v)) {
-          for (const c of v) walkAST(c, node, childAsyncScope)
+          for (const c of v) walkAST(c, node, childAsyncScope, passAwait, kInTry)
         } else if (v && typeof v.type === 'string') {
-          walkAST(v, node, childAsyncScope)
+          walkAST(v, node, childAsyncScope, passAwait, kInTry)
         }
       }
     }
 
     walkAST(ast, null, false)
-    if (!spots.length) return src
+    if (!spots.size) return src
 
-    spots.sort((a, b) => b - a)
+    const order = [...spots].sort((a, b) => b - a)
+    spots.clear()
+    for (const p of order) spots.add(p)
     let out = src
     for (const pos of spots) {
       out = out.slice(0, pos) + 'await ' + out.slice(pos)
@@ -282,6 +300,31 @@ function upgradeCallSitesToAwait(src, fnName) {
   } catch {
     return src
   }
+}
+
+// STACKED AWAITS LEFT BY A CRDT UNION (0.14.3 P0-5-3). Two peers making the same sync -> async
+// change at once each insert `await ` before the same call; the shared text keeps BOTH inserts, so
+// the room reads `await await f()`. No merge can prevent that (each peer's merge is right on its own),
+// so the engine removes it afterwards. Returns the [start, end) spans to delete: for every
+// `await await x`, the OUTER `await` and the whitespace after it, and only when nothing but whitespace
+// separates the two (so `await (await x)`, a comment, or a string is never touched). On the same
+// converged text every peer computes the same spans, so their deletes are of the same characters.
+function stackedAwaits(src) {
+  let ast
+  try { ast = parse(src) } catch { return [] }
+  const spans = []
+  const walk = (node) => {
+    if (!node || typeof node.type !== 'string') return
+    if (node.type === 'AwaitExpression' && node.argument && node.argument.type === 'AwaitExpression' &&
+        /^await\s+$/.test(src.slice(node.start, node.argument.start))) spans.push([node.start, node.argument.start])
+    for (const k of Object.keys(node)) {
+      if (k === 'type' || k === 'start' || k === 'end' || k === 'loc' || k === 'range') continue
+      const v = node[k]
+      if (Array.isArray(v)) { for (const c of v) walk(c) } else if (v && typeof v.type === 'string') walk(v)
+    }
+  }
+  walk(ast)
+  return spans.sort((a, b) => a[0] - b[0])
 }
 
 // Find callers of `fnName` that are synchronous (cannot be auto-awaited without changing the caller's signature)
@@ -646,6 +689,7 @@ const javascript = {
   declBody,
   isAsyncDecl,
   upgradeCallSitesToAwait,
+  stackedAwaits,        // spans of `await await` a CRDT union left (P0-5-3)
   syncCallSitesOf,
   renameRefs,           // rewrites every matching identifier (kept for reference)
   renameFreeRefs,       // scope-aware â€” only rewrites references that resolve to the binding
@@ -2981,7 +3025,9 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
       // New unit: insert it exactly where the merge order dictated
       const val = textByKey.get(k)
       if (val != null) {
-        out += (out.endsWith('\n') ? '' : '\n') + val + '\n'
+        // A unit that already ends with its newline (Python, Ruby, TOML, YAML) gets no second one: that
+        // put a blank line no author wrote after every edited top-level line (#19).
+        out += (out.endsWith('\n') ? '' : '\n') + val + (val.endsWith('\n') ? '' : '\n')
       }
     }
   }
@@ -3139,12 +3185,17 @@ function structuralMerge(base, a, b, opts = {}) {
   // ASYNC/AWAIT SYNCHRONIZATION (intent):
   // When a declaration was synchronous in base and became ASYNC in the merged result,
   // upgrade call sites inside async callers with `await` so the contract holds.
+  // ONLY a function that EXISTED in the base as sync (0.14.3 P0-5). A function new in this merge was
+  // written async by its author, together with its callers: nothing was "made async" under anyone.
+  // Counting it rewrote authored lines (`return f()` -> `return await f()`, credited to the author,
+  // silently), and two peers making the same insert at once stacked in the shared text: the room's
+  // own server.js read `return await await await admitMux(req, q)` (9 Nov).
   const asyncUpgrades = []
   if (lang.isAsyncDecl && lang.upgradeCallSitesToAwait) {
     for (const name of mergedNames) {
-      const wasAsyncInBase = baseNames.has(name) ? lang.isAsyncDecl(base, name) : false
+      const wasSyncInBase = baseNames.has(name) && !lang.isAsyncDecl(base, name)
       const isAsyncInMerged = lang.isAsyncDecl(merged, name)
-      if (!wasAsyncInBase && isAsyncInMerged) {
+      if (wasSyncInBase && isAsyncInMerged) {
         const upgraded = lang.upgradeCallSitesToAwait(merged, name)
         if (upgraded !== merged && lang.parses(upgraded)) {
           merged = upgraded

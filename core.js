@@ -11,6 +11,8 @@ export const {
   merge3,
   summarizeChange,
   changedRange,
+  lineHunks,
+  blockVersions,
   symbolsIn,
   icrMerge3,
   createReconciler,

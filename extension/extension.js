@@ -1225,22 +1225,38 @@ function start(root, room, relay, linkToken) {
   // changes conflict, as in git: two edits with no unchanged line between them are one decision). A
   // region only one side changed takes that side; both sides making the same change takes it once;
   // anything else is a conflict of THAT region only. Null when either diff is past the work bound.
-  function diff3Lines(b, mine, theirs) {
+  //
+  // SIDE BY SIDE (sideBySide, the sync merge only; #17, 10 Nov 2026). Two edits that only TOUCH
+  // are applied side by side when both replace lines one for one (the same number of lines out as
+  // in). It is P0-F's footprint rule, and what the character CRDT does with the same two edits made at
+  // the same moment, so a save that lands a moment late no longer gets markers the on-time one did not
+  // (bigproject W1: README.md, five agents on adjacent lines). Overlap, an insertion or deletion at the
+  // edge, and a change of line count still conflict. git-clash and plain merge3 keep git's rule.
+  function diff3Lines(b, mine, theirs, sideBySide = false) {
     const hm = lineHunks(b, mine), ht = lineHunks(b, theirs)
     if (!hm || !ht) return null
     const sm = hm.map((h) => slideSpan(b, h, mine)), st = ht.map((h) => slideSpan(b, h, theirs))
+    const oneForOne = (h) => h[1] - h[0] === h[3] - h[2] // lineHunks has no empty hunk, so this is a real replacement
+    // Does a hunk starting at `s` join a region reaching `reach`? Overlap always; touching, unless both
+    // the hunk and every hunk ending at `reach` are one-for-one replacements (side by side).
+    const joins = (s, h, reach, edgeRep) => s < reach || (s === reach && !(sideBySide && edgeRep && oneForOne(h)))
     const out = []
     let conflict = false, pos = 0, i = 0, j = 0
     while (i < hm.length || j < ht.length) {
       const fromMine = j >= ht.length || (i < hm.length && hm[i][0] <= ht[j][0])
       const first = fromMine ? hm[i] : ht[j]
       let reach = fromMine ? sm[i++][1] : st[j++][1] // how far this region's edits could extend
+      let edgeRep = oneForOne(first)                  // every hunk ending at `reach` is one-for-one
       const rm = fromMine ? [first] : [], rt = fromMine ? [] : [first]
       const rs = first[0]
       let re = first[1]
+      const take = (h, span) => {
+        re = Math.max(re, h[1])
+        if (span[1] > reach) { reach = span[1]; edgeRep = oneForOne(h) } else if (span[1] === reach) edgeRep = edgeRep && oneForOne(h)
+      }
       for (;;) {
-        if (i < hm.length && sm[i][0] <= reach) { re = Math.max(re, hm[i][1]); reach = Math.max(reach, sm[i][1]); rm.push(hm[i++]); continue }
-        if (j < ht.length && st[j][0] <= reach) { re = Math.max(re, ht[j][1]); reach = Math.max(reach, st[j][1]); rt.push(ht[j++]); continue }
+        if (i < hm.length && joins(sm[i][0], hm[i], reach, edgeRep)) { take(hm[i], sm[i]); rm.push(hm[i++]); continue }
+        if (j < ht.length && joins(st[j][0], ht[j], reach, edgeRep)) { take(ht[j], st[j]); rt.push(ht[j++]); continue }
         break
       }
       for (let x = pos; x < rs; x++) out.push(b[x])

@@ -36,7 +36,8 @@ function describeConflicts(conflicts) {
 // fixed-point, verified by icr-converge-test.js), so its 'auto' result is used as the
 // merged bytes for supported files; merge3 covers conflicts, fallbacks, and other languages.
 export function icrMerge3(base, mine, theirs, relPath) {
-  const lm = merge3(base, mine, theirs)
+  // The sync merge: edits on adjacent lines that each replace lines one for one go side by side (#17).
+  const lm = merge3(base, mine, theirs, { sideBySide: true })
   if (!supports(relPath)) return lm
 
   let r
@@ -44,6 +45,12 @@ export function icrMerge3(base, mine, theirs, relPath) {
   catch { return lm } // ICR must never break a sync
 
   if (r.status === 'auto') {
+    // THE LINE MERGE KEEPS THE AUTHORS' LAYOUT (#19). A one-line top-level statement is a unit keyed by
+    // its own text, so the structural merge sees an edit as a delete plus an insert and can leave the
+    // deleted line's blank lines behind. When the line merge is clean and the two differ only in blank
+    // lines, the line merge is exactly both sides' edits: take it.
+    const blankless = (t) => t.split('\n').filter((l) => l.trim() !== '').join('\n')
+    if (!lm.conflict && r.text !== lm.text && blankless(r.text) === blankless(lm.text)) return lm
     const renamed = r.renames && r.renames.length
     return {
       text: r.text, conflict: false, icr: renamed ? 'rename' : 'structural',

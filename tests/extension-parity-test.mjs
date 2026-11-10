@@ -57,7 +57,8 @@ console.log('\n# A. extension/icr.cjs vs the sources it is generated from')
   // itself pass is not a test.
   const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hive-parity-')), 'icr.cjs')
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-icr-cjs.cjs'), tmp],
-    { cwd: ROOT, encoding: 'utf8', timeout: 60000 })
+    // The generator requires its own output; from a temp folder that finds `acorn` only by NODE_PATH.
+    { cwd: ROOT, encoding: 'utf8', timeout: 60000, env: { ...process.env, NODE_PATH: path.join(ROOT, 'node_modules') } })
   T('A1 the generator runs', r.status === 0, (r.stderr || '').split('\n')[0])
 
   if (r.status === 0) {

@@ -115,12 +115,13 @@ function extra() { return helper() }
   assert('text preserved (work not lost)', typeof r.text === 'string' && r.text.length > 0)
 }
 
-console.log('\n# Non-JS file: ICR never engages, behaves exactly like merge3')
+console.log('\n# Non-JS file: ICR never engages, behaves exactly like the sync line merge')
 {
   const base = 'a\nb\nc\n', mine = 'a\nB\nc\n', theirs = 'a\nb\nC\n'
   const r = icrMerge3(base, mine, theirs, 'notes.md')
-  const lm = merge3(base, mine, theirs)
-  assert('identical to merge3 on a .md file', r.text === lm.text && r.conflict === lm.conflict)
+  // The sync line merge is merge3 with side-by-side replacements (#17): B and C are adjacent one-for-one.
+  const lm = merge3(base, mine, theirs, { sideBySide: true })
+  assert('identical to the sync line merge on a .md file', r.text === lm.text && r.conflict === lm.conflict && !r.conflict)
 }
 
 console.log('\n# Unparseable JS: ICR bails to merge3 (never throws, never regresses)')

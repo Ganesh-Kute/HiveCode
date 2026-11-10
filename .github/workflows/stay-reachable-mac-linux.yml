@@ -109,3 +109,16 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
+      # 0.14.5: two saves of the same line give a conflict block, never a line nobody wrote: on time,
+      # late, and at random lateness (the soak). Plus the merge rule's git parity, neighbouring lines,
+      # blank lines, the extension's generated bundle, and first contact with CRLF files.
+      - name: 0.14.5 fixes
+        if: always()
+        run: |
+          fail=0
+          for t in same-line-intent-unit-test.mjs same-line-fuzz-test.mjs late-save-merge-test.mjs adjacent-lines-merge-test.mjs same-line-late-unit-test.mjs icr-blank-lines-test.mjs diff3-test.mjs same-line-race-test.mjs same-line-later-save-test.mjs same-line-very-late-test.mjs same-line-soak-test.mjs first-contact-summary-test.mjs extension-parity-test.mjs; do
+            echo "::group::$t"
+            node "tests/$t" || { fail=1; echo "::error::$t failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
