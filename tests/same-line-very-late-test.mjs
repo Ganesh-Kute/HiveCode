@@ -4,7 +4,7 @@
 //
 // Antigravity-Cloud, 10 Nov 2026, on a2afc85: Alice, Bob and Dave save one line at the same moment and
 // the room resolves it to a 3-version block. Carol saved the same line at the same moment, but her save
-// was delayed 15 s on the way. By then the race's intents had expired (CLASH_WINDOW_MS), so no client
+// was delayed 15 s on the way. By then the race's intents had expired (a 15 s window then), so no client
 // saw her save as part of the clash: it landed as a raw character edit made against a text the block
 // had replaced, and every folder ended with `wednes<<<<<<< Bob`. Carol's version was gone but for a
 // fragment, and the block's opener no longer started its line. Nothing said so. (0.14.3:

@@ -1609,7 +1609,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
 
   // ---- SAME-LINE RACE (P0-F; docs/rules-rewrite/p0f-design.md) ----
-  const CLASH_WINDOW_MS = 15000, CLASH_SETTLE_MS = Number(process.env.HIVE_CLASH_SETTLE_MS) || 750, CLASH_HOLD_MS = 8000, RECENT_TEXTS = 8
+  // A save held on the way for less than LATE_OWN_MS is still part of its race; longer is an offline edit (F4).
+  const LATE_OWN_MS = 2 * 60 * 1000, CLASH_SETTLE_MS = Number(process.env.HIVE_CLASH_SETTLE_MS) || 750, CLASH_HOLD_MS = 8000, RECENT_TEXTS = 8
   // The last few texts this folder held for a file, by hash: a peer's intent names the text it was made
   // from, and this is how we know it.
   function rememberText(fe, t) {
@@ -1642,11 +1643,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     fe.intents.set(me, { ...v, at: Date.now() })
     // An intent only matters while a race could still be arriving. Left in place it stays in the file's
     // history forever, and a client gets a new id on every start (review F3), so take ours out after the
-    // window, unless a later save has replaced it.
+    // window, unless a later save has replaced it. The window is LATE_OWN_MS, not 15 s: a client whose
+    // connection dropped for longer than that resyncs in ONE update, where an intent set and deleted is
+    // not there at all. Nobody saw the race, and the fused line stayed, unmarked (soak, a 25 s hold).
     const t = setTimeout(() => {
       if (stopped || !fileDocs.has(relPath) || fe.intent.get(String(me)) !== v) return
       try { fe.doc.transact(() => fe.intent.delete(String(me))) } catch { }
-    }, CLASH_WINDOW_MS + 1000)
+    }, LATE_OWN_MS + 1000)
     if (t.unref) t.unref()
   }
   // P0-F-12: A SAME-LINE SAVE THAT ARRIVES AFTER ITS RACE WAS RESOLVED (same-line-very-late-test). It was
@@ -1656,7 +1659,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // version added to the block (merge3's late-save merge). The late author's own client writes it -- it
   // is online, its save just arrived -- and every other client holds its disk until it lands. Returns the
   // bases it took over, so the race path leaves them alone.
-  const LATE_OWN_MS = 2 * 60 * 1000 // a save held longer than this on the way is an offline edit (F4), not a race
   function checkLate(relPath, txn) {
     const fe = fileDocs.get(relPath)
     const taken = new Set()
@@ -1843,7 +1845,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const wrote = new Set(base.split('\n'))
       for (const [, v] of fe.intents) { const t = fe.recent.get(v.b); if (t != null) for (const l of applyIntent(t, v.m ? v.v : v.h).split('\n')) wrote.add(l) }
       const fused = current.split('\n').some((l) => !wrote.has(l) && !/^(<<<<<<<|>>>>>>>)( |$)|^=======$/.test(l))
-      if (fused || !hasConflictMarkers(current) || /[^\n](<<<<<<< |>>>>>>> )/.test(current)) try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
+      if (fused || /[^\n](<<<<<<< |>>>>>>> )/.test(current)) try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
       releaseHold(relPath, fe); return
     }
     const writer = ids[0] === fe.doc.clientID

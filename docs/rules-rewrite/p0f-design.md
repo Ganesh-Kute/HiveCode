@@ -148,6 +148,12 @@ The design above changed during review:
     differ from the base on the save's lines and nowhere else. It now asks only that each edits those
     lines; the late-save merge carries the other change into every version.
   - *An unresolved race said nothing* (seed 2). See the first known limit below.
+  - *A dropped connection erased the race* (seeds 4, 5, 7; every case had a 25 s hold). A client took
+    its intent out of the room after 16 s. A client whose connection dropped for longer resyncs in one
+    update, in which an intent set and then deleted is not there at all: nobody saw the race, and the
+    fused line stayed with no markers and no message. Intents now stay for 2 min, like everything else
+    about a late save. The "check by hand" warning is sent on evidence (a line nobody wrote, or a
+    broken marker), not merely because the text has no markers.
 
 ### Evidence
 
