@@ -22,6 +22,13 @@ T('LO6 the late text itself: null', lateOverBlock(F, C, C) === null)
 T('LO7 a block on ANOTHER line: null', lateOverBlock(F, C, 'wednes<<<<<<< Bob\nplan\n=======\nplan B\n>>>>>>> Al\nship friday\nowner: team\nnotes\n') === null)
 T('LO8 a stray that is not the save\'s insert: null', lateOverBlock(F, C, X.replace('<<<<<<< Bob', 'zz<<<<<<< Bob')) === null)
 T('LO9 the insert inside a version\'s line, not at an edge of the block, is someone\'s text: null', lateOverBlock(F, C, X.replace('ship monday', 'ship wednesmonday')) === null)
+{
+  // Someone changed a far line after the block was written (same-line-soak-test, seed 3): still repaired.
+  const X2 = X.replace('notes\n', 'notes v2\n')
+  T('LO10 another line changed since: still this save\'s block', X2 !== X && lateOverBlock(F, C, X2.replace('<<<<<<< Bob', 'wednes<<<<<<< Bob')) === X2)
+  const r = merge3(F, C, X2, { lateName: 'Carol' })
+  T('LO10 ...and the repair keeps that change and adds Carol\'s version', r.conflict && r.text === X2.replace('ship monday\n>>>>>>> Dave, Alice (3 versions)', 'ship monday\n=======\nship wednesday\n>>>>>>> Dave, Alice, Carol (4 versions)'), JSON.stringify(r.text))
+}
 
 console.log(`\n=== SAME-LINE LATE UNIT: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

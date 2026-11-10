@@ -357,10 +357,12 @@ export function lateOverBlock(base, side, current) {
     if (!hasConflictMarkers(x) || /[^\n](<<<<<<< |>>>>>>> )/.test(x)) continue
     const bv = blockVersions(x)
     if (!bv || bv.versions.length < 2) continue
-    // Every version the block holds is an edit of this save's lines, from `base`, and of nothing else.
+    // Every version the block holds is an edit of this save's lines, from `base`. It may differ from
+    // `base` elsewhere too: someone changed another line since (a far line, in same-line-soak-test seed
+    // 3, and the repair was refused). The late-save merge carries that change into every version.
     const ok = bv.versions.every((v) => {
       const h = intentHunks(base, v)
-      return h && h.length && h.every(([bs, be]) => be >= lo && bs <= hi)
+      return h && h.some(([bs, be]) => be >= lo && bs <= hi)
     })
     if (ok) return x
   }
@@ -1835,8 +1837,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (unexplained || !clashOnlyRegion(base, all, final, current, laters)) {
       // The file changed outside the clash since: writing the resolution would delete that change.
       log(`[${name}] same-line race in ${relPath} (${who}) not resolved: the file changed since`)
-      // Markers already in the file: a merge has flagged it and said so. A second line is noise.
-      if (!hasConflictMarkers(current) || /[^\n](<<<<<<< |>>>>>>> )/.test(current)) try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
+      // Markers already in the file: a merge has flagged it and said so. A second line is noise --
+      // unless the file also holds a line nobody wrote: the markers are then another race's, on other
+      // lines, and this one's fused line would stay with nothing said (same-line-soak-test, seed 2).
+      const wrote = new Set(base.split('\n'))
+      for (const [, v] of fe.intents) { const t = fe.recent.get(v.b); if (t != null) for (const l of applyIntent(t, v.m ? v.v : v.h).split('\n')) wrote.add(l) }
+      const fused = current.split('\n').some((l) => !wrote.has(l) && !/^(<<<<<<<|>>>>>>>)( |$)|^=======$/.test(l))
+      if (fused || !hasConflictMarkers(current) || /[^\n](<<<<<<< |>>>>>>> )/.test(current)) try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
       releaseHold(relPath, fe); return
     }
     const writer = ids[0] === fe.doc.clientID
@@ -1912,6 +1919,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // From the mtime scan() already took, not two more syscalls per open: a 1,000-file join opens
     // 1,000 files, and fileCreationTs() still falls back to a stat for any file this missed.
     if (!createdTimes.has(relPath) && mtimes.has(relPath)) createdTimes.set(relPath, mtimes.get(relPath))
+    // Every text this client itself puts in the room is remembered, however it got there: a file's
+    // first publish records no intent, so its author did not know the text two later saves were made
+    // from, saw no race, and wrote their fused line to its disk (same-line-soak-test, seed 2).
+    text.observe((_ev, txn) => { if (txn.local) rememberText(e, text.toString()) })
     text.observe((_ev, txn) => { if (!txn.local) { if (!FORK_GATE) checkClash(relPath, txn, checkLate(relPath, txn)); reconcile(relPath, 'remote') } }) // remote content edits
     bin.observe((_ev, txn) => { if (!txn.local) reconcileBinary(relPath, 'remote') }) // remote binary edits
     // A divergent receipt can arrive slightly after (or before) the fused content — so
