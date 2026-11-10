@@ -644,7 +644,9 @@ function spliceUnits(baseText, baseUnits, order, textByKey, opts = {}) {
       // New unit: insert it exactly where the merge order dictated
       const val = textByKey.get(k)
       if (val != null) {
-        out += (out.endsWith('\n') ? '' : '\n') + val + '\n'
+        // A unit that already ends with its newline (Python, Ruby, TOML, YAML) gets no second one: that
+        // put a blank line no author wrote after every edited top-level line (#19).
+        out += (out.endsWith('\n') ? '' : '\n') + val + (val.endsWith('\n') ? '' : '\n')
       }
     }
   }
