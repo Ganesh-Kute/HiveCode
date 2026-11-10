@@ -22,7 +22,7 @@ export const WORKFLOW_GUIDE_URL =
   'https://github.com/Ganesh-Kute/HiveCode/blob/main/docs/WORKFLOW.md'
 
 /** The hosted relay also serves the browser Control Room — no install, works on a phone. */
-export const CONTROL_ROOM_URL = 'https://hivecode-relay.onrender.com/control'
+export const CONTROL_ROOM_URL = 'https://livecode-xoss.onrender.com/control'
 
 /** Self-service key recovery, keyed on the payment reference from the Razorpay receipt. */
 export const RECOVER_URL = `${SITE_URL}/recover`

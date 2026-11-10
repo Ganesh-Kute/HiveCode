@@ -141,7 +141,7 @@
       "properties": {
         "hivecode.relayUrl": {
           "type": "string",
-          "default": "wss://hivecode-relay.onrender.com",
+          "default": "wss://livecode-xoss.onrender.com",
           "description": "The Hivecode relay server URL."
         },
         "hivecode.displayName": {

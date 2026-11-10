@@ -110,24 +110,24 @@ Once `slack check` passes, you can also run `--dry-run` on `slack start` or `git
 **macOS / Linux (bash, zsh):**
 ```bash
 # 1. Verify token and channel membership first
-SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --dry-run
+SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --dry-run
 
 # 2. Start the live bridge
-SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789
+SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789
 ```
 
 **Windows (PowerShell):**
 ```powershell
 $env:SLACK_BOT_TOKEN="xoxb-…"
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --dry-run
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --dry-run
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789
 ```
 
 **Windows (Command Prompt / `cmd.exe`):**
 ```cmd
 set SLACK_BOT_TOKEN=xoxb-…
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --dry-run
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --dry-run
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789
 ```
 
 ---
@@ -284,14 +284,14 @@ What to know about polling:
 
 macOS / Linux (bash, zsh):
 ```bash
-SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack agent "wss://hivecode-relay.onrender.com|room-abc123" --channel D0123456789 --allow U012ABCDEF
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack agent "wss://livecode-xoss.onrender.com|room-abc123" --channel D0123456789 --allow U012ABCDEF
 ```
 
 Windows (PowerShell):
 ```powershell
 $env:SLACK_BOT_TOKEN="xoxb-…"
 $env:SLACK_APP_TOKEN="xapp-…"
-npx -y hivecode-mcp@latest slack agent "wss://hivecode-relay.onrender.com|room-abc123" --channel D0123456789 --allow U012ABCDEF
+npx -y hivecode-mcp@latest slack agent "wss://livecode-xoss.onrender.com|room-abc123" --channel D0123456789 --allow U012ABCDEF
 ```
 
 <details>
@@ -366,24 +366,24 @@ Paste the contents of [`slack-app-manifest-agent.json`](../slack-app-manifest-ag
 
 **macOS / Linux (bash, zsh):**
 ```bash
-SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
-SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
+SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
 ```
 
 **Windows (PowerShell):**
 ```powershell
 $env:SLACK_BOT_TOKEN="xoxb-…"
 $env:SLACK_APP_TOKEN="xapp-…"
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
 ```
 
 **Windows (Command Prompt / `cmd.exe`):**
 ```cmd
 set SLACK_BOT_TOKEN=xoxb-…
 set SLACK_APP_TOKEN=xapp-…
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
-npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
+npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
 ```
 
 ### Slackbot Remote MCP Server (`hive-mcp-http.js`)
@@ -400,14 +400,14 @@ If you connect Slackbot's remote MCP client over Streamable HTTP (`hive-mcp-http
 
 **macOS / Linux (bash, zsh):**
 ```bash
-SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack mcp-server "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
+SLACK_SIGNING_SECRET=… SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack mcp-server "wss://livecode-xoss.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
 ```
 
 **Windows (PowerShell):**
 ```powershell
 $env:SLACK_SIGNING_SECRET="…"
 $env:SLACK_BOT_TOKEN="xoxb-…"
-npx -y hivecode-mcp@latest slack mcp-server "wss://hivecode-relay.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
+npx -y hivecode-mcp@latest slack mcp-server "wss://livecode-xoss.onrender.com|room-abc123" --port 8790 --allow U012ABCDEF
 ```
 
 **What a First-Time User Sees Step by Step (`hive-mcp-http.js`):**
@@ -447,8 +447,8 @@ Use these 5 steps to demonstrate either **GitHub-to-Slack issue threads** (`gith
      ```powershell
      $env:SLACK_BOT_TOKEN="xoxb-…"
      $env:SLACK_APP_TOKEN="xapp-…"
-     npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
-     npx -y hivecode-mcp@latest slack start "wss://hivecode-relay.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
+     npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF --dry-run
+     npx -y hivecode-mcp@latest slack start "wss://livecode-xoss.onrender.com|room-abc123" --channel C0123456789 --allow U012ABCDEF
      ```
 4. **Trigger a Thread**:
    - **In Flow A**: Add the `hivecode` label to a GitHub issue. Watch Slack open a single thread (`#12 — Title`) for that issue and post run progress inside it.

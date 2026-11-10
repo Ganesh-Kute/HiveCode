@@ -159,7 +159,7 @@ console.log('\n# B2 & B2.1: Room-Mode Issue Posting & Queue Processing')
     /In the room now: Claude-cloud, VM-ANTI-G-1; humans: Ganesh/.test(fgc ? fgc({ issue: { number: 7 }, members: withListeners, branch: 'b' }) : ''))
 
   const roomId = 'room-6UlP1vRk4V9P-w6fEQ'
-  const relayUrl = 'wss://hivecode-relay.onrender.com'
+  const relayUrl = 'wss://livecode-xoss.onrender.com'
   const comment = fgc ? fgc({
     issue: { number: 101 },
     branch: 'fix-edge-case',

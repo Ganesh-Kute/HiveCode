@@ -163,14 +163,14 @@ console.log('\n# routing + pacing')
 console.log('\n# secrets + room link scrubbing')
 {
   const fakeKey = ['ghp', 'aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5'].join('_')
-  const roomLink = 'wss://hivecode-relay.onrender.com|room-6UlP1vRk4V9P-w6fEQ'
+  const roomLink = 'wss://livecode-xoss.onrender.com|room-6UlP1vRk4V9P-w6fEQ'
   const out = typeof scrubSlack === 'function'
     ? scrubSlack(`key=${fakeKey} link=${roomLink} id=room-6UlP1vRk4V9P-w6fEQ`, { room: 'room-6UlP1vRk4V9P-w6fEQ', link: roomLink })
     : ''
   T('scrubSlack strips API keys before Slack', out !== '' && !out.includes(fakeKey) && /removed\]/.test(out))
   T('scrubSlack strips room link and room id before Slack', out !== '' && !out.includes('room-6UlP1vRk4V9P-w6fEQ') && !out.includes('wss://hivecode-relay'))
   const bareOut = typeof scrubSlack === 'function'
-    ? scrubSlack('link=wss://hivecode-relay.onrender.com|room-6UlP1vRk4V9P-w6fEQ bare=room-gh-issue-42-run-1')
+    ? scrubSlack('link=wss://livecode-xoss.onrender.com|room-6UlP1vRk4V9P-w6fEQ bare=room-gh-issue-42-run-1')
     : ''
   T('scrubSlack with no options strips generic wss://...|room-... links and bare room-... ids',
     bareOut !== '' && !bareOut.includes('wss://hivecode-relay') && !bareOut.includes('room-6UlP1vRk4V9P-w6fEQ') && !bareOut.includes('room-gh-issue-42-run-1') && /\[room link removed\]/.test(bareOut) && /\[room id removed\]/.test(bareOut),

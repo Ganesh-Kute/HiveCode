@@ -51,7 +51,7 @@
       <article class="card">
         <span class="card__tag">relay</span>
         <h3 class="stat"><span class="dot" id="relay-dot"></span><span id="relay-state">checking…</span></h3>
-        <p>The hosted relay at <code>hivecode-relay.onrender.com</code>, which rooms run on unless you run your own.</p>
+        <p>The hosted relay at <code>livecode-xoss.onrender.com</code>, which rooms run on unless you run your own.</p>
         <ul class="facts" id="relay-facts"></ul>
         <p class="note" id="relay-note"></p>
       </article>
@@ -85,7 +85,7 @@
 
 <script>
 (() => {
-  const RELAY = 'https://hivecode-relay.onrender.com/health'
+  const RELAY = 'https://livecode-xoss.onrender.com/health'
   const NPM = 'https://registry.npmjs.org/hivecode-mcp/latest'
   const $ = (id) => document.getElementById(id)
   const set = (k, cls, text) => { $(`${k}-dot`).className = `dot ${cls}`; $(`${k}-state`).textContent = text }

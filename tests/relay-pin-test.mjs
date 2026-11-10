@@ -206,11 +206,11 @@ sec('I  a retired public relay is followed to its replacement — and only that'
   // Measured before this existed, on a build that already shipped the new default: a folder
   // whose .hive.json predated the move sent a returning user straight back to the dead host --
   // "NOT JOINED ... 503", as if nothing had been fixed. Publishing cannot reach a saved file.
-  const m = currentRelayFor('wss://livecode-xoss.onrender.com')
+  const m = currentRelayFor('wss://hivecode-relay.onrender.com')
   T('I1 the retired relay is followed to the current default', m.relay === PUBLIC_DEFAULT_RELAY, m.relay)
-  T('I2 ... and the move is reported, not silent', m.migratedFrom === 'wss://livecode-xoss.onrender.com')
+  T('I2 ... and the move is reported, not silent', m.migratedFrom === 'wss://hivecode-relay.onrender.com')
   T('I3 the retired relay written with a slash / :443 / https is still recognised',
-    ['wss://livecode-xoss.onrender.com/', 'wss://livecode-xoss.onrender.com:443', 'https://livecode-xoss.onrender.com']
+    ['wss://hivecode-relay.onrender.com/', 'wss://hivecode-relay.onrender.com:443', 'https://hivecode-relay.onrender.com']
       .every((u) => currentRelayFor(u).relay === PUBLIC_DEFAULT_RELAY))
   // The property that makes the move safe: it can never redirect a team's OWN relay.
   const own = currentRelayFor('wss://relay.acme.com')
@@ -253,7 +253,7 @@ sec('G  the suite is measuring something')
   // A relay this project retired must still read as PUBLIC. An old .hive.json names it, and
   // if that host ever answers again the join would otherwise be labelled "YOUR RELAY".
   T('G2b the retired relay is still recognised as a public one, not "YOUR RELAY"',
-    classifyRelay('wss://livecode-xoss.onrender.com').kind === 'public-default')
+    classifyRelay('wss://hivecode-relay.onrender.com').kind === 'public-default')
 
   // Every code the sections above claim to have seen must have actually been produced. A
   // checkRelay that returned ok:true forever would pass F and silently gut C, D and E.

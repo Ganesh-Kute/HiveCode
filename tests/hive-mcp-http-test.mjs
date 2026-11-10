@@ -347,7 +347,7 @@ try {
   // 10. PORT from environment and token from wss://relay|room|token link
   console.log('\n# PORT from env + token from wss://relay|room|token link')
   const cfg = typeof resolveConfig === 'function'
-    ? resolveConfig(['wss://hivecode-relay.onrender.com|room-xyz123|tok-secret-99', '--auth', 'none'], { PORT: '9912', HIVE_TOKEN: '' })
+    ? resolveConfig(['wss://livecode-xoss.onrender.com|room-xyz123|tok-secret-99', '--auth', 'none'], { PORT: '9912', HIVE_TOKEN: '' })
     : {}
   T('PORT is read from environment when --port is not given', cfg.port === 9912, `port=${cfg.port}`)
   T('token is extracted from a wss://relay|room|token link', cfg.hiveToken === 'tok-secret-99', `token=${cfg.hiveToken}`)

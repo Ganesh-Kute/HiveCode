@@ -16,7 +16,7 @@ earlier point.
 ## How it works
 
 1. Someone creates a **room** and gets a **join link**, like
-   `wss://hivecode-relay.onrender.com|room-a1b2c3d4e5`
+   `wss://livecode-xoss.onrender.com|room-a1b2c3d4e5`
 2. Everyone — people and agents — joins with that link.
 3. Each agent works in **its own folder**. Hivecode keeps every folder identical, live.
 4. An agent **claims** a file before editing it and **releases** it after. While someone
@@ -88,7 +88,7 @@ Then:
    Customizations → MCP Servers → refresh. For Claude Code, start a new session.
 2. **Paste this to your agent**, with the link you were sent and a name:
 
-   > Use your hive_join tool to join the Hivecode room `wss://hivecode-relay.onrender.com|room-a1b2c3d4e5`
+   > Use your hive_join tool to join the Hivecode room `wss://livecode-xoss.onrender.com|room-a1b2c3d4e5`
    > as **Alice-AI**. Then follow the rules it gives you.
 
 The agent's files go in `~/hivecode/<room>/<name>`, a folder of its own. To use a particular
@@ -124,12 +124,12 @@ If it says **NOT JOINED** instead, see [Troubleshooting](#troubleshooting).
 
 You don't need to install anything to watch and steer.
 
-1. Open the Control Room: **https://hivecode-relay.onrender.com/control**
+1. Open the Control Room: **https://livecode-xoss.onrender.com/control**
 2. Paste the join link, type your name, and press **Enter room**.
 
 To skip the pasting, put the link after a `#` in the address — the room is filled in and you
 only type your name:
-`https://hivecode-relay.onrender.com/control#wss://hivecode-relay.onrender.com|room-a1b2c3d4e5`
+`https://livecode-xoss.onrender.com/control#wss://livecode-xoss.onrender.com|room-a1b2c3d4e5`
 
 From there you can:
 
@@ -366,7 +366,7 @@ you prompt it: tell it to check the room.
 | `setup` printed `FAILED` for an app | that app's config could not be written, or what was written does not start | the reason is on the same line, and the entry to add by hand is printed below it |
 | `npx` stops with `ENOENT` and `AppData\Roaming\npm` (Windows) | that folder is missing, which happens on some fresh Node installs, and npm gives up before Hivecode starts | create it with `mkdir "$env:APPDATA\npm"` in PowerShell (`mkdir "%APPDATA%\npm"` in cmd), then run setup again |
 | `'room-…' is not recognized` or `command not found: room-…` | a join link was pasted into a terminal without quotes | give the link to your agent instead; if you pass it to `setup`, quote it |
-| `NOT JOINED` and the address `livecode-xoss.onrender.com` | an old Hivecode version, still cached by `npx` | put `hivecode-mcp@latest` in your agent's config and restart it |
+| `NOT JOINED` and the address `hivecode-relay.onrender.com` | an old Hivecode version, still cached by `npx` | put `hivecode-mcp@latest` in your agent's config and restart it |
 | `Q430` | the relay is out of sockets | try again shortly; clients on the older one-socket-per-file transport (the VS Code extension, the browser panel) can lower `HIVE_MAX_OPEN_FILES` |
 | `Q438` | the relay holds as many open files as it is sized for | try again shortly, or ask whoever runs the relay to raise `HIVE_MAX_CHANNELS_TOTAL` |
 | `Q431` | this room is full | fewer participants in one room, or ask whoever runs the relay to raise `HIVE_SEATS` |

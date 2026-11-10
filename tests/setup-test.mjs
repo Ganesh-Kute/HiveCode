@@ -99,10 +99,10 @@ T('A16 a second run changes nothing it already did', ['claude', 'anti', 'cursor'
 T('A17 the backup is still the ORIGINAL, not the first run\'s output', ['claude', 'anti', 'cursor'].every((k) => rd(F[k] + '.before-hivecode') === ORIG[k]))
 
 // a pasted link: retired relay followed, and the sentence carries it
-const r3 = runSetup(home, ['wss://livecode-xoss.onrender.com|room-probe', '--name', 'Tester'])
-T('A18 a link on the retired relay is moved to the current one in the sentence to paste', /join the Hivecode room wss:\/\/hivecode-relay\.onrender\.com\|room-probe as Tester/.test(r3.out), r3.out.split('\n').filter((l) => /hive_join|relay/.test(l)).join('\n         '))
+const r3 = runSetup(home, ['wss://hivecode-relay.onrender.com|room-probe', '--name', 'Tester'])
+T('A18 a link on the retired relay is moved to the current one in the sentence to paste', /join the Hivecode room wss:\/\/livecode-xoss\.onrender\.com\|room-probe as Tester/.test(r3.out), r3.out.split('\n').filter((l) => /hive_join|relay/.test(l)).join('\n         '))
 // the pipe trap: an unquoted `setup wss://relay|room` reaches us as `setup wss://relay`
-const r4 = runSetup(home, ['wss://hivecode-relay.onrender.com', '--name', 'Tester'])
+const r4 = runSetup(home, ['wss://livecode-xoss.onrender.com', '--name', 'Tester'])
 T('A19 a link cut off at "|" (the unquoted-shell trap) is explained, not joined', /the part after \| was cut off/.test(r4.out))
 // Antigravity1's stranger test: "Antigravity (2nd) not installed" read as a missing component.
 const lone = tmp('lone')
