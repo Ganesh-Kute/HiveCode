@@ -247,6 +247,78 @@ function summarizeChange(base, next) {
   return { isRewrite, changedLines: churn, totalLines: total, symbols: symbolsIn(r.newLines.join('\n')) }
 }
 
+// A LATE SAVE AGAINST A CONFLICT BLOCK (P0-F-9, 10 Nov 2026). The author edited a clean copy; the
+// room's copy now holds one or more blocks. Every version the room holds is a whole file: block j
+// read as section j (a block with fewer sections repeats its last). The late save is merged into
+// EACH of them, a merge that conflicts giving both its sides, and the distinct results are written
+// as ONE block per region where they differ. A block is never flattened into its sections side by
+// side: that came out clean with lines no author wrote (`a = 1 / b = 1 / a = 2 / b = 2`, P0-F p0f),
+// and 0.14.4's one-side strip silently dropped every other version. Null: the caller's old path
+// (a section holding markers of its own, or a diff past its work bound).
+function blockVersions(text) {
+  const lines = text.split('\n'), segs = [] // a segment: a plain line (string) or a block {head, foot, secs}
+  let blk = null
+  for (const line of lines) {
+    if (/^<<<<<<< /.test(line)) { if (blk) return null; blk = { head: line, secs: [[]] }; continue }
+    if (blk && /^=======( |$)/.test(line)) { blk.secs.push([]); continue }
+    if (blk && /^>>>>>>> /.test(line)) { blk.foot = line; segs.push(blk); blk = null; continue }
+    if (blk) blk.secs[blk.secs.length - 1].push(line)
+    else segs.push(line)
+  }
+  if (blk) return null // an unclosed block: not ours to read
+  const blocks = segs.filter((s) => typeof s !== 'string')
+  const k = Math.max(...blocks.map((b) => b.secs.length))
+  const versions = []
+  for (let j = 0; j < k; j++) versions.push(segs.flatMap((s) => (typeof s === 'string' ? [s] : s.secs[Math.min(j, s.secs.length - 1)])).join('\n'))
+  return { versions, blocks }
+}
+function mergeLateSave(base, mine, theirs) {
+  const bv = blockVersions(theirs)
+  if (!bv) return null
+  const variants = []
+  const add = (t) => { if (!variants.some((v) => v.text === t.text)) variants.push(t) }
+  for (const T of bv.versions) {
+    if (hasConflictMarkers(T)) return null
+    const r = merge3(base, mine, T)
+    if (!r.conflict) { add({ text: r.text, mine: false }); continue }
+    add({ text: stripConflictMarkers(r.text, 'local'), mine: true })
+    add({ text: stripConflictMarkers(r.text, 'theirs'), mine: false })
+  }
+  if (variants.length === 1) return { text: variants[0].text, conflict: false }
+  // Regions, in the first version's lines, where any other version differs.
+  const anchor = variants[0].text.split('\n')
+  const hunksOf = variants.map((v, i) => (i === 0 ? [] : lineHunks(anchor, v.text.split('\n'))))
+  if (hunksOf.some((h) => h === null)) return null
+  const spans = hunksOf.flat().map((h) => [h[0], h[1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const regions = []
+  for (const [s, e] of spans) {
+    const last = regions[regions.length - 1]
+    if (last && s <= last[1]) last[1] = Math.max(last[1], e)
+    else regions.push([s, e])
+  }
+  const heads = bv.blocks.map((b) => b.head), feet = bv.blocks.map((b) => b.foot.replace(/^>>>>>>> /, '').replace(/ \(\d+ versions\)$/, ''))
+  const out = []
+  let pos = 0
+  regions.forEach(([rs, re], ri) => {
+    for (let x = pos; x < rs; x++) out.push(anchor[x])
+    const secs = []
+    variants.forEach((v, vi) => {
+      const src = v.text.split('\n')
+      const sec = sideOfRegion(anchor, rs, re, hunksOf[vi].filter((h) => h[0] >= rs && h[1] <= re), src)
+      if (!secs.some((x) => x.join('\n') === sec.join('\n'))) secs.push(sec)
+    })
+    if (secs.length === 1) out.push(...secs[0])
+    else {
+      const who = feet[Math.min(ri, feet.length - 1)]
+      const late = variants.some((v) => v.mine) && !/local \(yours\)/.test(who) ? ', local (yours)' : ''
+      out.push(heads[Math.min(ri, heads.length - 1)], ...secs[0], ...secs.slice(1).flatMap((x) => ['=======', ...x]), `>>>>>>> ${who}${late} (${secs.length} versions)`)
+    }
+    pos = re
+  })
+  for (let x = pos; x < anchor.length; x++) out.push(anchor[x])
+  return { text: out.join('\n'), conflict: true }
+}
+
 // 3-way merge for the sync layer (disk <-> shared doc)
 function merge3(base, mine, theirs) {
   const norm = (s) => (s || '').replace(/\r\n/g, '\n')
@@ -263,6 +335,10 @@ function merge3(base, mine, theirs) {
   // are stripped alike, as before, or the extra versions read as new lines every round and pile up
   // (merge-balloon-test).
   const lateSave = !hasConflictMarkers(base) && !hasConflictMarkers(mine)
+  if (lateSave && hasConflictMarkers(theirs)) {
+    const r = mergeLateSave(norm(base), norm(mine), norm(theirs))
+    if (r) return r
+  }
   const cleanTheirs = hasConflictMarkers(theirs) ? stripConflictMarkers(theirs, lateSave ? 'all' : 'theirs') : (theirs || '')
 
   const nm = norm(cleanMine), nt = norm(cleanTheirs), nb = norm(cleanBase)
