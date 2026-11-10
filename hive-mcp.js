@@ -2258,7 +2258,10 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   } else {
     const modPath = process.argv[2] === 'github' ? './hive-github.js' : process.argv[2] === 'slack' ? './hive-slack.js' : './hive-notify.js'
     const mod = await import(modPath)
-    process.exit(await mod.main(process.argv.slice(3)))
+    const code = await mod.main(process.argv.slice(3))
+    // `slack start` returns once the bridge is up and then lives on its sockets: exiting here stopped
+    // it the moment it said READY. A dry run holds no socket and ends by itself.
+    if (code !== 0 || !(process.argv[2] === 'slack' && process.argv[3] === 'start')) process.exit(code)
   }
 } else if (isEntryPoint) {
   const transport = new StdioServerTransport()
