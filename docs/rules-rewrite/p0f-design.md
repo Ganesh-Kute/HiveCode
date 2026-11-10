@@ -117,6 +117,14 @@ The design above changed during review:
   applies two touching edits side by side when both replace lines one for one, as the footprint rule
   and the character CRDT already do. Overlap, an insertion or deletion at the edge, and a change of
   line count still conflict. Plain `merge3`, git-clash and the extension keep git's rule.
+- **A same-line save that arrives after the block was written (P0-F-12, 10 Nov; Antigravity-Cloud).** It
+  landed as a character edit against the text the block replaced, beside the block:
+  `wednes<<<<<<< Bob`, at 8, 17 and 30 s late alike. Every client now recognises that shape
+  (`lateOverBlock`: the save's inserted text, at an edge of a block whose versions are edits of the
+  same lines). The late author's client adds its version to the block, and the others hold their disks
+  until it lands. It acts only against a race's resolution, never a block a merge raised, which the
+  race path keeps (R10). `same-line-very-late-test` 12/0 (6 failing before), `same-line-late-unit-test`
+  9/0.
 - **Blank lines (#19, 10 Nov).** Found on the way: the structural merge added a blank line after every
   edited one-line top-level statement in .py, .rb and .yaml files, and left a deleted line's blank
   lines behind. Fixed in `spliceUnits`, and the sync merge takes the clean line merge when the two
@@ -131,6 +139,7 @@ The design above changed during review:
 | `same-line-intent-unit-test` | 63/0 |
 | `same-line-fuzz-test` | 15/0 |
 | `late-save-merge-test` | 19/0 (RED on f051913: unmarked fusion in 962 of 1,500 fuzz cases; on 0.14.4: lines lost in 1,310) |
+| `same-line-very-late-test` | 12/0 (6 failing before: `wednes<<<<<<< Bob` at 8, 17 and 30 s) |
 | `adjacent-lines-merge-test` | 23/0 (9 failing before; 408 of 4,000 fuzz cases merge only under the new rule, each exactly both sides' edits) |
 | `merge-balloon` | PASS |
 | `r9-loop` | 20/20 |
@@ -145,6 +154,9 @@ The design above changed during review:
     .py went through the structural merge); 0 of 3 since #17.
 
 ### Known, not fixed here
+- **A late save's repair needs its author online** (its client writes it). If it is not, the others
+  let the text through after 8 s and say "check by hand". A save held for more than 2 min is treated as
+  an offline edit (F4).
 - **A block that the base and the author's copy both hold** (an edit made with the block on disk, while
   the room's copy changed elsewhere) still merges into one coarse 2-sided block, and a 3-version block
   has its later sections glued inside it. Everything stays inside markers and nothing is lost.
