@@ -1661,9 +1661,13 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (!fe || !fe.intent) return taken
     const current = fe.text.toString()
     const now = Date.now()
+    // Only against a race's resolution: its block names its authors. A block a merge raised ("local
+    // (yours)" / "incoming (theirs)") is an author's save, and the race path decides how it joins (F5
+    // builds the block from what each author saved, same-line-later-save-test R10).
     const repair = (base, side, who) => {
       const x = lateOverBlock(base, side, current)
-      return x == null ? null : merge3(base, side, x, { lateName: who }).text
+      if (x == null || /^(<<<<<<<|>>>>>>>) .*(local \(yours\)|incoming \(theirs\))/m.test(x)) return null
+      return merge3(base, side, x, { lateName: who }).text
     }
     const own = fe.lastOwn
     if (own && (now - own.at >= LATE_OWN_MS || current === own.side || (blockVersions(current) || { versions: [] }).versions.includes(own.side))) fe.lastOwn = null
