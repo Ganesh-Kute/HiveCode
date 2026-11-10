@@ -2,8 +2,8 @@
 // hears about it ONCE, in plain words.
 //
 // The onboarding audit (2 Oct 2026). HIV-P9 keeps both copies of a file whose content the room has
-// never seen, and adopts the room's copy of one it has (or of one that differs only in line
-// endings). Both outcomes are right. But each file was announced on its own line, in engine words
+// never seen, and adopts the room's copy of one it has. A file that differs only in line endings
+// is the same file: each disk keeps its own endings (8 Nov 2026). Both outcomes are right. But each file was announced on its own line, in engine words
 // ("UNPROVEN", "Resolve deliberately"), so a teammate a few commits behind filled the chat with one
 // line per file. A Windows checkout makes it worse: git writes CRLF there and the room holds LF, so
 // nearly every text file "differs" in line endings alone.
@@ -68,7 +68,8 @@ try {
   console.log('# outcomes (unchanged by this fix)')
   T('the files with content the room never saw keep B\'s version on B\'s disk', ['k1.js', 'k2.js', 'k3.js'].every((f) => rd(dirB, f) === LOCAL[f]))
   T('...and the room side keeps its own', Object.keys(ROOM).every((f) => rd(dirA, f) === ROOM[f]))
-  T('the files that differed only in line endings now hold the room\'s copy on B\'s disk', ['e1.js', 'e2.js'].every((f) => rd(dirB, f) === ROOM[f]))
+  // Line endings are not content (8 Nov 2026, eol-mixed-peers-test E1): each disk keeps its own.
+  T('the files that differed only in line endings keep B\'s endings on B\'s disk, and the room\'s on A\'s', ['e1.js', 'e2.js'].every((f) => rd(dirB, f) === LOCAL[f] && rd(dirA, f) === ROOM[f]))
 
   console.log('# the announcement')
   const fromB = () => (A.doc.getArray('chat').toArray() || []).filter((m) => m && m.by === 'B').map((m) => String(m.text || ''))
@@ -76,7 +77,7 @@ try {
   T('ONE message tells the room about B\'s first contact, not one per file', about.length === 1, about.map((t) => t.slice(0, 90)).join('\n         '))
   const msg = about[0] || ''
   T('...it names each file that kept B\'s version, and says the room\'s copy was NOT adopted', ['k1.js', 'k2.js', 'k3.js'].every((f) => msg.includes(f)) && /NOT adopted/.test(msg), msg)
-  T('...it counts the files that differed only in line endings, without listing them', /2 differed only in line endings/.test(msg) && !/e1\.js|e2\.js/.test(msg), msg)
+  T('...it says nothing about the files that differed only in line endings', !/line endings|e1\.js|e2\.js/.test(msg), msg)
   T('...it says how to make B\'s version the room\'s', /claim it and hive_edit it with the full file/.test(msg), msg)
   T('...and it uses no engine words', !/UNPROVEN|DIVERGED|Resolve deliberately/.test(msg), msg)
   T('a file B had byte for byte is not mentioned', !fromB().some((t) => /same\.js/.test(t)))
@@ -89,7 +90,7 @@ try {
   for (const f of ['e1.js', 'e2.js', 'same.js']) fs.writeFileSync(path.join(dirC, f), ROOM[f].replace(/\n/g, '\r\n'))
   C = startSync({ relay: `ws://localhost:${PORT}`, room, dir: dirC, name: 'C', kind: 'ai', log: () => {} })
   await sleep(8000)
-  T('...its files now hold the room\'s copy', ['e1.js', 'e2.js', 'same.js'].every((f) => rd(dirC, f) === ROOM[f]))
+  T('...its files keep their own endings, and the room\'s copy is unchanged', ['e1.js', 'e2.js', 'same.js'].every((f) => rd(dirC, f) === ROOM[f].replace(/\n/g, '\r\n') && rd(dirA, f) === ROOM[f]))
   const fromC = (A.doc.getArray('chat').toArray() || []).filter((m) => m && m.by === 'C').map((m) => String(m.text || ''))
   T('...and C posts no chat line about them', !fromC.some((t) => /e1\.js|e2\.js|same\.js|line endings|differ from the room/.test(t)), fromC.join(' | ').slice(0, 300))
 } catch (e) {
