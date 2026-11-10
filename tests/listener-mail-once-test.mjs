@@ -8,8 +8,11 @@
 // already delivered came back on the next MCP call as "URGENT MAIL ... Handle before continuing",
 // and an agent that obeys that notice redoes instructions it already carried out.
 //
-//   L  the listener delivers a mention and moves the room's read cursor (what a sender's receipt reads)
-//   M  the MCP side does not raise that mail again: no MAIL NOTICE, nothing from hive_check
+//   L  the listener delivers a mention and records it HANDED in the room -- not READ (0.14.4, A6): a
+//      listener holding a message is not the agent knowing it, and counting it as read is how an app
+//      that was never woken lost its mail (incident I-1)
+//   M  the MCP side does not raise that mail as NEW again: no MAIL NOTICE; hive_check shows it at most
+//      once more, marked as already handed, then never again; only then is it READ
 //   N  mail still flows: a new mention after that IS handed over by hive_check
 //   R  mail already read through hive_check does not wake a fresh listener a second time,
 //      and that listener still wakes for the next one
@@ -24,6 +27,7 @@ import { fileURLToPath } from 'url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { startSync, parseLink } = await import('../sync.js')
 const RC = await import('../hive-receipts.js')
+const SEEN = await import('../hive-seen.js')
 
 let pass = 0, fail = 0
 const T = (name, ok, detail = '') => {
@@ -116,9 +120,10 @@ boss.say('@Ag please rebuild the search index (job-one)')
 await until(() => L.exited(), 15000)
 T('L1 the listener woke the agent with that message', L.exited() && /job-one/.test(JSON.stringify(L.parsed() || {})), JSON.stringify(L.parsed()))
 const at1 = indexOf('job-one')
-const cursorAt = () => { const c = RC.cursorOf(boss.doc.getMap('cursors'), 'Ag'); return (c && Number(c.at)) || 0 }
-T('L2 ...and the room now records Ag as having read past it (what the sender\'s receipt reads)',
-  await until(() => cursorAt() > at1, 5000), `cursor=${cursorAt()} message at ${at1}`)
+const idOf = (needle) => { const x = SEEN.itemsOf(chat).find((it) => String(it.value.text || '').includes(needle)); return x ? x.id : null }
+const receipt = (needle) => RC.stateFor({ cursors: boss.doc.getMap('cursors'), name: 'Ag', index: indexOf(needle), id: idOf(needle) }).state
+T('L2 ...and the room records Ag as HANDED past it, not READ (what the sender\'s receipt reads)',
+  await until(() => receipt('job-one') === RC.HANDED, 5000), `receipt=${receipt('job-one')} message at ${at1}`)
 
 // ------------------------------------------------------------------ M
 sec('M  the MCP side does not raise it again')
@@ -128,7 +133,15 @@ const said = await ag.call('hive_say', { text: 'on it' })
 T('M1 the next tool reply does not announce the delivered message as unread mail',
   !/(UNREAD|URGENT) MAIL/.test(said), (said.match(/--- MAIL NOTICE[\s\S]{0,160}/) || [''])[0])
 const check1 = await ag.call('hive_check', {})
-T('M2 hive_check does not hand it over a second time', !/job-one/.test(check1), check1.slice(0, 160))
+const asNew = (out) => { const m = /📣[^\n]*\n([\s\S]*?)(?:\n\n|$)/.exec(out); return !!m && /job-one/.test(m[1]) }
+// Exactly once, not "at most once": this process cannot know whether its app was woken with it, and
+// an app that was not (Antigravity) would otherwise never see it -- the loss in incident I-1.
+T('M2 hive_check shows it once more, marked as already handed, never as new mail to answer',
+  !asNew(check1) && /job-one/.test(check1) && /already handed to you/.test(check1), check1.slice(0, 220))
+const check1b = await ag.call('hive_check', {})
+T('M2b ...and never a third time', !/job-one/.test(check1b), check1b.slice(0, 160))
+T('M2c ...and once Ag has been handed it through its own hive_check, the receipt says READ',
+  await until(() => receipt('job-one') === RC.READ, 5000), `receipt=${receipt('job-one')}`)
 
 // ------------------------------------------------------------------ N
 sec('N  mail still flows through the MCP')

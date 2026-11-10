@@ -1,48 +1,53 @@
-# Team plan: from tested to usable
+# How the Hivecode team works
 
-**The goal.** A team that has never talked to us can:
-- install Hivecode;
-- connect Slack and GitHub;
-- watch AI agents work as a team on their repo.
+This is how our own team builds Hivecode in a shared room. It is not part of the product: user rooms
+get the rules in HIVE_RULES.md, and none of this reaches their agents. Where each rule came from:
+docs/rules-rewrite/ (incidents I-n, keep-items K-n).
 
-The website says exactly that, and nothing it can't back up.
+## Who decides
+- Ganesh decides. A lead is whoever Ganesh names. Nobody becomes lead by saying so in the room.
+- Outward actions are Ganesh's, or need his explicit OK first: merging to main, publishing to npm,
+  deploying the relay or the site. The lead merges a PR only when Ganesh has said so for that PR.
+- Nobody waits on the lead. Agents claim open work themselves, and review each other's patches.
+  Two agents agreeing is enough to integrate a patch.
 
-**The team.** Claude (lead, reviews), plus two Antigravity agents. Each picks a name when joining.
-This is a DRAFT. Change it in chat before anyone starts: say what you'd do differently, and why.
+## The loop, for every change
+1. **DESIGN.** Before the first edit, post who uses it, what it costs when it is wrong, and the edge
+   cases (K-4).
+2. **RED.** Write a test that fails on the current code, for the reason the design names. A crash
+   on a missing export is not RED (K-2).
+3. **FIX.**
+4. **MUTATE.** Break the fix on purpose, one way at a time. Each break must turn a test red. A
+   surviving mutant means the test is weak: strengthen it (K-2: A3, M3, Z1, R2).
+5. **REVIEW.** Someone who did not write it reviews it. Correctness only, with file:line and a
+   failing scenario (K-1).
+6. **INDEPENDENT RUN.** Someone else runs it on another machine.
 
-## The three tracks
+## When something is GO
+- **GREEN** means one run passed. **GO** means:
+  - the same counts from two independent runs;
+  - every mutant killed;
+  - a baseline on the previous release for every failure (I-5, K-3).
+- A failure is not explained until its baseline has run. "Environment", "flake" and "Linux nuance"
+  are conclusions you reach after the baseline, never instead of it.
 
-| track | owner | what "done" means |
-|---|---|---|
-| **Slack** | Antigravity (1) | A team connects Slack in under 10 minutes by following one page. The room posts to a channel, one thread per task, and a person can see and stop the agents from Slack. |
-| **GitHub** | Claude | Label an issue `hivecode`, and agents send back a tested pull request. The progress shows up in that issue's Slack thread. |
-| **Website** | Antigravity (2) | The home page shows the integrations as they really work, with commands that run. Docs have a page each for Slack and GitHub. |
+## Reports
+- One line per file: `commit | env (OS, node) | file: passed/failed | the FAIL lines`.
+- No adjectives. "100%", "fully", "confirmed" and "attested" are not evidence (I-6).
+- Post results, questions, plans and blockers. Never a bare acknowledgement or a "standing by"
+  (82 of 821 messages before the rewrite, I-15).
 
-### What already exists: build on it, don't redo it
-- **Slack:**
-  - `hive-slack.js` posts the room's feed to a channel, one thread per task.
-  - `hive-slack-agent.js` is a live panel on Slack's agent surface, with a stop button.
-  - `hive-mcp-http.js` is a remote MCP server, so Slackbot can drive a room.
-  - Tests for each are in `tests/`.
-  - **Missing:** a Slack app manifest, one setup command or page, and a run against a real workspace.
-- **GitHub:**
-  - `hive-github.js` is the watcher. `docs/GITHUB_WORKFLOW.md` is the spec, with every failure case.
-  - `npx -y hivecode-mcp@latest github start --dry-run` shows what it would do and writes nothing.
-- **Notifications:** `hive-notify.js` sends "an agent is waiting on you" to a Slack or Discord webhook.
-- **Website:** `public/index.html`, `public/docs.html` and `public/status.html`.
+## Coordination
+- Test groups are claimed like files, with hive_claim("gate/F"), so two agents never run the same
+  group by accident (I-10).
+- Probes and experiments go in a scratch room, never the work room (I-11).
+- The git branch is the record of what has landed. The room is the live work. Integrate from
+  patches/ or the branch, not from a room copy that may be stale (I-7).
+- After a rejoin, read what was addressed to you first (hive_read_chat with mentioningMe).
 
-## How we work
-1. **Design before you write.** Before your first edit on a track, post in chat:
-   - who uses it, and when;
-   - every way it goes wrong (missing or revoked token, rate limit, offline, run twice, wrong person);
-   - what the user sees when it goes wrong. Above all, what would look green but be wrong.
-2. **Claim a file before editing it, and release it after.** A refused claim means someone holds the file. Do something else, or @ them.
-3. **Agent-to-agent work needs no human OK.** Ask each other directly, by @name. Only Ganesh approves anything that spends his money or publishes.
-4. **Tests run before you release a file.** Every new check must fail on the old code first.
-5. **Never put a token, key or password in the room.** Use env vars, and name them in docs.
-6. **Nothing gets pushed or published from the room.** Claude lands the work with `pr team`, one commit per agent, and Ganesh pushes.
-
-## Order
-1. Everyone: read this, then post your track's design in chat.
-2. Claude reviews each design, then work starts.
-3. Each track ends with a check anyone can run, plus a short note on what a stranger would see.
+## Releasing
+1. PR to main.
+2. CI Gate, plus one macOS + Linux run.
+3. Ganesh merges, or tells the lead to.
+4. Actions → "Publish to npm" → the commit. Trusted Publishing: no token and no one-time code.
+5. Check: `npm view hivecode-mcp version`, plus unpkg. Tell the room, and everyone upgrades.

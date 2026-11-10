@@ -11,7 +11,7 @@
 // └─────────────────────────────────────────────────────────────────────────┘
 
 import { merge, structuralMerge, supports } from '../icr-merge/index.js'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 const c = {
@@ -290,9 +290,14 @@ function await_import_merge3() {
 
 // ── Git integration ─────────────────────────────────────────────────────────
 
-function runGit(cmd) {
+// NO SHELL (0.14.4). The refs come from action inputs and the paths from the diff, and this used to
+// paste both into a shell string: a ref like `x; touch PWNED` ran as a command on the CI runner
+// (tests/ci-gate-workflow-test.mjs). Git gets an argument list now, and a ref that starts with '-'
+// cannot be read as an option.
+function runGit(args) {
+  if (args.some((a) => typeof a !== 'string' || /^-/.test(a) && !/^--name-only$/.test(a))) return null
   try {
-    return execSync(`git ${cmd}`, { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8' }).trim()
+    return execFileSync('git', args, { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8', shell: false }).trim()
   } catch (e) {
     return null
   }
@@ -301,13 +306,13 @@ function runGit(cmd) {
 function runScan(baseRef, headRef) {
   console.log(`  ${c.dim}Scanning merge: ${c.magenta}${headRef}${c.dim} into ${c.magenta}${baseRef}${c.reset}`)
   
-  const mergeBase = runGit(`merge-base ${baseRef} ${headRef}`)
+  const mergeBase = runGit(['merge-base', baseRef, headRef])
   if (!mergeBase) {
     console.log(`  ${c.red}Error: Could not find merge base between ${baseRef} and ${headRef}${c.reset}`)
     process.exit(1)
   }
 
-  const diffFiles = runGit(`diff --name-only ${mergeBase}...${headRef}`)
+  const diffFiles = runGit(['diff', '--name-only', `${mergeBase}...${headRef}`])
   if (!diffFiles) {
     console.log(`  ${c.green}No files changed in this branch.${c.reset}`)
     return
@@ -324,9 +329,9 @@ function runScan(baseRef, headRef) {
 
   const results = []
   for (const file of files) {
-    const baseText = runGit(`show ${mergeBase}:${file}`) || ''
-    const oursText = runGit(`show ${baseRef}:${file}`) || ''
-    const theirsText = runGit(`show ${headRef}:${file}`) || ''
+    const baseText = runGit(['show', `${mergeBase}:${file}`]) || ''
+    const oursText = runGit(['show', `${baseRef}:${file}`]) || ''
+    const theirsText = runGit(['show', `${headRef}:${file}`]) || ''
 
     if (!baseText && !oursText && !theirsText) continue
     if (baseText === oursText && baseText === theirsText) continue

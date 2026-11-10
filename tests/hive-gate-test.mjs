@@ -18,6 +18,8 @@ import { startSync } from '../sync.js'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.HIVE_TEST_PORT) || 1251
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+// Gate approvals (0.14.4 S-1) go to a throwaway folder, never the real ~/.hivecode.
+process.env.HIVE_GATES_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-approvals-'))
 let pass = 0, fail = 0
 const T = (name, cond, detail) => {
   if (cond) { pass++; console.log(`  ok   ${name}`) }

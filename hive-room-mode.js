@@ -23,6 +23,7 @@ import crypto from 'crypto'
 import { spawnSync } from 'child_process'
 import { parseLink, startSync } from './sync.js'
 import { landAndOpen, testCommandFor } from './hive-land.js'
+import * as SEEN from './hive-seen.js' // what the room held when the issue was posted, by Yjs id (0.14.4)
 
 export const MIN_ROOM_MODE_VERSION = '0.13.0'
 
@@ -709,6 +710,17 @@ export async function postIssue(opts = {}) {
     // 3. Post chat message
     const chatText = formatIssueChat({ issue, waysOfWorking })
     if (hive.say) hive.say(chatText)
+    // Everything this poster held once its own post was in: the watcher counts an agent reply as
+    // "since the issue was posted" when its id is NOT in here, wherever it integrates (0.14.4).
+    const postFrontier = (() => {
+      try {
+        const ch = hive.doc && hive.doc.getArray('chat')
+        if (!SEEN.isYArray(ch)) return null
+        const f = SEEN.makeFrontier()
+        for (const { id } of SEEN.itemsOf(ch)) f.add(id)
+        return f.toJSON()
+      } catch { return null }
+    })()
 
     // 4. Verify delivery via fresh passive peek
     const chatMarker = attempt > 1
@@ -739,6 +751,7 @@ export async function postIssue(opts = {}) {
       verified: true,
       members: members.agents,
       comment,
+      postFrontier,
     }
   } finally {
     if (hive && typeof hive.stop === 'function') {

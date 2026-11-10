@@ -41,12 +41,13 @@ import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from '.
 import { newPersonalRoom, saveRoomKey, loadRoomKey, hostToken, main as roomKeyMain } from './hive-room-key.js'
 import { isSecuredRoom } from './token.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
-import { INSTRUCTIONS, JOIN_RULES } from './hive-instructions.js'
+import { INSTRUCTIONS, joinCard, REACH_BY_WAIT } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
 import * as OB from './hive-obligations.js'
 import * as RC from './hive-receipts.js'
+import * as SEEN from './hive-seen.js' // read state by Yjs id, never by position (0.14.4)
 import { findSecrets, describeSecret } from './hive-secrets.js' // a key never goes into the room's chat or tasks either
 import { makeThrottle, RULES_NUDGE } from './hive-throttle.js'
 import * as HB from './hive-branch.js' // a room bound to a git branch: hive_join { branch }, and the branch/pr CLI
@@ -100,16 +101,19 @@ function resolveRoomRaw(link, dir) {
 const SESSION_FILE = path.join(process.cwd(), SESSION_FILE_NAME)
 const CONV = process.env.CLAUDE_CODE_SESSION_ID || process.env.ANTIGRAVITY_CONVERSATION_ID || ''
 let keptOutOfGit = false
-function persistSession({ dir, name, owner, cursor, authed = false, kind = 'ai', passive = false }) {
+function persistSession({ dir, name, owner, cursor, frontier, authed = false, kind = 'ai', passive = false }) {
   try {
     const agents = readAgents(SESSION_FILE)
     const prev = ownRecord(agents, { conv: CONV })
     const chatCursor = cursor === undefined ? (prev && prev.name === name ? prev.chatCursor : undefined) : cursor
+    // The read FRONTIER (hive-seen.js) is what a resume restores; chatCursor stays beside it so an
+    // older build resuming from this file still has the count it understands.
+    const chatFrontier = frontier === undefined ? (prev && prev.name === name ? prev.chatFrontier : undefined) : (frontier || undefined)
     // `authed`: the Stop hook reads this file, and must not order a listener into a room that checks
     // tokens -- the agent's shell does not hold this server's token, so that listener could not join.
     // `kind` and `passive`: a resume rejoins from this file, and without them a human came back as an
     // AI and a passive participant as one the room waits on; the Stop hook reads `passive` too.
-    const rec = { dir, name, owner, chatCursor, ...(authed ? { authed: true } : {}),
+    const rec = { dir, name, owner, chatCursor, ...(chatFrontier ? { chatFrontier } : {}), ...(authed ? { authed: true } : {}),
       ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}),
       pid: process.pid, ...(CONV ? { conv: CONV } : {}), at: Date.now() }
     for (const [n, s] of Object.entries(agents)) if (n !== name && s.pid === process.pid) delete agents[n] // this server's earlier identity
@@ -134,7 +138,21 @@ function forgetSession() {
 /** Save the read cursor so a host restart does not reopen the blind window it just closed. */
 function persistCursor() {
   if (!session || !session.mailbox) return
-  persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor, authed: session.authed, kind: session.kind, passive: session.passive })
+  const chat = session.hive.doc.getArray('chat')
+  const frontier = session.mailbox.frontier({ prune: chat })
+  persistSession({ dir: session.dir, name: session.name, owner: session.owner, cursor: session.mailbox.cursor, frontier, authed: session.authed, kind: session.kind, passive: session.passive })
+  // FRONTIERS, NOT A COUNT (0.14.4). What is published is which messages this agent read, by Yjs id,
+  // so a message that integrated behind its position is not reported READ. Published only when the
+  // frontier really moved: this runs on every hive_wait and hive_check, and an unchanged write still
+  // wakes every observer in the room (Claude-cloud's review, attack 4).
+  if (frontier && session.mailbox.version !== session.publishedVersion) {
+    try {
+      RC.publishFrontier(session.hive.doc.getMap('cursors'), session.name, { read: frontier, at: SEEN.coveredPrefix(chat, frontier) })
+      session.publishedVersion = session.mailbox.version
+    } catch { /* a room that predates receipts */ }
+    return
+  }
+  if (frontier) return
   // AND PUBLISH IT INTO THE ROOM. The file above is for resuming THIS session; the room copy is
   // what makes "did they actually read it" answerable by anybody other than me. The cursor only
   // advances inside box.take(), which is the call that hands messages to the agent -- so a cursor
@@ -192,7 +210,7 @@ function defaultJoinTarget(link, name) {
   return { dir: path.join(HIVE_HOME, safeSegment(room), safeSegment(name)), link, hostedHere: false }
 }
 
-async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, kind = 'ai', passive = false, branch = '', repo = '', private: personal = false }) {
+async function joinRoom({ link = '', dir = '', name = `agent-${crypto.randomBytes(2).toString('hex')}`, owner = '', token = '', chatCursor, chatFrontier, kind = 'ai', passive = false, branch = '', repo = '', private: personal = false }) {
   // REFUSED BEFORE THE OLD SESSION IS TORN DOWN. joinRoom's first act is to stop whatever session
   // exists, so validating after that point would leave an agent with a bad name holding nothing at
   // all -- it would lose a working room to a refusal it could have been given for free.
@@ -411,6 +429,10 @@ was not written. Fix the relay and call hive_join again.`
       'it reports `connected` and `filesSynced`, and both are authoritative.',
     ].join('\n')
   }
+  // HIV-C3: wait for presence to settle before evaluating sameNameElsewhere (Incident I-3).
+  // Waits for the first awareness update from the relay, or 1500 ms, whichever comes first.
+  await settlePresence(hive, 1500)
+
   // ONE NAME, ONE PARTICIPANT (Q581). Everything in a room is keyed by name, so a second agent under
   // a name already here is the same identity to everybody: both are told they hold each other's
   // claims, both read each other's mail, and their writes land on each other's files. Measured
@@ -440,8 +462,31 @@ was not written. Fix the relay and call hive_join again.`
   // process was down is still delivered rather than falling into the old blind window.
   const chatLen = hive.doc.getArray('chat').length
   const startAt = Number.isFinite(Number(chatCursor)) ? Number(chatCursor) : chatLen
-  session.mailbox = createMailbox({ me: name, startAt })
+  session.mailbox = createMailbox({ me: name, startAt, frontier: chatFrontier && typeof chatFrontier === 'object' ? chatFrontier : null })
   persistCursor()
+  session.joined = Date.now()
+
+  // Twin join re-check (0.14.4 C3): if two case-variant names joined at the same moment both see nobody.
+  // Re-check once more about 3 s after joining. If a twin has appeared, the LATER joiner
+  // (higher join time) gets one line telling it to rejoin under another name.
+  setTimeout(() => {
+    try {
+      if (!session || session.name !== name || session.room !== room) return
+      const dupesLater = typeof hive.sameNameElsewhere === 'function' ? hive.sameNameElsewhere() : []
+      if (!dupesLater.length) return
+      const d = dupesLater[0]
+      const myJoined = session.joined || 0
+      const theirJoined = d.joined || 0
+      const myId = hive.provider && hive.provider.awareness ? hive.provider.awareness.clientID : 0
+      const isLater = theirJoined < myJoined || (theirJoined === myJoined && (d.clientID || 0) < myId)
+      if (isLater) {
+        const taken = new Set(hive.members().map((m) => String(m.name).toLowerCase()))
+        let n = 2
+        while (taken.has(`${name}-${n}`.toLowerCase())) n++
+        session.twinWarning = `A twin named "${d.name}" joined at the same moment. You are the later joiner: call hive_join with a different name to rejoin under another name (e.g. hive_join { name: "${name}-${n}" }).`
+      }
+    } catch { }
+  }, 3000).unref?.()
 
   const others = hive.members().filter((m) => m.name !== name).map((m) => `${m.name}(${m.kind})`)
   const mixedNote = mixedLine(hive.members(), name, VERSION_LABEL)
@@ -488,7 +533,7 @@ was not written. Fix the relay and call hive_join again.`
       const s = session
       if (!s || !s.mailbox) return
       catchUp(s)
-      const m = s.mailbox.peek(hive.doc.getArray('chat').toArray())
+      const m = newMailOnly(s.mailbox.peek(hive.doc.getArray('chat')))
       // Compare with !== rather than >: after hive_wait consumes the backlog the count drops to
       // 0, and a later single mention must still ring. `>` would go permanently silent.
       if (!m.mentioned || m.mentions.length === lastMailSignal) return
@@ -525,7 +570,7 @@ was not written. Fix the relay and call hive_join again.`
   // THE CORE, NOT THE WHOLE FILE. This reply stays in the agent's transcript for the rest of its
   // session, so every character is paid again on every later turn: pasting all of HIVE_RULES.md made
   // the join ~1,900 tokens (27 Sep 2026, bench/token-cost.mjs). The full text is on disk in the folder.
-  const rulesText = JOIN_RULES
+  const rulesText = joinCard(reachLine(session))
   // A TOKEN IS A PERSON (3 Oct 2026). The invite link used to carry the joiner's own token, labelled
   // as the thing to forward, so an agent that shared it handed whoever read it the joiner's identity
   // and access -- in the README's own flow, the host's maintainer token to the outside agent scoped to
@@ -585,7 +630,8 @@ was not written. Fix the relay and call hive_join again.`
       : (browserUrl ? `\nbrowser (people without an agent): ${browserUrl}` : '')
   // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
   // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.
-  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  const ls = listenerStatusFor({ name, room, useToken, passive })
+  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nlistener: ${ls.card}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 // A MIXED BUILD, TOLD TO THE ONE WHO CAN ACT ON IT (2 Oct 2026). The room's own warning names
@@ -657,12 +703,29 @@ function mailbox() {
 // redoes old instructions. Both now meet at the room's per-member cursor, which only moves forward:
 // whichever of them handed a message over, the other knows. A cursor past the end of chat belongs to
 // a rebuilt room and is ignored, as the mailbox itself does. Every peek and take goes through here.
+//
+// HANDED IS NOT READ (0.14.4, Claude-cloud's attack 6, incident I-1). The listener used to publish this
+// agent's READ cursor when it woke on a mention, and this seeked the mailbox past it. An app that was
+// never woken (Antigravity), or crashed before its turn, then never got that mail on its next session,
+// and hive_delivered told the sender READ. Now the room record carries two frontiers: `read` (moved
+// only by this agent's own hive_wait / hive_check) is restored here; `handed` (moved by the listener
+// too) only marks a mention as already handed -- it is delivered once more, tagged, never dropped.
+// A record from an older build has only a count, `at`, and can't say which of the two it was, so
+// it is taken as HANDED: at worst one mention is shown twice, never lost.
 function catchUp(s) {
   if (!s || !s.mailbox) return
   try {
+    const chat = s.hive.doc.getArray('chat')
     const c = RC.cursorOf(s.hive.doc.getMap('cursors'), s.name)
-    const at = (c && Number(c.at)) || 0
-    if (at > s.mailbox.cursor && at <= s.hive.doc.getArray('chat').length) s.mailbox.seek(at)
+    if (!c) return
+    const when = c.handedAt || (c.ts ? new Date(Number(c.ts)).toTimeString().slice(0, 5) : '')
+    if (c.ver >= 2 && c.read) {
+      s.mailbox.seedFrontier(c.read, chat)
+      if (c.handed) s.mailbox.handedBy(c.handed, when)
+      return
+    }
+    const at = Number(c.at) || 0
+    if (at > 0 && at <= chat.length) s.mailbox.handedBy(SEEN.frontierOfPrefix(chat, at).toJSON(), when)
   } catch { /* a room that predates receipts */ }
 }
 function chatArray() { return requireSession().hive.doc.getArray('chat').toArray() }
@@ -723,7 +786,7 @@ function waitForWork(timeoutMs, opts = {}) {
   // `baseChatLen` here and returned `chat.slice(baseChatLen)`, which meant anything posted
   // between one wait returning and the next one starting — the whole time the agent was
   // working — was returned by no path at all. Two paths also hardcoded `newChat: []`.
-  const deliver = (extra) => { const got = box.take(chat.toArray()); persistCursor(); return { ...got, ...extra } }
+  const deliver = (extra) => { const got = box.take(chat); persistCursor(); return { ...got, ...extra } } // the Y.Array: read by id
   // Only wake for ambient chatter if asked to. Defaults to waking on anything, as before.
   const wakeOnMentionOnly = opts.wakeOn === 'mention'
   const mentionsMe = (t) => mentionsName(t, me)
@@ -745,7 +808,7 @@ function waitForWork(timeoutMs, opts = {}) {
         if (dt.length) return finish(deliver({ paused: true, mentioned: true, tasks: dt }))
         // A paused agent stays deaf to chatter but wakes when directly addressed. Unchanged,
         // except the messages come from the mailbox now, so none are skipped.
-        if (box.peek(chat.toArray()).mentioned) finish(deliver({ paused: true, tasks: [] }))
+        if (box.peek(chat).mentioned) finish(deliver({ paused: true, tasks: [] }))
       }
       const onCtl = check, onChat = check, onTask = check
       controls.observe(onCtl); chat.observe(onChat); tmap.observe(onTask)
@@ -765,8 +828,8 @@ function waitForWork(timeoutMs, opts = {}) {
   if (ready.length) return Promise.resolve(deliver({ tasks: ready }))
   // Anything already unread is handed over immediately rather than waited past — that backlog
   // is exactly what used to be unreachable.
-  if (box.hasUnread(chat.toArray())) {
-    const pending = box.peek(chat.toArray())
+  if (box.hasUnread(chat)) {
+    const pending = box.peek(chat)
     if (!wakeOnMentionOnly || pending.mentioned) return Promise.resolve(deliver({ tasks: [] }))
   }
   return new Promise((resolve) => {
@@ -774,7 +837,7 @@ function waitForWork(timeoutMs, opts = {}) {
     const finish = (v) => { if (!done) { done = true; tmap.unobserve(onTask); chat.unobserve(onChat); controls.unobserve(onCtl); if (until) { try { state.unobserve(onState) } catch { /* never observed */ } } resolve(v) } }
     const onTask = () => { const a = accepted(); if (a.length) finish(deliver({ tasks: a })) }
     const onChat = () => {
-      const seen = box.peek(chat.toArray())
+      const seen = box.peek(chat)
       if (!seen.unreadCount) return                      // only this agent's own messages — not mail
       if (wakeOnMentionOnly && !seen.mentioned) return    // ambient chatter, and the caller opted out
       finish(deliver({ tasks: accepted() }))
@@ -787,7 +850,7 @@ function waitForWork(timeoutMs, opts = {}) {
     tmap.observe(onTask); chat.observe(onChat); controls.observe(onCtl); if (until) state.observe(onState)
     // On timeout, flush anything that arrived rather than dropping it: a message must never
     // expire unread just because the wait window closed on it.
-    setTimeout(() => finish(box.hasUnread(chat.toArray()) ? deliver({ tasks: accepted() }) : null), timeoutMs)
+    setTimeout(() => finish(box.hasUnread(chat) ? deliver({ tasks: accepted() }) : null), timeoutMs)
   })
 }
 
@@ -828,6 +891,48 @@ function collidedNotice(s) {
   } catch { return '' }
 }
 
+function twinNotice(s) {
+  if (!s || !s.twinWarning) return ''
+  return `\n\n⚠ ${s.twinWarning}`
+}
+
+async function settlePresence(hive, timeoutMs = 1500) {
+  if (hive && hive.provider && hive.provider.awareness && typeof hive.sameNameElsewhere === 'function' && !hive.sameNameElsewhere().length) {
+    await new Promise((resolve) => {
+      let timer = null
+      let done = false
+      const finish = () => {
+        if (!done) {
+          done = true
+          clearTimeout(timer)
+          try { hive.provider.awareness.off('change', onChange) } catch { }
+          resolve()
+        }
+      }
+      const onChange = (_changes, origin) => {
+        if (origin !== 'local') finish()
+      }
+      timer = setTimeout(finish, timeoutMs)
+      hive.provider.awareness.on('change', onChange)
+    })
+  }
+}
+
+function listenerStatusFor({ session: s, name, room, useToken, passive } = {}) {
+  const targetName = name || (s && s.name)
+  const targetRoom = room || (s && s.room)
+  const isPassive = passive !== undefined ? !!passive : !!(s && s.passive)
+  const isAuthed = useToken !== undefined ? !!useToken : !!(s && s.authed)
+  const how = !isAuthed && !isPassive ? listenHow(clientName()) : ''
+  if (!how) return { enabled: false, status: 'not used on this client', card: 'idle with hive_wait' }
+  const armed = isArmed({ name: targetName, room: targetRoom })
+  return {
+    enabled: true,
+    status: armed ? 'running' : 'not running',
+    card: armed ? 'running' : 'not running',
+  }
+}
+
 // A KEY IN A FILE KEEPS THE FILE HERE (3 Oct 2026; sync.js heldForSecret). The agent that pasted it
 // is usually the one that needs telling, and the room line about it is in that agent's own name.
 function withheldNotice(s) {
@@ -844,13 +949,13 @@ function withheldNotice(s) {
 
 const TOOLS = [
   { name: 'hive_join', description: 'Join a Hivecode room, or host a new one, for a folder. Uses the join link if given, else <dir>/.hive.json, else hosts. Returns the room details and the rules you must follow.',
-    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch (npx -y hivecode-mcp@latest branch <name>)' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' }, private: { type: 'boolean', description: 'host a NEW room only people you invite can join' } } } },
+    inputSchema: { type: 'object', properties: { link: { type: 'string', description: 'join link "wss://relay|room"' }, dir: { type: 'string', description: 'folder to sync; default ~/hivecode/<room>/<name>. Never share a folder with another participant.' }, name: { type: 'string', description: 'your display name in the room' }, owner: { type: 'string', description: 'the human who approves tasks aimed at you' }, token: { type: 'string', description: 'token for a secured room (default $HIVE_TOKEN)' }, kind: { type: 'string', description: '"ai" (default) or "human"' }, passive: { type: 'boolean', description: 'true = a listener or bot that never takes turns or answers' }, branch: { type: 'string', description: 'instead of link: the room bound to this git branch' }, repo: { type: 'string', description: 'the repo for branch (default: your working directory)' }, private: { type: 'boolean', description: 'host a NEW room only people you invite can join' } } } },
   { name: 'hive_assign', description: 'Give a task to a participant by name. A task for an AI with an owner stays PENDING until that owner approves.',
     inputSchema: { type: 'object', properties: { to: { type: 'string', description: 'participant name' }, text: { type: 'string', description: 'the task' } }, required: ['to', 'text'] } },
   { name: 'hive_read_tasks', description: 'Tasks aimed at you (act only on accepted ones) and all pending tasks awaiting approval.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_wait', description: 'Your idle state. Blocks until there is approved work, mail for you, or a state flag you named reaches its value, then returns all of it; returns at once if any is already true. Loop: hive_wait -> work -> hive_complete -> hive_wait.',
-    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60, 110 in Claude Code and Antigravity; max 300, kept under your app\'s own tool deadline)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: '"any" (default), or "mention" = wake only when @mentioned or assigned; other mail still arrives on the next wake' }, until: { type: 'object', description: 'wake when a project state key reaches a value: {key, is}, {key, in: [...]}, {key, not} (unset counts as not), or {key} = set at all. The result carries stateReached.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
+  { name: 'hive_wait', description: 'Blocks until there is approved work, mail for you, or a state flag you named reaches its value, then returns all of it; returns at once if any is already true. Idle with it on clients that have no listener (hive_join says which).',
+    inputSchema: { type: 'object', properties: { timeoutSeconds: { type: 'number', description: 'max seconds to wait (default 60; 110 in Claude Code and Antigravity; max 300)' }, wakeOn: { type: 'string', enum: ['any', 'mention'], description: '"any" (default), or "mention" = wake only when @mentioned or assigned; other mail still arrives on the next wake' }, until: { type: 'object', description: 'wake when a project state key reaches a value: {key, is}, {key, in: [...]}, {key, not} (unset counts as not), or {key} = set at all. The result carries stateReached.', properties: { key: { type: 'string' }, is: { type: 'string' }, in: { type: 'array', items: { type: 'string' } }, not: { type: 'string' } }, required: ['key'] } } } },
   { name: 'hive_check', description: 'Non-blocking check for use mid-task: unread mail for you and approved work, returned at once. Call it between edits; if it reports priority "stop", handle that first.',
     inputSchema: { type: 'object', properties: { peek: { type: 'boolean', description: 'true = look without marking messages read' } } } },
   { name: 'hive_approve', description: 'Approve a pending task for an AI you own; it may then act on it.',
@@ -861,8 +966,8 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: 'manifest files to review' }, verdict: { type: 'string', enum: ['pass', 'fail'], description: 'review verdict: pass or fail' }, note: { type: 'string', description: 'review notes explaining verdict' } }, required: ['files', 'verdict'] } },
   { name: 'hive_complete', description: 'Mark a task you were doing as done, with an optional note.',
     inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'task id' }, note: { type: 'string', description: 'what was done' } }, required: ['id'] } },
-  { name: 'hive_say', description: 'Post to the room chat. Put @Name on anything meant for someone: a message naming nobody is ambient and gets skipped. Announce a file before you edit it.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = [!]: the recipient handles it before continuing' }, needsReply: { type: 'boolean', description: 'true = a question: tracked until YOU close it with hive_answered; you are told at once if someone you named is not here' }, replyWithinMinutes: { type: 'number', description: 'remind you after this many minutes (default 10)' } }, required: ['text'] } },
+  { name: 'hive_say', description: 'Post to the room chat. Put @Name on anything meant for someone: a message naming nobody is ambient and gets skipped.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'the message' }, urgent: { type: 'boolean', description: 'true = [!]: the recipient handles it before continuing' }, needsReply: { type: 'boolean', description: 'true = a question: tracked until you close it with hive_answered' }, replyWithinMinutes: { type: 'number', description: 'remind you after this many minutes (default 10)' } }, required: ['text'] } },
   { name: 'hive_delivered', description: 'Did recipients actually READ what you said? Per recipient: READ; UNREAD (here, behind); UNKNOWN (no read position, e.g. a human client, so silence means nothing); UNREACHABLE (left, or you are offline). Check before concluding someone is ignoring you.',
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'recent addressed messages to check (default 10)' } } } },
   { name: 'hive_answered', description: 'Close a question you asked with needsReply once you have what you needed. Only the asker can close it; a reply alone does not.',
@@ -872,13 +977,13 @@ const TOOLS = [
   { name: 'hive_busy', description: 'Mark yourself mid-task: whoever @mentions you is told to expect a delay. Posts nothing, silences nothing, expires by itself. Clear it when you finish.',
     inputSchema: { type: 'object', properties: { what: { type: 'string', description: 'what you are doing, in a few words' }, minutes: { type: 'number', description: 'how long (default 10)' }, clear: { type: 'boolean', description: 'true = free again' } } } },
   { name: 'hive_read_chat', description: 'Read recent room chat: what people and agents are doing and saying.',
-    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many recent messages (default 30)' }, mentioningMe: { type: 'boolean', description: 'true = only messages that @mention you, across all history' }, unreadOnly: { type: 'boolean', description: 'true = only what you have not been handed yet (does not mark it read)' }, full: { type: 'boolean', description: 'true = long messages whole (other people\'s are cut at 280 chars by default)' } } } },
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: 'how many recent messages (default 30)' }, mentioningMe: { type: 'boolean', description: 'true = only messages that @mention you, across all history' }, unreadOnly: { type: 'boolean', description: 'true = only what you have not been handed yet (does not mark it read)' }, full: { type: 'boolean', description: 'true = long messages whole (else cut at 280 chars)' } } } },
   { name: 'hive_read_board', description: 'Recent whole-file rewrites: who, which file, which symbols. If a file you plan to edit was just rewritten, re-read it first.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_claim', description: 'Claim a file (or region) before you edit it. Returns whether you got it; if not, someone holds it, so work on something else. Claims expire; hive_release when done.',
+  { name: 'hive_claim', description: 'Claim a file (or region) before you edit it (new behaviour others rely on: post its design first); if refused, someone holds it, so do other work. A claim lasts 5 min, renews when you claim again, and holds at most 15 min in a row (then a 15 min wait): release and re-claim between long steps. hive_release when done.',
     inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'file path or region id' }, intent: { type: 'string', description: 'what you intend to do' } }, required: ['region'] } },
-  { name: 'hive_release', description: 'Hand a file back. If the room set a gate, it runs in your folder first, and a failing check REFUSES the release: the file stays yours and retrying will not help. Fix what it reported, or force with a reason to abandon the work.',
-    inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'file path or region id' }, force: { type: 'boolean', description: 'release despite a failing gate; recorded against you and announced; for abandoned work only' }, why: { type: 'string', description: 'why the work is abandoned (give it whenever force is true)' } }, required: ['region'] } },
+  { name: 'hive_release', description: 'Hand a file back. A room gate your person approved runs in your folder first; a failing check REFUSES the release: the file stays yours and retrying will not help. Fix it, or force with a reason to abandon the work. An unapproved gate does not run (Q592).',
+    inputSchema: { type: 'object', properties: { region: { type: 'string', description: 'file path or region id' }, force: { type: 'boolean', description: 'release despite a failing gate; recorded and announced; for abandoned work only' }, why: { type: 'string', description: 'why the work is abandoned (give it whenever force is true)' } }, required: ['region'] } },
   { name: 'hive_claims', description: 'The live claim board: who holds which file. Authoritative; read it instead of asking the room.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_edit', description: 'Write a file through the medium (preferred over editing on disk): your intent and the exact change are signed into the provenance ledger as it lands. Claim the file first. Changing existing lines: pass old (whole lines, exactly as you read them) and new; if those lines changed since you read them it is refused and nothing is written. A whole new file: pass content.',
@@ -893,11 +998,11 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} } },
   { name: 'hive_leave', description: 'Leave the room and stop syncing.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_set_state', description: 'PM only: set a global project state flag (e.g. key="contract", val="READY") that blocks or unblocks agents. Short enum values only; text belongs in files.',
+  { name: 'hive_set_state', description: 'Set a room-wide state flag (e.g. key="contract", val="READY") that blocks or unblocks agents waiting on it. Any member can set one. Short enum values only; text belongs in files.',
     inputSchema: { type: 'object', properties: { key: { type: 'string', description: 'flag name' }, val: { type: 'string', description: 'short value' } }, required: ['key', 'val'] } },
   { name: 'hive_read_state', description: 'Read the global project state flags.',
     inputSchema: { type: 'object', properties: {} } },
-  { name: 'hive_set_schema', description: 'PM only: validate a state key with JSON rules: enum, transitions (legal moves) and requires (what must already hold to arrive). Example: {"enum":["PLANNING","READY","APPROVED"],"transitions":{"PLANNING":["READY"],"READY":["APPROVED"]},"requires":{"APPROVED":{"tests":"GREEN"}}}',
+  { name: 'hive_set_schema', description: 'Validate a state key with JSON rules: enum, transitions (legal moves) and requires (what must already hold to arrive). Example: {"enum":["PLANNING","READY","APPROVED"],"transitions":{"PLANNING":["READY"],"READY":["APPROVED"]},"requires":{"APPROVED":{"tests":"GREEN"}}}',
     inputSchema: { type: 'object', properties: { key: { type: 'string', description: 'state key' }, rules: { type: 'object', description: 'the JSON rules' } }, required: ['key', 'rules'] } },
   { name: 'hive_attest', description: 'Record what YOUR folder holds for a file (bytes, lines) so peers can compare; a different size from another peer warns everyone. Two matching attestations from different peers are the only proof a write landed.',
     inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'workspace-relative path' }, bytes: { type: 'number', description: 'exact byte count in your folder' }, lines: { type: 'number', description: 'line count in your folder' } }, required: ['file', 'bytes'] } },
@@ -1291,7 +1396,7 @@ async function dispatch(req) {
           return text(`${mine.length} message(s) addressed to you:\n` + mine.map(formatMessage).join('\n'))
         }
         if (args.unreadOnly) {
-          const seen = mailbox().peek(all)
+          const seen = mailbox().peek(requireSession().hive.doc.getArray('chat'))
           if (!seen.unreadCount) return text('(nothing unread)')
           return text(`${seen.unreadCount} unread (still marked unread — hive_check or hive_wait will hand these over):\n` + seen.messages.map(formatMessage).join('\n'))
         }
@@ -1313,7 +1418,8 @@ async function dispatch(req) {
         const s = requireSession()
         const all = chatArray()
         const box = mailbox()
-        const got = args.peek ? box.peek(all) : box.take(all)
+        const ychat = s.hive.doc.getArray('chat') // the mailbox reads by Yjs id; `all` stays for the plain-array helpers below
+        const got = args.peek ? box.peek(ychat) : box.take(ychat)
         if (!args.peek) persistCursor()
         const tasks = [...s.hive.doc.getMap('tasks').values()].filter((t) => t.to === s.name && t.status === 'accepted')
         // WHO IS STILL WAITING ON YOU. Read mail is not answered mail: the cursor advances the
@@ -1357,8 +1463,18 @@ async function dispatch(req) {
           parts.push('(your claims were just refreshed — the files you hold stay yours while you deal with this)')
           parts.push(got.mentions.filter((m) => priorityOf(m.text) === 'stop').map(formatMessage).join('\n'))
         } else if (got.mentioned) {
-          parts.push(`📣 ${got.mentions.length} message(s) addressed to YOU — answer at your next safe stopping point:`)
-          parts.push(got.mentions.map(formatMessage).join('\n'))
+          // A mention your listener already handed over is shown ONCE more, on its own line and marked,
+          // never as new mail to answer (A6): if your app was woken with it, it is probably done.
+          const fresh = got.mentions.filter((m) => !m.handed)
+          const handedOver = got.mentions.filter((m) => m.handed)
+          if (fresh.length) {
+            parts.push(`📣 ${fresh.length} message(s) addressed to YOU — answer at your next safe stopping point:`)
+            parts.push(fresh.map(formatMessage).join('\n'))
+          }
+          if (handedOver.length) {
+            parts.push(`↪ ${handedOver.length} already handed to you by your listener (shown once; if you already acted on it, ignore it):`)
+            parts.push(handedOver.map(formatMessage).join('\n'))
+          }
         }
         const ambient = got.messages.filter((m) => !mentionsName(m.text, s.name))
         const dig = ambientDigest(ambient)
@@ -1378,7 +1494,7 @@ async function dispatch(req) {
             }
           }
         } catch { }
-        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s) + collidedNotice(s))
+        return text(parts.join('\n\n') + owedLine + unsharedPart + unwritableNotice(s) + withheldNotice(s) + collidedNotice(s) + twinNotice(s))
       }
       case 'hive_read_board': { const b = boardMap(); return text(b.length ? b.map((e) => `${e.at} ${e.by} rewrote ${e.file} (${e.churn}) — touched: ${(e.symbols || []).join(', ')}`).join('\n') : '(no rewrites logged)') }
       case 'hive_assign': { enforceDcoLock(); const taskKey = findSecrets(String(args.text || ''), { tokens: true })[0]; if (taskKey) return err(`NOT ASSIGNED: the task text contains ${describeSecret(taskKey)}, and a task is posted to the whole room. Say where the key is kept instead.`); const id = requireSession().hive.assign(String(args.to || ''), String(args.text || '')); return id ? text(`assigned task ${id} to ${args.to} (pending approval if they have an owner)`) : err('need to and text') }
@@ -1461,9 +1577,15 @@ async function dispatch(req) {
         // Direct address is separated from ambient traffic on every path. It used to be that
         // only a PAUSED agent got this distinction, so a working agent could not tell "stop,
         // wrong file" from two other agents talking to each other.
-        const mentionBlock = (r) => (r.mentions && r.mentions.length)
-          ? `${r.priority === 'stop' ? '🛑 STOP — handle this BEFORE anything else' : '📣 ADDRESSED TO YOU'}:\n${r.mentions.map(formatMessage).join('\n')}`
-          : ''
+        // A mention your listener already handed over is shown once more, marked, apart from new mail (A6).
+        const mentionBlock = (r) => {
+          const all = r.mentions || []
+          const fresh = all.filter((m) => !m.handed), handedOver = all.filter((m) => m.handed)
+          const blocks = []
+          if (fresh.length) blocks.push(`${r.priority === 'stop' ? '🛑 STOP — handle this BEFORE anything else' : '📣 ADDRESSED TO YOU'}:\n${fresh.map(formatMessage).join('\n')}`)
+          if (handedOver.length) blocks.push(`${handedOver.some((m) => priorityOf(m.text) === 'stop') ? '🛑 URGENT, already handed to you by your listener — if you have not acted on it, do now' : '↪ already handed to you by your listener (shown once; if you already acted on it, ignore it)'}:\n${handedOver.map(formatMessage).join('\n')}`)
+          return blocks.join('\n\n')
+        }
         // Both delivery paths go through the SAME digest. They used to format ambient traffic
         // separately, which is how two copies of a rule drift apart -- the exact hazard that
         // already bit the duplicated reconcile() and the two HIVE_RULES copies.
@@ -1484,22 +1606,25 @@ async function dispatch(req) {
           const waitMsg = armed
             ? '(nothing yet — your background listener is running and will wake you when called: you may end your turn now.)'
             : '(nothing yet — no approved work or new messages in the wait window. Call hive_wait again to keep waiting.)'
-          return text(`${waitMsg}${owedStr}${connStr}${unwritableNotice(sess)}${withheldNotice(sess)}${collidedNotice(sess)}${stateStr}${rulesStr}${ll}`)
+          return text(`${waitMsg}${owedStr}${connStr}${unwritableNotice(sess)}${withheldNotice(sess)}${collidedNotice(sess)}${twinNotice(sess)}${stateStr}${rulesStr}${ll}`)
         }
         const parts = []
         if (r.resumed) parts.push('▶ You were RESUMED by mission control — continue.')
         const mb = mentionBlock(r); if (mb) parts.push(mb)
         if (r.tasks.length) parts.push(`APPROVED WORK — do these now, then hive_complete each:\n${r.tasks.map(fmtTask).join('\n')}`)
         const ab = ambientBlock(r); if (ab) parts.push(ab)
-        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()) + withheldNotice(requireSession()) + collidedNotice(requireSession()))
+        return text(`${owedStr}${connStr}${stateStr}${rulesStr}\n` + (parts.join('\n\n') || '(resumed — no queued work yet. Call hive_wait again.)') + unwritableNotice(requireSession()) + withheldNotice(requireSession()) + collidedNotice(requireSession()) + twinNotice(requireSession()))
       }
       case 'hive_delivered': {
         const s2 = requireSession()
         const conn = (() => { try { return connectionOf(s2.hive) } catch { return null } })()
         const connected = !conn || !!conn.connected
         const here = new Set(s2.hive.members().map((m) => String(m.name).toLowerCase()))
+        const ych = s2.hive.doc.getArray('chat')
+        const its = SEEN.itemsOf(ych)
         const rs = RC.receipts({
-          chat: s2.hive.doc.getArray('chat').toArray(),
+          chat: its.map((x) => x.value),
+          ids: its.map((x) => x.id), // so a message behind someone's position is UNREAD, not a false READ
           cursors: s2.hive.doc.getMap('cursors'),
           me: s2.name,
           present: (n) => here.has(String(n).toLowerCase()),
@@ -1737,6 +1862,7 @@ Then call hive_release.`)
         const r = requireSession().hive.release(region, { force: !!args.force, why: String(args.why || '') })
         if (r && r.ok === false) return text(r.message)
         const check = await releaseCheck(requireSession(), region)
+        if (r && r.gateSkipped) return text(`released ${region}, NOT CHECKED\n${r.message}${check}`)
         if (r && r.forced) return text(`released ${region} WITHOUT passing the gate — recorded against your name in the room${check}`)
         return text(`released ${region}${r && r.gated ? ' (gate passed)' : ''}${check}`)
       }
@@ -1853,16 +1979,19 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
         // reportable and "where is my source going" was not. A bare relay URL is not an
         // answer to the second -- the public relay and a company's own are the same shape.
         const pv = checkRelay({ relay: s.relay, env: process.env, dir: s.dir, fs, room: s.room })
+        const ls = listenerStatusFor({ session: s })
         return text({
           room: s.room, relay: s.relay, dir: s.dir, name: s.name, hivecode: VERSION, ...(BUILD ? { build: BUILD } : {}), ...(updateNotice() ? { update: updateNotice() } : {}),
           ...(clientName() ? { app: clientName() } : {}), // which agent app this is: support needs it, and so does waitPolicy
+          listener: ls.status,
           privacy: pv.headline,
           access: isSecuredRoom(s.room) ? (loadRoomKey(s.room) ? 'personal: invite only, and you host it (npx -y hivecode-mcp@latest invite <name>)' : 'personal: invite only') : 'open: anyone with the link can join',
           ...(pv.warn ? { privacyWarning: pv.warn } : {}),
           ...(pv.pin && pv.pin.pinned ? { relayPin: pv.pin.origins.join(', ') } : {}),
-          unread: mailbox().peek(chatArray()).unreadCount,
+          unread: mailbox().peek(requireSession().hive.doc.getArray('chat')).unreadCount,
           connected: conn ? conn.connected : null,
           filesSynced: conn ? `${conn.filesSynced}/${conn.files}` : null,
+          ...(s.twinWarning ? { twinWarning: s.twinWarning } : {}),
           // How full this client's bounded working set is: files open / the bound (HIVE_MAX_OPEN_FILES, or
           // 4096 on one socket, 128 with a socket per file). At the bound, files that were in the room
           // at join arrive when touched; new ones still open (sync.js newRemote), and `waiting` counts
@@ -1875,6 +2004,9 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
           ...(conn && conn.unwritable && conn.unwritable.length ? { unwritable: { files: conn.unwritable.map((u) => `${u.path} (${u.code})`), meaning: 'read-only or locked in your folder, so your copy is older than the room\'s; each is written as soon as it can be' } } : {}),
           ...(conn && conn.collided && conn.collided.length ? { collided: { files: conn.collided.map((c) => `${c.path} (your folder has ${c.with})`), meaning: 'in the room, but this disk cannot hold both names, so not in your folder; editing yours never changes it' } } : {}),
           ...(conn && conn.withheld && conn.withheld.length ? { withheld: { files: conn.withheld.map((w) => `${w.path}: ${w.kind}, line ${w.line}`), meaning: 'NOT shared: each contains a key or token the room does not have. Read it from the environment (.env is never shared); the file is shared on its next save without it' } } : {}),
+          // What only THIS folder needed to know, kept off the room's chat (0.14.4, C5): a local copy kept after
+          // a room write, a file that differed at join, a teammate on the same release from another commit.
+          ...((() => { try { const n = s.hive.notices ? s.hive.notices() : []; return n.length ? { thisFolderOnly: n.slice(-8).map((x) => `${new Date(x.at).toISOString().slice(11, 19)}Z ${x.text}`) } : {} } catch { return {} } })()),
         })
       }
       // HIV-P11. A deliberate leave is the one departure the room KNOWS about, so the activity
@@ -1946,11 +2078,19 @@ Nothing was written. This tool exists to guarantee the change syncs to every pee
 let mailSig = ''
 let mailNotice = 0
 
+// A mention this agent's listener already handed over is not NEW mail for a notice (A6). hive_wait
+// and hive_check still deliver it once more, marked, so an app that was never woken still gets it;
+// a notice on every tool reply would bring back the 19-duplicates storm (listener-mail-once-test).
+// An URGENT one still rings: a stand-down nobody saw is the worse of the two failures.
+function newMailOnly(m) {
+  const mentions = (m.mentions || []).filter((x) => !x.handed || priorityOf(x.text) === 'stop')
+  return { ...m, mentions, mentioned: mentions.length > 0 }
+}
 function mailBanner() {
   try {
     if (!session || !session.mailbox) return ''
     catchUp(session)
-    const m = session.mailbox.peek(chatArray())
+    const m = newMailOnly(session.mailbox.peek(session.hive.doc.getArray('chat')))
     // EVERY notice says it supersedes the earlier ones: a context is append-only, so an old "you have
     // mail" can only be retired by a newer notice that says so. What is said once per session (see
     // firstTime) is the explanation in the body.
@@ -2034,7 +2174,7 @@ function urgentGate(name) {
   try {
     if (!URGENT_GATED.has(name) || !session || !session.mailbox) return ''
     catchUp(session)
-    const m = session.mailbox.peek(chatArray())
+    const m = session.mailbox.peek(session.hive.doc.getArray('chat'))
     const urgent = (m.mentions || []).filter((x) => x && priorityOf(x.text) === 'stop')
     if (!urgent.length) return ''
     const shown = urgent.slice(-3).map((x) => `  ${formatMessage(x)}`.slice(0, 600)).join('\n')
@@ -2093,6 +2233,11 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // `npx -y hivecode-mcp@latest branch <name>` binds a room to a git branch; `pr <name>` lands its work on it.
   // A CLI run like setup: nobody is speaking JSON-RPC to it, so it never opens stdio.
   process.exit(await HB.main(process.argv.slice(2)))
+} else if (isEntryPoint && process.argv[2] === 'gate') {
+  // `gate allow --dir <folder> --cmd "<exact>"`: a person approves the room's hand-back check for this
+  // machine (0.14.4 S-1). A command, never a tool: an agent persuaded by a message cannot consent.
+  const { main: gateMain } = await import('./hive-gate.js')
+  process.exit(await gateMain(process.argv.slice(2)))
 } else if (isEntryPoint && (process.argv[2] === 'invite' || process.argv[2] === 'revoke')) {
   // `invite <name>` makes one person's link into a personal room this machine hosts; `revoke <name>`
   // takes it back. Commands rather than tools: see hive-room-key.js for why.
@@ -2177,6 +2322,16 @@ function waitDefaultSeconds() { return waitPolicy().def }
 // same build, and both use forward slashes, which bash and PowerShell each accept. A token-gated
 // room gets no line: the agent's shell does not hold this server's token, and a listener that
 // cannot join is a false "listening". (tests/mcp-wait-test.mjs)
+// THE JOIN CARD SAYS HOW TO STAY REACHABLE ON THIS CLIENT (0.14.4 rules rewrite). The rules tell
+// every agent to "do what hive_join told you", so join must always tell it something true: the
+// listener where the server knows one works, hive_wait everywhere else (other apps, token-checked
+// rooms, passive participants).
+function reachLine(s) {
+  const how = s && !s.authed && !s.passive ? listenHow(clientName()) : ''
+  if (!how) return REACH_BY_WAIT
+  const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name, app: clientName() })
+  return `1. Stay reachable: before your turn ends, start your listener. ${how} It ends, and that wakes you, when you are addressed or after ${LISTEN_IDLE_MIN} quiet minutes; then start it again:\n   ${cmd}`
+}
 function listenLine(s) {
   // A passive participant never answers and nobody waits on it, so there is nothing to wake it for.
   const how = s && !s.authed && !s.passive ? listenHow(clientName()) : ''
@@ -2204,6 +2359,9 @@ export const _test = {
   // process forgets between them.
   forget: (key) => explained.delete(key),
   mixedLine,
+  listenerStatusFor,
+  settlePresence,
+  joinRoom,
   callTool: (name, args = {}) =>
     server._requestHandlers.get('tools/call')({ method: 'tools/call', params: { name, arguments: args } }, {}),
 }

@@ -55,6 +55,7 @@
  */
 import fs from 'fs'
 import path from 'path'
+import crypto from 'crypto'
 import { mentionsName, unansweredFor } from './hive-mailbox.js'
 import { isArmed, listenCommand, listenHow, listenOrder } from './hive-listen.js'
 import { readAgents, agentForHook } from './hive-session.js'
@@ -128,32 +129,46 @@ export function decide(o) {
   return { ...d, block: true, reason: d.block ? `${d.reason}\n\n${listenLine}` : listenLine, listenBlocks: listenBlocks + 1 }
 }
 
-function obligations({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
+// WHICH MENTIONS WERE ALREADY BLOCKED ON, BY IDENTITY, NOT BY LINE (0.14.4). The watermark was a line
+// count, `seen`: everything after line N was new. But the room's chat is a Y.Array, and a message a
+// peer pushed while its update was in flight integrates at its ORIGINAL position, behind lines already
+// counted -- so a late mention was rendered mid-file and this hook never blocked on it (hive-seen.js
+// has the incident). This file has no Yjs, so a mention is identified by what HIVE_CHAT.md carries:
+// author, time and text. The only messages that can share that are exact duplicates -- the same author
+// saying the same words in the same second -- and blocking once for both is the right answer anyway.
+const fingerprint = (m) => crypto.createHash('sha1').update(`${m.by}\u0000${m.at}\u0000${m.text}`).digest('hex').slice(0, 16)
+
+function obligations({ chat, tasks, me, seen, handled = null, taskBlocks, nudged = [] }) {
   const msgs = parseChat(chat)
   const nowSeen = msgs.length
-  // A cursor past the end means this is a different (rebuilt or switched) room -- start over
-  // rather than treating the whole history as unread and blocking on all of it.
-  const from = seen > nowSeen ? 0 : seen
-  const fresh = msgs.slice(from)
-
-  const mail = fresh.filter((m) =>
+  const isMail = (m) =>
     m.kind !== 'system' &&
     String(m.by).toLowerCase() !== String(me).toLowerCase() &&  // never block on our own post
-    mentionsName(m.text, me))
+    mentionsName(m.text, me)
+  // `handled` (0.14.4): the fingerprints of every mention already blocked on. A state written by an
+  // older build has only the count; it is migrated once, as the prefix it described. A count past the
+  // end means a different (rebuilt or switched) room: start over rather than block on its history.
+  let done
+  if (Array.isArray(handled)) done = new Set(handled)
+  else done = new Set(msgs.slice(0, seen > nowSeen ? 0 : seen).filter(isMail).map(fingerprint))
+  const mail = msgs.filter((m) => isMail(m) && !done.has(fingerprint(m)))
+  // After this decision every mention in the file is handled: blocked on now, or before. Kept to what
+  // the file holds, so it is bounded by the room's history and a rebuilt room sheds the old ones.
+  const nextHandled = [...new Set(msgs.filter(isMail).map(fingerprint))]
 
   if (mail.length) {
     const quoted = mail.slice(0, 5).map((m) => `  ${m.by}: ${m.text.replace(/\s+/g, ' ').slice(0, 220)}`)
     const more = mail.length > 5 ? `\n  ... and ${mail.length - 5} more` : ''
     return {
-      block: true, seen: nowSeen, taskBlocks: 0,
+      block: true, seen: nowSeen, handled: nextHandled, taskBlocks: 0,
       // Blocking here also spends this message's ONE nudge, so the debt branch below cannot
       // charge for the same message a second time. One block per message, whatever the reason.
       nudged: [...nudged, ...mail.map((m) => m.by + '|' + m.at)].slice(-200),
       reason: `You are in a Hivecode room and ${mail.length} message${mail.length > 1 ? 's' : ''} ` +
         `addressed to you arrived while you were working:\n\n${quoted.join('\n')}${more}\n\n` +
         `Do not stop -- they are waiting on a reply from you. Answer with hive_say (put @Name on ` +
-        `it), then go back to hive_wait. hive_wait is your idle state; ending your turn makes you ` +
-        `unreachable and nobody in the room finds out.`,
+        `it), then stay reachable the way this client does it (your listener, or hive_wait): a ` +
+        `participant who stops hearing still looks present, and nobody in the room finds out.`,
     }
   }
 
@@ -172,7 +187,7 @@ function obligations({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
   if (unnudged.length) {
     const quoted = unnudged.slice(0, 3).map((o) => `  ${o.from}: ${o.text.replace(/\s+/g, ' ').slice(0, 200)}`)
     return {
-      block: true, seen: nowSeen, taskBlocks,
+      block: true, seen: nowSeen, handled: nextHandled, taskBlocks,
       // Recorded BEFORE returning, exactly as the watermark is, so a question cannot block a
       // second time even if whatever happens next goes wrong. Capped so the state file cannot
       // grow without bound in a long-lived room.
@@ -181,7 +196,7 @@ function obligations({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
         `still waiting on a reply from you:\n\n${quoted.join('\n')}\n\n` +
         `Answer with hive_say and name them. "Not yet — I am on X, I will come back to you" is a ` +
         `complete answer; silence is the one thing they cannot act on, and nothing tells them you ` +
-        `stopped. Then call hive_wait.`,
+        `stopped. Then stay reachable (your listener, or hive_wait).`,
     }
   }
 
@@ -189,11 +204,11 @@ function obligations({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
   if (open.length && taskBlocks < MAX_TASK_BLOCKS) {
     const quoted = open.slice(0, 3).map((t) => `  [${t.id}] from ${t.from}: ${t.text.replace(/\s+/g, ' ').slice(0, 220)}`)
     return {
-      block: true, seen: nowSeen, taskBlocks: taskBlocks + 1, nudged,
+      block: true, seen: nowSeen, handled: nextHandled, taskBlocks: taskBlocks + 1, nudged,
       reason: `You are in a Hivecode room with ${open.length} accepted task${open.length > 1 ? 's' : ''} ` +
         `still open:\n\n${quoted.join('\n')}\n\n` +
         `Finish the work and call hive_complete with the task id, or say why you are blocked with ` +
-        `hive_say (@ the person who assigned it). Then call hive_wait. If you genuinely cannot ` +
+        `hive_say (@ the person who assigned it). Then stay reachable. If you genuinely cannot ` +
         `proceed, say so in the room first -- do not just stop, nobody would learn that you had.`,
     }
   }
@@ -202,7 +217,7 @@ function obligations({ chat, tasks, me, seen, taskBlocks, nudged = [] }) {
   // as it being resolved, so hold the counter rather than resetting it while it is still there.
   // Debts and tasks share the counter deliberately: they are the same kind of obligation, and
   // two separate counters would let an agent be pinned for 2x MAX_TASK_BLOCKS turns.
-  return { block: false, seen: nowSeen, taskBlocks: open.length ? taskBlocks : 0, nudged }
+  return { block: false, seen: nowSeen, handled: nextHandled, taskBlocks: open.length ? taskBlocks : 0, nudged }
 }
 
 /** Walk up from `start` looking for the session file; the hook's cwd is usually but not always
@@ -266,7 +281,7 @@ async function main() {
 
     const d = decide({
       chat, tasks: read('HIVE_TASKS.md'), me: session.name,
-      seen: Number(st.seen) || 0, taskBlocks: Number(st.taskBlocks) || 0,
+      seen: Number(st.seen) || 0, handled: Array.isArray(st.handled) ? st.handled : null, taskBlocks: Number(st.taskBlocks) || 0,
       nudged: Array.isArray(st.nudged) ? st.nudged : [],
       listening, listenLine, listenBlocks: Number(st.listenBlocks) || 0,
     })
@@ -274,7 +289,7 @@ async function main() {
     // GUARD 2: write the watermark BEFORE returning the block, so this message can never block a
     // second time even if what happens next goes wrong.
     try {
-      prev[key] = { seen: d.seen, taskBlocks: d.taskBlocks, nudged: d.nudged || [], listenBlocks: d.listenBlocks, at: Date.now() }
+      prev[key] = { seen: d.seen, handled: d.handled, taskBlocks: d.taskBlocks, nudged: d.nudged || [], listenBlocks: d.listenBlocks, at: Date.now() }
       fs.writeFileSync(statePath, JSON.stringify(prev, null, 2))
     } catch { /* a watermark we cannot persist is a reason to allow, never to fail */ }
 
