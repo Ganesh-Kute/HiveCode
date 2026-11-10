@@ -939,6 +939,18 @@ export function branchHeadOf(root, branch) {
  *    (unless allowUnreviewed is true and no file has a fail or stale-after-fail review).
  * 4. No unresolved FAIL review exists on any planned file.
  */
+// Why a done task whose only changes are unsigned cannot land, and what its author does about it.
+// The second half is the way that was measured to work (10 Nov 2026): saving the same text again
+// signs nothing, and a signed change on top of an unsigned one is refused as Q506, because the signed
+// history then starts from a text the branch never held.
+function unsignedWhy(orphans) {
+  const shown = orphans.slice(0, 8).join(', ') + (orphans.length > 8 ? ` and ${orphans.length - 8} more` : '')
+  const one = orphans.length === 1
+  return `the task is done, but nothing can land: ${shown} ${one ? 'was' : 'were'} changed in the room by a client that signs nothing, ` +
+    `so Hivecode cannot say who wrote ${one ? 'it' : 'them'}. Whoever changed ${one ? 'it' : 'them'}: put the branch's version of ${one ? 'the file' : 'each file'} back, ` +
+    'then make the change again from a client that signs (hivecode-mcp signs by itself; a script that calls startSync needs HIVE_PROVENANCE=on).'
+}
+
 export async function whenDone(opts = {}) {
   const {
     link,
@@ -1047,6 +1059,17 @@ export async function whenDone(opts = {}) {
     const plannedFiles = (dryRes.plan || []).flatMap((g) => g.files || [])
     const deletions = dryRes.deletions || []
     const hashes = dryRes.hashes || null
+    const orphans = Array.isArray(dryRes.orphans) ? dryRes.orphans.filter((f) => typeof f === 'string' && f) : []
+
+    // DONE, BUT EVERY CHANGE IS UNSIGNED: NOTHING CAN LAND (10 Nov 2026). Only files with a signed
+    // receipt are committed. Issue #10's three files were saved by a client that signs nothing, so
+    // the plan was empty; with no planned file there was nothing to review either, this answered
+    // ready, the real landing returned ok with no pull request, and the watcher announced "landed as
+    // PR #undefined". A refusal with a code, so it is said once on the issue and in the room.
+    if (!plannedFiles.length && !deletions.length && orphans.length) {
+      const why = unsignedWhy(orphans)
+      return { ready: false, refused: true, code: 'Q588', why, reasons: [why], files: [], deletions, orphans, task }
+    }
 
     // 4. Review status check for every planned file
     const reasons = []
@@ -1097,6 +1120,7 @@ export async function whenDone(opts = {}) {
         reasons,
         files: plannedFiles,
         deletions,
+        orphans,
         task,
         plan: dryRes.plan,
         hashes,
@@ -1110,6 +1134,7 @@ export async function whenDone(opts = {}) {
       reviewed,
       files: plannedFiles,
       deletions,
+      orphans,
       task,
       plan: dryRes.plan,
       hashes,
@@ -1268,6 +1293,24 @@ async function landIssueOn(opts = {}) {
       why: landRes.why,
       fingerprint,
       state: nextState,
+    }
+  }
+
+  // A LANDING THAT OPENED NO PULL REQUEST IS NOT A LANDING (10 Nov 2026). landAndOpen answers ok
+  // when there was nothing new to commit and the branch has no commit beyond its base: right for
+  // someone running `pr` by hand, wrong for a done task, whose whole result is the pull request.
+  // Handed back as a refusal, remembered by fingerprint like the others.
+  if (!landRes.pr || !landRes.pr.number) {
+    const left = (landRes.orphans && landRes.orphans.length) ? landRes.orphans : (wd.orphans || [])
+    return {
+      ok: false,
+      code: 'Q589',
+      why: `the task is done, but the landing opened no pull request: there is nothing on ${branch} beyond what it started from` +
+        `${landRes.why ? ` (${landRes.why})` : ''}.` +
+        `${left.length ? ` Not landed, no signed receipt: ${left.join(', ')}.` : ''}` +
+        ' If the work was done, it has to be saved in the room by a client that signs; if the issue needed no change, close it on GitHub.',
+      fingerprint,
+      state: { ...state, lastFailedFingerprint: fingerprint },
     }
   }
 

@@ -217,7 +217,15 @@ export function makeRoomWatcher(o) {
     // are not retried this way: they wait for the room to change.
     let lastFp = a.lastFailedFingerprint || ''
     if (lastFp && a.lastRefusal && now() - (a.refusalTriedAt || a.lastRefusal.at) >= refusalRetryMinutes * 60000) { lastFp = ''; a.refusalTriedAt = now() }
-    const r = await deps.landIssue({ taskId: a.taskId, issue: { number: n, title: it.title }, lastFailedFingerprint: lastFp, allowUnreviewed })
+    let r = await deps.landIssue({ taskId: a.taskId, issue: { number: n, title: it.title }, lastFailedFingerprint: lastFp, allowUnreviewed })
+    // "OK" WITH NO PULL REQUEST IS A REFUSAL, whatever landIssue this is (10 Nov 2026). Issue #10
+    // came back ok with pr = null: this said "issue #10 landed as PR #undefined" in the room and on
+    // the issue, marked it landed and stored openPr = 0, with nothing pushed. hive-room-mode.js
+    // refuses that itself now (Q588, Q589); this is the same rule where the number is printed. A
+    // review fix is sent for a pull request that already exists (a.pr), so it is not judged here.
+    if (r && r.ok && a.kind !== 'review' && !(r.pr && r.pr.number)) {
+      r = { ok: false, code: 'Q589', why: `the landing reported success but opened no pull request${r.why ? ` (${oneLine(r.why, 200)})` : ''}.`, fingerprint: r.fingerprint || '', state: r.state }
+    }
     if (r && !r.ok && r.blocked === 'unreviewed') {
       if (!a.unreviewedSince && !a.unreviewedSaid) {
         a.unreviewedSince = now()
