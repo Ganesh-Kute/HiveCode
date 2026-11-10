@@ -291,15 +291,18 @@ function blockVersions(text) {
 function mergeLateSave(base, mine, theirs, opts) {
   const bv = blockVersions(theirs)
   if (!bv) return null
-  const variants = []
-  const add = (t) => { if (!variants.some((v) => v.text === t.text)) variants.push(t) }
+  const variants = [], lates = []
+  const add = (t, to = variants) => { if (!variants.some((v) => v.text === t.text) && !lates.some((v) => v.text === t.text)) to.push(t) }
   for (const T of bv.versions) {
     if (hasConflictMarkers(T)) return null
     const r = merge3(base, mine, T, opts)
     if (!r.conflict) { add({ text: r.text, mine: false }); continue }
-    add({ text: stripConflictMarkers(r.text, 'local'), mine: true })
+    // The room's versions first, in the block's order, so its header and footer still name its sections;
+    // the late save's versions join after all of them.
     add({ text: stripConflictMarkers(r.text, 'theirs'), mine: false })
+    add({ text: stripConflictMarkers(r.text, 'local'), mine: true }, lates)
   }
+  variants.push(...lates.filter((l) => !variants.some((v) => v.text === l.text)))
   if (variants.length === 1) return { text: variants[0].text, conflict: false }
   // Regions, in the first version's lines, where any other version differs.
   const anchor = variants[0].text.split('\n')
@@ -326,7 +329,8 @@ function mergeLateSave(base, mine, theirs, opts) {
     if (secs.length === 1) out.push(...secs[0])
     else {
       const who = feet[Math.min(ri, feet.length - 1)]
-      const late = variants.some((v) => v.mine) && !/local \(yours\)/.test(who) ? ', local (yours)' : ''
+      const lateName = String(opts.lateName || 'local (yours)').replace(/[\r\n]/g, ' ')
+      const late = variants.some((v) => v.mine) && !who.split(', ').includes(lateName) ? `, ${lateName}` : ''
       out.push(heads[Math.min(ri, heads.length - 1)], ...secs[0], ...secs.slice(1).flatMap((x) => ['=======', ...x]), `>>>>>>> ${who}${late} (${secs.length} versions)`)
     }
     pos = re
@@ -713,6 +717,7 @@ module.exports = {
   merge3,
   lineHunks,
   diff3Lines,
+  blockVersions,
   describeConflicts,
   icrMerge3
 }

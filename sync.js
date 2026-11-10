@@ -24,7 +24,7 @@ import { WebsocketProvider } from 'y-websocket'
 import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
 import { HiveSocket, transportFor } from './hive-transport.js' // a WebSocket, or HTTPS long-poll where WebSockets are refused
 import ignore from 'ignore'
-import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3, lineHunks } from './core.js'
+import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3, lineHunks, blockVersions } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
 import { RULES_MD, AGENT_MANUAL } from './hive-instructions.js'
@@ -323,6 +323,49 @@ export function clashUnion(base, intents, laters = []) {
 // clean merge of several sides that do not clash. Returns { after, text } -- the saves that text held and
 // the text itself -- when `bHash` is the hash of such a text, else null. Never a FUSED union: a version made
 // from fused text would carry the fused line into the resolution as if someone had written it.
+// A SAME-LINE SAVE THAT ARRIVES AFTER THE RACE WAS RESOLVED (P0-F-12). `base` is the text the save was made
+// from and `side` the author's file. The save reached the shared text as a character edit made against
+// `base`, but the room had already replaced that line with a conflict block, so the CRDT put what the save
+// inserted next to the characters it was anchored on, which the block had deleted: `wednes<<<<<<< Bob`.
+// Returns the room's text before the save -- `current` with the save's inserted text taken out -- when
+// that is a well-formed block whose versions are other edits of the lines this save changed. Null
+// otherwise: not this shape, so not ours to repair.
+export function lateOverBlock(base, side, current) {
+  let p = 0
+  while (p < base.length && p < side.length && base[p] === side[p]) p++
+  let s = 0
+  while (s < base.length - p && s < side.length - p && base[base.length - 1 - s] === side[side.length - 1 - s]) s++
+  const ins = side.slice(p, side.length - s)
+  // (Not hasConflictMarkers: the opener this repairs no longer starts its line.)
+  if (!ins || !/<<<<<<< |>>>>>>> /.test(current) || current.includes(side)) return null
+  // Already a version of a block in the room: nothing to repair.
+  const cv = blockVersions(current)
+  if (cv && cv.versions.includes(side)) return null
+  const mine = intentHunks(base, side)
+  if (!mine || !mine.length) return null
+  const lo = mine[0][0], hi = mine[mine.length - 1][1]
+  for (let i = current.indexOf(ins); i >= 0; i = current.indexOf(ins, i + 1)) {
+    // The CRDT can only have put it where its anchor characters were, and the block deleted those: at an
+    // edge of the block, just before its opener or at the end of its closing line. Anywhere else (inside a
+    // version, say) it is someone's text, not a stray.
+    const before = current.slice(0, i), after = current.slice(i + ins.length)
+    const lineStart = before.lastIndexOf('\n') + 1
+    const atOpen = after.startsWith('<<<<<<< ') && lineStart === i
+    const atClose = /^>>>>>>> /.test(current.slice(lineStart, i)) && (after === '' || after[0] === '\n')
+    if (!atOpen && !atClose) continue
+    const x = before + after
+    if (!hasConflictMarkers(x) || /[^\n](<<<<<<< |>>>>>>> )/.test(x)) continue
+    const bv = blockVersions(x)
+    if (!bv || bv.versions.length < 2) continue
+    // Every version the block holds is an edit of this save's lines, from `base`, and of nothing else.
+    const ok = bv.versions.every((v) => {
+      const h = intentHunks(base, v)
+      return h && h.length && h.every(([bs, be]) => be >= lo && bs <= hi)
+    })
+    if (ok) return x
+  }
+  return null
+}
 export function explainBase(base, firsts, bHash) {
   const ids = [...firsts.keys()].sort((x, y) => x - y).slice(0, 6)
   const pick = (k, from = 0) => (k === 0 ? [[]] : ids.slice(from).flatMap((id, i) => pick(k - 1, from + i + 1).map((r) => [id, ...r])))
@@ -1590,6 +1633,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     rememberText(fe, to)
     const me = fe.doc.clientID
     const v = marked ? { b, h, n: name, m: 1, v: vh } : { b, h, n: name }
+    // Our own last save, for P0-F-12: if it reaches the room after a race on its line was resolved, this
+    // client is the one that repairs it. Kept apart from `intents`, which forgets after the window.
+    if (!marked) fe.lastOwn = { base: from, side: to, at: Date.now() }
     fe.intent.set(String(me), v)
     fe.intents.set(me, { ...v, at: Date.now() })
     // An intent only matters while a race could still be arriving. Left in place it stays in the file's
@@ -1601,6 +1647,64 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }, CLASH_WINDOW_MS + 1000)
     if (t.unref) t.unref()
   }
+  // P0-F-12: A SAME-LINE SAVE THAT ARRIVES AFTER ITS RACE WAS RESOLVED (same-line-very-late-test). It was
+  // made at the same moment as the race's saves, but reached the room only after the room had written
+  // the race's block, and the CRDT put what it inserted beside the block (`wednes<<<<<<< Bob`). Any
+  // client that can explain the text that way (lateOverBlock) knows the repair: the late author's
+  // version added to the block (merge3's late-save merge). The late author's own client writes it -- it
+  // is online, its save just arrived -- and every other client holds its disk until it lands. Returns the
+  // bases it took over, so the race path leaves them alone.
+  const LATE_OWN_MS = 2 * 60 * 1000 // a save held longer than this on the way is an offline edit (F4), not a race
+  function checkLate(relPath, txn) {
+    const fe = fileDocs.get(relPath)
+    const taken = new Set()
+    if (!fe || !fe.intent) return taken
+    const current = fe.text.toString()
+    const now = Date.now()
+    const repair = (base, side, who) => {
+      const x = lateOverBlock(base, side, current)
+      return x == null ? null : merge3(base, side, x, { lateName: who }).text
+    }
+    const own = fe.lastOwn
+    if (own && (now - own.at >= LATE_OWN_MS || current === own.side || (blockVersions(current) || { versions: [] }).versions.includes(own.side))) fe.lastOwn = null
+    else if (own) {
+      const final = repair(own.base, own.side, name)
+      if (final != null && final !== current) {
+        fe.lastOwn = null
+        taken.add(contentHash(own.base))
+        fe.clashHold = { final, until: now + CLASH_HOLD_MS, late: true }
+        log(`[${name}] ${relPath}: this save of a line reached the room after a race on that line was resolved; adding it to the block`)
+        setTimeout(() => {
+          if (stopped || fe.text.toString() !== current) { if (fe.clashHold && fe.clashHold.final === final) releaseHold(relPath, fe); return }
+          fe.doc.transact(() => applyDiff(fe.text, final))
+          rememberText(fe, final)
+          try { postOnce(`late:${relPath}:${contentHash(final)}`, `[!] ${relPath}: ${name} saved the same line as the others at the same moment, but the save arrived after their conflict was written. ${name}'s version is now one more version in the conflict block.`) } catch { }
+          releaseHold(relPath, fe)
+        }, 0)
+        return taken
+      }
+    }
+    const keys = txn.changed && txn.changed.get(fe.intent)
+    if (!keys) return taken
+    for (const k of keys) {
+      const v = fe.intent.get(k)
+      if (!v || v.m || !Array.isArray(v.h) || typeof v.b !== 'string' || Number(k) === fe.doc.clientID) continue
+      const base = fe.recent.get(v.b)
+      if (base == null) continue
+      const final = repair(base, applyIntent(base, v.h), v.n || `client ${k}`)
+      if (final == null || final === current) continue
+      taken.add(v.b)
+      fe.clashHold = { final, until: now + CLASH_HOLD_MS, late: true }
+      log(`[${name}] ${relPath}: ${v.n || k}'s save of a line arrived after the race on it was resolved; waiting for it to be added to the block`)
+      const t = setTimeout(() => {
+        if (stopped || fe.clashHold == null || fe.clashHold.final !== final) return
+        if (fe.text.toString() !== final) try { postOnce(`late:${relPath}:${k}:${v.b}`, `[!] ${relPath}: ${v.n || k}'s save of a line arrived after the conflict on it was written, and it was not added to the block in ${CLASH_HOLD_MS / 1000} s. The block may hold a fragment of that save. Check it by hand.`, { observer: true }) } catch { }
+        releaseHold(relPath, fe)
+      }, CLASH_HOLD_MS + 50)
+      if (t.unref) t.unref()
+    }
+    return taken
+  }
   // A remote transaction arrived. If it carries an intent made from the same text as another recent
   // intent, and the two changed the same line, the shared text now holds their character union.
   //
@@ -1610,13 +1714,20 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // pair, and both write: three saves became two, and one author's line was lost (R6). So every peer
   // first holds its disk, waits CLASH_SETTLE_MS for the rest of the race to arrive, and then decides from
   // everything made from that text: the same group, the same text, and one writer, the lowest client.
-  function checkClash(relPath, txn) {
+  function checkClash(relPath, txn, taken = new Set()) {
     const fe = fileDocs.get(relPath)
     if (!fe || !fe.intent) return
     const keys = txn.changed && txn.changed.get(fe.intent)
     if (!keys || !keys.size) return
     const now = Date.now()
     for (const [c, v] of fe.intents) if (now - v.at > CLASH_WINDOW_MS) fe.intents.delete(c)
+    // Our own last save stays in the race until it has been seen (P0-F-12): when it was held on the way,
+    // the others' saves reach us long after the window, and without it here their union went to this disk.
+    const own = fe.lastOwn, me = fe.doc.clientID
+    if (own && now - own.at < LATE_OWN_MS && !fe.intents.has(me)) {
+      const h = intentHunks(own.base, own.side)
+      if (h) fe.intents.set(me, { b: contentHash(own.base), h, n: name, at: own.at })
+    }
     const bases = new Set()
     for (const k of keys) {
       const v = fe.intent.get(k)
@@ -1626,6 +1737,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       if (!v.m) bases.add(v.b)
     }
     for (const b of bases) {
+      if (taken.has(b) || (fe.clashHold && fe.clashHold.late)) continue
       if (fe.recent.get(b) == null || !clashGroup(fe, b)) continue
       // Hold this disk now: the shared text may already be the union.
       fe.clashHold = { final: null, until: now + CLASH_SETTLE_MS + CLASH_HOLD_MS }
@@ -1678,6 +1790,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     if (t.unref) t.unref()
   }
   function resolveClash(relPath, fe, b) {
+    if (fe.clashHold && fe.clashHold.late) return // P0-F-12 has this file: its own timer ends the hold
     const base = fe.recent.get(b)
     const group = base == null ? null : clashGroup(fe, b)
     if (!group) { releaseHold(relPath, fe); return }
@@ -1714,7 +1827,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       // The file changed outside the clash since: writing the resolution would delete that change.
       log(`[${name}] same-line race in ${relPath} (${who}) not resolved: the file changed since`)
       // Markers already in the file: a merge has flagged it and said so. A second line is noise.
-      if (!hasConflictMarkers(current)) try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
+      if (!hasConflictMarkers(current) || /[^\n](<<<<<<< |>>>>>>> )/.test(current)) try { postOnce(`race:${relPath}:${key}`, `[!] ${relPath}: ${who} saved the same line at the same moment, and the file changed again before it could be resolved, so the line may hold a mix of their text. Check it by hand.`, { observer: ids[0] !== fe.doc.clientID }) } catch { }
       releaseHold(relPath, fe); return
     }
     const writer = ids[0] === fe.doc.clientID
@@ -1790,7 +1903,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // From the mtime scan() already took, not two more syscalls per open: a 1,000-file join opens
     // 1,000 files, and fileCreationTs() still falls back to a stat for any file this missed.
     if (!createdTimes.has(relPath) && mtimes.has(relPath)) createdTimes.set(relPath, mtimes.get(relPath))
-    text.observe((_ev, txn) => { if (!txn.local) { if (!FORK_GATE) checkClash(relPath, txn); reconcile(relPath, 'remote') } }) // remote content edits
+    text.observe((_ev, txn) => { if (!txn.local) { if (!FORK_GATE) checkClash(relPath, txn, checkLate(relPath, txn)); reconcile(relPath, 'remote') } }) // remote content edits
     bin.observe((_ev, txn) => { if (!txn.local) reconcileBinary(relPath, 'remote') }) // remote binary edits
     // A divergent receipt can arrive slightly after (or before) the fused content — so
     // re-run the fork check whenever the provenance ledger changes too, not only on edits.
