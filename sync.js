@@ -1674,12 +1674,14 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     else if (own) {
       const final = repair(own.base, own.side, name)
       if (final != null && final !== current) {
-        fe.lastOwn = null
         taken.add(contentHash(own.base))
         fe.clashHold = { final, until: now + CLASH_HOLD_MS, late: true }
         log(`[${name}] ${relPath}: this save of a line reached the room after a race on that line was resolved; adding it to the block`)
         setTimeout(() => {
+          // The text moved on (another change arrived in the same burst): that change's own check has
+          // already taken this save up again, against the newer text. lastOwn stays until a repair lands.
           if (stopped || fe.text.toString() !== current) { if (fe.clashHold && fe.clashHold.final === final) releaseHold(relPath, fe); return }
+          fe.lastOwn = null
           fe.doc.transact(() => applyDiff(fe.text, final))
           rememberText(fe, final)
           try { postOnce(`late:${relPath}:${contentHash(final)}`, `[!] ${relPath}: ${name} saved the same line as the others at the same moment, but the save arrived after their conflict was written. ${name}'s version is now one more version in the conflict block.`) } catch { }
@@ -1724,7 +1726,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     const keys = txn.changed && txn.changed.get(fe.intent)
     if (!keys || !keys.size) return
     const now = Date.now()
-    for (const [c, v] of fe.intents) if (now - v.at > CLASH_WINDOW_MS) fe.intents.delete(c)
+    // Kept as long as a held save still counts as a race (LATE_OWN_MS), not just the race window: a
+    // save 18 s late met a line one other author had changed, and only those two clients still knew of
+    // both saves, so every other disk took the fused line until the block landed (same-line-soak-test).
+    for (const [c, v] of fe.intents) if (now - v.at > LATE_OWN_MS) fe.intents.delete(c)
     // Our own last save stays in the race until it has been seen (P0-F-12): when it was held on the way,
     // the others' saves reach us long after the window, and without it here their union went to this disk.
     const own = fe.lastOwn, me = fe.doc.clientID

@@ -129,6 +129,18 @@ The design above changed during review:
   edited one-line top-level statement in .py, .rb and .yaml files, and left a deleted line's blank
   lines behind. Fixed in `spliceUnits`, and the sync merge takes the clean line merge when the two
   differ only in blank lines (`icr-blank-lines-test` 11/0).
+- **Two late-save cases the soak found (P0-F-13, 10 Nov).** `same-line-soak-test` checks the thing
+  itself: on every disk, during the round and after it, every line is one somebody wrote. Its first
+  round (seed 1: one client 18 s late, one 9 s late) failed twice.
+  - *A late author's repair was dropped for good.* Its client cleared the pending save before the
+    repair was written. When another change arrived in the same burst (the 9 s client's edit of the next
+    line), the text had moved on, the write was skipped, and nothing retried it:
+    `>>>>>>> carol"alice-r1"`, alice's line gone, in every folder. The pending save now stays until a
+    repair lands, so the next arrival takes it up against the newer text.
+  - *The other disks took the fused line for about a second.* A save 18 s late met a line that one
+    other author had changed. Clients forgot a save after the 15 s race window, so only the two authors
+    still knew of both, and the others wrote `const v4 = "carol-r1""alice-r1"` to disk until the block
+    landed. Every client now remembers a save for as long as a held save still counts as a race (2 min).
 
 ### Evidence
 
