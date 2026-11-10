@@ -948,7 +948,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       let real = false
       for (let i = 0; i < arr.length && !real; i++)
         for (let j = i + 1; j < arr.length && !real; j++) {
-          const m = merge3(base, arr[i].text, arr[j].text)
+          const m = merge3(base, arr[i].text, arr[j].text, { sideBySide: true }) // the sync rule (#17)
           if (m.conflict || hasConflictMarkers(m.text)) real = true
         }
       if (!real) continue

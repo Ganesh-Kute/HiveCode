@@ -36,7 +36,8 @@ function describeConflicts(conflicts) {
 // fixed-point, verified by icr-converge-test.js), so its 'auto' result is used as the
 // merged bytes for supported files; merge3 covers conflicts, fallbacks, and other languages.
 export function icrMerge3(base, mine, theirs, relPath) {
-  const lm = merge3(base, mine, theirs)
+  // The sync merge: edits on adjacent lines that each replace lines one for one go side by side (#17).
+  const lm = merge3(base, mine, theirs, { sideBySide: true })
   if (!supports(relPath)) return lm
 
   let r
