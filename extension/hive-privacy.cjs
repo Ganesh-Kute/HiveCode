@@ -18,7 +18,7 @@
 //
 //   1. A VERDICT on every join, so "am I private?" is answered without being asked.
 //      Printing the URL is not a verdict. A person who has never run a relay cannot tell
-//      wss://livecode-xoss.onrender.com from wss://relay.theircompany.com by looking.
+//      wss://hivecode-relay.onrender.com from wss://relay.theircompany.com by looking.
 //
 //   2. A PIN that REFUSES. A verdict you have to read is a verdict that gets skimmed, and
 //      an agent does not read banners at all. HIVE_RELAY_PIN says "this machine may only
@@ -38,13 +38,15 @@
 // sent that client to a dead host, or made this module call the live default "YOUR RELAY".
 // Every client now imports it from here. The extension's JSON setting cannot import, so
 // extension-privacy-parity-test pins it equal to this value instead.
-const PUBLIC_DEFAULT_RELAY = 'wss://hivecode-relay.onrender.com'
+const PUBLIC_DEFAULT_RELAY = 'wss://livecode-xoss.onrender.com'
 
+// 10 Nov 2026: the hosted relay moved back to livecode-xoss (its first address, live again) when the
+// hivecode-relay account ran out of hours for the month, so the two addresses below swapped places.
 // Relays this project has run publicly and retired. A .hive.json written before a move still
 // names the old one, and if that host ever answers again (a reactivated account, a squatter
 // on the name) the verdict must still say PUBLIC -- not "YOUR RELAY", which is what any host
 // outside this list is called.
-const RETIRED_PUBLIC_RELAYS = ['wss://livecode-xoss.onrender.com']
+const RETIRED_PUBLIC_RELAYS = ['wss://hivecode-relay.onrender.com']
 
 /**
  * The relay a client should actually dial for a URL it was handed.

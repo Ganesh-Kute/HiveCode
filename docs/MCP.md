@@ -16,7 +16,7 @@ the runtime copy that `setup` installs:
     "hivecode": {
       "command": "node",
       "args": ["<your home>/.hivecode/runtime/<version>/node_modules/hivecode-mcp/hive-mcp.js"],
-      "env": { "HIVE_RELAY": "wss://hivecode-relay.onrender.com" }
+      "env": { "HIVE_RELAY": "wss://livecode-xoss.onrender.com" }
     }
   }
 }

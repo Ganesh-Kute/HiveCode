@@ -24,7 +24,7 @@ import { fileURLToPath } from 'url'
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const R = path.join(os.tmpdir(), 'hivecode-live-stranger', `run-${process.pid}`)
-const RELAY = (process.env.LIVE_RELAY || 'wss://hivecode-relay.onrender.com').replace(/\/+$/, '')
+const RELAY = (process.env.LIVE_RELAY || 'wss://livecode-xoss.onrender.com').replace(/\/+$/, '')
 const HTTP = RELAY.replace(/^ws/, 'http')
 const ROOM = `e2e-stranger-${process.pid.toString(36)}${(Date.now() % 1e6).toString(36)}`
 const LINK = `${RELAY}|${ROOM}`

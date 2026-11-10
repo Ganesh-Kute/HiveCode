@@ -166,7 +166,7 @@ Once exit code `0` is verified, deploy `public/` files to your production web ho
 4. Wait ~2 minutes for the build and container startup to complete.
 5. Verify the live relay endpoint:
    ```bash
-   curl https://hivecode-relay.onrender.com/health
+   curl https://livecode-xoss.onrender.com/health
    ```
 
 ### How to Tell It Worked
