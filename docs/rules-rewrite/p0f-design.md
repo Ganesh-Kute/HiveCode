@@ -108,9 +108,15 @@ The design above changed during review:
   lost a version).
 - **Later saves (Opus-Cloud, F5).** A save made after seeing one side is rebased onto the race's base and
   joins the resolution.
-- **Late saves against a block.** When a late save is merged against a conflict block, every version in
-  the block is kept. Before, a 15 s-late save dropped three authors' versions; 0.14.3 dropped one side of
-  any 2-way block.
+- **Late saves against a block (P0-F-9, 10 Nov).** A late save is merged into every version the block
+  holds (block j read as section j), and the distinct results are written as one block per region
+  where they differ. Before, a 15 s-late save dropped three authors' versions, and 0.14.3 dropped one
+  side of any 2-way block. A first fix kept every section by gluing them together, which let the next
+  merge come out clean with lines no author wrote (`a = 1 / b = 1 / a = 2 / b = 2`): now replaced.
+- **Adjacent lines (#17, 10 Nov).** The sync merge (`icrMerge3`, and the fork gate's real-fork check)
+  applies two touching edits side by side when both replace lines one for one, as the footprint rule
+  and the character CRDT already do. Overlap, an insertion or deletion at the edge, and a change of
+  line count still conflict. Plain `merge3`, git-clash and the extension keep git's rule.
 
 ### Evidence
 
@@ -120,21 +126,28 @@ The design above changed during review:
 | `same-line-later-save-test` | 18/0 |
 | `same-line-intent-unit-test` | 63/0 |
 | `same-line-fuzz-test` | 15/0 |
-| `late-save-merge-test` | 9/0 |
+| `late-save-merge-test` | 19/0 (RED on f051913: unmarked fusion in 962 of 1,500 fuzz cases; on 0.14.4: lines lost in 1,310) |
+| `adjacent-lines-merge-test` | 23/0 (9 failing before; 408 of 4,000 fuzz cases merge only under the new rule, each exactly both sides' edits) |
 | `merge-balloon` | PASS |
 | `r9-loop` | 20/20 |
 
+- **`bigproject` with the fork gate on:** all 23 checks pass, against 8 of 23 failing on f051913 (W1, W2, W3).
 - **`bigproject` in default mode:**
   - W2, the same-line collisions, fused in 4 of 4 runs on 0.14.3 and in 0 runs since the fix.
   - With one client 5 s late, 0.14.3 produced `ship monwednesthurstuesday` in every folder. The fix gives
     one 4-version block everywhere.
 
+  - W1, adjacent lines: README.md got markers in 2 of 3 runs on f051913 (only non-code files: .js and
+    .py went through the structural merge); 0 of 3 since #17.
+
 ### Known, not fixed here
-- **W1 false conflict.** Adjacent-line saves can still get markers from merge3's git-style
-  touching-lines rule when a save lands after its neighbour's edit. Measured: 0.14.3 1 in 4 runs, b06a5ff
-  3 in 8, 5bf73f7 3 in 8. Both versions are kept and nothing is lost. A follow-up could give reconcile's
-  local merge the footprint rule.
+- **A block that the base and the author's copy both hold** (an edit made with the block on disk, while
+  the room's copy changed elsewhere) still merges into one coarse 2-sided block, and a 3-version block
+  has its later sections glued inside it. Everything stays inside markers and nothing is lost.
+  Pre-existing.
+- **ICR's YAML merge** adds blank lines that no author wrote. Pre-existing, whitespace only.
 - **Different bases (F4).** When the two saves were made from different texts, because one client had not
   yet received the last change, the race is not seen.
 - **Clients on 0.14.4 or older** write no intents, so a race with them is not seen.
-- **The VS Code extension** keeps its own copy of reconcile. VM-ANTI-G-1's port has to follow 5bf73f7.
+- **The VS Code extension** keeps its own copy of reconcile, still with 0.14.4's one-side strip.
+  VM-ANTI-G-1's port has to take `mergeLateSave` and pass `sideBySide` from its sync merge.
