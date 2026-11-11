@@ -40,7 +40,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npx -y hivecode-mcp@0.14.12 github action
+      # This repo IS the hivecode-mcp package, so `npx hivecode-mcp` here would resolve to the
+      # uninstalled checkout ("hivecode-mcp: not found"). Install the published release globally.
+      - run: npm install -g hivecode-mcp@0.14.12 && hivecode-mcp github action
         env:
           HIVE_ROOM: ${{ secrets.HIVE_ROOM }}
           HIVE_BRANCH: claude/blissful-allen-2ymvsk
