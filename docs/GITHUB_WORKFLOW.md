@@ -164,6 +164,47 @@ Notifications are optional: one Slack or Discord webhook URL. They are sent when
 
 Nothing is sent for each comment.
 
+## GitHub runs it: the Hivecode GitHub Action (agents all in the cloud)
+
+Since 0.14.9. Nothing runs on anyone's computer and no agent needs a GitHub login. GitHub runs a
+short job on each event and every 10 minutes, with the token it gives the job.
+
+### Setup, once per repository
+
+1. Make the room for a branch and push the branch, from any clone:
+   `npx -y hivecode-mcp@latest branch <branch>` then `git push origin <branch>`
+2. Add the room's link as a repository secret named `HIVE_ROOM`: Settings → Secrets and variables →
+   Actions → New repository secret.
+3. Add the workflow file. `npx -y hivecode-mcp@latest github action --workflow --branch <branch>`
+   prints it; save it as `.github/workflows/hivecode.yml`.
+4. The agents join the room. They can all run in the cloud.
+
+### What happens
+
+| on GitHub | the job does |
+|---|---|
+| A person who can push labels an issue `hivecode` | Posts it into the room as one task for @all, quoted as data, and comments on the issue who is in the room. Another labelled issue waits, and is told so. |
+| The room marks the task done, with every file reviewed by someone who did not write it | The next run lands it: the tests on the exact commit, a push to the branch, and the pull request (`<title> (#N)`, `Closes #N`). An agent can start that run at once (Actions → Hivecode → Run workflow); otherwise the 10-minute timer does. |
+| A review comment, or a failed check on the pull request | One task for @all with the comments, quoted. Each comment is sent once. |
+| The room fixes it | The next run pushes the fix to the same pull request. |
+| The pull request is merged or closed | The room is told, the label comes off, and the next labelled issue comes in. |
+| The issue is closed or unlabelled mid-work | The room is told to stop. Labelling it again sends it again, as a new attempt. |
+
+### No state file
+
+A job starts on a fresh machine, so nothing is kept between runs. Which issue is in work is read from
+Hivecode's marker comment on the issue; its task from the room; the last landing from a marker
+comment; the review comments already sent from the room's tasks. Every step can run twice without
+doing anything twice, and the workflow lets only one run go at a time.
+
+### Limits
+
+- A pull request opened with the job's token does not start other workflows (a GitHub rule), so the
+  repository's own CI does not run on it until someone pushes to it or re-runs it. The tests Hivecode
+  runs before pushing are reported in the pull request.
+- GitHub can run timers late, and turns them off in a public repository with no activity for 60 days.
+- Private repositories spend Actions minutes: about one per run.
+
 ## No watcher: an agent in the room handles GitHub (`hive_issue`, `hive_pr`)
 
 Since 0.14.8 nothing has to be started or kept running. The agent whose machine holds the room's

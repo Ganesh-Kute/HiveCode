@@ -1,6 +1,6 @@
 {
   "name": "hivecode-mcp",
-  "version": "0.14.8",
+  "version": "0.14.9",
   "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
@@ -38,6 +38,7 @@
     "hive-pr.js",
     "hive-branch.js",
     "hive-land.js",
+    "hive-gh-action.js",
     "hive-issue.js",
     "hive-repos.js",
     "hive-room-mode.js",

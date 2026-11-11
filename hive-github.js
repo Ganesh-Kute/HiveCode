@@ -1640,6 +1640,8 @@ const USAGE = `usage:
   npx -y hivecode-mcp@latest github start --room "<room link>" [--fallback-agent "<command>"] [--ack-minutes 10]
   npx -y hivecode-mcp@latest github start --branch <name> [--fallback-agent "<command>"] [--ack-minutes 10]
   npx -y hivecode-mcp@latest github status
+  npx -y hivecode-mcp@latest github action     one run inside GitHub Actions (env HIVE_ROOM, HIVE_BRANCH)
+  npx -y hivecode-mcp@latest github action --workflow --branch <name>   print the workflow file to add
 
 --room: hand each labelled issue to the agents ALREADY in that room (a room bound to a branch of
 this repo: npx -y hivecode-mcp@latest branch <name>). They split it, build it and review each other;
@@ -1684,6 +1686,8 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const ri = rest.indexOf('--repo')
   const cwd = ri !== -1 && rest[ri + 1] ? path.resolve(rest[ri + 1]) : here
   if (ri !== -1) rest.splice(ri, 2)
+  // `github action`: one run inside GitHub Actions (hive-gh-action.js). No watcher, no state file.
+  if (sub === 'action') { const A = await import('./hive-gh-action.js'); return A.main(rest, { cwd, log, logErr, call }) }
   if (sub !== 'start' && sub !== 'status') { logErr(USAGE); return EXIT_FIX }
   const top = git(cwd, ['rev-parse', '--show-toplevel'])
   if (top.code !== 0) { logErr(`Q601 ${cwd} is not inside a git repository. Run this in your clone of the repo.`); return EXIT_FIX }

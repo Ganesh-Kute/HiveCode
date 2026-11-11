@@ -1190,6 +1190,10 @@ async function landIssueOn(opts = {}) {
     base,
     allowWorkflowChanges,
     only,
+    github,
+    // The GitHub Action (hive-gh-action.js) passes this while the issue's PR is open: a run with
+    // nothing new to land does nothing, instead of running the tests again to update nothing.
+    skipEmpty = false,
   } = opts
 
   // 1. Check readiness
@@ -1216,6 +1220,10 @@ async function landIssueOn(opts = {}) {
       why: `Not ready to land: ${wd.why}`,
       reasons: wd.reasons,
     }
+  }
+
+  if (skipEmpty && !(wd.files && wd.files.length) && !(wd.deletions && wd.deletions.length)) {
+    return { ok: false, skipped: true, nothing: true, why: 'nothing new to land: the branch already holds the room\'s work', state }
   }
 
   // 2. Plan fingerprint (Claude addition a: NO RETRY LOOP)
@@ -1276,6 +1284,7 @@ async function landIssueOn(opts = {}) {
     ...(base ? { base } : {}),
     ...(allowWorkflowChanges === true ? { allowWorkflowChanges: true } : {}),
     ...(only ? { only } : {}),
+    ...(github ? { github } : {}),
   })
 
   if (!landRes.ok) {
