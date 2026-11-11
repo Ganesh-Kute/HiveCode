@@ -1398,6 +1398,10 @@ function askOfPrComment(key, c, state = {}) {
   }
   const m = body.match(/^\/hivecode\b\s*([\s\S]*)$/i)
   if (m) return /^(stop|retry)\b/i.test(m[1].trim()) ? '' : m[1].trim()
+  // EVERY COMMENT (the GitHub Action, 0.14.12): a plain comment on the issue or the pull request,
+  // from someone who can push, goes to the room too. The watcher leaves this off, so "thanks" there
+  // still spends no run.
+  if (state.allComments && (key === 'ic' || key === 'pc')) return body
   return key === 'ic' && state.question ? body : ''
 }
 
