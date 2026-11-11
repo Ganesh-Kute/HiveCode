@@ -107,7 +107,9 @@ export async function roomDeps({ link, root, branch, github }) {
     assignFix: async (text) => { const r = await openRoom(link); try { r.hive.assign('all', text) } finally { await r.close(1500) } },
     say: (text) => RW.roomSay({ link, text }),
     postIssue: (issue) => RM.postIssue({ link, issue, waysOfWorking: RW.WAYS_OF_WORKING, branch }),
-    landIssue: (o) => RM.landIssue({ link, root, branch, ...(github ? { github } : {}), ...o }),
+    // THE JOB'S TOKEN CANNOT READ /user (GitHub answers 403 "Resource not accessible by integration"),
+    // and the landing asks it as its login check. The token is the job's; there is no person to check.
+    landIssue: (o) => RM.landIssue({ link, root, branch, ...(github ? { github: { ...github, user: () => ({ login: 'github-actions[bot]' }) } } : {}), ...o }),
     prFeedback: (o) => RM.postPrFeedback({ link, root, branch, quietMs: 0, ...o }),
     bind: async () => {
       const HB = await import('./hive-branch.js')
@@ -225,7 +227,24 @@ export async function runAction({ gh, deps, eventName = '', event = {}, branch, 
   const tasks = await deps.tasks()
   const task = issueTasks(tasks, n)[0]
   if (!task) { note(`#${n}: its task is not in the room (the relay lost the room?); nothing to land`); return { did } }
-  const openPr = pulls.find((p) => p.state === 'open' && closesOf(p.body) === n) || null
+  let openPr = pulls.find((p) => p.state === 'open' && closesOf(p.body) === n) || null
+  // A PULL REQUEST ON THE BRANCH THAT SOMEONE ELSE OPENED (an agent's hive_pr, a person) is this
+  // issue's: the room lands on one branch, one issue at a time. It is told so ("Closes #N" goes in
+  // first), so merging it closes the issue and the next run sees it as the issue's.
+  if (!openPr) {
+    const other = pulls.find((p) => p.state === 'open' && !closesOf(p.body))
+    if (other) {
+      try {
+        gh.updatePull(other.number, { body: `Closes #${n}\n\n${String(other.body || '')}` })
+        other.body = `Closes #${n}\n\n${String(other.body || '')}`
+        openPr = other
+        comment(n, `#${other.number} is this issue's pull request: it was opened on the room's branch, so Hivecode linked it.\n\n${MARK('adopted', { pr: other.number })}`)
+        await deps.say(`@all PR #${other.number} on the room's branch is now issue #${n}'s pull request (it closes #${n} when merged).`)
+        await tell(`PR #${other.number} is now the pull request for issue #${n}.`)
+        note(`#${n}: linked PR #${other.number}`)
+      } catch (e) { note(`#${n}: could not link PR #${other.number}: ${oneLine(e.message, 160)}`) }
+    }
+  }
   const cs = commentsOf(n)
   const lastLand = cs.map((c) => markOf(c.body, 'land')).filter(Boolean).pop() || null
   if (task.status === 'done') {
@@ -368,7 +387,7 @@ export async function main(argv = [], { cwd = process.cwd(), env = process.env, 
   try { if (env.GITHUB_EVENT_PATH) event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8')) } catch { }
   let base = String(env.HIVE_BASE || '').trim()
   if (!base) { try { base = gh.repoInfo().default_branch || '' } catch { } }
-  const deps = await roomDeps({ link, root, branch })
+  const deps = await roomDeps({ link, root, branch, github: gh })
   try {
     const W = await import('./hive-webhook.js')
     const notify = W.makeNotifier(String(env.HIVE_NOTIFY_WEBHOOK || '').trim(), { log })
