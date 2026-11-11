@@ -278,10 +278,14 @@ export async function runAction({ gh, deps, eventName = '', event = {}, branch, 
     } else note(`#${n}: not ready to land: ${oneLine(r && r.why, 200)}`)
   } else note(`#${n}: task ${task.id} is ${task.status}; waiting for the room`)
 
-  // ── 6. its open pull request: review comments and failed checks back to the room ─────────────
+  // ── 6. comments back to the room: every comment on the issue from someone who can push, and
+  //       once its pull request is open, the reviews and comments there too; failed checks ──────
+  {
+    const fb = await deps.prFeedback({ gh, issueNumber: n, prNumber: openPr ? openPr.number : 0, state: { seen: seenFromTasks(tasks), allComments: true } })
+    const where = openPr ? `PR #${openPr.number} and issue #${n}` : `issue #${n}`
+    if (fb && fb.ok && fb.items && fb.items.length && !fb.already) { note(`${where}: ${fb.items.length} comment(s) sent to the room`); await tell(`${fb.items.length} comment(s) on ${where} went to the room.`) }
+  }
   if (openPr) {
-    const fb = await deps.prFeedback({ gh, issueNumber: n, prNumber: openPr.number, state: { seen: seenFromTasks(tasks) } })
-    if (fb && fb.ok && fb.items && fb.items.length && !fb.already) { note(`PR #${openPr.number}: ${fb.items.length} review comment(s) sent to the room`); await tell(`${fb.items.length} review comment(s) on PR #${openPr.number} went to the room.`) }
     const sha = openPr.head && openPr.head.sha
     if (sha) {
       const GH = await import('./hive-github.js')

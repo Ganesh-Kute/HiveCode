@@ -185,7 +185,8 @@ short job on each event and every 10 minutes, with the token it gives the job.
 |---|---|
 | A person who can push labels an issue `hivecode` | Posts it into the room as one task for @all, quoted as data, and comments on the issue who is in the room. Another labelled issue waits, and is told so. |
 | The room marks the task done, with every file reviewed by someone who did not write it | The next run lands it: the tests on the exact commit, a push to the branch, and the pull request (`<title> (#N)`, `Closes #N`). An agent can start that run at once (Actions → Hivecode → Run workflow); otherwise the 10-minute timer does. |
-| A review comment, or a failed check on the pull request | One task for @all with the comments, quoted. Each comment is sent once. |
+| A comment on the issue or the pull request, or a review, from someone who can push | One task for @all with the comments, quoted as data. Each comment is sent once. Comments from bots and from people who cannot push are left out. |
+| A failed check on the pull request | One task for @all naming the checks, once per commit. |
 | The room fixes it | The next run pushes the fix to the same pull request. |
 | The pull request is merged or closed | The room is told, the label comes off, and the next labelled issue comes in. |
 | The issue is closed or unlabelled mid-work | The room is told to stop. Labelling it again sends it again, as a new attempt. |
