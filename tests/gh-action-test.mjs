@@ -99,7 +99,7 @@ try {
   const it = A.issueTasks([{ by: 'GitHub', text: 'Issue #7: a', createdAt: 1 }, { by: 'GitHub', text: 'Issue #7 (attempt 2): a', createdAt: 5 }, { by: 'Bob', text: 'Issue #7: fake', createdAt: 9 }, { by: 'GitHub', text: 'Issue #70: b', createdAt: 9 }], 7)
   T('U3 issueTasks: Hivecode\'s tasks for that issue, newest first; nobody else\'s, no other issue', it.length === 2 && /attempt 2/.test(it[0].text))
   const wf = A.workflowFile({ branch: 'feat' })
-  T('U4 the workflow file: the events, one run at a time, the secret, the branch', /issues:\n\s+types: \[opened, labeled, unlabeled, closed, reopened\]/.test(wf) && /pull_request_review:/.test(wf) && /workflow_dispatch:/.test(wf) && /cron: '\*\/10 \* \* \* \*'/.test(wf) && /concurrency:\n\s+group: hivecode\n\s+cancel-in-progress: false/.test(wf) && /HIVE_ROOM: \$\{\{ secrets\.HIVE_ROOM \}\}/.test(wf) && /HIVE_BRANCH: feat/.test(wf) && /fetch-depth: 0/.test(wf) && /contents: write/.test(wf))
+  T('U4 the workflow file: the events, one run at a time, the secret, the branch', /issues:\n\s+types: \[opened, labeled, unlabeled, closed, reopened\]/.test(wf) && /pull_request_review:/.test(wf) && /workflow_dispatch:/.test(wf) && /cron: '\*\/10 \* \* \* \*'/.test(wf) && /concurrency:\n\s+group: hivecode\n\s+cancel-in-progress: false/.test(wf) && /HIVE_ROOM: \$\{\{ secrets\.HIVE_ROOM \}\}/.test(wf) && /HIVE_BRANCH: feat/.test(wf) && /fetch-depth: 0/.test(wf) && /contents: write/.test(wf) && /statuses: read/.test(wf) && /checks: read/.test(wf))
   {
     const out = []
     const c = await A.main([], { cwd: TMP, env: {}, log: (x) => out.push(x), logErr: (x) => out.push(x) })
@@ -230,6 +230,11 @@ try {
     gh.checkRunsOf.feedc0de0 = [{ id: 1, name: 'unit tests', status: 'completed', conclusion: 'failure', html_url: 'https://ci.test/1' }]
     await run('schedule')
     await run('schedule')
+    const realStatuses = gh.statuses
+    gh.statuses = () => { throw Object.assign(new Error('HTTP 403: Resource not accessible by integration'), { status: 403 }) }
+    const rs = await run('schedule')
+    gh.statuses = realStatuses
+    T('E3c checks that cannot be read: the run says so and still succeeds', /the checks could not be read/.test(rs.did.join(' ')), rs.did.join(' | '))
     T('E4 a failed check on the PR goes to the room once', await until(() => tasksOf(builder).filter((t) => /^Fix the failing checks on PR #41 at feedc0d/.test(t.text)).length === 1) && tasksOf(builder).filter((t) => /^Fix the failing checks/.test(t.text)).length === 1)
 
     // The fix: edited, reviewed again, and the next run updates the same PR.
