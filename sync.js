@@ -4093,7 +4093,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       }
     }
 
-    tasks.set(id, { ...t, status: 'done', completedBy: name, decidedBy: t.decidedBy })
+    // The note stays ON the task, not only in the chat line below: the pull request for a finished
+    // issue quotes it as "what was done" (hive-room-mode.js landIssue read task.note, which nothing set).
+    tasks.set(id, { ...t, status: 'done', completedBy: name, decidedBy: t.decidedBy, ...(note ? { note: String(note).slice(0, 2000) } : {}) })
     say(`task ${id} done by ${name}${note ? ': ' + note : ''}`)
     return { ok: true }
   }

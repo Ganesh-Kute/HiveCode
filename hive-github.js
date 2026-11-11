@@ -144,6 +144,9 @@ export function makeGitHub({ call, owner, repo, now = () => Date.now() }) {
     repoInfo: () => req('GET', base),
     labeledIssues: (label) => list(`${base}/issues?state=open&labels=${encodeURIComponent(label)}&sort=created&direction=asc`),
     issue: (n) => req('GET', `${base}/issues/${n}`),
+    // The newest open issues, one page: for a person or an agent choosing one (hive_issue). Pull
+    // requests come back in this list too; the caller drops them.
+    recentIssues: (n = 40) => req('GET', `${base}/issues?state=open&sort=created&direction=desc&per_page=${Math.max(1, Math.min(100, Number(n) || 40))}`) || [],
     issueEvents: (n) => list(`${base}/issues/${n}/events`),
     permission: (login) => absentIs('none', () => (req('GET', `${base}/collaborators/${encodeURIComponent(login)}/permission`) || {}).permission || 'none'),
     comments: (n) => list(`${base}/issues/${n}/comments`),
