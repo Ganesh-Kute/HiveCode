@@ -42,6 +42,10 @@ jobs:
           node-version: 22
       # Landing runs this repo's `npm test`, which needs its dependencies.
       - run: npm ci
+      # Landing runs the tests in a fresh worktree whose node_modules is a link to this checkout's,
+      # and this repo's pretest (check-deps) refuses dependencies resolved outside the checkout, so
+      # the worktree installs its own first (the link is removed, never followed).
+      - run: git config --local "hivecode.claude/blissful-allen-2ymvsk.testSetup" "rm -f node_modules && npm ci --no-audit --no-fund"
       # This repo IS the hivecode-mcp package, so `npx hivecode-mcp` here would resolve to the
       # uninstalled checkout ("hivecode-mcp: not found"). Install the published release globally.
       - run: npm install -g hivecode-mcp@0.14.12 && hivecode-mcp github action
