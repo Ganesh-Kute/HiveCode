@@ -159,6 +159,7 @@ export function makeGitHub({ call, owner, repo, now = () => Date.now() }) {
     pull: (n) => req('GET', `${base}/pulls/${n}`),
     pullsFor: (branch) => list(`${base}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}`),
     createPull: (p) => req('POST', `${base}/pulls`, p),
+    updatePull: (n, p) => req('PATCH', `${base}/pulls/${n}`, p),
     checkRuns: (sha) => (req('GET', `${base}/commits/${sha}/check-runs?per_page=100&filter=latest`) || {}).check_runs || [],
     statuses: (sha) => (req('GET', `${base}/commits/${sha}/status`) || {}).statuses || [],
     reviews: (n) => list(`${base}/pulls/${n}/reviews`),

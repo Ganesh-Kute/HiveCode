@@ -51,7 +51,10 @@ function fakeGitHub() {
     merge(pr) { const p = pulls.find((x) => x.number === pr); p.state = 'closed'; p.merged_at = tick(); const n = A.closesOf(p.body); if (n) issues.get(n).state = 'closed' },
     marks(n, kind) { return (comments.get(n) || []).filter((c) => c.body.includes(`<!-- hivecode:room kind=${kind}`)) },
     // the API
-    user: () => ({ login: 'github-actions[bot]' }),
+    // The job's token cannot read /user: GitHub answers 403 "Resource not accessible by integration"
+    // (seen on the first live run, 11 Nov 2026). The landing must not depend on it.
+    user: () => { throw Object.assign(new Error('Q603 GitHub answered GET user with HTTP 403: Resource not accessible by integration'), { status: 403 }) },
+    updatePull: (n, p) => { const pr = pulls.find((x) => x.number === n); Object.assign(pr, p); writes.push({ what: 'updatePull', n, p }); return pr },
     repoInfo: () => ({ default_branch: 'main' }),
     labeledIssues: (name) => [...issues.values()].filter((i) => i.state === 'open' && i.labels.some((l) => l.name === name)),
     issue: (n) => { const i = issues.get(Number(n)); if (!i) throw Object.assign(new Error('HTTP 404'), { status: 404 }); return i },
@@ -269,6 +272,24 @@ try {
     gh.label(8)
     const r = await run('issues', { action: 'labeled', issue: { number: 8 }, label: { name: 'hivecode' } })
     T('G2 labelled again: it goes to the room again, as attempt 2', await until(() => tasksOf(builder).some((t) => /^Issue #8 \(attempt 2\):/.test(t.text))), r.did.join(' | '))
+  }
+
+  // ── I. a pull request on the branch opened by someone else ────────────────────────────────────
+  console.log('\n# I. A pull request someone else opened on the branch')
+  {
+    // #8 is in work (attempt 2). An agent's hive_pr opens a plain PR on the branch, no "Closes".
+    gh.pulls.push({ number: 77, state: 'open', head: { ref: 'feat', sha: 'abc777' }, base: { ref: 'main' }, title: 'Hivecode: feat', body: 'Opened by Hivecode from the room bound to `feat`.', html_url: 'https://github.test/acme/widgets/pull/77' })
+    const t8 = tasksOf(builder).filter((t) => /^Issue #8 \(attempt 2\):/.test(t.text))[0]
+    builder.complete(t8.id, 'done by hand')
+    const r = await run('schedule')
+    const pr = gh.pulls.find((p) => p.number === 77)
+    T('I1 it becomes the issue\'s pull request: "Closes #8" goes in first, the issue and the room are told', /^Closes #8\n/.test(pr.body) && gh.marks(8, 'adopted').length === 1 && await until(() => chatOf(builder).some((c) => /PR #77 on the room's branch is now issue #8's pull request/.test(c))), r.did.join(' | '))
+    T('I2 no second pull request, and no "landing refused" for having nothing new', gh.pulls.length === 2 && !gh.marks(8, 'land').some((c) => /could not land/.test(c.body)), r.did.join(' | '))
+    await run('schedule')
+    T('I3 linked once', gh.marks(8, 'adopted').length === 1 && gh.writes.filter((w) => w.what === 'updatePull').length === 1)
+    gh.merge(77)
+    await run('pull_request', { action: 'closed', pull_request: { number: 77 } })
+    T('I4 merging it is that issue\'s merge: the room is told', await until(() => chatOf(builder).some((c) => /^@all PR #77 for issue #8 was merged/.test(c))))
   }
 
   // ── H. through the command, as GitHub Actions runs it ─────────────────────────────────────────
