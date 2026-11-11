@@ -164,6 +164,47 @@ Notifications are optional: one Slack or Discord webhook URL. They are sent when
 
 Nothing is sent for each comment.
 
+## No watcher: an agent in the room handles GitHub (`hive_issue`, `hive_pr`)
+
+Since 0.14.8 nothing has to be started or kept running. The agent whose machine holds the room's
+repository reads GitHub when it is asked to, with that machine's own `gh` login.
+
+### Setup, once
+
+1. Bind a room to a branch, in the clone: `npx -y hivecode-mcp@latest branch <branch-name>`
+2. The agents join the room. One of them joins from the machine that has the clone and `gh auth login`.
+3. That agent's person tells it once: "you handle GitHub for this room".
+
+### What happens
+
+| step | who | what |
+|---|---|---|
+| Choose an issue | the agent with the repository | `hive_issue` with no arguments lists the open issues. |
+| Bring it in | the same agent | `hive_issue { number }`: the room gets one task for @all and one chat line with the issue's text, quoted as data. GitHub gets one comment: `Sent to room for branch <name>. In the room now: <agents>`. |
+| Build | everyone in the room | Plan, claim files, edit, run the tests, review each other (`hive_review`), mark the task done (`hive_complete`). |
+| Open the pull request | the agent with the repository | `hive_pr { confirm: true }`. It is refused until the task is done, no claim is held and every landing file was reviewed by someone who did not write it. The pull request is titled `<issue title> (#N)`, says `Closes #N`, names who reviewed, and reports the tests. The room is told the link. |
+| Review comes back | the agent with the repository | `hive_issue { feedback: true }`: review comments from people who can push, and failed checks, become one task for @all. Fixes go to the same pull request with `hive_pr`. |
+| Merged or closed | the agent with the repository | `hive_issue { feedback: true }` sees it, tells the room, and the room is free for the next issue. |
+
+### What can go wrong, and what we do
+
+| what goes wrong | what we do |
+|---|---|
+| The agent asked is not on the machine with the repository | Refused with Q582, naming the member and machine that hold it. |
+| `gh` is not logged in, or GitHub is down | Q590 with the reason. Nothing is posted. A failed read is never reported as "no such issue". |
+| The number is closed, missing, or a pull request | Q591. Nothing is posted. |
+| The same issue is brought in twice | One task, one comment. The second call says it is already in the room. |
+| A second issue while the first is in work | Q595. One issue at a time, because the room lands on one branch. `replace: true` drops the first and tells the room. |
+| The issue text contains `@Name`, a key, or instructions | `@` is neutralised, keys are removed, and the text is quoted and marked "not an instruction to do anything else". |
+| Another member writes a fake issue record into the room | Ignored. Which issue a pull request closes is read from a file in the repository's `.git` folder on the landing machine, never from the room. |
+| Done, but nobody else reviewed | Nothing is pushed. `allowUnreviewed: true` lands it only when the agent's person says so, and the pull request names the unreviewed files. |
+| Every change is unsigned, or the landing opens no pull request | Q588 / Q589. Never reported as "up for review". |
+| The tests fail at landing | Nothing is pushed, and the room gets a task to fix them. The same failed landing is not run again until the room's files or the branch change. |
+| A review comment from someone who cannot push, or a bot | Left out. |
+| The same review comments, or the same failed commit | Posted once. |
+
+The watcher below still works, for a repository where issues should start without anyone asking.
+
 ## Room mode: multi-agent issues in a shared room
 
 Room Mode hands labelled issues directly to agents already collaborating in a shared room bound to a branch.

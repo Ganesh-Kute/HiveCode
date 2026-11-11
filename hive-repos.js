@@ -255,6 +255,10 @@ export function makeHivePr({
   readHolder = readRepoHolder,
   register = registerRepo,
   writeHolder = writeRepoHolder,
+  // The issue this machine brought into the room (hive-issue.js), and the landing that checks a
+  // finished issue (hive-room-mode.js). Both imported late: hive-issue.js imports this module.
+  issues = null,
+  landIssue = null,
 } = {}) {
   return async function hivePr(args = {}) {
     const s = typeof getSession === 'function' ? getSession() : null;
@@ -306,6 +310,75 @@ export function makeHivePr({
     const confirmed = args?.confirm === true;
     const by = s.owner ? `${s.name} for ${s.owner}` : s.name;
     const configuredTest = testCommandFor(found.entry.root, found.entry.branch).command;
+
+    // AN ISSUE IS IN THIS ROOM (hive_issue brought it in from this machine). Its pull request is the
+    // issue's: titled from it, "Closes #N", and opened only when its task is done, no claim is held
+    // and every landing file was reviewed by someone who did not write it. The record is this
+    // machine's own file, never the room's copy.
+    const HI = issues || await import('./hive-issue.js');
+    const issue = HI.readIssue(found.entry.root, roomId);
+    const issueTask = issue ? (() => { try { return s.hive.doc.getMap('tasks').get(issue.taskId) || null; } catch { return null; } })() : null;
+    if (issue && issueTask && confirmed) {
+      const RM = landIssue ? null : await import('./hive-room-mode.js');
+      const lr = await (landIssue || RM.landIssue)({
+        link: linkStr,
+        taskId: issue.taskId,
+        issue: { number: issue.number, title: issue.title },
+        root: found.entry.root,
+        branch: found.entry.branch,
+        syncRunner: async () => s.hive,
+        landRunner: land,
+        allowUnreviewed: args?.allowUnreviewed === true,
+        state: { lastFailedFingerprint: issue.lastFailedFingerprint || '' },
+        by,
+        closes: true,
+        note: args?.summary,
+        base: args?.base,
+        allowWorkflowChanges: args?.allowWorkflowChanges === true,
+        only: args?.only,
+      });
+      const out = [];
+      // Belt and braces: landIssue answers Q589 itself, but "ok" with no pull request must never
+      // read as "up for review" here either, whatever landing was passed in.
+      if (lr && lr.ok && !(lr.pr && lr.pr.number)) {
+        return `Nothing was pushed for issue #${issue.number} (Q589): the landing reported success but opened no pull request.`;
+      }
+      if (!lr || !lr.ok) {
+        const fp = lr && lr.state && lr.state.lastFailedFingerprint;
+        if (fp && fp !== issue.lastFailedFingerprint) HI.writeIssue(found.entry.root, roomId, { ...issue, lastFailedFingerprint: fp });
+        if (lr && lr.blocked === 'unreviewed') {
+          const files = (lr.files || []).join(', ') || 'some files';
+          out.push(`Issue #${issue.number} is done, but nothing was pushed: ${files} ${(lr.files || []).length === 1 ? 'has' : 'have'} no review by someone who did not write ${(lr.files || []).length === 1 ? 'it' : 'them'}.`);
+          out.push(`Ask a teammate to review (hive_review). Only if your person said to land without a second review: hive_pr with confirm: true and allowUnreviewed: true; the pull request then says which files nobody else reviewed.`);
+        } else if (lr && lr.skipped) {
+          out.push(`Nothing was pushed for issue #${issue.number}: the last landing failed and neither the room's files nor the branch changed since. Fix the cause in the room, then call hive_pr again.`);
+        } else {
+          out.push(`Nothing was pushed for issue #${issue.number}${lr && lr.code ? ` (${lr.code})` : ''}: ${(lr && lr.why) || 'the landing gave no reason'}`);
+          if (lr && lr.code === 'Q576') out.push('A task to fix the failing tests was given to the room.');
+        }
+        return out.join('\n');
+      }
+      register({ room: roomId, root: found.entry.root, branch: found.entry.branch, link: linkStr || found.entry.link });
+      writeHolder(s.hive.doc, { branch: found.entry.branch, holder: s.name, host: os.hostname() });
+      const next = { ...issue, pr: lr.pr.number, prUrl: lr.pr.url || '', lastFailedFingerprint: '' };
+      HI.writeIssue(found.entry.root, roomId, next);
+      HI.writeIssueRecord(s.hive.doc, next);
+      const made = lr.pr.created || !issue.pr;
+      out.push(`Issue #${issue.number} ${made ? 'is up for review' : 'was updated'}: PR #${lr.pr.number} ${lr.pr.url || ''}`.trim());
+      for (const group of Array.isArray(lr.plan) ? lr.plan : []) {
+        out.push(`  • ${group.agent || 'agent'}: ${Array.isArray(group.files) ? group.files.join(', ') : ''}`);
+      }
+      if (lr.tests?.ran) out.push(`  • Tests: ${lr.tests.command} -> ${lr.tests.ok ? 'PASS' : 'FAIL'} (${lr.tests.seconds ?? 0}s)`);
+      else out.push('  • Tests: NOT RUN (no test command is saved for this branch)');
+      if (Array.isArray(lr.orphans) && lr.orphans.length) out.push(`⚠️ Not in the pull request (no signed receipt): ${lr.orphans.join(', ')}`);
+      out.push(`The pull request says "Closes #${issue.number}". When a person reviews it, bring their comments into the room with hive_issue { feedback: true }.`);
+      try {
+        s.hive.say(made
+          ? `@all issue #${issue.number} is up for review: PR #${lr.pr.number} ${lr.pr.url || ''}`.trim()
+          : `@all PR #${lr.pr.number} for issue #${issue.number} was updated${lr.pr.newCommits ? ` with ${lr.pr.newCommits} new commit(s)` : ''}: ${lr.pr.url || ''}`.trim());
+      } catch {}
+      return out.join('\n');
+    }
 
     const res = await land({
       cwd: found.entry.root,
@@ -380,6 +453,15 @@ export function makeHivePr({
           `⚠️ Orphans (changed in room with no verified receipt — will NOT land): ` +
           res.orphans.join(', ')
         );
+      }
+      if (issue && issueTask) {
+        let wd = null;
+        try {
+          const RM = await import('./hive-room-mode.js');
+          wd = await RM.whenDone({ link: linkStr, taskId: issue.taskId, root: found.entry.root, branch: found.entry.branch, syncRunner: async () => s.hive, landRunner: land, allowUnreviewed: args?.allowUnreviewed === true });
+        } catch (e) { wd = { ready: false, why: e.message }; }
+        lines.push(`\nIssue #${issue.number} (${issue.title}), task ${issue.taskId}: ` +
+          (wd.ready ? `ready. With confirm: true this opens or updates its pull request, titled from the issue, saying "Closes #${issue.number}".` : `not ready to land: ${wd.why}`));
       }
       lines.push(`\nNothing was committed or pushed. Call hive_pr with confirm: true to land, push, and open/update the PR.`);
       return lines.join('\n');

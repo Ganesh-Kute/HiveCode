@@ -1182,6 +1182,14 @@ async function landIssueOn(opts = {}) {
     state = {},
     token,
     headOf = branchHeadOf,
+    // For the hive_pr tool (hive-issue.js): who asked, the agent's own words, and the line that makes
+    // GitHub close the issue when the pull request is merged. The watcher passes none of them.
+    by = '',
+    closes = false,
+    note = '',
+    base,
+    allowWorkflowChanges,
+    only,
   } = opts
 
   // 1. Check readiness
@@ -1235,10 +1243,11 @@ async function landIssueOn(opts = {}) {
   const issueTitle = issue.title || (wd.task ? wd.task.text : '') || 'Issue'
   const title = issueNum ? `${issueTitle} (#${issueNum})` : issueTitle
 
-  let summary = issueTitle
+  let summary = closes && issueNum ? `Closes #${issueNum}\n\n${issueTitle}` : issueTitle
   if (wd.task && wd.task.note) {
     summary += '\n\n' + wd.task.note
   }
+  if (note) summary += '\n\n' + String(note).slice(0, 2000)
   if (wd.deletions && wd.deletions.length > 0) {
     summary += '\n\nDeletions:\n' + wd.deletions.map((d) => `- ${d}`).join('\n')
   }
@@ -1261,9 +1270,12 @@ async function landIssueOn(opts = {}) {
     dry: false,
     pr: true,
     test: testCmd,
-    by: 'Hivecode room mode',
+    by: by || 'Hivecode room mode',
     title,
     summary,
+    ...(base ? { base } : {}),
+    ...(allowWorkflowChanges === true ? { allowWorkflowChanges: true } : {}),
+    ...(only ? { only } : {}),
   })
 
   if (!landRes.ok) {
@@ -1322,6 +1334,8 @@ async function landIssueOn(opts = {}) {
     pr: landRes.pr,
     tip: landRes.tip,
     plan: landRes.plan,
+    tests: landRes.tests,
+    orphans: landRes.orphans,
     opts: { title, summary, test: testCmd },
     fingerprint,
     state: nextState,
