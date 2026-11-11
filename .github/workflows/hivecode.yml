@@ -40,6 +40,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Landing runs this repo's `npm test`, which needs its dependencies.
+      - run: npm ci
       # This repo IS the hivecode-mcp package, so `npx hivecode-mcp` here would resolve to the
       # uninstalled checkout ("hivecode-mcp: not found"). Install the published release globally.
       - run: npm install -g hivecode-mcp@0.14.12 && hivecode-mcp github action
