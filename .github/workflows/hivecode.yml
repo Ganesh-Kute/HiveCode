@@ -1,0 +1,50 @@
+# Hivecode: GitHub issues go to the agents in a room, and their work comes back as a pull request.
+# Needs one repository secret, HIVE_ROOM: the room's link (Settings -> Secrets and variables -> Actions).
+name: Hivecode
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled, closed, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+  workflow_dispatch: # an agent starts this when the room's task is done
+  schedule:
+    - cron: '*/10 * * * *'
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+# One run at a time: two runs never post the same issue or land twice.
+concurrency:
+  group: hivecode
+  cancel-in-progress: false
+
+jobs:
+  room:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx -y hivecode-mcp@0.14.12 github action
+        env:
+          HIVE_ROOM: ${{ secrets.HIVE_ROOM }}
+          HIVE_BRANCH: claude/blissful-allen-2ymvsk
+          # optional: a Slack or Discord incoming webhook, to follow each issue there
+          HIVE_NOTIFY_WEBHOOK: ${{ secrets.HIVE_NOTIFY_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+
