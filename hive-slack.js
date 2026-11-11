@@ -61,6 +61,8 @@ export function makeChatForwarder({ chat, forwarded, key, at, threads, onChat })
 const MAX_SEEN_EVENTS = 500
 
 export const USAGE = `usage:
+  npx -y hivecode-mcp@latest slack connect "<relay|room>" [--channel <id>]      Slack <-> room through the relay, nothing to keep running
+  npx -y hivecode-mcp@latest slack disconnect "<relay|room>" [--id <connection id>]
   SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--inbound auto|poll|socket] [--dry-run] [--start-retry <ms>]
   SLACK_BOT_TOKEN=xoxb-… [SLACK_APP_TOKEN=xapp-…] npx -y hivecode-mcp@latest slack check --channel <id> [--agent] [--inbound auto|poll|socket] [--timeout <ms>] [--start-retry <ms>]
   SLACK_BOT_TOKEN=xoxb-… SLACK_APP_TOKEN=xapp-… npx -y hivecode-mcp@latest slack agent "<relay|room>" --channel <id> [--name <name>] [--allow <U123,U456>]
@@ -2205,13 +2207,14 @@ export async function runSlackCheck({
   }
 }
 
-export async function main(argv = process.argv.slice(2), { log = console.log, logErr = console.error, fetchImpl = fetch, env = process.env, WebSocketImpl = WebSocket } = {}) {
+export async function main(argv = process.argv.slice(2), { log = console.log, logErr = console.error, fetchImpl = fetch, env = process.env, WebSocketImpl = WebSocket , connect = {}} = {}) {
   let mode = 'start'
   let CHANNEL = env.SLACK_CHANNEL || ''
   let NAME = 'SlackBridge'
   let ALLOW = env.SLACK_ALLOW || ''
   let allowSource = env.SLACK_ALLOW ? 'SLACK_ALLOW' : '--allow'
   let LINK = ''
+  let CONN_ID = ''
   let dryRun = false
   let agent = false
   let timeoutMs = Number(env.HIVE_SLACK_CHECK_TIMEOUT_MS) || 120000
@@ -2222,7 +2225,8 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   let inbound = String(env.HIVE_SLACK_INBOUND || 'auto').toLowerCase()
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if ((a === 'start' || a === 'check') && !LINK && i === 0) { mode = a; continue }
+    if ((a === 'start' || a === 'check' || a === 'connect' || a === 'disconnect') && !LINK && i === 0) { mode = a; continue }
+    if (a === '--id') { CONN_ID = argv[++i] || ''; continue }
     if (a === '--inbound') { inbound = String(argv[++i] || '').toLowerCase(); continue }
     if (a === '--help' || a === '-h') { log(USAGE.trim()); return 0 }
     if (a === '--dry-run') { dryRun = true; continue }
@@ -2243,6 +2247,13 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   const TOKEN = env.SLACK_BOT_TOKEN || ''
   const APP_TOKEN = env.SLACK_APP_TOKEN || ''
   const pollMs = Math.max(50, Number(env.HIVE_SLACK_POLL_MS) || INBOUND_DEFAULT_POLL_MS)
+  if (mode === 'connect' || mode === 'disconnect') {
+    const C = await import('./hive-slack-connect.js') // lazy: it imports slackPost from here
+    if (!LINK) { logErr(C.CONNECT_USAGE.trim()); return 2 }
+    return mode === 'connect'
+      ? C.runSlackConnect({ link: LINK, channel: CHANNEL, env, log, logErr, fetchImpl, ...connect })
+      : C.runSlackDisconnect({ link: LINK, id: CONN_ID, env, log, logErr, fetchImpl, ...connect })
+  }
   if (mode === 'check') {
     return await runSlackCheck({
       token: TOKEN,
