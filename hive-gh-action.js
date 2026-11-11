@@ -286,7 +286,10 @@ export async function runAction({ gh, deps, eventName = '', event = {}, branch, 
     if (sha) {
       const GH = await import('./hive-github.js')
       // The job's own run is not a check on the pull request; the rest are.
-      const v = GH.ciVerdict(gh.checkRuns(sha), gh.statuses(sha))
+      // A check that cannot be read (an older workflow file without `statuses: read`) is said in the
+      // log, never a failed run: everything before it already happened.
+      let v = { state: 'none', failed: [] }
+      try { v = GH.ciVerdict(gh.checkRuns(sha), gh.statuses(sha)) } catch (e) { note(`PR #${openPr.number}: the checks could not be read (${oneLine(e.message, 160)}); add "statuses: read" and "checks: read" to the workflow's permissions`) }
       const short = String(sha).slice(0, 7)
       const marker = `Fix the failing checks on PR #${openPr.number} at ${short}`
       if (v.state === 'failure' && !tasks.some((t) => t && t.by === 'GitHub' && String(t.text || '').startsWith(marker))) {
@@ -326,6 +329,7 @@ permissions:
   issues: write
   pull-requests: write
   checks: read
+  statuses: read
 
 # One run at a time: two runs never post the same issue or land twice.
 concurrency:
