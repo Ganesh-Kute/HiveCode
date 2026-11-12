@@ -40,6 +40,11 @@ const markOf = (body, kind) => {
 const oneLine = (s, n = 300) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n)
 const PUSHERS = new Set(['admin', 'maintain', 'write'])
 const ISSUE_TASK = (n) => new RegExp(`^Issue #${n}(?: \\(attempt \\d+\\))?:`)
+// Test output that means "the runner has no installed dependencies", in Node and in Python. The fix
+// is a step in the workflow file, which nobody in the room can add, so the issue comment names it.
+const MISSING_DEPS = /Cannot find (?:module|package)|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|No module named/
+const PR_NOT_ALLOWED = /not permitted to create or approve pull requests/i
+const PR_SETTING = 'Settings → Actions → General → Workflow permissions → "Allow GitHub Actions to create and approve pull requests"'
 
 /** The issue a pull request closes, from the "Closes #N" Hivecode writes first in its body. */
 export function closesOf(body) {
@@ -124,7 +129,9 @@ export async function roomDeps({ link, root, branch, github }) {
  * Returns { did: [what it did, for the log] }. A refusal is a result; a throw is a failed job, which
  * GitHub shows in red and the next run retries.
  */
-export async function runAction({ gh, deps, eventName = '', event = {}, branch, label = LABEL, base = '', log = () => { }, notify = async () => false }) {
+export async function runAction({ gh, deps, eventName = '', event = {}, branch, label = LABEL, base = '', runAt = '', log = () => { }, notify = async () => false }) {
+  // runAt: the commit this run's checkout is at (the default branch, where the workflow file lives).
+  // A landing refused for something the workflow has to fix is tried again when it changes.
   const did = []
   const note = (s) => { did.push(s); log(s) }
   // What a person follows in Slack or Discord (HIVE_NOTIFY_WEBHOOK): the issue's life, never the room link.
@@ -228,32 +235,45 @@ export async function runAction({ gh, deps, eventName = '', event = {}, branch, 
   const task = issueTasks(tasks, n)[0]
   if (!task) { note(`#${n}: its task is not in the room (the relay lost the room?); nothing to land`); return { did } }
   let openPr = pulls.find((p) => p.state === 'open' && closesOf(p.body) === n) || null
-  // A PULL REQUEST ON THE BRANCH THAT SOMEONE ELSE OPENED (an agent's hive_pr, a person) is this
-  // issue's: the room lands on one branch, one issue at a time. It is told so ("Closes #N" goes in
-  // first), so merging it closes the issue and the next run sees it as the issue's.
+  const lands = commentsOf(n).map((c) => markOf(c.body, 'land')).filter(Boolean)
+  const lastLand = lands[lands.length - 1] || null
+  // The issue's work is on the branch on origin once a landing pushed it: one that opened or updated
+  // a pull request (ok=1), or one that pushed and could not open the pull request (pushed=1).
+  const workOnBranch = lands.some((l) => l.ok === '1' || l.pushed === '1')
+  // "Closes #N" goes in first, so merging the pull request closes the issue and the next run sees
+  // it as the issue's.
+  const link = async (pr) => {
+    try {
+      gh.updatePull(pr.number, { body: `Closes #${n}\n\n${String(pr.body || '')}` })
+      pr.body = `Closes #${n}\n\n${String(pr.body || '')}`
+      comment(n, `#${pr.number} is this issue's pull request: it is on the room's branch and holds this issue's work, so Hivecode linked it.\n\n${MARK('adopted', { pr: pr.number })}`)
+      await deps.say(`@all PR #${pr.number} on the room's branch is now issue #${n}'s pull request (it closes #${n} when merged).`)
+      await tell(`PR #${pr.number} is now the pull request for issue #${n}.`)
+      note(`#${n}: linked PR #${pr.number}`)
+      return true
+    } catch (e) { note(`#${n}: could not link PR #${pr.number}: ${oneLine(e.message, 160)}`); return false }
+  }
+  // A PULL REQUEST ON THE BRANCH THAT SOMEONE ELSE OPENED (an agent, a person) is this issue's ONLY
+  // ONCE IT HOLDS THIS ISSUE'S WORK (11 Nov 2026). A pull request head is the branch, so it holds the
+  // work from the landing's push on. Before that it is somebody's own change that happens to sit on
+  // the room's branch: linking it made merging a setup fix close issue #22 with nothing landed.
   if (!openPr) {
     const other = pulls.find((p) => p.state === 'open' && !closesOf(p.body))
-    if (other) {
-      try {
-        gh.updatePull(other.number, { body: `Closes #${n}\n\n${String(other.body || '')}` })
-        other.body = `Closes #${n}\n\n${String(other.body || '')}`
-        openPr = other
-        comment(n, `#${other.number} is this issue's pull request: it was opened on the room's branch, so Hivecode linked it.\n\n${MARK('adopted', { pr: other.number })}`)
-        await deps.say(`@all PR #${other.number} on the room's branch is now issue #${n}'s pull request (it closes #${n} when merged).`)
-        await tell(`PR #${other.number} is now the pull request for issue #${n}.`)
-        note(`#${n}: linked PR #${other.number}`)
-      } catch (e) { note(`#${n}: could not link PR #${other.number}: ${oneLine(e.message, 160)}`) }
-    }
+    if (other && workOnBranch) { if (await link(other)) openPr = other }
+    else if (other) note(`#${n}: PR #${other.number} is open on ${branch} but holds none of this issue's work yet; left alone`)
   }
-  const cs = commentsOf(n)
-  const lastLand = cs.map((c) => markOf(c.body, 'land')).filter(Boolean).pop() || null
+  const prOnlyBefore = !!lastLand && lastLand.code === 'Q574' && lastLand.pushed === '1'
+  const tryAgain = prOnlyBefore || (!!lastLand && lastLand.deps === '1' && !!runAt && lastLand.at !== runAt)
   if (task.status === 'done') {
     await deps.bind()
     const r = await deps.landIssue({
       taskId: task.id,
       issue: { number: n, title: active.title },
-      // The same plan, branch and room as the last landing, ok or not, is not run again.
-      state: { lastFailedFingerprint: lastLand ? lastLand.fp : '' },
+      // The same plan, branch and room as the last landing, ok or not, is not run again. Two refusals
+      // are, because what fixes them changes none of the three: the pull request GitHub would not
+      // let the job open (a repository setting; nothing new lands, so no tests run again), and tests
+      // that found no installed dependencies, once the workflow file has changed.
+      state: { lastFailedFingerprint: lastLand && !tryAgain ? lastLand.fp : '' },
       by: 'GitHub Actions',
       closes: true,
       skipEmpty: !!openPr,
@@ -267,12 +287,36 @@ export async function runAction({ gh, deps, eventName = '', event = {}, branch, 
         : `@all PR #${r.pr.number} for issue #${n} was updated${r.pr.newCommits ? ` with ${r.pr.newCommits} new commit(s)` : ''}.`)
       note(`#${n}: ${made ? 'opened' : 'updated'} PR #${r.pr.number}`)
       await tell(made ? `issue #${n} is up for review: ${r.pr.url || `PR #${r.pr.number}`}` : `PR #${r.pr.number} for issue #${n} was updated with the room's fixes.`)
+      // The landing went onto a pull request that was already open on the branch and is not yet the
+      // issue's: it holds the issue's work now, so it is linked in this run.
+      if (!openPr) {
+        const landedOn = pulls.find((p) => p.state === 'open' && p.number === r.pr.number && !closesOf(p.body))
+        if (landedOn && await link(landedOn)) openPr = landedOn
+      }
     } else if (r && r.code) {
       // A refusal with a code is said once per landing (its fingerprint), on the issue and in the room.
-      if (!lastLand || lastLand.fp !== (r.fingerprint || '') || lastLand.code !== r.code) {
-        comment(n, `Hivecode could not land this (${r.code}): ${oneLine(r.why, 600)}\nNothing was pushed. It is tried again when the room's files or the branch change.\n\n${MARK('land', { fp: r.fingerprint || '', code: r.code })}`)
-        await tell(`issue #${n}: the landing was refused (${r.code}). Nothing was pushed; the room was told.`)
-        if (r.code !== 'Q576') await deps.say(`@all issue #${n} is done, but its landing was refused (${r.code}): ${oneLine(r.why, 400)} Nothing was pushed.`)
+      const fp = r.fingerprint || ''
+      const why = String(r.why || '')
+      // PUSHED, BUT NO PULL REQUEST (11 Nov 2026): the commits were on the branch and the comment
+      // said "Nothing was pushed". Said once however often it is tried again.
+      const prOnly = r.code === 'Q574' && !!r.onBranch
+      const noDeps = r.code === 'Q576' && MISSING_DEPS.test(why)
+      const repeat = prOnly ? prOnlyBefore
+        : !!lastLand && lastLand.fp === fp && lastLand.code === r.code && (!noDeps || !runAt || lastLand.at === runAt)
+      if (prOnly && !repeat) {
+        const reason = oneLine(why.replace(/^[\s\S]*?opening the PR failed:\s*/, ''), 400)
+        const setting = PR_NOT_ALLOWED.test(why)
+        comment(n, `The work for this issue is pushed to \`${branch}\`, but Hivecode could not open the pull request (Q574): ${reason}\n` +
+          (setting ? `GitHub does not let Actions open pull requests in this repository. Turn it on: ${PR_SETTING} (in an organization, an owner may have to allow it first). The next run then opens the pull request: Actions → Hivecode → Run workflow, or the 10-minute timer.\n`
+            : 'The next run tries to open it again.\n') +
+          `Or open a pull request from \`${branch}\` by hand: Hivecode links it to this issue.\n\n${MARK('land', { fp, code: r.code, pushed: 1 })}`)
+        await tell(`issue #${n}: the work is pushed to ${branch}, but the pull request could not be opened (Q574). ${setting ? 'Turn on "Allow GitHub Actions to create and approve pull requests" in the repository\'s Actions settings, or open it by hand.' : 'Open it by hand, or wait for the next run.'}`)
+        await deps.say(`@all issue #${n} is done and its work is pushed to ${branch}, but the pull request could not be opened (Q574): ${reason}. A person has to ${setting ? 'change a repository setting' : 'look at it'} or open the pull request by hand; there is nothing to fix in the room.`)
+      } else if (!repeat) {
+        const hint = noDeps ? `The tests did not find the project's dependencies on the runner. Add an install step before the Hivecode step in \`.github/workflows/hivecode.yml\` (for npm: \`- run: npm ci\`); the landing is tried again once that change is on the default branch.\n` : ''
+        comment(n, `Hivecode could not land this (${r.code}): ${oneLine(why, 600)}\nNothing ${workOnBranch ? 'new ' : ''}was pushed. ${hint}It is tried again when the room's files or the branch change.\n\n${MARK('land', { fp, code: r.code, ...(noDeps ? { deps: 1, ...(runAt ? { at: runAt } : {}) } : {}) })}`)
+        await tell(`issue #${n}: the landing was refused (${r.code}). Nothing was pushed; the room was told.${noDeps ? ' The workflow file needs an install step.' : ''}`)
+        if (r.code !== 'Q576') await deps.say(`@all issue #${n} is done, but its landing was refused (${r.code}): ${oneLine(why, 400)} Nothing was pushed.`)
       }
       note(`#${n}: landing refused (${r.code})`)
     } else note(`#${n}: not ready to land: ${oneLine(r && r.why, 200)}`)
@@ -308,9 +352,35 @@ export async function runAction({ gh, deps, eventName = '', event = {}, branch, 
 }
 
 // ── the workflow file a repository adds ──────────────────────────────────────────────────────────
-export function workflowFile({ branch = '<branch>', version = 'latest' } = {}) {
+/** How this repository installs what its tests need, from the lockfile it keeps: { found, commands }.
+ *  Nothing recognised is found '' and no commands; the workflow then says where the step goes. */
+export function installStepsFor(dir) {
+  const has = (f) => { try { return fs.statSync(path.join(dir, f)).isFile() } catch { return false } }
+  for (const [file, command] of [
+    ['package-lock.json', 'npm ci'],
+    ['npm-shrinkwrap.json', 'npm ci'],
+    ['pnpm-lock.yaml', 'corepack enable && pnpm install --frozen-lockfile'],
+    ['yarn.lock', 'yarn install --frozen-lockfile'],
+    ['package.json', 'npm install'],
+  ]) if (has(file)) return { found: file, commands: [command] }
+  return { found: '', commands: [] }
+}
+
+export function workflowFile({ branch = '<branch>', version = 'latest', install = [] } = {}) {
+  // THE LANDING RUNS THE REPOSITORY'S TESTS ON THE RUNNER, which starts with no dependencies: without
+  // this step every first landing on a project with dependencies failed (11 Nov 2026).
+  // `install` is what installStepsFor answers, or just its list of commands.
+  const steps = (Array.isArray(install) ? install : (install && Array.isArray(install.commands) ? install.commands : [])).map((c) => String(c || '').replace(/[\r\n]+/g, ' ').trim()).filter(Boolean)
+  const installBlock = steps.length
+    ? `      # The landing runs your tests on this runner, so what they need is installed first.\n${steps.map((c) => `      - run: ${c}`).join('\n')}\n`
+    : `      # The landing runs your tests on this runner. No package.json or lockfile was found, so nothing
+      # is installed. If your tests need dependencies, add the install step here, for example:
+      #   - run: pip install -r requirements.txt
+`
   return `# Hivecode: GitHub issues go to the agents in a room, and their work comes back as a pull request.
 # Needs one repository secret, HIVE_ROOM: the room's link (Settings -> Secrets and variables -> Actions).
+# And one setting, so the job may open the pull request: Settings -> Actions -> General ->
+# Workflow permissions -> "Allow GitHub Actions to create and approve pull requests".
 name: Hivecode
 
 on:
@@ -351,7 +421,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npx -y hivecode-mcp@${version} github action
+${installBlock}      - run: npx -y hivecode-mcp@${version} github action
         env:
           HIVE_ROOM: \${{ secrets.HIVE_ROOM }}
           HIVE_BRANCH: ${branch}
@@ -365,7 +435,10 @@ jobs:
 export async function main(argv = [], { cwd = process.cwd(), env = process.env, log = console.log, logErr = console.error, call } = {}) {
   if (argv.includes('--workflow')) {
     const bi = argv.indexOf('--branch')
-    log(workflowFile({ branch: bi !== -1 && argv[bi + 1] ? argv[bi + 1] : '<branch>' }))
+    // What to install is read from the repository this is run in (its top level, when it is one).
+    const here = git(cwd, ['rev-parse', '--show-toplevel'])
+    const found = installStepsFor(here.code === 0 && here.out ? path.resolve(here.out) : cwd)
+    log(workflowFile({ branch: bi !== -1 && argv[bi + 1] ? argv[bi + 1] : '<branch>', install: found.commands }))
     return 0
   }
   const link = String(env.HIVE_ROOM || '').trim()
@@ -399,7 +472,8 @@ export async function main(argv = [], { cwd = process.cwd(), env = process.env, 
   try {
     const W = await import('./hive-webhook.js')
     const notify = W.makeNotifier(String(env.HIVE_NOTIFY_WEBHOOK || '').trim(), { log })
-    const r = await runAction({ gh, deps, eventName: env.GITHUB_EVENT_NAME || '', event, branch, label, base, log, notify })
+    const runAt = git(root, ['rev-parse', 'HEAD']).out.slice(0, 12)
+    const r = await runAction({ gh, deps, eventName: env.GITHUB_EVENT_NAME || '', event, branch, label, base, runAt, log, notify })
     if (!r.did.length) log('nothing to do')
     return 0
   } catch (e) {

@@ -1314,6 +1314,8 @@ async function landIssueOn(opts = {}) {
       why: landRes.why,
       fingerprint,
       state: nextState,
+      // Q574 after the push: the branch on origin holds the work, only the pull request is missing.
+      ...(landRes.onBranch ? { onBranch: true } : {}),
     }
   }
 
