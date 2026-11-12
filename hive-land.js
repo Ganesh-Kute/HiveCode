@@ -382,7 +382,9 @@ export async function landAndOpen(opts = {}) {
           let pr = null
           try { pr = github.createPull({ title: o.title || `Hivecode: ${name}`, head: name, base: into, body }) } catch (e) {
             const again = e && e.status === 422 ? (github.pullsFor(name) || []).find((p) => p.state === 'open') : null
-            if (!again) return refuse('Q574', `the work is pushed to ${name}, but opening the PR failed: ${e.message}`)
+            // onBranch: origin has the work and only the pull request is missing. A caller that speaks for
+            // the landing (the GitHub Action) must not say "nothing was pushed", and tries the PR again.
+            if (!again) return refuse('Q574', `the work is pushed to ${name}, but opening the PR failed: ${e.message}`, { onBranch: true })
             pr = again
           }
           const closed = prs.filter((p) => p.state !== 'open').map((p) => `#${p.number}`)

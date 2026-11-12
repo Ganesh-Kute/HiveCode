@@ -293,22 +293,115 @@ try {
     T('G2 labelled again: it goes to the room again, as attempt 2', await until(() => tasksOf(builder).some((t) => /^Issue #8 \(attempt 2\):/.test(t.text))), r.did.join(' | '))
   }
 
-  // ── I. a pull request on the branch opened by someone else ────────────────────────────────────
-  console.log('\n# I. A pull request someone else opened on the branch')
+  // The room does a piece of work for an issue: Builder changes temp.js, Reviewer passes it, the task is completed.
+  let seq = 0
+  const doWork = async (n, note) => {
+    const cur = git(origin, 'show', 'feat:temp.js')
+    await builder.edit('temp.js', `${cur}\nexport const w${++seq} = () => ${seq}\n`, note)
+    await until(() => reviewer.reviewStatus('temp.js').hash === builder.reviewStatus('temp.js').hash)
+    await reviewer.review(['temp.js'], 'pass', 'ok')
+    await until(() => builder.reviewStatus('temp.js').verdict === 'pass')
+    builder.complete(A.issueTasks(tasksOf(builder), n)[0].id, note)
+  }
+  const updates = () => gh.writes.filter((w) => w.what === 'updatePull').length
+  const sayHas = (re) => chatOf(builder).some((c) => re.test(c))
+
+  // ── I. a pull request on the branch that is not the issue's ──────────────────────────────────
+  console.log("\n# I. A pull request on the branch opened before the issue's work landed")
   {
-    // #8 is in work (attempt 2). An agent's hive_pr opens a plain PR on the branch, no "Closes".
-    gh.pulls.push({ number: 77, state: 'open', head: { ref: 'feat', sha: 'abc777' }, base: { ref: 'main' }, title: 'Hivecode: feat', body: 'Opened by Hivecode from the room bound to `feat`.', html_url: 'https://github.test/acme/widgets/pull/77' })
-    const t8 = tasksOf(builder).filter((t) => /^Issue #8 \(attempt 2\):/.test(t.text))[0]
-    builder.complete(t8.id, 'done by hand')
-    const r = await run('schedule')
+    // #8 is in work (attempt 2). Someone opens a plain PR on the branch (on 11 Nov 2026 it was a setup PR,
+    // and the Action wrote "Closes #22" into it: merging it closed the issue before its work had landed).
+    const body0 = 'A setup change. Nothing to do with the issue.'
+    gh.pulls.push({ number: 77, state: 'open', head: { ref: 'feat', sha: 'abc777' }, base: { ref: 'main' }, title: 'Fix the workflow', body: body0, html_url: 'https://github.test/acme/widgets/pull/77' })
     const pr = gh.pulls.find((p) => p.number === 77)
-    T('I1 it becomes the issue\'s pull request: "Closes #8" goes in first, the issue and the room are told', /^Closes #8\n/.test(pr.body) && gh.marks(8, 'adopted').length === 1 && await until(() => chatOf(builder).some((c) => /PR #77 on the room's branch is now issue #8's pull request/.test(c))), r.did.join(' | '))
-    T('I2 no second pull request, and no "landing refused" for having nothing new', gh.pulls.length === 2 && !gh.marks(8, 'land').some((c) => /could not land/.test(c.body)), r.did.join(' | '))
+    const u0 = updates()
     await run('schedule')
-    T('I3 linked once', gh.marks(8, 'adopted').length === 1 && gh.writes.filter((w) => w.what === 'updatePull').length === 1)
+    await run('schedule')
+    T('I1 the issue\'s work has not landed: the PR is left alone (body untouched, no write, no "adopted", nothing said in the room)', pr.body === body0 && updates() === u0 && gh.marks(8, 'adopted').length === 0 && !sayHas(/PR #77 on the room's branch is now/), `body: ${pr.body} | marks: ${gh.marks(8, 'adopted').length}`)
+    await doWork(8, 'second piece')
+    const r = await run('workflow_dispatch')
+    T('I2 a landing that succeeds onto that PR links it in the same run: "Closes #8" first, the issue told once', /^Closes #8\n/.test(pr.body) && gh.marks(8, 'adopted').length === 1 && gh.pulls.length === 2, `${r.did.join(' | ')} || ${pr.body}`)
+    T('I3 the room is told it is the issue\'s pull request', await until(() => sayHas(/PR #77 on the room's branch is now issue #8's pull request/)))
+    await run('schedule')
+    T('I4 linked once', gh.marks(8, 'adopted').length === 1 && updates() === u0 + 1)
     gh.merge(77)
     await run('pull_request', { action: 'closed', pull_request: { number: 77 } })
-    T('I4 merging it is that issue\'s merge: the room is told', await until(() => chatOf(builder).some((c) => /^@all PR #77 for issue #8 was merged/.test(c))))
+    T('I5 merging it is that issue\'s merge: the room is told', await until(() => sayHas(/^@all PR #77 for issue #8 was merged/)))
+  }
+
+  // ── J. the work is pushed, GitHub will not open the pull request (Q574) ───────────────────────
+  console.log('\n# J. Pushed, but GitHub refuses to open the pull request')
+  {
+    const realCreate = gh.createPull
+    const REFUSED = 'Q603 GitHub answered POST repos/acme/widgets/pulls with HTTP 403: GitHub Actions is not permitted to create or approve pull requests.'
+    gh.createPull = () => { throw Object.assign(new Error(REFUSED), { status: 403 }) }
+    gh.open(9, 'Add Rankine', 'Rankine too.'); gh.label(9)
+    await run('issues', { action: 'labeled', issue: { number: 9 }, label: { name: 'hivecode' } })
+    await until(() => A.issueTasks(tasksOf(builder), 9).length === 1)
+    await doWork(9, 'rankine')
+    await run('workflow_dispatch')
+    const lands = () => gh.marks(9, 'land')
+    const body = (lands()[0] || {}).body || ''
+    T('J1 the issue is told the work IS pushed, and to which branch; never "Nothing was pushed"', lands().length === 1 && /is pushed to/.test(body) && body.includes('feat') && !/Nothing was pushed/.test(body), body)
+    T('J2 it names the setting and where it is', /Allow GitHub Actions to create and approve pull requests/.test(body) && /Settings/.test(body), body)
+    T('J3 the mark says Q574 and pushed', /code=Q574/.test(body) && /pushed=1/.test(body), body)
+    T('J4 the work is on origin', /export const w\d+/.test(git(origin, 'show', 'feat:temp.js')))
+    T('J5 the room is told, and not that nothing was pushed', await until(() => sayHas(/issue #9/) && sayHas(/pushed/)) && !chatOf(builder).some((c) => /issue #9/.test(c) && /Nothing was pushed/.test(c)), chatOf(builder).filter((c) => /issue #9/.test(c)).join(' || '))
+    await run('schedule')
+    await run('workflow_dispatch')
+    T('J6 the refusal is said once, however often it is tried again', lands().length === 1 && gh.pulls.filter((p) => A.closesOf(p.body) === 9).length === 0, `${lands().length} marks`)
+    // The setting is switched on. The room changes nothing; the next run opens the PR.
+    gh.createPull = realCreate
+    await run('schedule')
+    const pr9 = gh.pulls.find((p) => A.closesOf(p.body) === 9 && p.state === 'open')
+    T('J7 once GitHub allows it, the next run opens the pull request with no change in the room', !!pr9, `pulls: ${gh.pulls.map((p) => `${p.number}:${p.state}:${A.closesOf(p.body)}`).join(' ')}`)
+    if (!pr9) { T('J8 a PR opened by hand after the push becomes the issue\'s (needs J7: #9 must be finished first)', false); gh.createPull = realCreate }
+    else {
+    gh.merge(pr9.number); await run('pull_request', { action: 'closed', pull_request: { number: pr9.number } })
+
+    // And a person opens it by hand instead: pushed work, a plain PR on the branch. That one IS the issue's.
+    gh.createPull = () => { throw Object.assign(new Error(REFUSED), { status: 403 }) }
+    gh.open(10, 'Add Reaumur', 'Reaumur too.'); gh.label(10)
+    await run('issues', { action: 'labeled', issue: { number: 10 }, label: { name: 'hivecode' } })
+    await until(() => A.issueTasks(tasksOf(builder), 10).length === 1)
+    await doWork(10, 'reaumur')
+    await run('workflow_dispatch')
+    gh.pulls.push({ number: 92, state: 'open', head: { ref: 'feat', sha: 'abc992' }, base: { ref: 'main' }, title: 'By hand', body: 'Opened by hand.', html_url: 'https://github.test/acme/widgets/pull/92' })
+    await run('schedule')
+    const pr92 = gh.pulls.find((p) => p.number === 92)
+    T('J8 the work was pushed first, so a plain PR opened by hand after it becomes the issue\'s: "Closes #10" first, told once', /^Closes #10\n/.test(pr92.body) && gh.marks(10, 'adopted').length === 1, `${pr92.body} | ${gh.marks(10, 'adopted').length}`)
+    gh.createPull = realCreate
+    }
+  }
+
+  // ── K. a second attempt does not inherit the first attempt's landing ───────────────────────────
+  // Attempt 1 landed (ok=1) and its PR was closed unmerged; the issue is labelled again. A plain PR that
+  // appears on the branch before attempt 2 has landed anything is not attempt 2's. Control: with a
+  // landing mark made after the relabel, the same PR is linked (so the check can tell the difference).
+  console.log('\n# K. Attempt 2 starts clean')
+  {
+    const M = (kind, f = {}) => `<!-- hivecode:room kind=${kind}${Object.entries(f).map(([k, v]) => ` ${k}=${v}`).join('')} -->`
+    const at = (m) => new Date(Date.parse('2026-11-12T10:00:00Z') + m * 60000).toISOString()
+    const attempt2 = async (landAfterRelabel) => {
+      let updates2 = 0
+      const comments = [
+        { id: 1, body: M('sent'), created_at: at(1) }, { id: 2, body: M('land', { fp: 'a', ok: 1 }), created_at: at(2) }, { id: 3, body: M('prclosed', { pr: 9 }), created_at: at(3) },
+        { id: 4, body: M('sent'), created_at: at(11) }, ...(landAfterRelabel ? [{ id: 5, body: M('land', { fp: 'b', ok: 1 }), created_at: at(12) }] : []),
+      ]
+      const pulls2 = [{ number: 77, state: 'open', head: { ref: 'feat' }, base: { ref: 'main' }, body: 'plain', title: 'x' }]
+      const ev = (m) => ({ event: 'labeled', label: { name: 'hivecode' }, actor: { login: 'ganesh' }, created_at: at(m) })
+      const g2 = {
+        owner: 'acme', repo: 'widgets', issueEvents: () => [ev(0), ev(10)], comments: () => comments, comment: () => { }, removeLabel: () => { },
+        labeledIssues: () => [{ number: 5, title: 'T', state: 'open', labels: [{ name: 'hivecode' }] }], pullsFor: () => pulls2, pull: (n) => pulls2.find((p) => p.number === n),
+        updatePull: (n, p) => { updates2++; Object.assign(pulls2[0], p) }, permission: () => 'admin', repoInfo: () => ({ default_branch: 'main' }),
+        reviewComments: () => [], reviews: () => [], checkRuns: () => [], statuses: () => [], issue: () => ({ number: 5, state: 'open', labels: [{ name: 'hivecode' }] }),
+      }
+      const d2 = { tasks: async () => [{ id: 't1', by: 'GitHub', text: 'Issue #5 (attempt 2): T', status: 'open' }], say: async () => { }, bind: async () => { }, landIssue: async () => ({ ok: false, skipped: true }), postIssue: async () => ({}), prFeedback: async () => ({}) }
+      await A.runAction({ gh: g2, deps: d2, eventName: 'schedule', event: {}, branch: 'feat' })
+      return updates2
+    }
+    T('K1 attempt 1 landed, its PR was closed, relabelled: a plain PR on the branch is left alone', (await attempt2(false)) === 0)
+    T('K2 control: a landing made after the relabel does link that PR', (await attempt2(true)) === 1)
   }
 
   // ── H. through the command, as GitHub Actions runs it ─────────────────────────────────────────

@@ -175,9 +175,15 @@ short job on each event and every 10 minutes, with the token it gives the job.
    `npx -y hivecode-mcp@latest branch <branch>` then `git push origin <branch>`
 2. Add the room's link as a repository secret named `HIVE_ROOM`: Settings → Secrets and variables →
    Actions → New repository secret.
-3. Add the workflow file. `npx -y hivecode-mcp@latest github action --workflow --branch <branch>`
-   prints it; save it as `.github/workflows/hivecode.yml`.
-4. The agents join the room. They can all run in the cloud.
+3. Allow GitHub Actions to create pull requests: Settings → Actions → General → Workflow permissions →
+   select "Allow GitHub Actions to create and approve pull requests" and save. Without this, GitHub
+   refuses the pull request (HTTP 403 / Q574) when the work lands.
+4. Add the workflow file. `npx -y hivecode-mcp@latest github action --workflow --branch <branch>`
+   detects your repository's package manager and lockfile (`package-lock.json`, `pnpm-lock.yaml`, or
+   `yarn.lock`) to insert the dependency installation step (`npm ci`, `pnpm install`, or `yarn install`),
+   then prints the workflow; save it as `.github/workflows/hivecode.yml`. For other package managers
+   or languages, add your dependency installation step before the Hivecode step.
+5. The agents join the room. They can all run in the cloud.
 
 ### What happens
 
@@ -190,6 +196,8 @@ short job on each event and every 10 minutes, with the token it gives the job.
 | The room fixes it | The next run pushes the fix to the same pull request. |
 | The pull request is merged or closed | The room is told, the label comes off, and the next labelled issue comes in. |
 | The issue is closed or unlabelled mid-work | The room is told to stop. Labelling it again sends it again, as a new attempt. |
+| Tests fail during landing due to missing dependencies | The landing is refused (Q576); the issue gets a comment naming the fix (`Add an install step` in `.github/workflows/hivecode.yml`). Once the workflow file is updated on the default branch, the next run tries landing again. |
+| The work is pushed to the branch, but GitHub refuses to open the PR (HTTP 403) | The issue is told the work is pushed to the branch, names the missing permission (Settings → Actions → General → Workflow permissions → "Allow GitHub Actions to create and approve pull requests"), and offers opening the PR manually. Once the setting is enabled, the next run opens the PR automatically without changes in the room. |
 
 ### No state file
 
