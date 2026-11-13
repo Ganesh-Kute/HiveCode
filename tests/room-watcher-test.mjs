@@ -580,5 +580,65 @@ console.log('\n# P. a deleted issue does not jam the watcher')
   }
 }
 
+console.log('\n# Q. a landing that opened no pull request is not a landing (e2e run, 10 Nov 2026)')
+{
+  // What happened: landIssue answered ok with no pr, and the watcher said "issue #10 landed as PR
+  // #undefined" in the room and on the issue, marked it landed and stored openPr = 0.
+  const h = harness()
+  h.file(1); h.file(2)
+  await h.w.tick()
+  h.behave.land = () => ({ ok: true, pr: null, why: 'nothing new to land on fix; tests: NOT RUN; pushed' })
+  await h.w.tick()
+  const all = [...comments(h.S, 1), ...h.calls.say]
+  T('Q1 "undefined" is never said, in the room or on the issue', !all.some((b) => /undefined/.test(b)), all.filter((b) => /undefined/.test(b)).join(' | '))
+  T('Q2 the room is not told it landed', !h.calls.say.some((s) => /landed as PR/.test(s)))
+  T('Q3 the issue is not marked landed and stays the active one', h.w.state.issues[1].status !== 'landed' && h.w.state.active && h.w.state.active.n === 1 && !h.w.state.lastIssue)
+  T('Q4 the issue and the room are told the landing was refused, with a code', comments(h.S, 1).some((b) => /refused to land it \(Q589\)/.test(b)) && h.calls.say.some((s) => /REFUSED \(Q589\)/.test(s)))
+  const before = comments(h.S, 1).length
+  await h.w.tick()
+  T('Q5 the same answer again adds no second comment', comments(h.S, 1).length === before)
+  T('Q6 issue #2 is not started behind a landing that never happened', h.calls.post.length === 1)
+
+  // The refusal landIssue itself now gives for unsigned work reaches the issue with the file names.
+  const g = harness()
+  g.file(1)
+  await g.w.tick()
+  g.behave.land = () => ({ ok: false, code: 'Q588', why: 'the task is done, but nothing can land: README.md, temp.js, test.js were changed in the room by a client that signs nothing.', refusedAt: 'dry' })
+  await g.w.tick()
+  T('Q7 unsigned work (Q588): said on the issue with the files, never "landed"', comments(g.S, 1).some((b) => /refused to land it \(Q588\)/.test(b) && /temp\.js/.test(b)) && !g.calls.say.some((s) => /landed as PR/.test(s)) && g.w.state.active && g.w.state.active.n === 1)
+
+  // A review fix (the PR already exists) is told apart: it reports on the PR it was sent for.
+  const k = harness()
+  k.file(1)
+  await k.w.tick()
+  k.behave.land = () => ({ ok: true, pr: { number: 7, url: 'https://github.com/o/r/pull/7' }, why: 'landed' })
+  k.S.pulls.set(7, { number: 7, state: 'open' })
+  await k.w.tick()
+  T('Q8 a real landing is still reported with its number', k.calls.say.some((s) => /issue #1 landed as PR #7/.test(s)) && k.w.state.issues[1].status === 'landed' && k.w.state.openPr === 7)
+
+  // A pull request object with no number in it is no pull request.
+  const m = harness()
+  m.file(1)
+  await m.w.tick()
+  m.behave.land = () => ({ ok: true, pr: { url: '' }, why: 'landed 1 commit(s)' })
+  await m.w.tick()
+  T('Q9 a pull request with no number: not landed, "undefined" not said', m.w.state.issues[1].status !== 'landed' && m.w.state.active && ![...comments(m.S, 1), ...m.calls.say].some((b) => /undefined|landed as PR/.test(b)) && comments(m.S, 1).some((b) => /refused to land it \(Q589\)/.test(b)))
+
+  // A review fix goes to the pull request it was sent for; its answer needs no number of its own.
+  const v = harness()
+  let fb = { ok: true, noop: true, settled: true, items: [], state: {} }
+  v.deps.prFeedback = async () => fb
+  v.file(1)
+  await v.w.tick()
+  v.behave.land = () => ({ ok: true, pr: { number: 7, url: 'u7' }, why: 'landed' })
+  v.S.pulls.set(7, { number: 7, state: 'open' })
+  await v.w.tick()
+  fb = { ok: true, taskId: 'tR', items: [{ id: 1 }], state: {} }
+  await v.w.tick()
+  v.behave.land = () => ({ ok: true, why: 'updated the open pull request' })
+  await v.w.tick()
+  T('Q10 a review fix answered ok with no pr of its own still reports on PR #7', v.S.comments.some((c) => c.n === 7 && /fixes for the review are pushed/.test(c.body)) && v.calls.say.some((s) => /review fixes landed on PR #7/.test(s)) && !v.w.state.active && v.w.state.openPr === 7)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

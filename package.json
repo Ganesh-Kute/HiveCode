@@ -1,6 +1,6 @@
 {
   "name": "hivecode-mcp",
-  "version": "0.14.6",
+  "version": "0.14.14",
   "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
@@ -38,6 +38,8 @@
     "hive-pr.js",
     "hive-branch.js",
     "hive-land.js",
+    "hive-gh-action.js",
+    "hive-issue.js",
     "hive-repos.js",
     "hive-room-mode.js",
     "hive-room-watcher.js",
@@ -85,6 +87,7 @@
     "hive-notify.js",
     "hive-webhook.js",
     "hive-slack.js",
+    "hive-slack-connect.js",
     "hive-slack-agent.js",
     "hive-mcp-http.js",
     "slack-app-manifest.json",
@@ -166,7 +169,8 @@
     "test:gate": "node tests/hive-gate-test.mjs",
     "bench:ab": "node bench/coordination-ab.mjs",
     "test:branch": "node tests/branch-test.mjs",
-    "test:github": "node tests/github-cli-test.mjs && node tests/notify-test.mjs && node tests/github-watcher-test.mjs"
+    "test:github": "node tests/github-cli-test.mjs && node tests/notify-test.mjs && node tests/github-watcher-test.mjs",
+    "test:issue": "node tests/hive-issue-tool-test.mjs && node tests/hive-pr-tool-test.mjs"
   },
   "engines": {
     "node": ">=18"

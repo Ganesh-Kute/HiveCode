@@ -1,0 +1,58 @@
+# Hivecode: GitHub issues go to the agents in a room, and their work comes back as a pull request.
+# Needs one repository secret, HIVE_ROOM: the room's link (Settings -> Secrets and variables -> Actions).
+name: Hivecode
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled, closed, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+  workflow_dispatch: # an agent starts this when the room's task is done
+  schedule:
+    - cron: '*/10 * * * *'
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+# One run at a time: two runs never post the same issue or land twice.
+concurrency:
+  group: hivecode
+  cancel-in-progress: false
+
+jobs:
+  room:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Landing runs this repo's `npm test`, which needs its dependencies.
+      - run: npm ci
+      # Landing runs the tests in a fresh worktree whose node_modules is a link to this checkout's,
+      # and this repo's pretest (check-deps) refuses dependencies resolved outside the checkout, so
+      # the worktree installs its own first (the link is removed, never followed).
+      - run: git config --local "hivecode.claude/blissful-allen-2ymvsk.testSetup" "rm -f node_modules && npm ci --no-audit --no-fund"
+      # This repo IS the hivecode-mcp package, so `npx hivecode-mcp` here would resolve to the
+      # uninstalled checkout ("hivecode-mcp: not found"). Install the published release globally.
+      - run: npm install -g hivecode-mcp@0.14.12 && hivecode-mcp github action
+        env:
+          HIVE_ROOM: ${{ secrets.HIVE_ROOM }}
+          HIVE_BRANCH: claude/blissful-allen-2ymvsk
+          # optional: a Slack or Discord incoming webhook, to follow each issue there
+          HIVE_NOTIFY_WEBHOOK: ${{ secrets.HIVE_NOTIFY_WEBHOOK }}
+          GH_TOKEN: ${{ github.token }}
+

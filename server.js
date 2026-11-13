@@ -42,6 +42,7 @@ import { makePollHandler } from './relay-poll.js'
 import { VERSION, BUILD } from './hive-version.js'
 import { serveMux } from './relay-mux.js'
 import { STATIC, staticFile } from './relay-static.js'
+import { makeSlackRelay, SLACK_PREFIX } from './hive-slack-relay.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
 // library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
@@ -1138,7 +1139,24 @@ if (PERSIST_DIR) {
   console.log(`[relay] persistence ON -> ${PERSIST_DIR}`)
 }
 
+// SLACK WITHOUT A BRIDGE PROCESS (issue #22): the relay answers Slack's Events API itself and sends
+// each room's new chat lines to its Slack channel. Off (every /slack/ route answers Q660) until
+// HIVE_SLACK_KEY is set; hive-slack-relay.js has the contract and what never leaves.
+const slackRelay = makeSlackRelay({
+  getDoc: getYDoc, docs: yDocs, dir: PERSIST_DIR, key: process.env.HIVE_SLACK_KEY || '',
+  api: process.env.HIVE_SLACK_API || 'https://slack.com/api',
+  publicUrl: process.env.HIVE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '',
+  // ONE-LINK SETUP (13 Nov 2026): the relay owner's own Slack app, installed by each workspace through
+  // Slack's OAuth, so nobody carries a token. Off unless all three are set; never logged.
+  clientId: process.env.HIVE_SLACK_CLIENT_ID || '',
+  clientSecret: process.env.HIVE_SLACK_CLIENT_SECRET || '',
+  appSecret: process.env.HIVE_SLACK_APP_SECRET || '',
+  authorizeUrl: process.env.HIVE_SLACK_AUTHORIZE || 'https://slack.com/oauth/v2/authorize',
+  log: (m) => console.log(m),
+})
+
 const server = http.createServer((req, res) => {
+  if (req.url && req.url.startsWith(SLACK_PREFIX)) return void slackRelay.handle(req, res)
   // A room connection carried over HTTPS requests (relay-poll.js), for networks that refuse upgrades.
   if (req.url && req.url.startsWith(POLL_PREFIX)) {
     if (!RELAY_POLL) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('long-poll is off on this relay') }

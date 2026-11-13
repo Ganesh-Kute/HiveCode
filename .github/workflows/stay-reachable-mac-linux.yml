@@ -65,7 +65,7 @@ jobs:
         if: always()
         run: |
           fail=0
-          for t in entry-point-test.mjs hive-slack-test.mjs hive-slack-agent-test.mjs slack-poll-inbound-test.mjs slack-control-confirm-test.mjs slack-poller-cursor-test.mjs; do
+          for t in entry-point-test.mjs hive-slack-test.mjs hive-slack-agent-test.mjs slack-poll-inbound-test.mjs slack-control-confirm-test.mjs slack-poller-cursor-test.mjs slack-relay-test.mjs slack-relay-e2e-test.mjs slack-connect-test.mjs slack-oauth-test.mjs slack-one-click-e2e-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"
@@ -78,7 +78,7 @@ jobs:
         if: always()
         run: |
           fail=0
-          for t in land-test.mjs hive-pr-test.mjs hive-pr-tool-test.mjs review-test.mjs room-watcher-test.mjs room-mode-e2e-test.mjs room-mode-issue-test.mjs room-mode-start-test.mjs room-mode-land-test.mjs room-mode-pr-comments-test.mjs room-start-cli-test.mjs release-check-test.mjs version-truth-test.mjs poll-fallback-test.mjs await-rebuilt-room-test.mjs poll-transport-test.mjs poll-vm-e2e-test.mjs proxy-connect-test.mjs proxy-tools-test.mjs proxy-fetch-test.mjs new-file-latency-test.mjs join-honesty-test.mjs phantom-held-edit-test.mjs handover-edit-test.mjs revert-agent-test.mjs hive-pr-crlf-test.mjs handover-edit-adversarial-test.mjs working-set-adversarial-test.mjs crlf-sweep-test.mjs; do
+          for t in land-test.mjs hive-pr-test.mjs hive-pr-tool-test.mjs hive-issue-tool-test.mjs gh-action-test.mjs gh-action-workflow-test.mjs gh-action-retry-test.mjs review-test.mjs room-watcher-test.mjs room-mode-e2e-test.mjs room-mode-issue-test.mjs room-mode-start-test.mjs room-mode-land-test.mjs room-mode-pr-comments-test.mjs room-start-cli-test.mjs release-check-test.mjs version-truth-test.mjs poll-fallback-test.mjs await-rebuilt-room-test.mjs poll-transport-test.mjs poll-vm-e2e-test.mjs proxy-connect-test.mjs proxy-tools-test.mjs proxy-fetch-test.mjs new-file-latency-test.mjs join-honesty-test.mjs phantom-held-edit-test.mjs handover-edit-test.mjs revert-agent-test.mjs hive-pr-crlf-test.mjs handover-edit-adversarial-test.mjs working-set-adversarial-test.mjs crlf-sweep-test.mjs; do
             echo "::group::$t"
             node "tests/$t" || { fail=1; echo "::error::$t failed"; }
             echo "::endgroup::"

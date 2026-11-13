@@ -368,6 +368,69 @@ try {
   T('T3.3 ...but a new branch head earns one new landing with the room unchanged',
     q506Runs === 2 && Boolean(r3 && r3.skipped !== true && r3.code === 'Q506'))
 
+  // Group 4 -- a done task that lands nothing is not "landed" (e2e run, 10 Nov 2026)
+  // Issue #10 was done and reviewed, but its three files were saved by a client that signs nothing.
+  // The dry landing said "0 attributed, 3 files with no verified receipt", whenDone answered ready
+  // (no planned file, so nothing to review), the real landing returned ok with pr = null, and the
+  // watcher posted "issue #10 landed as PR #undefined" in the room and on the issue. Nothing had
+  // been pushed.
+  console.log('\n# Group 4: a done task whose landing brings nothing is refused, never reported as landed')
+  const base4 = { link: `${RELAY}|${ROOM}`, taskId, issue: { number: 10, title: 'Add Kelvin conversions' }, root: ROOT, branch: 'main', syncRunner: async () => agent }
+
+  // (a) every changed file is unsigned: nothing can land
+  let unsignedRealRuns = 0
+  const UNSIGNED = ['README.md', 'temp.js', 'test.js']
+  const mockUnsigned = async (opts) => {
+    if (opts.dry) return { ok: true, plan: [], deletions: [], orphans: UNSIGNED, hashes: {} }
+    unsignedRealRuns++
+    return { ok: true, pr: null, tip: 'a0b6b02', plan: [], orphans: UNSIGNED, landed: 0, why: 'nothing new to land on main; tests: NOT RUN; pushed' }
+  }
+  const wdU = await whenDone({ ...base4, landRunner: mockUnsigned })
+  T('T4.1 whenDone: the only changes are unsigned -> refused with a code, every file named',
+    Boolean(wdU && wdU.ready === false && wdU.refused === true && wdU.code === 'Q588' && UNSIGNED.every((f) => (wdU.why || '').includes(f))), wdU ? JSON.stringify({ ready: wdU.ready, code: wdU.code, why: wdU.why }) : 'null')
+  const liU = await landIssue({ ...base4, landRunner: mockUnsigned, headOf: () => 'h-unsigned' })
+  T('T4.2 landIssue: not ok, Q588, and the real landing never ran',
+    Boolean(liU && liU.ok === false && liU.code === 'Q588' && !liU.pr) && unsignedRealRuns === 0, liU ? JSON.stringify({ ok: liU.ok, code: liU.code, runs: unsignedRealRuns }) : 'null')
+  T('T4.3 ...and the reason says what to do: a client that signs', /sign/i.test((liU && liU.why) || '') && /HIVE_PROVENANCE/.test((liU && liU.why) || ''), liU ? liU.why : 'null')
+
+  // (b) nothing changed at all, and the real landing opened no pull request
+  let nothingRuns = 0
+  const mockNothing = async (opts) => {
+    if (opts.dry) return { ok: true, plan: [], deletions: [], orphans: [] }
+    nothingRuns++
+    return { ok: true, pr: null, tip: 'a0b6b02', plan: [], landed: 0, why: 'nothing new to land on main; tests: NOT RUN; pushed' }
+  }
+  const liN = await landIssue({ ...base4, landRunner: mockNothing, headOf: () => 'h-nothing' })
+  T('T4.4 no pull request came of the landing: not ok, Q589, never "landed"',
+    Boolean(liN && liN.ok === false && liN.code === 'Q589' && !liN.pr), liN ? JSON.stringify({ ok: liN.ok, code: liN.code, pr: liN.pr }) : 'null')
+  const liN2 = await landIssue({ ...base4, landRunner: mockNothing, headOf: () => 'h-nothing', state: liN && liN.state })
+  T('T4.5 ...remembered like any refusal: the same room and branch are not landed again',
+    Boolean(liN && liN.fingerprint && liN.state && liN.state.lastFailedFingerprint === liN.fingerprint) && Boolean(liN2 && liN2.skipped === true) && nothingRuns === 1, `runs ${nothingRuns}`)
+
+  // (c) a pull request with no number is no pull request
+  const mockNoNumber = async (opts) => (opts.dry
+    ? { ok: true, plan: [{ agent: 'DevAgent', files: ['buffer.js'] }], deletions: [] }
+    : { ok: true, pr: { url: '' }, tip: 'c0ffee', plan: [{ agent: 'DevAgent', files: ['buffer.js'] }], landed: 1 })
+  const liX = await landIssue({ ...base4, landRunner: mockNoNumber, headOf: () => 'h-nonumber' })
+  T('T4.6 a pull request without a number is not a landing either', Boolean(liX && liX.ok === false && liX.code === 'Q589'), liX ? JSON.stringify({ ok: liX.ok, code: liX.code }) : 'null')
+
+  // (d) a retry that only opens the pull request for commits that already landed still succeeds
+  const mockRetryOpens = async (opts) => (opts.dry
+    ? { ok: true, plan: [], deletions: [], orphans: [] }
+    : { ok: true, pr: { number: 12, url: 'https://github.com/org/repo/pull/12', created: true, newCommits: 0 }, tip: 'c0ffee', plan: [], landed: 0 })
+  const liR = await landIssue({ ...base4, landRunner: mockRetryOpens, headOf: () => 'h-retry' })
+  T('T4.7 nothing new to commit, but the landing opened PR #12: that is a landing', Boolean(liR && liR.ok === true && liR.pr && liR.pr.number === 12), liR ? JSON.stringify({ ok: liR.ok, code: liR.code }) : 'null')
+
+  // (e) signed and unsigned files together: the signed ones land as before (hive-land.js writes
+  // "Not in this PR" into the body itself; tests/land-test.mjs group O)
+  const mockPartial = async (opts) => (opts.dry
+    ? { ok: true, plan: [{ agent: 'DevAgent', files: ['buffer.js'] }], deletions: [], orphans: ['notes.md'] }
+    : { ok: true, pr: { number: 13, url: 'https://github.com/org/repo/pull/13' }, tip: 'c0ffee', plan: [{ agent: 'DevAgent', files: ['buffer.js'] }], landed: 1, opts })
+  const wdP = await whenDone({ ...base4, landRunner: mockPartial })
+  T('T4.8 whenDone hands on the unsigned files it found', Boolean(wdP && wdP.ready === true && JSON.stringify(wdP.orphans) === JSON.stringify(['notes.md'])), wdP ? JSON.stringify({ ready: wdP.ready, orphans: wdP.orphans, why: wdP.why }) : 'null')
+  const liP = await landIssue({ ...base4, landRunner: mockPartial, headOf: () => 'h-partial' })
+  T('T4.9 signed files still land when another file is unsigned', Boolean(liP && liP.ok === true && liP.pr && liP.pr.number === 13), liP ? JSON.stringify({ ok: liP.ok, code: liP.code }) : 'null')
+
 } catch (err) {
   // A throw is a FAILURE: 0.14.2 only printed it, so a test file that crashed half way exited 0
   // with every check after the crash silently skipped (0.14.3, Claude's review).

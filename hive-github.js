@@ -144,6 +144,9 @@ export function makeGitHub({ call, owner, repo, now = () => Date.now() }) {
     repoInfo: () => req('GET', base),
     labeledIssues: (label) => list(`${base}/issues?state=open&labels=${encodeURIComponent(label)}&sort=created&direction=asc`),
     issue: (n) => req('GET', `${base}/issues/${n}`),
+    // The newest open issues, one page: for a person or an agent choosing one (hive_issue). Pull
+    // requests come back in this list too; the caller drops them.
+    recentIssues: (n = 40) => req('GET', `${base}/issues?state=open&sort=created&direction=desc&per_page=${Math.max(1, Math.min(100, Number(n) || 40))}`) || [],
     issueEvents: (n) => list(`${base}/issues/${n}/events`),
     // The account the repo belongs to is always its admin, so GitHub is not asked. A token that may
     // not read collaborators (a Claude Code cloud session's) can then still serve the repo's owner.
@@ -159,6 +162,7 @@ export function makeGitHub({ call, owner, repo, now = () => Date.now() }) {
     pull: (n) => req('GET', `${base}/pulls/${n}`),
     pullsFor: (branch) => list(`${base}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}`),
     createPull: (p) => req('POST', `${base}/pulls`, p),
+    updatePull: (n, p) => req('PATCH', `${base}/pulls/${n}`, p),
     checkRuns: (sha) => (req('GET', `${base}/commits/${sha}/check-runs?per_page=100&filter=latest`) || {}).check_runs || [],
     statuses: (sha) => (req('GET', `${base}/commits/${sha}/status`) || {}).statuses || [],
     reviews: (n) => list(`${base}/pulls/${n}/reviews`),
@@ -1640,6 +1644,8 @@ const USAGE = `usage:
   npx -y hivecode-mcp@latest github start --room "<room link>" [--fallback-agent "<command>"] [--ack-minutes 10]
   npx -y hivecode-mcp@latest github start --branch <name> [--fallback-agent "<command>"] [--ack-minutes 10]
   npx -y hivecode-mcp@latest github status
+  npx -y hivecode-mcp@latest github action     one run inside GitHub Actions (env HIVE_ROOM, HIVE_BRANCH)
+  npx -y hivecode-mcp@latest github action --workflow --branch <name>   print the workflow file to add
 
 --room: hand each labelled issue to the agents ALREADY in that room (a room bound to a branch of
 this repo: npx -y hivecode-mcp@latest branch <name>). They split it, build it and review each other;
@@ -1684,6 +1690,8 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
   const ri = rest.indexOf('--repo')
   const cwd = ri !== -1 && rest[ri + 1] ? path.resolve(rest[ri + 1]) : here
   if (ri !== -1) rest.splice(ri, 2)
+  // `github action`: one run inside GitHub Actions (hive-gh-action.js). No watcher, no state file.
+  if (sub === 'action') { const A = await import('./hive-gh-action.js'); return A.main(rest, { cwd, log, logErr, call }) }
   if (sub !== 'start' && sub !== 'status') { logErr(USAGE); return EXIT_FIX }
   const top = git(cwd, ['rev-parse', '--show-toplevel'])
   if (top.code !== 0) { logErr(`Q601 ${cwd} is not inside a git repository. Run this in your clone of the repo.`); return EXIT_FIX }
