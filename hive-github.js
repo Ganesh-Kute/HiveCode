@@ -148,7 +148,10 @@ export function makeGitHub({ call, owner, repo, now = () => Date.now() }) {
     // requests come back in this list too; the caller drops them.
     recentIssues: (n = 40) => req('GET', `${base}/issues?state=open&sort=created&direction=desc&per_page=${Math.max(1, Math.min(100, Number(n) || 40))}`) || [],
     issueEvents: (n) => list(`${base}/issues/${n}/events`),
-    permission: (login) => absentIs('none', () => (req('GET', `${base}/collaborators/${encodeURIComponent(login)}/permission`) || {}).permission || 'none'),
+    // The account the repo belongs to is always its admin, so GitHub is not asked. A token that may
+    // not read collaborators (a Claude Code cloud session's) can then still serve the repo's owner.
+    permission: (login) => (String(login).toLowerCase() === String(owner).toLowerCase() ? 'admin'
+      : absentIs('none', () => (req('GET', `${base}/collaborators/${encodeURIComponent(login)}/permission`) || {}).permission || 'none')),
     comments: (n) => list(`${base}/issues/${n}/comments`),
     comment: (n, body) => req('POST', `${base}/issues/${n}/comments`, { body }),
     deleteComment: (id) => absentIs(null, () => req('DELETE', `${base}/issues/comments/${id}`)),
@@ -1768,6 +1771,8 @@ export async function main(argv, { cwd: here = process.cwd(), log = console.log,
         return EXIT_FIX
       }
     }
+    // Room mode posts nothing to Slack itself, and a flag that silently does nothing reads as "Slack is on".
+    if (opt('slack-channel')) log(`NOTE: --slack-channel does nothing with --room. For this room's work in Slack, also run: npx -y hivecode-mcp@latest slack start "${roomLink}" --channel ${opt('slack-channel')}`)
     const RW = await import('./hive-room-watcher.js')
     return RW.runRoomMode({ f, opt, gh, id, info, root, gitDir, label: opt('label') || LABEL, log, logErr })
   }

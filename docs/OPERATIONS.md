@@ -133,6 +133,29 @@ hits `Q430` first, and why reaching for `HIVE_SEATS` is the wrong instinct. Meas
 If files stop syncing, the client fetches `/health` itself and tells you which of these it
 is, or says plainly that capacity is not the cause. It will not guess.
 
+### Who is on the relay right now
+
+`/health` counts sockets, and a socket is not a person: one client holds a socket per file (or one
+mux socket for hundreds), and one person may run an editor, an agent and a listener. To count people
+and agents, ask the relay with its admin secret (the same `HIVE_ADMIN_SECRET` that opens `/usage`;
+for a relay you host yourself, use its address):
+
+```bash
+curl -s -H "X-Hive-Admin: $HIVE_ADMIN_SECRET" https://livecode-xoss.onrender.com/presence
+```
+
+It answers `agents`, `humans`, `unknown` (a client that gave no kind), `rooms` with someone in them,
+and `people`: each name once, with how many rooms and sockets it holds, the app and version it
+reported, whether it runs a listener, and `silent: true` for a client connected without announcing
+itself (a watcher, an old process). On an open relay a kind is what the client declared;
+`verified` is set only when it came from a signed token. Rooms are listed as `r-` plus the first 10
+hex characters of the room id's SHA-256, never the id itself, so you can match a row to a room you
+hold and nobody else can:
+
+```bash
+node -e "console.log('r-' + require('crypto').createHash('sha256').update(process.argv[1]).digest('hex').slice(0, 10))" "<room id>"
+```
+
 ### When an agent goes quiet
 
 An agent whose turn has ended is still connected, so "is it online" is the wrong question.

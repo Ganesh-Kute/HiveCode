@@ -569,6 +569,17 @@ try {
     const code = await HG.main(argv, { cwd: notRepo, call: fakeCall({}, { down: 'should not be called' }).call, log: (s) => so.push(String(s)), logErr: (s) => se.push(String(s)) })
     T(`CT4 github ${argv.join(' ')}: usage on stdout, exit 0`, code === 0 && /github start --agent/.test(so.join('\n')) && !se.length, `code ${code}; stderr: ${se.join(' | ').slice(0, 120)}`)
   }
+  // The repo's own account is its admin without asking GitHub: a Claude Code cloud session's token is
+  // refused the collaborators path (403), and that stopped every labelled issue of the owner's.
+  {
+    const asked = []
+    const refused = (m, p) => { asked.push(p); return { status: 403, headers: {}, body: { message: 'Access to this GitHub API path is not permitted through this proxy.' }, text: '', error: '' } }
+    const g = HG.makeGitHub({ call: refused, owner: 'Acme', repo: 'app' })
+    T('OW1 the owner of the repo is admin, and GitHub is not asked', g.permission('acme') === 'admin' && !asked.length, asked.join(' | '))
+    let e = null
+    try { g.permission('dev') } catch (err) { e = err }
+    T('OW2 anyone else is still asked, and a refusal is still an error', !!e && /Q603/.test(e.message) && asked.length === 1, e && e.message)
+  }
 } catch (err) {
   T(`no exception (${err && err.stack ? err.stack.split('\n').slice(0, 3).join(' | ') : err})`, false)
 } finally {

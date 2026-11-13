@@ -43,6 +43,7 @@ import { VERSION, BUILD } from './hive-version.js'
 import { serveMux } from './relay-mux.js'
 import { STATIC, staticFile } from './relay-static.js'
 import { makeSlackRelay, SLACK_PREFIX } from './hive-slack-relay.js'
+import { presenceReport, adminOk } from './relay-presence.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
 // library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
@@ -1255,6 +1256,24 @@ const server = http.createServer((req, res) => {
     }))
   }
 
+  // Who is on the relay now, across every room: agents and people, by identity, not by socket.
+  // Same gate as /usage. Never a room id: rooms are reported as hashes (relay-presence.js).
+  if (req.url === '/presence' || (req.url || '').startsWith('/presence?')) {
+    const want = process.env.HIVE_ADMIN_SECRET || ''
+    if (!adminOk(want, req.headers['x-hive-admin'])) {
+      res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+      return res.end(JSON.stringify({ error: want ? 'Q441 bad or missing X-Hive-Admin header' : 'Q442 /presence is disabled: set HIVE_ADMIN_SECRET to enable it' }))
+    }
+    const s = limitStats()
+    const body = presenceReport({
+      peers: workspacePeers,
+      statesOf: (room) => { const d = yDocs.get(room); return d && d.awareness ? d.awareness.getStates().values() : null },
+      stats: { connections: s.connections, channels: s.channels },
+    })
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end(JSON.stringify(body))
+  }
+
   if (req.url === '/__hive/revoke') {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
     if (req.method === 'POST') return void handleRevoke(req, res)
@@ -1366,14 +1385,15 @@ function inheritedRoomAccount(baseRoom) {
 // Counted per identity, not per socket: one client holds hundreds of sockets (one per
 // file), so a set of connection ids would report a single user as hundreds. The refcount
 // is what lets an identity leave only when its LAST socket in the workspace closes.
-const workspacePeers = new Map() // baseRoom -> Map(name -> { kind, declaredKind, socks })
+const workspacePeers = new Map() // baseRoom -> Map(name -> { kind, declaredKind, open, socks })
 
-function joinWorkspace(baseRoom, identity) {
+function joinWorkspace(baseRoom, identity, role) {
   let m = workspacePeers.get(baseRoom)
   if (!m) { m = new Map(); workspacePeers.set(baseRoom, m) }
   const cur = m.get(identity.name)
   if (cur) { cur.socks++; return }
-  m.set(identity.name, { kind: identity.kind, declaredKind: identity.declaredKind, socks: 1 })
+  // `open`: the kind came from the client's own word (an open relay), not from a signed token.
+  m.set(identity.name, { kind: identity.kind, declaredKind: identity.declaredKind, open: role === 'open', socks: 1 })
 }
 
 function leaveWorkspace(baseRoom, name) {
@@ -1551,7 +1571,7 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
   // Add agent to active committers list
   if (!roomAgents.has(room)) roomAgents.set(room, new Set())
   roomAgents.get(room).add(agentId)
-  joinWorkspace(baseRoom, auth.identity)
+  joinWorkspace(baseRoom, auth.identity, auth.role)
 
   // Remove agent when connection drops, and SAY SO. Without a disconnect event the
   // audit log is connect-only, which makes three ordinary questions unanswerable:
