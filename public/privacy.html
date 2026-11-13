@@ -39,7 +39,7 @@
         What we hold, why, and for how long. The short version: an email address and a licence
         record, and nothing else we could avoid.
       </p>
-      <p class="prose__updated">Last updated 1 November 2026</p>
+      <p class="prose__updated">Last updated 13 November 2026</p>
     </div>
 
     <div class="prose">
@@ -50,6 +50,7 @@
         <li>Files your <code>.gitignore</code> excludes are never synced, and neither are <code>.env</code> files, private keys, certificates or your local identity file, regardless of what your ignore rules say.</li>
         <li>The GitHub watcher (<code>hivecode-mcp github</code>) runs on your machine and reaches GitHub through your own <code>gh</code> login. Your GitHub credentials never reach us. The issues, comments and CI logs it reads go to your agent on your machine, and into the room that agent works in.</li>
         <li>Notifications go from your machine straight to the Slack or Discord webhook you give them. We never see that webhook, and a room's link is never put in a notification.</li>
+        <li>The Slack bridge you run yourself (<code>hivecode-mcp slack start</code>) talks to Slack from your machine with your own app's tokens. Those tokens never reach us. Connecting a room through a Slack link is different: see <a href="#slack">Slack, when you connect a room to a channel</a> below.</li>
       </ul>
 
       <h2>What we store</h2>
@@ -103,12 +104,48 @@
         public, and then nothing about your work touches our infrastructure.
       </p>
 
+      <h2 id="slack">Slack, when you connect a room to a channel</h2>
+      <p>
+        <code>hivecode-mcp slack connect</code> links one room to one Slack channel, and the hosted
+        relay then carries messages both ways itself. Nothing passes until someone in your Slack
+        workspace approves the Hivecode app and picks the channel on Slack's own screen.
+      </p>
+      <ul>
+        <li><b>From Slack to the room.</b> Slack sends the relay the messages posted in channels the
+          Hivecode bot is a member of; the bot joins only the channel you picked. Messages people post
+          in that channel are written into the room's chat under their Slack username (the relay asks
+          Slack for it, which is why the app may read basic profile information). From then on they are
+          part of the room like any other chat line: anyone who holds the room link can read them, and
+          they are kept with the room's snapshot described above. Messages from bots, and events for
+          any other channel, are dropped.</li>
+        <li><b>From the room to Slack.</b> Every new chat line in the room, from people and agents alike,
+          is posted to that channel by the bot, where every member of the channel can read it and your
+          workspace's own Slack retention applies. Before a line is sent, room links, room ids and
+          anything that looks like a key or token are removed from it. History from before the
+          connection is not sent.</li>
+        <li><b>What the relay keeps.</b> For each connection: the room id, the Slack workspace's id and
+          name, the channel's id and name, the bot's user id, and the bot's access token. The token is
+          encrypted (AES-256-GCM) on the relay's disk, never logged and never written into a room. The
+          incoming-webhook address Slack returns during the install is discarded at once. Usernames
+          looked up from Slack are held in memory only. The relay's logs record Slack errors, never
+          message text or tokens.</li>
+        <li><b>How it ends.</b> Remove the bot from the channel, uninstall the app from your workspace,
+          or run <code>slack disconnect</code>: the stored token is deleted and nothing more passes.
+          A connection that was started but never approved is deleted after 24 hours. Like room
+          snapshots, stored connections are also lost when the hosted relay is redeployed (see above);
+          the room then stops reaching Slack until it is connected again.</li>
+        <li>If you connect with your own Slack app instead (<code>slack connect</code> with a bot token
+          and signing secret), the relay keeps that app's signing secret as well, encrypted in the same
+          way, and everything else above is the same.</li>
+      </ul>
+
       <h2>Third parties we use</h2>
       <ul>
         <li><b>Razorpay</b> — payments.</li>
         <li><b>Supabase</b> — the licence database.</li>
         <li><b>Vercel</b> — this website and the licence API.</li>
         <li><b>Render</b> — the hosted relay.</li>
+        <li><b>Slack</b> — only if you connect a room to a Slack channel (above).</li>
         <li><b>Resend</b> — sending your licence key, if email delivery is configured.</li>
         <li><b>Google Fonts</b> — the two typefaces on this site, which means Google receives a request from your browser when you load it.</li>
       </ul>
