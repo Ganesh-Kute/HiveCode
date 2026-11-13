@@ -18,6 +18,24 @@
 // expired id, Q662 Slack refused the token, Q663 bad signature or secret (401), Q664 the bot is not
 // in that channel.
 //
+// ONE LINK (13 Nov 2026). The contract above makes every person create their own Slack app and carry
+// a bot token and a signing secret to a terminal; a person who only works with cloud agents has no
+// terminal. When the relay's owner has registered ONE Slack app and set HIVE_SLACK_CLIENT_ID,
+// HIVE_SLACK_CLIENT_SECRET and HIVE_SLACK_APP_SECRET (that app's signing secret), a workspace installs
+// it through Slack's OAuth instead, and nobody but the relay ever holds a secret:
+//   POST /slack/prepare          also answers installUrl
+//   GET  /slack/install/<id>     302 to Slack's authorize page; `state` is the prepared id
+//   GET  /slack/oauth/callback   exchanges the code, joins the channel the person picked on Slack's
+//                                own screen, connects; answers a small page
+//   POST /slack/events           the shared app's events, signed with the app's secret, routed to a
+//                                connection by workspace id + channel id
+//   POST /slack/status {id}      {connected, pending?, ended?, channel?}: an agent can confirm without secrets
+// A one-link connection has no secret of its own, so it ends from Slack: the bot is removed from the
+// channel, or the app from the workspace. {id} alone also ends it (the id is only ever given to the
+// person who ran slack connect); {room} alone never does.
+// More codes: Q669 one-link setup is not enabled on this relay, Q670 that channel is already
+// connected, Q671 a direct message cannot be connected, Q672 Slack did not complete the install.
+//
 // WHAT NEVER LEAVES. The bot token and signing secret are stored on the relay's disk only, encrypted
 // (AES-256-GCM, key from HIVE_SLACK_KEY), never logged, never written into a room. The events URL
 // carries a random id, not the room id: the room id is the key to read the room, and Slack keeps
@@ -42,6 +60,20 @@ const CHANNEL_RE = /^[CGD][A-Z0-9]{2,30}$/
 // The same rule as hive-slack.js notFromAPerson: these subtypes are a person saying something.
 const PERSON_SUBTYPES = new Set(['thread_broadcast', 'file_share'])
 const FORWARDED_MAP = 'slack_forwarded'
+const DEFAULT_AUTHORIZE = 'https://slack.com/oauth/v2/authorize'
+const STATUS_CHECK_MS = 5000       // a waiting connection asks Slack "is the bot in yet?" at most this often
+/** What the shared app asks for. incoming-webhook is there for one thing: it puts Slack's own channel
+ *  picker on the approval screen and tells us the channel. The webhook URL it also returns is dropped. */
+export const SHARED_BOT_SCOPES = ['chat:write', 'channels:history', 'groups:history', 'users:read', 'channels:read', 'groups:read', 'channels:join', 'incoming-webhook']
+export const SHARED_BOT_EVENTS = ['message.channels', 'message.groups', 'member_joined_channel', 'member_left_channel', 'channel_left', 'group_left', 'app_uninstalled', 'tokens_revoked']
+/** chat.postMessage errors that mean a one-link connection is over, and what to say about it. */
+const GONE = {
+  not_in_channel: 'the bot is no longer in the channel', channel_not_found: 'the bot is no longer in the channel',
+  is_archived: 'the channel was archived',
+  token_revoked: 'the Hivecode app was removed from the Slack workspace', account_inactive: 'the Hivecode app was removed from the Slack workspace',
+  invalid_auth: 'the Hivecode app was removed from the Slack workspace',
+}
+const esc = (t) => String(t).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
 
 const hhmmss = (t = new Date()) => t.toTimeString().slice(0, 8)
 const fail = (status, code, why) => ({ status, body: { ok: false, code, why: `${code} ${why}` } })
@@ -109,9 +141,15 @@ export function renderForSlack(m, room) {
  *   key            HIVE_SLACK_KEY; without it every Slack route answers Q660
  *   fetchImpl, api the Slack Web API (HIVE_SLACK_API points tests at a fake)
  *   publicUrl      this relay's https origin, for eventsUrl (else the request's Host)
+ *   clientId, clientSecret, appSecret   the relay owner's ONE Slack app (one-link setup); all three or it is off
+ *   authorizeUrl   Slack's authorize page (HIVE_SLACK_AUTHORIZE points tests at a fake)
  */
-export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl = globalThis.fetch, api = DEFAULT_API, publicUrl = '', now = Date.now, log = () => { }, tickMs = 1000 } = {}) {
-  const conns = new Map()            // id -> { room, at, connected, channel, channelName, team, botUserId, allow, sealed }
+export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl = globalThis.fetch, api = DEFAULT_API, publicUrl = '', now = Date.now, log = () => { }, tickMs = 1000, clientId = '', clientSecret = '', appSecret = '', authorizeUrl = DEFAULT_AUTHORIZE } = {}) {
+  // id -> { room, at, connected, channel, channelName, team, botUserId, allow, sealed }
+  // a one-link connection also has { shared: true, teamId } and, while it waits for the bot to be
+  // invited to a private channel, { connected: false, pending: 'invite' }; its sealed part is the token alone.
+  const conns = new Map()
+  const oneLink = Boolean(key && clientId && clientSecret && appSecret)
   const runtime = new Map()          // id -> { secrets, seen:Set, seenOrder:[], users:Map, queue:Promise, doc, unobserve }
   const storePath = dir ? path.join(dir, STORE_FILE) : null
 
@@ -221,10 +259,79 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
         const c = conns.get(id); const s = secretsOf(id)
         if (!c || !c.connected || !s) return
         const j = await slack('chat.postMessage', s.botToken, { channel: c.channel, text, unfurl_links: false, unfurl_media: false })
-        if (!j.ok) log(`[slack] chat.postMessage refused: ${j.error}`)
+        if (!j.ok) {
+          log(`[slack] chat.postMessage refused: ${j.error}`)
+          // A one-link connection has nobody to run slack disconnect for it: when Slack says the bot or
+          // the app is gone, the connection goes too, even if Slack never sent the event for it.
+          if (c.shared && GONE[j.error]) drop(id, GONE[j.error])
+        }
       } catch (e) { log(`[slack] chat.postMessage failed: ${e.code || e.message}`) }
     }).catch(() => { }) // the queue itself never rejects: a rejection here would be unhandled
     return r.queue
+  }
+  /** A one-link connection ends: its token is forgotten, nothing is watched, and the room is told once.
+   *  The id goes back to being an unfinished one (for a day, like any other), so /slack/status can say
+   *  it ended and why, and the same link connects the room again. */
+  const drop = (id, why) => {
+    const c = conns.get(id)
+    if (!c) return
+    const r = runtime.get(id)
+    if (r && r.unobserve) { try { r.unobserve() } catch { } }
+    runtime.delete(id)
+    conns.set(id, { room: c.room, at: now(), connected: false, ended: why })
+    save()
+    if (c.connected) sayInRoom(c.room, `Slack (#${c.channelName || c.channel}) is no longer connected to this room: ${why}. Run slack connect to connect it again.`, { src: 'slack' })
+  }
+  /** The connection that already holds this channel, if any. The same channel twice would say
+   *  everything twice, in two rooms. Channel ids are only unique inside a workspace, so another
+   *  workspace's one-link connection with the same id is a different channel. */
+  const holderOf = (id, teamId, channel) => {
+    for (const [oid, o] of conns) if (oid !== id && o.connected && o.channel === channel && (!o.teamId || o.teamId === teamId)) return o
+    return null
+  }
+  const TAKEN = 'that channel is already connected to another room'
+  /** A one-link connection that was waiting (or was just made) starts working. False when the
+   *  channel was taken in the meantime: two rooms can wait on the same private channel, and one
+   *  invite must connect one of them, not both (found by Claude-cloud's review, O9b). */
+  const finishShared = (id) => {
+    const c = conns.get(id)
+    if (!c || c.connected || !c.shared) return false
+    if (holderOf(id, c.teamId, c.channel)) {
+      const r = runtime.get(id)
+      if (r && r.unobserve) { try { r.unobserve() } catch { } }
+      runtime.delete(id)
+      conns.set(id, { room: c.room, at: now(), connected: false, ended: TAKEN })
+      save()
+      sayInRoom(c.room, `Slack (#${c.channelName || c.channel}) was not connected to this room: Q670 ${TAKEN}. Run slack connect and pick another channel.`, { src: 'slack' })
+      return false
+    }
+    const { pending, ...rest } = c
+    conns.set(id, { ...rest, connected: true, connectedAt: now() })
+    rt(id).doc = null
+    save()
+    const line = `Slack is connected to this room (#${c.channelName || c.channel}).`
+    sayInRoom(c.room, line, { src: 'slack' })   // src: the forwarder does not send this one back
+    attach(id)                                  // only lines after this one go to Slack
+    // The channel side says who it was bridged to. The link is an invitation: whoever approves it
+    // connects THEIR channel to the link-maker's room, and Slack's screen does not name the room.
+    let names = []
+    try { names = [...new Set(membersOf(getDoc(c.room)).map((u) => String(u.name)))].slice(0, 8) } catch { }
+    post(id, `${line}${names.length ? ` In the room now: ${names.join(', ')}.` : ''} To disconnect, remove this bot from the channel.`)
+    return true
+  }
+  /** Waiting for /invite: ask Slack whether the bot is in yet (the event for it may never come). */
+  const checkInvited = async (id) => {
+    const c = conns.get(id), r = rt(id), s = secretsOf(id)
+    if (!c || c.connected || c.pending !== 'invite' || !s) return
+    if (r.checkedAt && now() - r.checkedAt < STATUS_CHECK_MS) return
+    r.checkedAt = now()
+    try {
+      const info = await slack('conversations.info', s.botToken, { channel: c.channel })
+      if (info.ok && info.channel && info.channel.is_member) {
+        if (info.channel.name) conns.set(id, { ...conns.get(id), channelName: info.channel.name })
+        finishShared(id)
+      }
+    } catch { /* asked again on the next status call */ }
   }
   const timer = setInterval(() => { for (const id of conns.keys()) attach(id) }, tickMs)
   if (timer.unref) timer.unref()
@@ -307,20 +414,30 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     // have made the Slack app from it. Running it again must give the same URL, or the app points
     // at an id nobody will ever connect (found by Claude-cloud reviewing part A).
     for (const [pid, c] of conns) {
-      if (c.room === room && !c.connected) return { status: 200, body: { ok: true, id: pid, eventsUrl: `${originOf(req)}${SLACK_PREFIX}events/${pid}` } }
+      if (c.room === room && !c.connected) {
+        // Asking again is a new attempt: an id that ended (bot removed, channel taken) stops saying so,
+        // or slack connect would read "ended" from /slack/status and give up before the link is opened.
+        if (c.ended) { const { ended, ...rest } = c; conns.set(pid, { ...rest, at: now() }); save() }
+        return prepared(req, pid)
+      }
     }
     if ([...conns.values()].filter((c) => !c.connected).length >= MAX_PREPARED) return fail(503, 'Q661', 'this relay has too many unfinished Slack connections; try again later.')
     const id = crypto.randomBytes(16).toString('base64url')
     conns.set(id, { room, at: now(), connected: false })
     save()
-    return { status: 200, body: { ok: true, id, eventsUrl: `${originOf(req)}${SLACK_PREFIX}events/${id}` } }
+    return prepared(req, id)
   }
+  const prepared = (req, id) => ({
+    status: 200,
+    body: { ok: true, id, eventsUrl: `${originOf(req)}${SLACK_PREFIX}events/${id}`, ...(oneLink ? { installUrl: `${originOf(req)}${SLACK_PREFIX}install/${id}` } : {}) },
+  })
 
   async function connect(req, raw) {
     const j = json(raw) || {}
     const id = String(j.id || ''), botToken = String(j.botToken || ''), signingSecret = String(j.signingSecret || ''), channel = String(j.channel || '')
     const c = conns.get(id)
     if (!c) return fail(404, 'Q661', 'unknown or expired Slack connection id; run slack connect again.')
+    if (c.connected && c.shared) return fail(401, 'Q663', 'this connection was made with the one-link setup and has no signing secret; remove the bot from the channel to end it, then run slack connect again.')
     if (c.connected) {
       const s = secretsOf(id)
       if (s && !safeEqual(s.signingSecret, signingSecret)) return fail(401, 'Q663', 'this connection is already set up, and that signing secret is not its own.')
@@ -355,8 +472,12 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     // connection whose secret matches. Every connection of the room is compared, constant time.
     if (!id && j.room) {
       const room = String(j.room)
-      const ofRoom = [...conns].filter(([, c]) => c.room === room && c.connected)
-      if (!ofRoom.length) return fail(404, 'Q661', 'this room has no Slack connection on this relay.')
+      const all = [...conns].filter(([, c]) => c.room === room && c.connected)
+      // A one-link connection has no secret, so the room id alone must never end it: the room id is
+      // known to everyone in the room, the connection id only to the person who connected.
+      const ofRoom = all.filter(([, c]) => !c.shared)
+      if (!all.length) return fail(404, 'Q661', 'this room has no Slack connection on this relay.')
+      if (!ofRoom.length) return fail(401, 'Q663', 'this room was connected with the one-link setup: remove the bot from the channel in Slack, or run slack disconnect on the computer that connected it.')
       let hit = ''
       for (const [cid] of ofRoom) { const s = secretsOf(cid); if (!hit && (!s || safeEqual(s.signingSecret, given))) hit = cid }
       if (!hit) return fail(401, 'Q663', 'that signing secret is not the one this room was connected with.')
@@ -364,7 +485,7 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     }
     const c = conns.get(id)
     if (!c) return fail(404, 'Q661', 'unknown Slack connection id.')
-    if (c.connected) {
+    if (c.connected && !c.shared) {
       const s = secretsOf(id)
       // Unreadable (the relay's key changed): nobody can prove the secret, and the connection cannot
       // send or receive anyway, so removing it is allowed. A readable one needs its own secret.
@@ -396,9 +517,150 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     if (payload.type === 'event_callback') setImmediate(() => { deliver(id, payload).catch((e) => log(`[slack] delivering an event failed: ${e.message}`)) })
   }
 
+  // ---- one link: the owner's Slack app, installed through Slack's OAuth ---------------------------
+  /** A small page for the person's browser. Text only: every line is escaped, `code` is the one mark. */
+  const page = (res, status, title, lines) => {
+    res.writeHead(status, {
+      'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'",
+    })
+    const body = lines.map((l) => `<p>${esc(l).replace(/`([^`]+)`/g, '<code>$1</code>')}</p>`).join('')
+    res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title>`
+      + '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1.25rem;color:#111318;background:#fff}h1{font-size:1.3rem}code{background:#eef0f4;padding:.1em .35em;border-radius:4px}'
+      + '@media(prefers-color-scheme:dark){body{background:#111318;color:#e8e9ee}code{background:#252932}}</style></head>'
+      + `<body><h1>${esc(title)}</h1>${body}</body></html>`)
+  }
+  const OFF = ['Q669 One-link Slack setup is not enabled on this relay. Its owner sets HIVE_SLACK_CLIENT_ID, HIVE_SLACK_CLIENT_SECRET and HIVE_SLACK_APP_SECRET. Until then, run `slack connect --manifest`.']
+  const STALE = ['Q661 This link was already used, or it is more than a day old.', 'If you have just connected Slack, it worked: look for "Slack is connected to this room" in your channel. Otherwise run `slack connect` again for a new link.']
+  const NOT_CONNECTED = 'Slack was not connected'
+  const slackWord = (e) => (/^[a-z0-9_]{1,60}$/.test(String(e || '')) ? String(e) : 'no reason given')
+  const redirectUri = (req) => `${originOf(req)}${SLACK_PREFIX}oauth/callback`
+
+  function install(req, res, id) {
+    if (!oneLink) return page(res, 503, 'One-link setup is off', OFF)
+    sweepPrepared()
+    const c = conns.get(id)
+    if (!c || c.connected) return page(res, 404, 'This link is not valid any more', STALE)
+    const q = new URLSearchParams({ client_id: clientId, scope: SHARED_BOT_SCOPES.join(','), redirect_uri: redirectUri(req), state: id })
+    res.writeHead(302, { location: `${authorizeUrl}?${q}`, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
+    res.end()
+  }
+
+  async function callback(req, res, query) {
+    if (!oneLink) return page(res, 503, 'One-link setup is off', OFF)
+    const state = String(query.get('state') || ''), code = String(query.get('code') || '')
+    sweepPrepared()
+    const c = /^[A-Za-z0-9_-]{8,64}$/.test(state) ? conns.get(state) : null
+    // Unknown, expired, or already connected: nothing is changed, whatever else the request carries.
+    if (!c || c.connected) return page(res, 404, 'This link is not valid any more', STALE)
+    if (query.get('error') || !code) return page(res, 400, NOT_CONNECTED, [`Q672 Slack did not complete the install (${slackWord(query.get('error'))}). Nothing was changed.`, 'Open the link again to try once more.'])
+    const r = rt(state)
+    if (r.busy) return page(res, 409, 'Still working on it', ['This link is being finished in another tab. Give it a few seconds.'])
+    r.busy = true
+    try {
+      let tok = null
+      try {
+        const out = await fetchImpl(`${api.replace(/\/$/, '')}/oauth.v2.access`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: redirectUri(req) }).toString(),
+        })
+        tok = await out.json().catch(() => null)
+      } catch (e) { return page(res, 502, NOT_CONNECTED, [`Q672 The relay could not reach Slack (${slackWord(e && e.code)}). Nothing was changed.`, 'Open the link again to try once more.']) }
+      if (!tok || !tok.ok || !tok.access_token) return page(res, 400, NOT_CONNECTED, [`Q672 Slack did not complete the install (${slackWord(tok && tok.error)}). Nothing was changed.`, 'Open the link again to try once more.'])
+      if (!tok.team || !tok.team.id) return page(res, 400, NOT_CONNECTED, ['Q672 Slack installed the app for a whole organisation, not one workspace; that is not supported yet. Nothing was changed.'])
+      const botToken = String(tok.access_token), teamId = String(tok.team.id), botUserId = String(tok.bot_user_id || '')
+      const hook = tok.incoming_webhook || {}           // only the channel is read; the webhook URL is dropped here
+      const channel = String(hook.channel_id || '')
+      let channelName = String(hook.channel || '').replace(/^#/, '')
+      const dm = [`Q671 ${channel ? 'A direct message' : 'No channel'} cannot be connected to a room. Nothing was changed.`, 'Open the link again and pick a channel.']
+      if (!CHANNEL_RE.test(channel) || channel[0] === 'D') return page(res, 400, NOT_CONNECTED, dm)
+      const takenPage = (o) => page(res, 409, NOT_CONNECTED, [`Q670 #${(o && o.channelName) || channelName || channel} is already connected to a room on this relay. Nothing was changed.`, 'Open the link again and pick another channel, or disconnect that one first.'])
+      let holder = holderOf(state, teamId, channel)
+      if (holder) return takenPage(holder)
+      let info = null, member = false
+      try { info = await slack('conversations.info', botToken, { channel }) } catch (e) { return page(res, 502, NOT_CONNECTED, [`Q672 The relay could not reach Slack (${slackWord(e && e.code)}). Nothing was changed.`, 'Open the link again to try once more.']) }
+      if (info.ok && info.channel) {
+        if (info.channel.is_im || info.channel.is_mpim) return page(res, 400, NOT_CONNECTED, dm)
+        channelName = info.channel.name || channelName
+        member = !!info.channel.is_member
+        // A public channel the bot is not in yet: it joins by itself. If Slack refuses, the person invites it.
+        if (!member && !info.channel.is_private) { try { member = !!(await slack('conversations.join', botToken, { channel })).ok } catch { member = false } }
+      } else if (info.error !== 'channel_not_found') {
+        // channel_not_found is a private channel the bot is not in yet. Anything else is a real refusal.
+        return page(res, 400, NOT_CONNECTED, [`Q672 Slack would not show that channel to the bot (${slackWord(info.error)}). Nothing was changed.`, 'Open the link again to try once more.'])
+      }
+      // Everything above awaited Slack, so look again: the id may be finished, or the channel taken,
+      // by another tab or another room that approved in the meantime.
+      const again = conns.get(state)
+      if (!again || again.connected) return page(res, 404, 'This link is not valid any more', STALE)
+      holder = holderOf(state, teamId, channel)
+      if (holder) return takenPage(holder)
+      const name = channelName || channel
+      conns.set(state, { room: c.room, at: c.at, connected: false, pending: 'invite', shared: true, channel, channelName: name, team: String(tok.team.name || ''), teamId, botUserId, allow: [], sealed: sealSecrets({ botToken }, key) })
+      r.secrets = { botToken }; r.unreadable = false
+      if (member) {
+        if (!finishShared(state)) return takenPage(null)
+        return page(res, 200, 'Slack is connected', [`Slack is connected to #${name}. Messages in that channel reach the room, and the room's messages appear there.`, 'You can close this tab.'])
+      }
+      save()
+      return page(res, 200, 'One more step', [`#${name} is a private channel, so the bot has to be invited. In Slack, open #${name} and type \`/invite @Hivecode\`.`, 'The room connects as soon as the bot is in the channel. You can close this tab.'])
+    } finally { r.busy = false }
+  }
+
+  async function status(req, raw) {
+    const id = String((json(raw) || {}).id || '')
+    if (!conns.get(id)) return fail(404, 'Q661', 'unknown or expired Slack connection id; run slack connect again.')
+    await checkInvited(id)
+    const c = conns.get(id)
+    if (!c) return fail(404, 'Q661', 'unknown or expired Slack connection id; run slack connect again.')
+    return { status: 200, body: { ok: true, connected: !!c.connected, ...(!c.connected && c.pending ? { pending: c.pending } : {}), ...(!c.connected && c.ended ? { ended: c.ended } : {}), ...(c.channelName ? { channel: c.channelName } : {}) } }
+  }
+
+  /** The shared app's events: one URL for every workspace, so the workspace and the channel choose the room. */
+  async function sharedEvents(req, res, raw) {
+    if (!oneLink) return send(res, 503, { ok: false, code: 'Q669', why: 'Q669 one-link Slack setup is not enabled on this relay.' })
+    const ok = verifySlackSignature({ signingSecret: appSecret, timestamp: req.headers['x-slack-request-timestamp'], signature: req.headers['x-slack-signature'], rawBody: raw, nowS: Math.floor(now() / 1000) })
+    if (!ok) return send(res, 401, { ok: false, code: 'Q663', why: 'Q663 bad Slack signature.' })
+    const payload = json(raw) || {}
+    if (payload.type === 'url_verification') return send(res, 200, { challenge: String(payload.challenge || '') })
+    send(res, 200, { ok: true })      // first: Slack's 3 s deadline. An event for nobody is dropped below.
+    if (payload.type === 'event_callback') setImmediate(() => { routeShared(payload).catch((e) => log(`[slack] delivering an event failed: ${e.message}`)) })
+  }
+  const routeShared = async (payload) => {
+    const ev = payload.event || {}
+    const team = String(payload.team_id || ev.team || '')
+    const mine = team ? [...conns].filter(([, c]) => c.shared && c.teamId === team) : []
+    if (!mine.length) return
+    const botGone = ev.type === 'app_uninstalled' || (ev.type === 'tokens_revoked' && (!ev.tokens || (Array.isArray(ev.tokens.bot) && ev.tokens.bot.length > 0)))
+    if (botGone) { for (const [id] of mine) drop(id, GONE.token_revoked); return }
+    const channel = typeof ev.channel === 'string' ? ev.channel : ''
+    if (!channel) return
+    for (const [id, c] of mine) {
+      if (c.channel !== channel) continue
+      if (ev.type === 'member_joined_channel') { if (!c.connected && c.pending === 'invite' && ev.user && ev.user === c.botUserId) finishShared(id) }
+      else if ((ev.type === 'member_left_channel' && ev.user && ev.user === c.botUserId) || ev.type === 'channel_left' || ev.type === 'group_left') drop(id, GONE.not_in_channel)
+      else if (ev.type === 'message' && c.connected) await deliver(id, payload)
+    }
+  }
+
   /** server.js calls this for every request under /slack/. Always answers. */
   async function handle(req, res) {
-    const url = String(req.url || '').split('?')[0]
+    const full = String(req.url || '')
+    const url = full.split('?')[0]
+    // The two pages a person's browser opens. Never logged with their query: it carries Slack's code.
+    if (req.method === 'GET' && (url.startsWith('/slack/install/') || url === '/slack/oauth/callback')) {
+      if (!key) return page(res, 503, 'Slack is off on this relay', ['Q660 Slack is not enabled on this relay: its owner sets HIVE_SLACK_KEY in its environment and restarts it.'])
+      try {
+        if (url === '/slack/oauth/callback') return await callback(req, res, new URLSearchParams(full.split('?')[1] || ''))
+        const m = url.match(/^\/slack\/install\/([A-Za-z0-9_-]{8,64})$/)
+        return m ? install(req, res, m[1]) : page(res, 404, 'This link is not valid any more', STALE)
+      } catch (e) {
+        log(`[slack] ${url === '/slack/oauth/callback' ? url : '/slack/install'} failed: ${e.message}`)
+        if (!res.headersSent) return page(res, 500, 'Something went wrong', ['The relay failed handling this link. Open it again to try once more.'])
+        return
+      }
+    }
     if (req.method !== 'POST') return send(res, 405, { ok: false, why: 'POST only' })
     if (!key) return send(res, 503, { ok: false, code: 'Q660', why: 'Q660 Slack is not enabled on this relay: set HIVE_SLACK_KEY (any long random string) in its environment and restart it.' })
     let raw
@@ -406,7 +668,8 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     try {
       const m = url.match(/^\/slack\/events\/([A-Za-z0-9_-]{8,64})$/)
       if (m) return await events(req, res, m[1], raw)
-      const route = { '/slack/prepare': prepare, '/slack/connect': connect, '/slack/disconnect': disconnect }[url]
+      if (url === '/slack/events') return await sharedEvents(req, res, raw)
+      const route = { '/slack/prepare': prepare, '/slack/connect': connect, '/slack/disconnect': disconnect, '/slack/status': status }[url]
       if (!route) return send(res, 404, { ok: false, why: 'no such Slack route' })
       const out = await route(req, raw)
       return send(res, out.status, out.body)

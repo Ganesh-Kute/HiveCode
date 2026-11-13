@@ -19,10 +19,13 @@ const body = (req) => new Promise((res) => { let b = ''; req.on('data', (d) => {
 const ROOM = 'room-SECRETROOMID123', TOKEN = 'xoxb-test-token-111', SIGN = 'signing-secret-222'
 const EVENTS = 'https://relay.test/slack/events/ABCdef_123-xyz'
 let relayCalls = [], relayReply = {}, slackChannels = [], slackError = ''
+const INSTALL = 'https://relay.test/slack/install/ABCdef_123-xyz'
+let withInstall = false, statusSeq = []   // one-click: /slack/prepare also answers installUrl; /slack/status answers these in turn
 const relay = await listen(async (req, res) => {
   const b = JSON.parse((await body(req)) || '{}')
   relayCalls.push({ route: req.url, body: b })
-  const r = relayReply[req.url] || (req.url === '/slack/prepare' ? { ok: true, id: 'ABCdef_123-xyz', eventsUrl: EVENTS } : req.url === '/slack/connect' ? { ok: true, team: 'T', channel: 'general', eventsUrl: EVENTS } : { ok: true })
+  const reply = typeof relayReply[req.url] === 'function' ? relayReply[req.url](b) : relayReply[req.url]
+  const r = reply || (req.url === '/slack/prepare' ? { ok: true, id: 'ABCdef_123-xyz', eventsUrl: EVENTS, ...(withInstall ? { installUrl: INSTALL } : {}) } : req.url === '/slack/status' ? { ok: true, ...(statusSeq.length > 1 ? statusSeq.shift() : statusSeq[0] || { connected: false }) } : req.url === '/slack/connect' ? { ok: true, team: 'T', channel: 'general', eventsUrl: EVENTS } : { ok: true })
   res.writeHead(r.status || 200, { 'content-type': 'application/json' }); res.end(JSON.stringify(r.json || r))
 })
 const slack = await listen(async (req, res) => {
@@ -34,11 +37,11 @@ const LINK = `ws://127.0.0.1:${relay.address().port}|${ROOM}`
 const API = `http://127.0.0.1:${slack.address().port}`
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-connect-'))
 
-async function run(argv, { env = {}, answers = [], interactive = false, fetchImpl } = {}) {
+async function run(argv, { env = {}, answers = [], interactive = false, fetchImpl, wait } = {}) {
   relayCalls = []
   const out = [], err = [], asked = []
   const ask = async (prompt, o = {}) => { asked.push({ prompt, hidden: !!o.hidden }); return answers.shift() ?? '' }
-  const code = await main(argv, { log: (m) => out.push(String(m)), logErr: (m) => err.push(String(m)), env: { HIVE_SLACK_API: API, HOME: home, ...env }, fetchImpl: fetchImpl || fetch, connect: { ask, interactive, home } })
+  const code = await main(argv, { log: (m) => out.push(String(m)), logErr: (m) => err.push(String(m)), env: { HIVE_SLACK_API: API, HOME: home, ...env }, fetchImpl: fetchImpl || fetch, connect: { ask, interactive, home, ...(wait || { pollMs: 10, waitMs: 2000 }) } })
   return { code, out: out.join('\n'), err: err.join('\n'), asked }
 }
 const ENV = { SLACK_BOT_TOKEN: TOKEN, SLACK_SIGNING_SECRET: SIGN }
@@ -115,6 +118,91 @@ try {
   relayReply['/slack/disconnect'] = { status: 401, json: { ok: false, code: 'Q663', why: 'bad signature' } }
   r = await run(['disconnect', LINK, '--id', 'x'], { env: { SLACK_SIGNING_SECRET: 'wrong' } })
   T('S26 the wrong signing secret is refused with the relay\'s code', r.code === 1 && /Q663/.test(r.err))
+  delete relayReply['/slack/disconnect']
+
+  // one-click (issue: connect a room to Slack with one link). The relay offers it by answering installUrl.
+  withInstall = true
+  statusSeq = [{ connected: false }, { connected: false }, { connected: true, channel: 'general' }]
+  r = await run(['connect', LINK])
+  const calls1 = relayCalls.map((c) => c.route)
+  T('S27 one-click: the install link is printed, on a line of its own', r.code === 0 && r.out.split('\n').some((l) => l.trim() === INSTALL), r.err + r.out.slice(-300))
+  T('S28 one-click: no manifest, no token or secret asked for, nothing sent to /slack/connect', !r.out.includes('"event_subscriptions"') && !r.asked.length && !calls1.includes('/slack/connect'), JSON.stringify(calls1))
+  T('S29 one-click: it waits on /slack/status with the id only, then says Slack is connected', calls1.filter((x) => x === '/slack/status').length === 3 && relayCalls.filter((c) => c.route === '/slack/status').every((c) => JSON.stringify(c.body) === JSON.stringify({ id: 'ABCdef_123-xyz' })) && /Slack is connected to this room \(#general\)/.test(r.out), r.out.slice(-200))
+  T('S30 one-click: neither the room id nor anything secret is printed', ![ROOM, TOKEN, SIGN].some((x) => (r.out + r.err).includes(x)))
+  T('S31 one-click: the id is remembered like the manifest route does', (() => { try { return JSON.parse(fs.readFileSync(path.join(home, '.hivecode', 'slack-connect.json'), 'utf8'))[ROOM].id === 'ABCdef_123-xyz' } catch { return false } })())
+
+  statusSeq = [{ connected: false }]
+  r = await run(['connect', LINK], { wait: { pollMs: 10, waitMs: 120 } })
+  T('S32 one-click: the link is not approved in time: Q673 says to open it and run again, exit 1 (Q669 is "one-click not enabled" on the relay)', r.code === 1 && /Q673/.test(r.err) && r.err.includes(INSTALL), r.err)
+
+  statusSeq = [{ connected: false, pending: 'invite', channel: 'secret' }, { connected: true, channel: 'secret' }]
+  r = await run(['connect', LINK])
+  T('S32b private channel waiting for the invite: it says to type /invite @Hivecode there and keeps waiting until connected', r.code === 0 && /\/invite @Hivecode/.test(r.out) && /Slack is connected to this room \(#secret\)/.test(r.out), r.err + r.out.slice(-300))
+
+  withInstall = true
+  statusSeq = [{ connected: true, channel: 'general' }]
+  slackChannels = [{ id: 'C1', name: 'general' }]
+  r = await run(['connect', LINK, '--manifest'], { env: ENV, interactive: false })
+  T('S33 --manifest forces the manifest route even when the relay offers one-click', r.code === 0 && relayCalls.some((c) => c.route === '/slack/connect') && !relayCalls.some((c) => c.route === '/slack/status') && r.out.includes('"event_subscriptions"') && !r.out.includes(INSTALL), r.err + r.out.slice(-200))
+
+  // --no-wait + slack status (agent flow)
+  statusSeq = [{ connected: false, pending: 'invite', channel: 'ops' }]
+  r = await run(['connect', LINK, '--no-wait'])
+  T('S38 --no-wait prints the link, remembers id, does not poll /slack/status, exits 0', r.code === 0 && r.out.includes(INSTALL) && !relayCalls.some((c) => c.route === '/slack/status'), r.err)
+  r = await run(['status', LINK])
+  T('S39 slack status when pending invite prints /invite @Hivecode and exits 1', r.code === 1 && /\/invite @Hivecode/.test(r.out) && relayCalls.some((c) => c.route === '/slack/status' && c.body.id === 'ABCdef_123-xyz'), r.err + r.out)
+  statusSeq = [{ connected: true, channel: 'ops' }]
+  r = await run(['status', LINK])
+  T('S40 slack status uses remembered id and exits 0 when connected', r.code === 0 && /Slack is connected to this room \(#ops\)/.test(r.out), r.err + r.out)
+  r = await run(['status', LINK, '--id', 'EXPLICIT123'])
+  T('S40b slack status --id uses explicit connection id', r.code === 0 && relayCalls.some((c) => c.route === '/slack/status' && c.body.id === 'EXPLICIT123'))
+  r = await run(['status', `ws://127.0.0.1:${relay.address().port}|room-UNSEEN999`])
+  T('S40c slack status without remembered id refuses with Q661', r.code === 1 && /Q661/.test(r.err), r.err)
+  statusSeq = [{ connected: false, ended: 'bot removed' }]
+  r = await run(['connect', LINK])
+  T('S44 connect stops immediately with Q673 if status reports ended', r.code === 1 && /Q673/.test(r.err) && /bot removed/.test(r.err), r.err)
+  r = await run(['status', LINK])
+  T('S44b slack status prints ended reason cleanly and exits 1', r.code === 1 && /bot removed/.test(r.out), r.err + r.out)
+  r = await run(['disconnect', LINK])
+  T('S45 disconnect with remembered id and no secret sends {id} alone for one-click connections', r.code === 0 && relayCalls.some((c) => c.route === '/slack/disconnect' && c.body.id === 'ABCdef_123-xyz' && c.body.signingSecret === undefined) && !JSON.parse(fs.readFileSync(path.join(home, '.hivecode', 'slack-connect.json'), 'utf8'))[ROOM], r.err)
+  await run(['connect', LINK, '--no-wait'])
+  relayReply['/slack/disconnect'] = (b) => b.signingSecret ? { ok: true } : { status: 401, json: { ok: false, code: 'Q663', why: 'signingSecret required for manual disconnect' } }
+  const dNonTty = await run(['disconnect', LINK])
+  const dTty = await run(['disconnect', LINK], { interactive: true, answers: [SIGN] })
+  delete relayReply['/slack/disconnect']
+  T('S45b disconnect falls back on Q663: refuses non-interactively with Q663, prompts hidden secret interactively', dNonTty.code === 1 && /Q663/.test(dNonTty.err) && dTty.code === 0 && dTty.asked.length === 1 && dTty.asked[0].hidden && relayCalls.some((c) => c.route === '/slack/disconnect' && c.body.id === 'ABCdef_123-xyz' && c.body.signingSecret === SIGN), `${dNonTty.err} | ${dTty.err}`)
+  withInstall = false
+
+  // app-manifest for relay owners
+  r = await run(['app-manifest', 'https://relay.example.com/some/path'])
+  const shared = r.code === 0 ? JSON.parse(r.out) : null
+  const wantScopes = ['chat:write', 'channels:history', 'groups:history', 'users:read', 'channels:read', 'groups:read', 'channels:join', 'incoming-webhook']
+  const wantEvents = ['message.channels', 'message.groups', 'member_joined_channel', 'member_left_channel', 'channel_left', 'group_left', 'app_uninstalled', 'tokens_revoked']
+  T('S41 app-manifest prints the shared OAuth manifest with callback, events URL, scopes and events', Boolean(
+    shared && shared.oauth_config && Array.isArray(shared.oauth_config.redirect_urls) && shared.oauth_config.redirect_urls[0] === 'https://relay.example.com/slack/oauth/callback'
+    && wantScopes.every((s) => shared.oauth_config.scopes.bot.includes(s))
+    && shared.settings && shared.settings.event_subscriptions && shared.settings.event_subscriptions.request_url === 'https://relay.example.com/slack/events'
+    && wantEvents.every((e) => shared.settings.event_subscriptions.bot_events.includes(e))
+    && shared.settings.socket_mode_enabled === false && shared.settings.org_deploy_enabled === false && shared.settings.token_rotation_enabled === false
+  ), r.err + r.out.slice(0, 200))
+  r = await run(['app-manifest', `wss://relay.example.com|${ROOM}`])
+  const fromWss = r.code === 0 ? JSON.parse(r.out) : null
+  T('S42 app-manifest accepts wss:// relay URLs and never echoes room ids', Boolean(fromWss && fromWss.oauth_config.redirect_urls[0] === 'https://relay.example.com/slack/oauth/callback' && !r.out.includes(ROOM)), r.err)
+  r = await run(['app-manifest', 'http://insecure.example.com'])
+  const badUrl = await run(['app-manifest', 'not-a-url'])
+  T('S43 app-manifest refuses non-https public URLs and bad URLs with Q665', r.code === 2 && /Q665/.test(r.err) && badUrl.code === 2 && /Q665/.test(badUrl.err), `${r.err} | ${badUrl.err}`)
+
+  r = await run(['connect', LINK, '--channel', 'C1'], { env: ENV })
+  T('S34 a relay without one-click keeps the manifest route as before', r.code === 0 && !relayCalls.some((c) => c.route === '/slack/status') && r.out.includes('"event_subscriptions"'))
+
+  // Behind an HTTPS proxy Node 22 needs NODE_USE_ENV_PROXY=1 or fetch fails: Q666 must say so.
+  const broken = async () => { throw new TypeError('fetch failed') }
+  r = await run(['connect', LINK, '--channel', 'C1'], { env: { ...ENV, HTTPS_PROXY: 'http://proxy.test:3128' }, fetchImpl: broken })
+  T('S35 Q666 behind an HTTPS proxy names the fix: NODE_USE_ENV_PROXY=1 and Node 22.21+', r.code === 1 && /Q666/.test(r.err) && /NODE_USE_ENV_PROXY=1/.test(r.err) && /22\.21/.test(r.err), r.err)
+  r = await run(['connect', LINK, '--channel', 'C1'], { env: { ...ENV, HTTPS_PROXY: 'http://proxy.test:3128', NODE_USE_ENV_PROXY: '1' }, fetchImpl: broken })
+  T('S36 with NODE_USE_ENV_PROXY already set the hint is not repeated', r.code === 1 && /Q666/.test(r.err) && !/NODE_USE_ENV_PROXY=1/.test(r.err), r.err)
+  r = await run(['connect', LINK, '--channel', 'C1'], { env: ENV, fetchImpl: broken })
+  T('S37 no proxy configured: no proxy hint', r.code === 1 && /Q666/.test(r.err) && !/NODE_USE_ENV_PROXY/.test(r.err))
 } catch (e) {
   T(`no exception (${e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e})`, false)
 } finally {

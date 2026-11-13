@@ -179,10 +179,13 @@ short job on each event and every 10 minutes, with the token it gives the job.
    select "Allow GitHub Actions to create and approve pull requests" and save. Without this, GitHub
    refuses the pull request (HTTP 403 / Q574) when the work lands.
 4. Add the workflow file. `npx -y hivecode-mcp@latest github action --workflow --branch <branch>`
-   detects your repository's package manager and lockfile (`package-lock.json`, `pnpm-lock.yaml`, or
-   `yarn.lock`) to insert the dependency installation step (`npm ci`, `pnpm install`, or `yarn install`),
-   then prints the workflow; save it as `.github/workflows/hivecode.yml`. For other package managers
-   or languages, add your dependency installation step before the Hivecode step.
+   detects your repository's lockfile to insert the exact dependency installation step:
+   `npm ci` (for `package-lock.json` or `npm-shrinkwrap.json`),
+   `corepack enable && pnpm install --frozen-lockfile` (for `pnpm-lock.yaml`),
+   `yarn install --frozen-lockfile` (for `yarn.lock`), or
+   `npm install` (for a bare `package.json`), then prints the workflow; save it as
+   `.github/workflows/hivecode.yml`. For other package managers or languages, add your
+   dependency installation step before the Hivecode step.
 5. The agents join the room. They can all run in the cloud.
 
 ### What happens

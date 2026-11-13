@@ -24,6 +24,7 @@
 // Codes: Q613 setup (no room link, no branch, not a checkout), Q614 the branch is not on origin.
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { spawnSync } from 'child_process'
 import { parseLink } from './sync.js'
@@ -301,8 +302,14 @@ export async function runAction({ gh, deps, eventName = '', event = {}, branch, 
       // said "Nothing was pushed". Said once however often it is tried again.
       const prOnly = r.code === 'Q574' && !!r.onBranch
       const noDeps = r.code === 'Q576' && MISSING_DEPS.test(why)
+      // THE SAME FAILURE AS LAST TIME is said once. It is not the same when the kind changed: after
+      // "a dependency is missing" (deps=1) the install step is added, and the tests then fail for an
+      // ordinary reason with the same fingerprint and code. Called a repeat, that left the deps mark
+      // as the last one, so every later run tried again and reran the tests, saying nothing
+      // (13 Nov 2026, found by Antigravity). The new, plain mark has to replace it.
+      const sameKind = !!lastLand && noDeps === (lastLand.deps === '1')
       const repeat = prOnly ? prOnlyBefore
-        : !!lastLand && lastLand.fp === fp && lastLand.code === r.code && (!noDeps || !runAt || lastLand.at === runAt)
+        : !!lastLand && lastLand.fp === fp && lastLand.code === r.code && sameKind && (!noDeps || !runAt || lastLand.at === runAt)
       if (prOnly && !repeat) {
         const reason = oneLine(why.replace(/^[\s\S]*?opening the PR failed:\s*/, ''), 400)
         const setting = PR_NOT_ALLOWED.test(why)
@@ -432,12 +439,35 @@ ${installBlock}      - run: npx -y hivecode-mcp@${version} github action
 }
 
 // ── the command ──────────────────────────────────────────────────────────────────────────────────
-export async function main(argv = [], { cwd = process.cwd(), env = process.env, log = console.log, logErr = console.error, call } = {}) {
+/** The same folder, links resolved (git names a top level with them resolved; the home directory comes as written). */
+const sameDir = (a, b) => {
+  const n = (p) => {
+    let r = path.resolve(p)
+    try { r = fs.realpathSync.native(r) } catch { /* a path that cannot be resolved is compared as written */ }
+    r = r.replace(/[\\/]+$/, '')
+    return process.platform === 'win32' ? r.toLowerCase() : r
+  }
+  return n(a) === n(b)
+}
+
+/**
+ * The folder whose lockfile says what to install: the top level of the repository `cwd` is in.
+ * A HOME DIRECTORY THAT IS A GIT REPOSITORY IS NOT THAT (13 Nov 2026, found by Antigravity): run in a
+ * folder that is no repository of its own, git answers the home directory, and the workflow printed
+ * `npm ci` from the home directory's lockfile for a project that has none. hive-branch.js refuses the
+ * same case for the same reason. Then, and outside any repository, it is `cwd` itself.
+ */
+export function installDirFor(cwd, home = os.homedir()) {
+  const here = git(cwd, ['rev-parse', '--show-toplevel'])
+  if (here.code !== 0 || !here.out) return cwd
+  const top = path.resolve(here.out)
+  return home && sameDir(top, home) ? cwd : top
+}
+
+export async function main(argv = [], { cwd = process.cwd(), env = process.env, log = console.log, logErr = console.error, call, home = os.homedir() } = {}) {
   if (argv.includes('--workflow')) {
     const bi = argv.indexOf('--branch')
-    // What to install is read from the repository this is run in (its top level, when it is one).
-    const here = git(cwd, ['rev-parse', '--show-toplevel'])
-    const found = installStepsFor(here.code === 0 && here.out ? path.resolve(here.out) : cwd)
+    const found = installStepsFor(installDirFor(cwd, home))
     log(workflowFile({ branch: bi !== -1 && argv[bi + 1] ? argv[bi + 1] : '<branch>', install: found.commands }))
     return 0
   }

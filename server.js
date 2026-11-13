@@ -1146,6 +1146,12 @@ const slackRelay = makeSlackRelay({
   getDoc: getYDoc, docs: yDocs, dir: PERSIST_DIR, key: process.env.HIVE_SLACK_KEY || '',
   api: process.env.HIVE_SLACK_API || 'https://slack.com/api',
   publicUrl: process.env.HIVE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '',
+  // ONE-LINK SETUP (13 Nov 2026): the relay owner's own Slack app, installed by each workspace through
+  // Slack's OAuth, so nobody carries a token. Off unless all three are set; never logged.
+  clientId: process.env.HIVE_SLACK_CLIENT_ID || '',
+  clientSecret: process.env.HIVE_SLACK_CLIENT_SECRET || '',
+  appSecret: process.env.HIVE_SLACK_APP_SECRET || '',
+  authorizeUrl: process.env.HIVE_SLACK_AUTHORIZE || 'https://slack.com/oauth/v2/authorize',
   log: (m) => console.log(m),
 })
 

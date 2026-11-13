@@ -8,8 +8,15 @@
 //   B. after "pushed, but the PR could not be opened" (Q574) every later run tries again, and the
 //      issue is told once;
 //   C. after "the tests could not find a dependency" the landing is tried again when the checkout
-//      moved, and a retry that still fails is recorded against the new checkout, once.
+//      moved, and a retry that still fails is recorded against the new checkout, once;
+//   D. a retry that now fails for an ordinary reason REPLACES the deps mark (or the old mark would
+//      send every later run back through the tests, forever);
+//   E. `--workflow` reads what to install from the repository it is run in, never from the home directory.
 import * as A from '../hive-gh-action.js'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { execFileSync } from 'child_process'
 
 let pass = 0
 let fail = 0
@@ -156,6 +163,55 @@ console.log('# C. missing dependencies: try again when the checkout moved')
   await w.run('aaa')
   await w.run('bbb')
   T('C6 an ordinary test failure is not retried on a new checkout', w.landCalls[1].state.lastFailedFingerprint === 'f1' && !/install step/.test(w.last()))
+}
+
+console.log('# D. the deps retry ends when the failure is no longer a deps failure')
+{
+  const w = world()
+  w.land = { ok: false, code: 'Q576', fingerprint: 'f1', why: 'Q576 not landed: the tests failed (exit 1) on abc.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package \'yjs\'\nNothing was changed.' }
+  await w.run('aaa')
+  const afterDeps = w.list.length
+  // the workflow file was fixed (new checkout), and now the tests fail for a real reason: same plan, same code
+  w.land = { ok: false, code: 'Q576', fingerprint: 'f1', why: 'Q576 not landed: the tests failed (exit 1): 1 assertion failed' }
+  await w.run('bbb')
+  T('D1 the retry at the new checkout is told, once, and the new mark has no deps=1 (it replaces the old one)', w.list.length === afterDeps + 1 && /kind=land fp=f1 code=Q576/.test(w.last()) && !/deps=1/.test(w.last()) && !/install step/.test(w.last()), w.last().slice(-160))
+  await w.run('bbb')
+  T('D2 the next run on that checkout is skipped by fingerprint again, nothing said', w.landCalls[2].state.lastFailedFingerprint === 'f1' && w.list.length === afterDeps + 1, JSON.stringify(w.landCalls.map((c) => c.state.lastFailedFingerprint)))
+  await w.run('ccc')
+  T('D3 and a later checkout does not send it through the tests again: the loop is over', w.landCalls[3].state.lastFailedFingerprint === 'f1' && w.list.length === afterDeps + 1, JSON.stringify(w.landCalls.map((c) => c.state.lastFailedFingerprint)))
+}
+
+console.log('# E. --workflow installs what the repository it is run in needs, not what the home directory has')
+{
+  const realHome = process.env.HOME, realProfile = process.env.USERPROFILE
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gha-home-'))
+  const sh = (cwd, ...a) => execFileSync('git', a, { cwd, stdio: 'ignore' })
+  const home = path.join(tmp, 'home'); fs.mkdirSync(path.join(home, 'empty'), { recursive: true })
+  sh(home, 'init', '-q'); fs.writeFileSync(path.join(home, 'package-lock.json'), '{}')          // the home directory is a git repo with a lockfile
+  const proj = path.join(tmp, 'proj'); fs.mkdirSync(path.join(proj, 'sub'), { recursive: true })
+  sh(proj, 'init', '-q'); fs.writeFileSync(path.join(proj, 'package-lock.json'), '{}')          // a real project
+  const workflowIn = async (cwd, homeAs = home) => {
+    const out = []
+    process.env.HOME = homeAs; process.env.USERPROFILE = homeAs                       // os.homedir() reads USERPROFILE on Windows
+    try { await A.main(['--workflow', '--branch', 'feat'], { cwd, env: { HOME: homeAs, USERPROFILE: homeAs }, log: (x) => out.push(String(x)), logErr: (x) => out.push(String(x)) }) }
+    finally { if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome; if (realProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realProfile }
+    return out.join('\n')
+  }
+  try {
+    const inEmpty = await workflowIn(path.join(home, 'empty'))
+    T('E1 a folder with no project of its own, inside a home directory that is a git repo: the home lockfile is not used', !/- run: npm ci/.test(inEmpty) && /add the install step here/.test(inEmpty), inEmpty.split('\n').filter((l) => /install|npm/.test(l)).join(' | '))
+    const inProj = await workflowIn(proj)
+    T('E2 a real project with a lockfile: npm ci is printed', /- run: npm ci/.test(inProj), inProj)
+    const inSub = await workflowIn(path.join(proj, 'sub'))
+    T('E3 a sub-folder of a real project still reads the project\'s own lockfile', /- run: npm ci/.test(inSub), inSub)
+    // HOME reached through a link (macOS /tmp, Windows junctions): the same folder, written differently
+    const linked = path.join(tmp, 'home-link')
+    let linkOk = true; try { fs.symlinkSync(home, linked, process.platform === 'win32' ? 'junction' : 'dir') } catch { linkOk = false }
+    if (linkOk) {
+      const viaLink = await workflowIn(path.join(home, 'empty'), linked)
+      T('E4 the home directory named through a link is still the home directory', !/- run: npm ci/.test(viaLink), viaLink.split('\n').filter((l) => /install|npm/.test(l)).join(' | '))
+    } else console.log('  skip E4 (this account may not create links)')
+  } finally { try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { } }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

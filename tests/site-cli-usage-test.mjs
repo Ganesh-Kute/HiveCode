@@ -333,11 +333,18 @@ for (const docFile of shippedMdFiles) {
 }
 T('P7b No shipped doc tells user to run unshipped node script', unshippedNodeErrors.length === 0, unshippedNodeErrors.join('; '))
 
-// P8: docs/TROUBLESHOOTING.md covers every printable Q-code in shipped source, and no obsolete codes
+// P8: docs/TROUBLESHOOTING.md covers every printable Q-code in shipped + relay source, and no obsolete codes
 const troubleshootingPath = path.join(ROOT, 'docs', 'TROUBLESHOOTING.md')
 T('vacuity guard: docs/TROUBLESHOOTING.md exists on disk', fs.existsSync(troubleshootingPath))
 
-const shippedJsFiles = pkgJson.files.filter(f => f.endsWith('.js') || f.endsWith('.cjs'))
+const relayJsFiles = ['server.js', 'hive-slack-relay.js']
+for (const rf of relayJsFiles) {
+  T(`vacuity guard: ${rf} exists on disk`, fs.existsSync(path.join(ROOT, rf)))
+}
+const shippedJsFiles = Array.from(new Set([
+  ...pkgJson.files.filter(f => f.endsWith('.js') || f.endsWith('.cjs')),
+  ...relayJsFiles,
+]))
 const codeToFiles = new Map()
 
 for (const f of shippedJsFiles) {
