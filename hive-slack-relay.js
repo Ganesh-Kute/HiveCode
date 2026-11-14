@@ -168,9 +168,10 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
   if (storePath) {
     try {
       const j = JSON.parse(fs.readFileSync(storePath, 'utf8'))
-      // A private room's record with no host mark was made before prepare asked who was asking
-      // (anyone holding the room id could make one), so it is not served; the host connects again.
-      for (const [id, c] of Object.entries((j && j.conns) || {})) if (!(c && isSecuredRoom(String(c.room || '')) && !c.private)) conns.set(id, c)
+      // A private room's record with no host mark (pre-A1) or a connected/pending record with no
+      // workspace teamId (pre-B3) cannot enforce host or workspace checks, so it is not served; the
+      // host connects again. Unconnected prepared records (/slack/prepare before connect) still keep.
+      for (const [id, c] of Object.entries((j && j.conns) || {})) if (!(c && isSecuredRoom(String(c.room || '')) && (!c.private || ((c.connected || c.pending) && !c.teamId)))) conns.set(id, c)
     } catch { /* no store yet */ }
   }
   const save = () => {
@@ -376,24 +377,33 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
     const r = rt(id)
     const secured = isSecuredRoom(c.room)
     const cached = r.users.get(user)
-    if (cached && now() - cached.at < USERS_TTL_MS) return cached
+    if (cached && (!secured || now() - cached.at < USERS_TTL_MS)) return cached
     let handle = user, denied = false, cacheable = !secured
     const s = secretsOf(id)
-    if (!s) return { handle, denied: secured }
+    if (!s) {
+      if (secured) log(`[slack] private room dropped Slack message from ${user}: Slack credentials unavailable`)
+      return { handle, denied: secured }
+    }
     try {
       const j = await slack('users.info', s.botToken, { user })
       if (j && j.ok && j.user) {
         const u = j.user
         handle = u.name || (u.profile && u.profile.display_name) || user
         cacheable = true
-        if (secured && (u.deleted || u.is_bot || u.is_restricted || u.is_ultra_restricted || u.is_stranger || (c.teamId && u.team_id && u.team_id !== c.teamId))) {
+        if (secured && (u.deleted || u.is_bot || u.is_restricted || u.is_ultra_restricted || u.is_stranger || !c.teamId || !u.team_id || u.team_id !== c.teamId)) {
           denied = true
+          const why = u.deleted ? 'deactivated account' : u.is_bot ? 'bot user' : (u.is_restricted || u.is_ultra_restricted) ? 'workspace guest' : u.is_stranger ? 'Slack Connect stranger' : !c.teamId ? 'connection missing teamId' : !u.team_id ? 'user missing team_id' : 'external workspace'
+          log(`[slack] private room dropped Slack message from ${user}: ${why}`)
         }
       } else if (secured) {
         denied = true
+        log(`[slack] private room dropped Slack message from ${user}: users.info ${(j && j.error) || 'missing user'}`)
       }
-    } catch {
-      if (secured) denied = true
+    } catch (e) {
+      if (secured) {
+        denied = true
+        log(`[slack] private room dropped Slack message from ${user}: users.info failed (${(e && (e.code || e.message)) || 'error'})`)
+      }
     }
     const entry = { handle, denied, at: now() }
     if (cacheable) r.users.set(user, entry)
@@ -414,7 +424,13 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
     if (ev.subtype && !PERSON_SUBTYPES.has(ev.subtype)) return
     if (!ev.user) return
     if (Array.isArray(c.allow) && c.allow.length && !c.allow.includes(ev.user)) return
-    if (isSecuredRoom(c.room) && c.teamId && ((ev.team && ev.team !== c.teamId) || (payload.team_id && payload.team_id !== c.teamId))) return
+    if (isSecuredRoom(c.room)) {
+      if (!c.teamId) { log(`[slack] private room dropped Slack message from ${ev.user}: connection missing teamId`); return }
+      if ((ev.team && ev.team !== c.teamId) || (payload.team_id && payload.team_id !== c.teamId)) {
+        log(`[slack] private room dropped Slack message from ${ev.user}: external workspace team mismatch`)
+        return
+      }
+    }
     const text = String(ev.text || '').trim()
     if (!text) return
     const sender = await senderOf(id, ev.user, c)
@@ -502,6 +518,7 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
     let auth, info
     try { auth = await slack('auth.test', botToken) } catch (e) { return fail(502, 'Q662', `could not reach Slack (${e.code || e.message}).`) }
     if (!auth.ok) return fail(400, 'Q662', `Slack refused the bot token (${auth.error}).`)
+    if (isSecuredRoom(c.room) && !auth.team_id) return fail(400, 'Q662', 'Slack did not report a workspace team id for that bot token (required for private rooms).')
     try { info = await slack('conversations.info', botToken, { channel }) } catch (e) { return fail(502, 'Q664', `could not reach Slack (${e.code || e.message}).`) }
     if (!info.ok) return fail(400, 'Q664', `Slack could not find that channel for this bot (${info.error}).`)
     if (info.channel && info.channel.is_member === false) return fail(400, 'Q664', `the bot is not in #${info.channel.name}; invite it there first (/invite @your-app).`)

@@ -47,9 +47,11 @@ const APP_SECRET = 'app-secret-b3-0123456789abcdef'
 
 let fakeNow = Date.parse('2026-11-14T10:00:00Z')
 let usersMode = 'normal'   // 'normal' | 'error' | 'throw' | 'demote_member'
+let authMode = 'normal'    // 'normal' | 'no_team_id'
 const usersCalls = []
 const userProfiles = {
   U_MEMBER: { id: 'U_MEMBER', name: 'alice', team_id: 'T1' },
+  U_NO_TEAM: { id: 'U_NO_TEAM', name: 'noteam' },
   U_RESTR: { id: 'U_RESTR', name: 'guest1', team_id: 'T1', is_restricted: true },
   U_ULTRA: { id: 'U_ULTRA', name: 'guest2', team_id: 'T1', is_ultra_restricted: true },
   U_STRANGE: { id: 'U_STRANGE', name: 'stranger', team_id: 'T1', is_stranger: true },
@@ -57,6 +59,7 @@ const userProfiles = {
   U_DELETED: { id: 'U_DELETED', name: 'exuser', team_id: 'T1', deleted: true },
   U_EXT: { id: 'U_EXT', name: 'outsider', team_id: 'T2_EXT' },
   U_OPEN_GUEST: { id: 'U_OPEN_GUEST', name: 'openguest', team_id: 'T1', is_restricted: true },
+  U_OPEN_CACHE: { id: 'U_OPEN_CACHE', name: 'opencache', team_id: 'T1' },
   U_OPEN_FAIL: { id: 'U_OPEN_FAIL', name: 'ignored' },
 }
 
@@ -89,7 +92,7 @@ const fakeFetch = async (url, opts = {}) => {
       }),
     }
   }
-  if (method === 'auth.test') return { status: 200, json: async () => ({ ok: true, team: 'Acme', team_id: 'T1', user_id: 'UBOT' }) }
+  if (method === 'auth.test') return { status: 200, json: async () => (authMode === 'no_team_id' ? { ok: true, team: 'NoTeam', user_id: 'UBOT' } : { ok: true, team: 'Acme', team_id: 'T1', user_id: 'UBOT' }) }
   if (method === 'conversations.info') return { status: 200, json: async () => ({ ok: true, channel: { name: 'priv-sec', is_member: true, is_private: false } }) }
   if (method === 'chat.postMessage') return { status: 200, json: async () => ({ ok: true, ts: '1.1' }) }
   if (method === 'users.info') {
@@ -109,18 +112,20 @@ const fakeFetch = async (url, opts = {}) => {
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'b3-guard-'))
 let relay, handleImpl
+const relayLogs = []
 const server = http.createServer((req, res) => handleImpl(req, res))
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const base = `http://127.0.0.1:${server.address().port}`
 
-const startRelay = () => {
+const startRelay = (keyOverride = 'b3-encryption-key-secret-012345') => {
   if (relay) relay.stop()
   relay = makeSlackRelay({
     getDoc,
     docs,
     access: async (_room, tok) => (tok === HOST_TOK ? { ok: true, role: 'admin', name: 'Host' } : { ok: false }),
     dir,
-    key: 'b3-encryption-key-secret-012345',
+    key: keyOverride,
+    log: (m) => relayLogs.push(String(m)),
     fetchImpl: fakeFetch,
     api: 'https://fake.slack/api',
     now: () => fakeNow,
@@ -239,6 +244,11 @@ try {
   await sleep(120)
   T('B3.5a users.info API failure fails closed in hs_ room', !chatOf(HS_ROOM).some((m) => m.text === 'fail closed api error'))
   T('B3.5b users.info thrown error fails closed in hs_ room', !chatOf(HS_ROOM).some((m) => m.text === 'fail closed network throw'))
+  T('B3.5d users.info failure logs safe reason with Slack user id (no secrets)',
+    relayLogs.some((l) => l.includes('U_ERR') && l.includes('ratelimited')) &&
+    relayLogs.some((l) => l.includes('U_THROW') && l.includes('network down')) &&
+    !relayLogs.some((l) => l.includes(BOT_T1) || l.includes(SECRET)),
+    JSON.stringify(relayLogs.slice(-4)))
 
   usersMode = 'error'
   await sendManifestEvent(privId, { user: 'U_RECOVER', text: 'during outage' })
@@ -272,6 +282,67 @@ try {
   T('B3.6b r.users TTL expires after 5m and re-checks users.info, blocking newly demoted guest',
     callsAfterExpiry === 2 && !chatOf(HS_ROOM).some((m) => m.text === 'ttl after demotion'),
     `callsAfterExpiry=${callsAfterExpiry}`)
+
+  // ---- B3.7 unreadable stored Slack secrets fail closed in senderOf (!s branch) ----
+  startRelay('different-encryption-key-after-restart-0123')
+  await sendSharedEvent({ user: 'U_MEMBER', text: 'after key rotation fail closed' })
+  await sleep(120)
+  T('B3.7 unreadable Slack secrets after key change fail closed in hs_ room',
+    !chatOf(HS_OAUTH_ROOM).some((m) => m.text === 'after key rotation fail closed'))
+
+  // ---- B3.8 pre-B3 persisted hs_ record with private:true but missing teamId is dropped on load ----
+  const storeFile = path.join(dir, 'slack-relay.json')
+  const savedStore = JSON.parse(fs.readFileSync(storeFile, 'utf8'))
+  savedStore.conns['legacy-no-teamid'] = {
+    room: HS_ROOM, at: fakeNow, connected: true, private: true, by: 'Host',
+    channel: 'C0LEG', channelName: 'legacy', team: 'T', teamId: '', botUserId: 'UBOT', allow: [],
+    sealed: savedStore.conns[privId].sealed,
+  }
+  fs.writeFileSync(storeFile, JSON.stringify(savedStore))
+  startRelay()
+  const legList = await post('/slack/list', { room: HS_ROOM, token: HOST_TOK })
+  const legIds = ((legList.j && legList.j.connections) || []).map((x) => x.id)
+  T('B3.8 pre-B3 persisted hs_ record missing teamId is skipped on load',
+    legList.status === 200 && !legIds.includes('legacy-no-teamid') && legIds.includes(privId),
+    JSON.stringify(legIds))
+
+  // ---- B3.4e users.info profile missing team_id is blocked in hs_ room ----
+  await sendManifestEvent(privId, { user: 'U_NO_TEAM', text: 'profile missing team_id msg' })
+  await sleep(120)
+  T('B3.4e users.info missing team_id is denied in hs_ room',
+    !chatOf(HS_ROOM).some((m) => m.text === 'profile missing team_id msg') &&
+    relayLogs.some((l) => l.includes('U_NO_TEAM')),
+    JSON.stringify(relayLogs.slice(-3)))
+
+  // ---- B3.6c open room keeps lifetime users.info cache (no 5m re-lookup) ----
+  usersCalls.length = 0
+  await sendManifestEvent(openId, { user: 'U_OPEN_CACHE', text: 'open cache first' })
+  await until(() => chatOf(OPEN_ROOM).some((m) => m.text === 'open cache first' && m.by === 'slack:opencache'))
+  fakeNow += 10 * 60 * 1000
+  await sendManifestEvent(openId, { user: 'U_OPEN_CACHE', text: 'open cache after 10m' })
+  await until(() => chatOf(OPEN_ROOM).some((m) => m.text === 'open cache after 10m' && m.by === 'slack:opencache'))
+  const openCacheLookups = usersCalls.filter((u) => u === 'U_OPEN_CACHE').length
+  T('B3.6c open room keeps lifetime users.info cache after >5m',
+    openCacheLookups === 1,
+    `openCacheLookups=${openCacheLookups}`)
+
+  // ---- B3.9 connect() on hs_ room fails closed with Q662 when auth.test omits team_id ----
+  const hsNoTeamRoom = makeSecuredRoomId(PK, 'b3noteam03')
+  const pNoTeam = await post('/slack/prepare', { room: hsNoTeamRoom, token: HOST_TOK })
+  const noTeamId = pNoTeam.j && pNoTeam.j.id
+  authMode = 'no_team_id'
+  const cNoTeam = await post('/slack/connect', { id: noTeamId, botToken: BOT_T1, signingSecret: SECRET, channel: 'C0PRIV' })
+  authMode = 'normal'
+  T('B3.9 connect() on hs_ room refuses Q662 when auth.test omits team_id',
+    cNoTeam.status === 400 && cNoTeam.j && cNoTeam.j.code === 'Q662' && /Q662/.test(cNoTeam.j.why || ''),
+    JSON.stringify(cNoTeam))
+
+  // ---- B3.10 unconnected prepared hs_ record survives relay restart (pending before connect) ----
+  startRelay()
+  const prepStatus = await post('/slack/status', { id: noTeamId })
+  T('B3.10 unconnected prepared hs_ record survives relay restart without teamId',
+    prepStatus.status === 200 && prepStatus.j && prepStatus.j.connected === false,
+    JSON.stringify(prepStatus))
 } finally {
   try { relay && relay.stop() } catch {}
   try { server.close() } catch {}
