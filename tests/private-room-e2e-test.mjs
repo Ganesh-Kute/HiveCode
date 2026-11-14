@@ -12,6 +12,7 @@
 //       The "attacker" is a separate process with its own home folder: it holds only the revoked
 //       invite, never the revocation list.
 //   J5  the same when the host is OFFLINE across the restart: a member's client alone restores the list
+//       (documented limit: a member that was online at the revoke and cached hive_revocations must reconnect)
 //
 //   node tests/private-room-e2e-test.mjs
 
@@ -19,7 +20,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { spawn } from 'child_process'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import WebSocket from 'ws'
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -43,8 +44,8 @@ const kids = []
 let relay = null
 async function bootRelay() {
   const cwd = fs.mkdtempSync(path.join(tmp, 'relay-'))          // a fresh folder every boot: no disk survives
-  fs.writeFileSync(path.join(cwd, 'server.js'), `import ${JSON.stringify(path.join(ROOT, 'server.js'))}\n`)
-  const r = spawn(process.execPath, ['server.js'], { cwd, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off', HIVE_ROOM_REVOKED_FILE: path.join(cwd, 'revoked.json') } })
+  fs.writeFileSync(path.join(cwd, 'server.mjs'), `import ${JSON.stringify(pathToFileURL(path.join(ROOT, 'server.js')).href)}\n`)
+  const r = spawn(process.execPath, ['server.mjs'], { cwd, env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off', HIVE_ROOM_REVOKED_FILE: path.join(cwd, 'revoked.json') } })
   kids.push(r)
   r.stderr.on('data', () => { })
   await new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('relay did not start')), 15000); r.stdout.on('data', (d) => { if (/listening on/.test(String(d))) { clearTimeout(t); res() } }) })
@@ -56,7 +57,7 @@ const killRelay = async () => { relay.kill(); await new Promise((r) => relay.onc
  *  link, prints every chat line it ever sees as "CHAT <text>", its connection state on request. */
 const PEER = path.join(tmp, 'peer.mjs')
 fs.writeFileSync(PEER, `
-import { startSync, parseLink } from ${JSON.stringify(path.join(ROOT, 'sync.js'))}
+import { startSync, parseLink } from ${JSON.stringify(pathToFileURL(path.join(ROOT, 'sync.js')).href)}
 const [, , link, name, dir] = process.argv
 const { relay, room, token } = parseLink(link)
 const hive = startSync({ relay, room, dir, name, kind: 'ai', token, syncFiles: false, log: () => {} })

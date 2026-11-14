@@ -549,7 +549,15 @@ export class HiveSocket extends SocketShape {
   static OPEN = OPEN
   static CLOSING = CLOSING
   static CLOSED = CLOSED
-  constructor(url, protocols) {
+  static gatedBy(before) {
+    if (typeof before !== 'function') return HiveSocket
+    return class GatedHiveSocket extends HiveSocket {
+      constructor(url, protocols, opts) {
+        super(url, protocols, { ...opts, before })
+      }
+    }
+  }
+  constructor(url, protocols, opts = {}) {
     super()
     this.url = url
     this.protocols = protocols
@@ -560,9 +568,17 @@ export class HiveSocket extends SocketShape {
     let origin = ''
     try { origin = httpOrigin(url) } catch { }
     this._origin = origin
-    const mode = transportMode()
-    const pick = mode !== 'auto' ? mode : (decided.get(origin) || 'ws')
-    this._attach(pick === 'poll' ? new PollSocket(url, protocols) : this._makeWS(url, protocols), pick)
+    const start = () => {
+      if (this._closedByUser || this.readyState !== CONNECTING) return
+      const mode = transportMode()
+      const pick = mode !== 'auto' ? mode : (decided.get(origin) || 'ws')
+      this._attach(pick === 'poll' ? new PollSocket(url, protocols) : this._makeWS(url, protocols), pick)
+    }
+    if (opts && typeof opts.before === 'function') {
+      Promise.resolve().then(() => opts.before(url)).catch(() => { }).then(start)
+    } else {
+      start()
+    }
   }
   /**
    * A WebSocket that remembers whether a refusal came from the RELAY (it marks its own with
@@ -631,7 +647,10 @@ export class HiveSocket extends SocketShape {
     if (early) fire(this, 'error', early)
     fire(this, 'close', closeEv)
   }
-  send(data) { return this._inner.send(data) }
+  send(data) {
+    if (!this._inner) throw new Error('WebSocket is not open: readyState 0 (CONNECTING)')
+    return this._inner.send(data)
+  }
   close(code = 1000, reason = '') {
     this._closedByUser = true
     if (this._probing || (this.readyState === CONNECTING && !this._inner)) {
@@ -645,7 +664,7 @@ export class HiveSocket extends SocketShape {
     try { this._inner.close(code, reason) } catch { }
   }
   terminate() {
-    if (this._probing) return this.close(1006, 'terminated')
+    if (this._probing || (this.readyState === CONNECTING && !this._inner)) return this.close(1006, 'terminated')
     this._closedByUser = true
     try { this._inner.terminate ? this._inner.terminate() : this._inner.close() } catch { }
   }

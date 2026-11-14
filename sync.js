@@ -1334,8 +1334,36 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let stopped = false
   let provider = null
   let fileTransport = null
+  let presentInFlight = null
+  function presentRevocations() {
+    if (!secured || stopped || authStopped) return Promise.resolve()
+    if (presentInFlight) return presentInFlight
+    const p = (async () => {
+      try {
+        const lists = RK.hostLists(room)
+        const base = String(relay).replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/+$/, '')
+        const r = await relayFetch(`${base}/__hive/revocations`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ room, lists }),
+          signal: AbortSignal.timeout(lists.length ? 8000 : 3000),
+        }).catch(() => null)
+        if (r && r.ok) {
+          const body = await r.json().catch(() => null)
+          if (Array.isArray(body && body.lists) && body.lists.length) {
+            const merged = mergeLists(room, lists, body.lists)
+            if (merged.lists.length) saveLists(room, merged.lists)
+          }
+        }
+      } catch { }
+    })().finally(() => {
+      if (presentInFlight === p) presentInFlight = null
+    })
+    presentInFlight = p
+    return p
+  }
   const wsOpts = {
-    WebSocketPolyfill: HiveSocket,
+    WebSocketPolyfill: secured ? HiveSocket.gatedBy(presentRevocations) : HiveSocket,
     disableBc: true,
     params: (Object.keys(wsParams).length || secured) ? wsParams : undefined,
     shouldReconnect: (ev) => !(ev && (ev.code === 4401 || ev.code === 4403)) || !authStopped,
@@ -1379,9 +1407,9 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // onFallback: the relay stopped offering it mid-session, so trim to the per-file bound before
   // each remaining file gets a socket of its own (trimForSockets, below).
   fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets(), onAuthFailure: (code, reason) => handleAuthFailure(code, reason) })
-  // For private rooms, wait to connect until our local/host revocation lists have been
-  // presented to POST /__hive/revocations so any revoked guest is dropped before content flows.
-  provider = new WebsocketProvider(relay, room, doc, secured ? { ...wsOpts, connect: false } : wsOpts)
+  // For private rooms, HiveSocket.gatedBy(presentRevocations) waits on every open (initial
+  // connect and every reconnect) until local/host revocation lists are presented to POST /__hive/revocations.
+  provider = new WebsocketProvider(relay, room, doc, wsOpts)
   // WHICH COPY OF AN AGENT THIS IS: this machine plus this folder, hashed. Everything in a room is
   // keyed by NAME (claims, mail, presence), so two different agents under one name are one identity
   // to everybody; this is what lets a join tell another agent with the same name (refused, see
@@ -1510,28 +1538,6 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     }
     revMap.observe(syncDocRevocations)
     provider.on('sync', (s) => { if (s) syncDocRevocations() })
-    ;(async () => {
-      try {
-        const lists = RK.hostLists(room)
-        const base = String(relay).replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/+$/, '')
-        const r = await relayFetch(`${base}/__hive/revocations`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ room, lists }),
-          signal: AbortSignal.timeout(lists.length ? 8000 : 3000),
-        }).catch(() => null)
-        if (r && r.ok) {
-          const body = await r.json().catch(() => null)
-          if (Array.isArray(body && body.lists) && body.lists.length) {
-            const merged = mergeLists(room, lists, body.lists)
-            if (merged.lists.length) saveLists(room, merged.lists)
-          }
-        }
-      } catch { }
-      if (!stopped && !authStopped) {
-        try { provider.connect() } catch { }
-      }
-    })()
   }
   provider.on('status', ({ status }) => {
     if (status !== 'connected') return
