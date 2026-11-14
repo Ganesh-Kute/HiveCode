@@ -33,7 +33,7 @@ import os from 'os'
 import path from 'path'
 import http from 'http'
 import { spawn } from 'child_process'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import WebSocket from 'ws'
 import { MUX_PREFIX } from '../hive-mux-proto.js'
 
@@ -70,7 +70,7 @@ await new Promise((r) => slack.listen(SLACK_PORT, '127.0.0.1', r))
 // ---- the relay
 const relays = []
 function boot(port, env = {}) {
-  const r = spawn(process.execPath, ['server.js'], { cwd: tmp, env: { ...process.env, PORT: String(port), HIVE_PERSIST_DIR: 'off', HIVE_SLACK_KEY: 'k'.repeat(40), HIVE_SLACK_API: `http://127.0.0.1:${SLACK_PORT}`, HIVE_EXPIRY_SWEEP_MS: '300', HIVE_ROOM_REVOKED_FILE: path.join(tmp, `revoked-${port}.json`), ...env }, })
+  const r = spawn(process.execPath, ['server.mjs'], { cwd: tmp, env: { ...process.env, PORT: String(port), HIVE_PERSIST_DIR: 'off', HIVE_SLACK_KEY: 'k'.repeat(40), HIVE_SLACK_API: `http://127.0.0.1:${SLACK_PORT}`, HIVE_EXPIRY_SWEEP_MS: '300', HIVE_ROOM_REVOKED_FILE: path.join(tmp, `revoked-${port}.json`), ...env }, })
   relays.push(r)
   r.stderr.on('data', () => { })
   return new Promise((res, rej) => {
@@ -79,7 +79,8 @@ function boot(port, env = {}) {
   })
 }
 // server.js is started from a temp cwd so nothing is written into the repository
-fs.writeFileSync(path.join(tmp, 'server.js'), `import ${JSON.stringify(path.join(ROOT, 'server.js'))}\n`)
+// (.mjs and a file: URL, so it also starts on Windows and on Node 20)
+fs.writeFileSync(path.join(tmp, 'server.mjs'), `import ${JSON.stringify(pathToFileURL(path.join(ROOT, 'server.js')).href)}\n`)
 
 const post = async (p, body, port = PORT) => {
   const r = await fetch(`http://127.0.0.1:${port}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -247,6 +248,23 @@ try {
   relay3.kill(); await sleep(400); relay3 = await boot(PORT + 6, { HIVE_PERSIST_DIR: disk })
   T('V7b and it remembers by itself across a restart', (await open(A.room, guest.token, PORT + 6)).status === 401)
   relay3.kill()
+
+  // The endpoint takes no token, and anyone can make a private room, so the relay holds lists for
+  // a bounded number of rooms. Filling it cannot stop a room it already holds from revoking.
+  const P4 = PORT + 7
+  const relay4 = await boot(P4, { HIVE_REVOCATIONS_MAX_ROOMS: '2' })
+  const [RA, RB, RC] = [mk('Fa'), mk('Fb'), mk('Fc')]
+  const q1 = tok(RA, 'G1'), q1b = tok(RA, 'G1b'), q3 = tok(RC, 'G3')
+  const ra = await post('/__hive/revocations', { room: RA.room, lists: [signList(RA, { seq: 1, revoked: [{ jti: q1.jti, exp: q1.exp }] })] }, P4)
+  const rb = await post('/__hive/revocations', { room: RB.room, lists: [signList(RB, { seq: 1, revoked: [{ jti: 'someone', exp: q1.exp }] })] }, P4)
+  T('V9a the relay keeps lists up to its bound', ra.status === 200 && rb.status === 200, `${ra.status} ${rb.status}`)
+  const rc = await post('/__hive/revocations', { room: RC.room, lists: [signList(RC, { seq: 1, revoked: [{ jti: q3.jti, exp: q3.exp }] })] }, P4)
+  T('V9b a new room past the bound is refused out loud (503 Q677, ok:false)', rc.status === 503 && rc.body.ok === false && /Q677/.test(rc.body.error || ''), JSON.stringify(rc).slice(0, 200))
+  const q3in = await open(RC.room, q3.token, P4)
+  T('V9c and the relay does not pretend: that invite still works there', q3in.open === true, JSON.stringify(q3in.status))
+  const ra2 = await post('/__hive/revocations', { room: RA.room, lists: [signList(RA, { seq: 2, revoked: [{ jti: q1.jti, exp: q1.exp }, { jti: q1b.jti, exp: q1b.exp }] })] }, P4)
+  T('V9d a room already held still revokes at the bound', ra2.status === 200 && ra2.body.ok === true && (await open(RA.room, q1b.token, P4)).status === 401 && (await open(RA.room, q1.token, P4)).status === 401, JSON.stringify(ra2).slice(0, 200))
+  relay4.kill()
 
   console.log('\n# A3 expiry is enforced on an open connection')
   const short = tok(A, 'Short', { role: 'writer', ttlSec: 2 })

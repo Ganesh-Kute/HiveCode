@@ -44,7 +44,7 @@ import { serveMux } from './relay-mux.js'
 import { STATIC, staticFile } from './relay-static.js'
 import { makeSlackRelay, SLACK_PREFIX } from './hive-slack-relay.js'
 import { presenceReport, adminOk } from './relay-presence.js'
-import { makeRelayRevocations } from './relay-revocations.js'
+import { makeRelayRevocations, MAX_ROOMS as MAX_REVOCATION_ROOMS, MAX_BYTES as MAX_REVOCATION_BYTES } from './relay-revocations.js'
 import { MAX_LISTS } from './hive-revocations.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
@@ -1053,6 +1053,7 @@ function readBodyUpTo(req, max) {
   })
 }
 const REVOCATIONS_MAX_BODY = 2 * 1048576
+let revocationsFullAt = 0
 const REVOCATIONS_MAP = 'hive_revocations'
 /** Put the room's lists where connected members see them at once. Only for a room that is open:
  *  nobody is listening in a closed one, and its next first connection publishes again. */
@@ -1085,7 +1086,13 @@ async function handleRevocations(req, res) {
   let dropped = 0
   try { dropped += applyRevocations(base, await revocations.ready(base)) }
   catch { return reply(503, { ok: false, error: 'Q676 the revocation store cannot be read right now; nothing was changed. Try again.' }) }
-  const { added, changed } = revocations.present(base, body.lists)
+  const { added, changed, refused } = revocations.present(base, body.lists)
+  if (refused) {
+    // The bounds (relay-revocations.js). Nothing was changed; for a room already held, what it had still stands.
+    const now = Date.now()
+    if (now - revocationsFullAt > 60000) { revocationsFullAt = now; console.warn(`[relay] revocation lists are at their bound (${refused}): ${JSON.stringify(revocations.size())}. A list was refused. Raise HIVE_REVOCATIONS_MAX_ROOMS / HIVE_REVOCATIONS_MAX_MB if these are real rooms.`) }
+    return reply(503, { ok: false, error: 'Q677 the relay holds as many revocation lists as it will; this one was not taken and the invite still works here. Tell whoever runs the relay.', full: refused, dropped })
+  }
   dropped += applyRevocations(base, added)
   if (changed) {
     // Closed first, stored second, answered last: "revoked" is only said once a restart cannot lose it.
@@ -1212,7 +1219,13 @@ if (PERSIST_DIR) {
 
 // Signed revocation lists, kept beside the snapshots when there is a disk (relay-revocations.js).
 // `store` stays null here: an outside store for a relay with no disk plugs in at this line.
-const revocations = makeRelayRevocations({ dir: PERSIST_DIR, store: null, log: (m) => console.log(m) })
+// How many it will hold is bounded, because anyone can sign a list for a room of their own making.
+const posInt = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : d }
+const revocations = makeRelayRevocations({
+  dir: PERSIST_DIR, store: null, log: (m) => console.log(m),
+  maxRooms: posInt(process.env.HIVE_REVOCATIONS_MAX_ROOMS, MAX_REVOCATION_ROOMS),
+  maxBytes: posInt(process.env.HIVE_REVOCATIONS_MAX_MB, MAX_REVOCATION_BYTES / 1048576) * 1048576,
+})
 
 // SLACK WITHOUT A BRIDGE PROCESS (issue #22): the relay answers Slack's Events API itself and sends
 // each room's new chat lines to its Slack channel. Off (every /slack/ route answers Q660) until
