@@ -13,6 +13,9 @@
 //   O1  an outside store is read once per boot before anyone is let in; what it returns is verified
 //   O2  a store that cannot be read: ready() rejects (the caller refuses the join), and works on retry
 //   O3  a store that refuses a write: commit() rejects, memory still holds the revoke
+//   O4  what the store returns is taken whole, past the bounds: refusing it would forget a revoke
+//   P   a room id is a file name here, so one that is not letters, digits, _ and - is refused and
+//       never turned into a path (found 14 Nov: 'hs_<fp>_x/../../victim' wrote and deleted outside the folder)
 //
 //   node tests/relay-revocations-test.mjs
 
@@ -25,6 +28,7 @@ process.env.HIVE_KEYS_DIR = path.join(tmp, 'keys')
 const { newPersonalRoom } = await import('../hive-room-key.js')
 const { signList } = await import('../hive-revocations.js')
 const { makeRelayRevocations } = await import('../relay-revocations.js')
+const { roomFingerprint } = await import('../token.js')
 
 let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra && !c ? `   ${String(extra).slice(0, 300)}` : ''}`); c ? pass++ : fail++ }
@@ -114,6 +118,34 @@ try {
   o.present(B.room, [list(B, 2, ['b1', 'b2'])])
   const refused = await o.commit(B.room).then(() => false, () => true)
   T('O3b a store that refuses the write: commit() rejects, and memory still holds the revoke', refused && o.isRevoked(B.room, 'b2'))
+
+  console.log('\n# O4 a store answer past the bounds is taken whole')
+  const tiny = makeRelayRevocations({ maxRooms: 1, maxBytes: 10, reserveBytes: 10, now: () => NOW, store: { get: async (rm) => (rm === A.room ? [list(A, 1, ['s1'])] : rm === B.room ? [list(B, 1, ['s2'])] : []), put: async () => { } } })
+  await tiny.ready(A.room); await tiny.ready(B.room)
+  T('O4 two rooms and more bytes than the bounds allow, from the store, are all kept', tiny.isRevoked(A.room, 's1') && tiny.isRevoked(B.room, 's2') && tiny.size().rooms === 2, JSON.stringify(tiny.size()))
+
+  console.log('\n# P a room id is not a path')
+  const K = room()
+  const fp = roomFingerprint(K.room)                       // base64url: it may itself hold an underscore
+  const pdir = path.join(tmp, 'pp', 'persist')
+  fs.mkdirSync(pdir, { recursive: true })
+  fs.writeFileSync(path.join(pdir, 'victim.json'), '{"precious":true}')
+  const pr = makeRelayRevocations({ dir: pdir, now: () => NOW })
+  const evil = [`hs_${fp}_x/../../ESCAPED`, `hs_${fp}_x/../../victim`, `hs_${fp}_..\\..\\x`, `hs_${fp}_x%2F..%2Fy`, `hs_${fp}_x\0y`, `hs_${fp}_${'a'.repeat(300)}`]
+  for (const id of evil) {
+    const out = pr.present(id, [signList({ ...K, room: id }, { seq: 1, revoked: [{ jti: 'e', exp: NOW + 3600 }], iat: NOW })])
+    T(`P1 refused, nothing kept: ${JSON.stringify(id).slice(0, 44)}`, out.refused === 'room' && !pr.isRevoked(id, 'e') && pr.listsOf(id).length === 0 && !out.changed, JSON.stringify(out.refused))
+  }
+  const under = []; (function walk(d) { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const q = path.join(d, f.name); f.isDirectory() ? walk(q) : under.push(path.relative(path.join(tmp, 'pp'), q)) } })(path.join(tmp, 'pp'))
+  T('P2 nothing was written anywhere (not outside the folder, not inside it)', under.length === 1 && under[0] === path.join('persist', 'victim.json'), under.join(','))
+  T('P3 an existing file beside the folder is untouched', fs.readFileSync(path.join(pdir, 'victim.json'), 'utf8') === '{"precious":true}')
+  // and a good room still works, and its expiry deletes only its own file
+  const okp = pr.present(K.room, [signList(K, { seq: 1, revoked: [{ jti: 'g', exp: NOW + 60 }], iat: NOW })])
+  T('P4 a proper room is still taken and written under revocations/', !okp.refused && fs.existsSync(path.join(pdir, 'revocations', `${K.room}.json`)))
+  const dotted = `hs_${fp}_a.b`                                             // validly signed, but not a plain id: a file for it is not read
+  fs.writeFileSync(path.join(pdir, 'revocations', `${dotted}.json`), JSON.stringify({ v: 1, lists: [signList({ ...K, room: dotted }, { seq: 1, revoked: [{ jti: 'dd', exp: NOW + 60 }], iat: NOW })] }))
+  const pr2 = makeRelayRevocations({ dir: pdir, now: () => NOW })
+  T('P5 a new boot reads the proper room and ignores a file whose id is not a plain one', pr2.isRevoked(K.room, 'g') && !pr2.isRevoked(dotted, 'dd') && pr2.size().rooms === 1, JSON.stringify(pr2.size()))
 } catch (e) {
   T('no exception', false, e && e.stack)
 } finally {

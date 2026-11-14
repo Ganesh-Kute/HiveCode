@@ -266,6 +266,24 @@ try {
   T('V9d a room already held still revokes at the bound', ra2.status === 200 && ra2.body.ok === true && (await open(RA.room, q1b.token, P4)).status === 401 && (await open(RA.room, q1.token, P4)).status === 401, JSON.stringify(ra2).slice(0, 200))
   relay4.kill()
 
+  // A room id becomes a file name when the relay has a disk, and anyone can sign a list for an id of
+  // their own making. 'hs_<fp>_x/../../victim' once wrote and deleted outside the lists' folder (14 Nov).
+  const P5 = PORT + 8
+  const pdisk = path.join(tmp, 'pdisk', 'persist')
+  fs.mkdirSync(pdisk, { recursive: true })
+  fs.writeFileSync(path.join(pdisk, 'victim.json'), '{"precious":true}')
+  const relay5 = await boot(P5, { HIVE_PERSIST_DIR: pdisk })
+  const RE = mk('Fe')
+  const evilId = `${RE.room}_x/../../victim`
+  const evilW = `${RE.room}_x/../../WRITTEN`
+  const e1 = await post('/__hive/revocations', { room: evilId, lists: [signList({ ...RE, room: evilId }, { seq: 1, revoked: [{ jti: 'e', exp: q1.exp }] })] }, P5)
+  const e2 = await post('/__hive/revocations', { room: evilW, lists: [signList({ ...RE, room: evilW }, { seq: 1, revoked: [{ jti: 'e', exp: q1.exp }] })] }, P5)
+  T('V10a a room id that is not letters, digits, _ and - is refused (400)', e1.status === 400 && e2.status === 400 && e1.body.ok === false, JSON.stringify([e1.status, e2.status]))
+  T('V10b an existing file beside the lists is untouched, and nothing is written outside their folder', fs.readFileSync(path.join(pdisk, 'victim.json'), 'utf8') === '{"precious":true}' && !fs.existsSync(path.join(pdisk, 'WRITTEN.json')))
+  const good = await post('/__hive/revocations', { room: RE.room, lists: [signList(RE, { seq: 1, revoked: [{ jti: 'g', exp: q1.exp }] })] }, P5)
+  T('V10c a proper room is still taken, and its file is under revocations/', good.status === 200 && fs.existsSync(path.join(pdisk, 'revocations', `${RE.room}.json`)), JSON.stringify(good.body).slice(0, 100))
+  relay5.kill()
+
   console.log('\n# A3 expiry is enforced on an open connection')
   const short = tok(A, 'Short', { role: 'writer', ttlSec: 2 })
   const long = tok(A, 'Long', { role: 'writer' })

@@ -44,7 +44,7 @@ import { serveMux } from './relay-mux.js'
 import { STATIC, staticFile } from './relay-static.js'
 import { makeSlackRelay, SLACK_PREFIX } from './hive-slack-relay.js'
 import { presenceReport, adminOk } from './relay-presence.js'
-import { makeRelayRevocations, MAX_ROOMS as MAX_REVOCATION_ROOMS, MAX_BYTES as MAX_REVOCATION_BYTES } from './relay-revocations.js'
+import { makeRelayRevocations, isSafeRoomId, MAX_ROOMS as MAX_REVOCATION_ROOMS, MAX_BYTES as MAX_REVOCATION_BYTES } from './relay-revocations.js'
 import { MAX_LISTS } from './hive-revocations.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
@@ -1081,7 +1081,7 @@ async function handleRevocations(req, res) {
   let body
   try { body = JSON.parse((await readBodyUpTo(req, REVOCATIONS_MAX_BODY)) || '{}') } catch { return reply(400, { ok: false, error: 'bad request' }) }
   const base = typeof body.room === 'string' ? body.room : ''
-  if (!base || baseRoomOf(base) !== base || !roomFingerprint(base)) return reply(400, { ok: false, error: 'revocation lists are for private rooms (hs_...)' })
+  if (!base || baseRoomOf(base) !== base || !roomFingerprint(base) || !isSafeRoomId(base)) return reply(400, { ok: false, error: 'revocation lists are for private rooms (hs_..., letters, digits, _ and - only)' })
   if (!Array.isArray(body.lists) || body.lists.length > MAX_LISTS) return reply(400, { ok: false, error: `lists must be an array of at most ${MAX_LISTS} signed lists` })
   let dropped = 0
   try { dropped += applyRevocations(base, await revocations.ready(base)) }

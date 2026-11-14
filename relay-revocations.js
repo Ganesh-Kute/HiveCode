@@ -38,6 +38,12 @@ import { mergeLists, MAX_LISTS } from './hive-revocations.js'
 import { isSecuredRoom } from './token.js'
 
 const FOLDER = 'revocations'
+// A room id is a FILE NAME here (<persist>/revocations/<room>.json), and anyone can sign a list for an id
+// of their own making: "hs_<fp>_x/../../victim" is a private room's id to isSecuredRoom, with a
+// fingerprint from the signer's own key. So only plain ids are ever kept, and never turned into a path
+// otherwise (14 Nov 2026: that string wrote and deleted outside this folder).
+const SAFE_ROOM = /^hs_[A-Za-z0-9_-]{1,200}$/
+export const isSafeRoomId = (room) => typeof room === 'string' && SAFE_ROOM.test(room) && isSecuredRoom(room)
 export const MAX_ROOMS = 1000
 export const MAX_BYTES = 64 * 1048576
 export const RESERVE_BYTES = 16 * 1024
@@ -91,7 +97,7 @@ export function makeRelayRevocations({ dir = null, store = null, now = nowSec, l
     try { names = fs.readdirSync(folder) } catch { /* none yet */ }
     for (const f of names) {
       const room = f.endsWith('.json') ? f.slice(0, -5) : ''
-      if (!isSecuredRoom(room)) continue
+      if (!isSafeRoomId(room)) continue
       try {
         const j = JSON.parse(fs.readFileSync(path.join(folder, f), 'utf8'))
         const m = mergeLists(room, Array.isArray(j && j.lists) ? j.lists : [], now())   // verified again: the file is not trusted either
@@ -101,10 +107,11 @@ export function makeRelayRevocations({ dir = null, store = null, now = nowSec, l
   }
 
   /** Merge what was handed in. -> { merged, added: [jti], changed, refused }
-   *  `added` is who is revoked now and was not. `refused` is 'rooms' or 'bytes' when the bounds
-   *  said no: nothing was changed then, and what the room had (if anything) still stands.
+   *  `added` is who is revoked now and was not. `refused` is 'room' (not an id this relay keeps), or
+   *  'rooms' or 'bytes' when the bounds said no: nothing was changed then, and what the room had (if anything) still stands.
    *  `own` is for what this relay kept itself (its store): no bounds. */
   function present(room, lists, { own = false } = {}) {
+    if (!isSafeRoomId(room)) return { merged: { lists: [], revoked: new Map(), seq: -1 }, added: [], changed: false, refused: 'room' }   // not a name this relay keeps
     const had = rooms.get(room) || { lists: [], revoked: new Map(), seq: -1, bytes: 0 }
     const merged = mergeLists(room, had.lists, Array.isArray(lists) ? lists.slice(0, MAX_LISTS) : [], now())
     const added = [...merged.revoked.keys()].filter((jti) => !had.revoked.has(jti))
@@ -136,7 +143,7 @@ export function makeRelayRevocations({ dir = null, store = null, now = nowSec, l
      *  the store cannot be read, and the caller must then refuse (fail closed) and let the client retry;
      *  the next call tries again. With no store it is already done. Returns who became revoked. */
     ready(room) {
-      if (!store || !isSecuredRoom(room)) return Promise.resolve([])
+      if (!store || !isSafeRoomId(room)) return Promise.resolve([])
       let p = loaded.get(room)
       if (!p) {
         p = Promise.resolve().then(() => store.get(room)).then((lists) => present(room, lists, { own: true }).added)
