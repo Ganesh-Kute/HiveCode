@@ -64,6 +64,7 @@ const MAX_PREPARED = 2000          // unconnected ids at once: a cap, so /slack/
 const MAX_BODY = 1024 * 1024       // Slack event payloads are a few KB
 const SIG_WINDOW_S = 300           // Slack's own replay window
 const SEEN_EVENTS = 1000           // event ids remembered per connection, for Slack's retries
+const USERS_TTL_MS = 5 * 60 * 1000 // cache users.info results per connection for 5 min (B3)
 const MAX_TEXT = 3500
 const ROOM_RE = /^[A-Za-z0-9_.~-]{1,200}$/
 const CHANNEL_RE = /^[CGD][A-Z0-9]{2,30}$/
@@ -371,18 +372,32 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
   if (timer.unref) timer.unref()
 
   // ---- Slack -> room --------------------------------------------------------------------------
-  const nameOf = async (id, user) => {
+  const senderOf = async (id, user, c) => {
     const r = rt(id)
-    if (r.users.has(user)) return r.users.get(user)
-    let handle = user
+    const secured = isSecuredRoom(c.room)
+    const cached = r.users.get(user)
+    if (cached && now() - cached.at < USERS_TTL_MS) return cached
+    let handle = user, denied = false, cacheable = !secured
     const s = secretsOf(id)
-    if (!s) return handle
+    if (!s) return { handle, denied: secured }
     try {
       const j = await slack('users.info', s.botToken, { user })
-      if (j.ok && j.user) handle = j.user.name || (j.user.profile && j.user.profile.display_name) || user
-    } catch { }
-    r.users.set(user, handle)
-    return handle
+      if (j && j.ok && j.user) {
+        const u = j.user
+        handle = u.name || (u.profile && u.profile.display_name) || user
+        cacheable = true
+        if (secured && (u.deleted || u.is_bot || u.is_restricted || u.is_ultra_restricted || u.is_stranger || (c.teamId && u.team_id && u.team_id !== c.teamId))) {
+          denied = true
+        }
+      } else if (secured) {
+        denied = true
+      }
+    } catch {
+      if (secured) denied = true
+    }
+    const entry = { handle, denied, at: now() }
+    if (cacheable) r.users.set(user, entry)
+    return entry
   }
   const deliver = async (id, payload) => {
     const c = conns.get(id); if (!c || !c.connected) return
@@ -399,9 +414,12 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
     if (ev.subtype && !PERSON_SUBTYPES.has(ev.subtype)) return
     if (!ev.user) return
     if (Array.isArray(c.allow) && c.allow.length && !c.allow.includes(ev.user)) return
+    if (isSecuredRoom(c.room) && c.teamId && ((ev.team && ev.team !== c.teamId) || (payload.team_id && payload.team_id !== c.teamId))) return
     const text = String(ev.text || '').trim()
     if (!text) return
-    const by = slackSender(await nameOf(id, ev.user))
+    const sender = await senderOf(id, ev.user, c)
+    if (sender.denied) return
+    const by = slackSender(sender.handle)
     const doc = getDoc(c.room)
     const intent = controlIntent(text)
     if (intent) {
@@ -490,7 +508,7 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
     const channelName = (info.channel && info.channel.name) || channel
     const allow = Array.isArray(j.allow) ? j.allow.map(String).filter((u) => /^[UW][A-Z0-9]+$/.test(u)) : []
     const r = rt(id)
-    conns.set(id, { room: c.room, at: c.at, connected: true, connectedAt: now(), channel, channelName, team: auth.team || '', botUserId: auth.user_id || '', allow, sealed: sealSecrets({ botToken, signingSecret }, key), ...hostMark(c) })
+    conns.set(id, { room: c.room, at: c.at, connected: true, connectedAt: now(), channel, channelName, team: auth.team || '', teamId: String(auth.team_id || ''), botUserId: auth.user_id || '', allow, sealed: sealSecrets({ botToken, signingSecret }, key), ...hostMark(c) })
     r.secrets = { botToken, signingSecret }; r.unreadable = false; r.doc = null
     save()
     const line = `Slack is connected to this room (#${channelName}).`
