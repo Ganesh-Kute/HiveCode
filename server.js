@@ -44,6 +44,8 @@ import { serveMux } from './relay-mux.js'
 import { STATIC, staticFile } from './relay-static.js'
 import { makeSlackRelay, SLACK_PREFIX } from './hive-slack-relay.js'
 import { presenceReport, adminOk } from './relay-presence.js'
+import { makeRelayRevocations } from './relay-revocations.js'
+import { MAX_LISTS } from './hive-revocations.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
 // library; calling that copy's applyUpdate on a doc created by the CJS copy (as the
@@ -916,7 +918,8 @@ function isRevoked(base, jti) {
   if (!jti) return false
   if (revokedSet().has(jti)) return true
   const s = roomRevoked.get(base)
-  return !!(s && s.has(jti))
+  if (s && s.has(jti)) return true
+  return revocations.isRevoked(base, jti)   // signed lists: what survives a relay with no disk
 }
 
 // Shared scope + path enforcement once a token's signature is verified. A project
@@ -940,7 +943,9 @@ function scopeCheck(p, room) {
     if (role !== 'reader' && !writeAllowed(sc, filePath)) role = 'reader'
   }
   // jti rides along so a revoke can find and close the connections that token opened (handleRevoke).
-  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner, jti: p.jti }, role, path: filePath }
+  // exp rides along too, beside the identity and not in it: the relay closes the connection when the
+  // token runs out (expireConnections), and identity is what audit lines print.
+  return { ok: true, identity: { sub: p.sub, name: p.name, kind: p.kind, owner: p.owner, jti: p.jti }, role, path: filePath, exp: typeof p.exp === 'number' ? p.exp : null }
 }
 
 // A SELF-DECLARED NAME IS NOT A CREDENTIAL, AND IS NEVER TREATED AS ONE.
@@ -1021,6 +1026,75 @@ function authorize(room, token, declaredName, declaredKind) {
   return scopeCheck(res.payload, room)
 }
 
+/** Close every connection a revoked invite opened in this room. -> how many. */
+function dropGrant(base, jti) {
+  let dropped = 0
+  for (const c of wss.clients) {
+    const g = c._hiveGrant || (c._hive && c._hive.identity ? { base: baseRoomOf(c._hive.room), jti: c._hive.identity.jti } : null)
+    if (g && g.jti === jti && g.base === base) { try { c.close(4401, 'token revoked') } catch { /* already closing */ } dropped++ }
+  }
+  return dropped
+}
+
+// SIGNED REVOCATION LISTS (14 Nov 2026). Body: { room, lists: [jws] }. No token: a list is signed
+// with the room's key and checked against the room id, so it does not matter who hands it over --
+// which is the point, because after a restart with no disk it is a member's client that hands it
+// back. Lists merge and never replace (relay-revocations.js), so nothing sent here can un-revoke.
+// The order inside is the guarantee a client relies on: the sockets a list revokes are closed
+// BEFORE the answer is written, and a client presents its lists and waits for this answer before
+// it opens a connection, so an honest member's content cannot reach a revoked socket that slipped
+// in while the relay had forgotten.
+function readBodyUpTo(req, max) {
+  return new Promise((resolve, reject) => {
+    let b = '', over = false
+    req.on('data', (d) => { if (over) return; b += d; if (b.length > max) { over = true; reject(new Error('too large')) } })
+    req.on('end', () => { if (!over) resolve(b) })
+    req.on('error', reject)
+  })
+}
+const REVOCATIONS_MAX_BODY = 2 * 1048576
+const REVOCATIONS_MAP = 'hive_revocations'
+/** Put the room's lists where connected members see them at once. Only for a room that is open:
+ *  nobody is listening in a closed one, and its next first connection publishes again. */
+function publishRevocations(base) {
+  const lists = revocations.listsOf(base)
+  const doc = yDocs.get(base)
+  if (!doc || !lists.length) return
+  try {
+    const m = doc.getMap(REVOCATIONS_MAP)
+    const cur = m.get('lists')
+    if (Array.isArray(cur) && cur.length === lists.length && cur.every((l, i) => l === lists[i])) return
+    doc.transact(() => m.set('lists', lists), 'relay')
+  } catch (e) { console.error('[relay] publishing revocation lists failed:', e && e.message) }
+}
+/** Act on a merge: close what it revoked, tell the room. -> connections closed. */
+function applyRevocations(base, added) {
+  let dropped = 0
+  for (const jti of added) dropped += dropGrant(base, jti)
+  if (added.length) audit('revoke', { room: base, by: 'signed list', revoked: added.length, dropped })
+  publishRevocations(base)
+  return dropped
+}
+async function handleRevocations(req, res) {
+  const reply = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)) }
+  let body
+  try { body = JSON.parse((await readBodyUpTo(req, REVOCATIONS_MAX_BODY)) || '{}') } catch { return reply(400, { ok: false, error: 'bad request' }) }
+  const base = typeof body.room === 'string' ? body.room : ''
+  if (!base || baseRoomOf(base) !== base || !roomFingerprint(base)) return reply(400, { ok: false, error: 'revocation lists are for private rooms (hs_...)' })
+  if (!Array.isArray(body.lists) || body.lists.length > MAX_LISTS) return reply(400, { ok: false, error: `lists must be an array of at most ${MAX_LISTS} signed lists` })
+  let dropped = 0
+  try { dropped += applyRevocations(base, await revocations.ready(base)) }
+  catch { return reply(503, { ok: false, error: 'Q676 the revocation store cannot be read right now; nothing was changed. Try again.' }) }
+  const { added, changed } = revocations.present(base, body.lists)
+  dropped += applyRevocations(base, added)
+  if (changed) {
+    // Closed first, stored second, answered last: "revoked" is only said once a restart cannot lose it.
+    try { await revocations.commit(base) }
+    catch { return reply(503, { ok: false, error: 'Q676 the revocation store did not take the change; the invite is cut off on this relay now, but that would not survive a restart. Try again.', dropped }) }
+  }
+  return reply(200, { ok: true, lists: revocations.listsOf(base), seq: revocations.seqOf(base), dropped, durable: revocations.durable })
+}
+
 // Owner-driven revocation endpoint. Body: { room, token, jti }. The token must be
 // an admin/maintainer token for that secured room (proven self-certifying), so
 // only the room owner can cut someone off. In-memory + audited.
@@ -1044,11 +1118,7 @@ async function handleRevoke(req, res) {
     // TAKEN BACK MEANS GONE NOW (8 Oct 2026). Refusing the token only at its next connect left a
     // removed guest reading every change for as long as its socket stayed up -- which, for an agent
     // that never disconnects, is forever. Close what it has open; its reconnect is then refused above.
-    let dropped = 0
-    for (const c of wss.clients) {
-      const g = c._hiveGrant || (c._hive && c._hive.identity ? { base: baseRoomOf(c._hive.room), jti: c._hive.identity.jti } : null)
-      if (g && g.jti === jti && g.base === base) { try { c.close(4401, 'token revoked') } catch { /* already closing */ } dropped++ }
-    }
+    const dropped = dropGrant(base, jti)
     audit('revoke', { room: base, jti, by: v.payload.name, dropped })
     return reply(200, { ok: true, dropped })
   } catch { return reply(400, { error: 'bad request' }) }
@@ -1140,11 +1210,22 @@ if (PERSIST_DIR) {
   console.log(`[relay] persistence ON -> ${PERSIST_DIR}`)
 }
 
+// Signed revocation lists, kept beside the snapshots when there is a disk (relay-revocations.js).
+// `store` stays null here: an outside store for a relay with no disk plugs in at this line.
+const revocations = makeRelayRevocations({ dir: PERSIST_DIR, store: null, log: (m) => console.log(m) })
+
 // SLACK WITHOUT A BRIDGE PROCESS (issue #22): the relay answers Slack's Events API itself and sends
 // each room's new chat lines to its Slack channel. Off (every /slack/ route answers Q660) until
 // HIVE_SLACK_KEY is set; hive-slack-relay.js has the contract and what never leaves.
 const slackRelay = makeSlackRelay({
   getDoc: getYDoc, docs: yDocs, dir: PERSIST_DIR, key: process.env.HIVE_SLACK_KEY || '',
+  // A private room's Slack routes ask the SAME gate a websocket passes: signature, room, expiry and
+  // revocation, in one place. Slack then requires the host's role on top (hive-slack-relay.js).
+  access: async (room, token) => {
+    let a
+    try { applyRevocations(room, await revocations.ready(room)); a = authorize(room, token, '', '') } catch { a = { ok: false } }
+    return a.ok ? { ok: true, role: a.role, name: a.identity && a.identity.name } : { ok: false }
+  },
   api: process.env.HIVE_SLACK_API || 'https://slack.com/api',
   publicUrl: process.env.HIVE_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '',
   // ONE-LINK SETUP (13 Nov 2026): the relay owner's own Slack app, installed by each workspace through
@@ -1274,6 +1355,10 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify(body))
   }
 
+  if (req.url === '/__hive/revocations') {
+    if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
+    if (req.method === 'POST') return void handleRevocations(req, res)
+  }
   if (req.url === '/__hive/revoke') {
     if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }); return res.end() }
     if (req.method === 'POST') return void handleRevoke(req, res)
@@ -1564,7 +1649,7 @@ function acceptConnection(conn, req, room, { auth, tier, license, agentId, chann
       account = meter.accountFor('', baseRoom)  // genuinely unclaimed: an anonymous workspace
     }
   }
-  conn._hive = { room, identity: auth.identity, role: auth.role, tier, account }
+  conn._hive = { room, identity: auth.identity, role: auth.role, tier, account, exp: auth.exp || null }
   if (channel) noteChannelOpened(room)
   else noteConnectionOpened(room)
 
@@ -1656,7 +1741,7 @@ async function admitMux(req, q) {
   return { accept: (ws) => {
     noteConnectionOpened(key)
     const openedAt = Date.now()
-    ws._hiveGrant = { base: baseRoom, jti: auth.identity && auth.identity.jti } // what a revoke matches on
+    ws._hiveGrant = { base: baseRoom, jti: auth.identity && auth.identity.jti, exp: auth.exp || null } // what a revoke, and expiry, match on
     audit('mux-connect', { baseRoom, identity: auth.identity })
     serveMux(ws, {
       baseRoom,
@@ -1693,6 +1778,13 @@ async function admitMux(req, q) {
 // protects both, and neither can be the way around the other.
 async function admitUpgrade(req) {
   const q = parseUpgrade(req.url)
+  // A private room's revocation lists are in hand before anyone is let in. Without an outside store
+  // this is already true; with one, a store that cannot be read refuses the join (fail closed).
+  const privateBase = baseRoomOf(q.room.startsWith(MUX_PREFIX) ? q.room.slice(MUX_PREFIX.length) : q.room)
+  if (roomFingerprint(privateBase)) {
+    try { applyRevocations(privateBase, await revocations.ready(privateBase)) }
+    catch { audit('reject', { room: q.room, reason: 'revocation store unreadable' }); return { line: '503 Service Unavailable' } }
+  }
   if (q.room.startsWith(MUX_PREFIX)) return admitMux(req, q)
   const t = await resolveTier(q.room, q.license)
   if (!t.ok) return { line: t.line }
@@ -1711,6 +1803,29 @@ server.on('upgrade', async (req, socket, head) => {
 // cloud VMs, 7 Nov 2026; many company proxies). Same admission, same accept path, same gates.
 const RELAY_POLL = !/^(off|0|false)$/i.test(process.env.HIVE_RELAY_POLL || '')
 const poll = makePollHandler({ admit: admitUpgrade, audit, track: (conn) => { wss.clients.add(conn); conn.once('close', () => wss.clients.delete(conn)) }, maxFrameBytes: LIMITS.maxFrameBytes || 16 * 1048576 })
+
+// EXPIRED MEANS OUT, NOT "OUT AT THE NEXT CONNECT" (14 Nov 2026). verify() refuses an expired token
+// when it connects, and nothing looked again: an invite for 7 days kept its open sockets for as long
+// as the client stayed up, which for an agent is until someone restarts it. The same was true of a
+// revoke until 8 Oct (handleRevoke). One sweep over the physical connections -- websocket, the mux
+// socket (its channels close with it) and long-poll sessions are all in wss.clients -- closes what
+// has run out, with the code a revoke uses, so a client treats both as "this invite is over".
+// A sweep and not a timer per socket: a host token lives 30 days, past what setTimeout can hold.
+const EXPIRY_SWEEP_MS = Math.max(100, Number(process.env.HIVE_EXPIRY_SWEEP_MS) || 15000)
+function expireConnections(nowS = Math.floor(Date.now() / 1000)) {
+  let closed = 0
+  for (const c of wss.clients) {
+    const exp = (c._hiveGrant && c._hiveGrant.exp) || (c._hive && c._hive.exp) || null
+    if (!exp || nowS < exp) continue
+    const base = c._hiveGrant ? c._hiveGrant.base : baseRoomOf(c._hive.room)
+    try { c.close(4401, 'token expired') } catch { /* already closing */ }
+    closed++
+    audit('expire', { room: base, identity: c._hive ? c._hive.identity : undefined })
+  }
+  return closed
+}
+const expiryTimer = setInterval(() => { try { expireConnections() } catch (e) { console.error('[relay] expiry sweep failed:', e && e.message) } }, EXPIRY_SWEEP_MS)
+if (expiryTimer.unref) expiryTimer.unref()
 
 wss.on('connection', (conn, req) => {
   const room = (conn._hive && conn._hive.room) || (req.url || '/').slice(1).split('?')[0] || 'default'
@@ -1743,6 +1858,7 @@ wss.on('connection', (conn, req) => {
   // would skip every gate. Nothing does that today; this makes sure nothing can.
   conn.addListener = conn.on
   setupWSConnection(conn, req, { docName: room })
+  if (pathOf(room) === null && roomFingerprint(room)) publishRevocations(room)   // members learn the lists on joining
   postNotice(room)                       // service notice, if one is set
   if (PROVENANCE !== 'off') installProvenanceGuard(room) // substrate: verify/enforce the file's provenance ledger (opt-in)
   if (ENFORCE_CLAIMS !== 'off') installManifestDeleteGuard(baseRoomOf(room))
