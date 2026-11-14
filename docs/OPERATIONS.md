@@ -133,6 +133,37 @@ hits `Q430` first, and why reaching for `HIVE_SEATS` is the wrong instinct. Meas
 If files stop syncing, the client fetches `/health` itself and tells you which of these it
 is, or says plainly that capacity is not the cause. It will not guess.
 
+### What a real repository costs (measured 13 Nov 2026)
+
+The per-file figures above were measured with small files. With a real repository they are higher,
+so size the instance from these. `node bench/relay-capacity.mjs` shares this repository's own tracked
+files (727 files, 11 MB of text) through a relay with real clients and reads the relay's memory and
+CPU after each step:
+
+| | Measured |
+|---|---|
+| Relay with nobody on it | 80 MB fresh, about 140 MB once it has been used |
+| Each room open at the same time (727 files) | about **+50 MB** (164, 196, 235 MB for one, two, three rooms) |
+| Each further client in a room | under 10 MB; it costs **706 channels**, one per file |
+| A room everyone has left | given back: 242 MB with three rooms open, 138 MB after they left, flat over four more rooms |
+| CPU for the first client to open a room | 1.0 to 1.4 s; 0.2 to 0.6 s for each further client |
+
+What follows from it:
+
+- **The channel cap is reached before memory.** 8,192 channels is 11 clients of a 700-file
+  repository across the whole relay, whoever they belong to; the twelfth is refused with `Q438`.
+- **A 512 MB instance holds about five such rooms open at once** ((400 - 140) / 50), so on it the
+  cap should stay near its default: raising it only lets more rooms in than the memory holds.
+- **A 2 GB instance holds about 28**, and `HIVE_MAX_CHANNELS_TOTAL=20000` matches that: 28 clients
+  of a 700-file repository, and if every one of them were alone in a room, 28 rooms at 50 MB.
+- **A join is CPU.** On a 0.1 CPU instance one client opening a 700-file room occupies the relay
+  for 10 to 14 seconds, and after a restart every client reconnects at once: fifteen clients is
+  minutes during which the relay answers nothing else, `/health` included.
+- **A relay without a persistent disk forgets on every deploy.** Rooms come back from the clients
+  that are still connected. Slack connections do not: the stored token is gone, the channel goes
+  quiet in both directions, and neither the room nor Slack is told. Mount a disk and point
+  `HIVE_PERSIST_DIR` at it before connecting a channel anyone relies on.
+
 ### Who is on the relay right now
 
 `/health` counts sockets, and a socket is not a person: one client holds a socket per file (or one
