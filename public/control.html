@@ -510,12 +510,28 @@ async function connect(raw){
   // code, but repeated failures with no sync is a shape worth naming: capacity is the only
   // thing that refuses an upgrade this consistently, and it is the one the operator can fix.
   const tries=()=>(provider&&provider.wsUnsuccessfulReconnects)||0
+  provider.on('connection-close',(ev)=>{
+    if(ev&&(ev.code===4401||ev.code===4403)){
+      provider._authRefused=ev.reason||'invite expired or revoked'
+      provider.shouldConnect=false
+      setTimeout(()=>{try{provider.disconnect()}catch{}},0)
+      $('dot').classList.remove('on')
+      $('connState').textContent='refused — invite expired or revoked'
+    }
+  })
   provider.on('status',(e)=>{
     if(e.status==='connected'){ok();return}
     $('dot').classList.remove('on')
-    $('connState').textContent=tries()>=3?'refused — room may be full':e.status
+    if(provider._authRefused||(isSecured(p.room)&&claim.exp&&claim.exp*1000<Date.now())){
+      provider._authRefused=provider._authRefused||'invite expired'
+      provider.shouldConnect=false
+      setTimeout(()=>{try{provider.disconnect()}catch{}},0)
+      $('connState').textContent='refused — invite expired or revoked'
+      return
+    }
+    $('connState').textContent=tries()>=3?(isSecured(p.room)?'refused — invite expired or revoked':'refused — room may be full'):e.status
     $('connState').title=tries()>=3
-      ?'The relay keeps refusing this connection. The likeliest cause is the room being at its connection ceiling (8 on the free tier — it counts connections, not people). Whoever runs the relay raises it with HIVE_SEATS.':''
+      ?(isSecured(p.room)?'Your invite link expired or was revoked. Ask the host for a new invite.':'The relay keeps refusing this connection. The likeliest cause is the room being at its connection ceiling (8 on the free tier — it counts connections, not people). Whoever runs the relay raises it with HIVE_SEATS.'):''
   })
   provider.on('sync',(s)=>{if(s)ok()})
   provider.awareness.on('change',render);doc.on('update',render)
@@ -730,7 +746,7 @@ function sendChat(){
 // What replaces it: reconnect only when the socket is genuinely dead, never while it is healthy.
 function reviveIfDead(){
   const p=window._h&&window._h.provider
-  if(!p||!p.shouldConnect)return                    // 'leave' was pressed -- stay gone
+  if(!p||!p.shouldConnect||p._authRefused)return                    // 'leave' or auth refusal -- stay gone
   if(p.wsconnected&&p.synced){window._dead=0;return}
   // y-websocket retries on its own and normally lands well inside a second. Give it a clear run
   // before intervening, so a blip is never answered with a second socket.

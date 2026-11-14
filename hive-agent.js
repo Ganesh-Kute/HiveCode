@@ -20,6 +20,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 import { PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
+import { resolveRoomToken, saveRoomToken } from './hive-room-key.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 const [, , ARG_LINK = '', DIR = './workspace', NAME = `agent-${crypto.randomBytes(2).toString('hex')}`] = process.argv
@@ -44,8 +45,12 @@ function resolveRoom() {
 }
 
 const { relay, room, mode } = resolveRoom()
-// persist so other agents (and humans) can rendezvous without a link
-fs.writeFileSync(configPath, JSON.stringify({ relay, room }, null, 2))
+// persist so other agents (and humans) can rendezvous without a link (never writing token here)
+let keep = {}
+try { const old = JSON.parse(fs.readFileSync(configPath, 'utf8')); if (old && old.pinnedRelay) keep = { pinnedRelay: old.pinnedRelay } } catch {}
+const useToken = resolveRoomToken({ room, name: NAME, dir: ROOT, link: ARG_LINK, migrate: true })
+if (useToken) saveRoomToken({ room, name: NAME, token: useToken })
+fs.writeFileSync(configPath, JSON.stringify({ ...keep, relay, room }, null, 2))
 
 console.log(`\n[hive-agent] "${NAME}" ${mode}`)
 console.log(`[hive-agent] room: ${room}`)
@@ -55,7 +60,7 @@ console.log('             see who is here, HIVE_CHAT.md to coordinate (announce 
 console.log('             HIVE_BOARD.md before editing a recently-rewritten file; prefer small')
 console.log('             patches; resolve <<<<<<< markers. To talk: node hive-say.js <name> "..."\n')
 
-const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '' })
+const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai', token: useToken })
 
 let announced = false
 hive.provider.on('sync', (s) => {

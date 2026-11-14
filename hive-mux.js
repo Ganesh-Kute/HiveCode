@@ -39,10 +39,35 @@ class FileProvider extends ObservableV2 {
   /** Bytes handed to this file's socket that the relay has not accepted yet (0.14.3 P0-1). */
   get bufferedAmount() { return (this._impl && this._impl.bufferedAmount) || 0 }
   get transport() { return this._impl ? this._impl.transport : 'pending' }
-  _bindLegacy(relay, wsOpts) {
+  _bindLegacy(relay, wsOpts, onAuthFailure) {
     const p = new WebsocketProvider(relay, this.docName, this.doc, wsOpts)
     for (const ev of ['sync', 'status', 'connection-error', 'connection-close']) p.on(ev, (...args) => this.emit(ev, args))
-    this._impl = { transport: 'socket', get synced() { return p.synced }, get wsconnected() { return p.wsconnected }, get bufferedAmount() { return (p.ws && p.ws.bufferedAmount) || 0 }, destroy: () => p.destroy() }
+    p.on('connection-close', (ev) => {
+      if (ev && (ev.code === 4401 || ev.code === 4403)) {
+        const refreshed = onAuthFailure ? onAuthFailure(ev.code, ev.reason || 'token revoked or expired') : false
+        if (!refreshed) {
+          p.shouldConnect = false
+          queueMicrotask(() => { try { p.disconnect() } catch { } })
+        } else {
+          queueMicrotask(() => { if (!this.destroyed && !p.shouldConnect) { try { p.connect() } catch { } } })
+        }
+      }
+    })
+    this._impl = {
+      transport: 'socket',
+      get synced() { return p.synced },
+      get wsconnected() { return p.wsconnected },
+      get bufferedAmount() { return (p.ws && p.ws.bufferedAmount) || 0 },
+      setToken: (tok) => {
+        if (!p.params) p.params = {}
+        if (tok) p.params.token = tok
+        else delete p.params.token
+        if (!this.destroyed && !p.shouldConnect) {
+          try { p.connect() } catch { }
+        }
+      },
+      destroy: () => p.destroy(),
+    }
   }
   destroy() {
     if (this.destroyed) return
@@ -110,6 +135,10 @@ class Channel {
     } else if (f.kind === F.REFUSED) {
       this.opened = false
       this.facade.emit('connection-error', [{ code: f.code, status: f.code, reason: f.reason, message: `Unexpected server response: ${f.code} ${f.reason}` }])
+      if (f.code === 401 || f.code === 403) {
+        const refreshed = this.mux.onAuthFailure ? this.mux.onAuthFailure(f.code, f.reason || 'refused') : false
+        if (!refreshed) return
+      }
       this.retryLater()
     } else if (f.kind === F.CLOSED) {
       this.lost({ code: 4000, reason: f.reason })
@@ -158,12 +187,16 @@ class Channel {
 
 /** The participant's one physical socket, carrying a channel per open file doc. */
 class MuxConnection {
-  constructor({ relay, room, params, WebSocketPolyfill, log, onRefused }) {
-    const q = new URLSearchParams({ ...(params || {}), mux: String(MUX_VERSION) })
-    this.url = `${String(relay).replace(/\/+$/, '')}/${muxPath(room)}?${q}`
+  constructor({ relay, room, params, WebSocketPolyfill, log, onRefused, onAuthFailure }) {
+    this.relay = relay
+    this.room = room
+    this.params = { ...(params || {}) }
+    this.url = this._buildUrl()
     this.WS = WebSocketPolyfill
     this.log = log || (() => { })
     this.onRefused = onRefused || (() => { })
+    this.onAuthFailure = onAuthFailure || null
+    this.authStopped = false
     this.channels = new Map()
     this.nextId = 1
     this.ws = null
@@ -192,8 +225,19 @@ class MuxConnection {
     if (!this.connected || !this.ws) return
     try { this.ws.send(bytes) } catch { /* the close handler takes it from here */ }
   }
+  _buildUrl() {
+    const q = new URLSearchParams({ ...(this.params || {}), mux: String(MUX_VERSION) })
+    return `${String(this.relay).replace(/\/+$/, '')}/${muxPath(this.room)}?${q}`
+  }
+  setToken(tok) {
+    if (tok) this.params.token = tok
+    else delete this.params.token
+    this.url = this._buildUrl()
+    this.authStopped = false
+  }
   connect() {
-    if (this.destroyed || this.connected || this.connecting) return
+    if (this.destroyed || this.authStopped || this.connected || this.connecting) return
+    this.url = this._buildUrl()
     this.connecting = true
     let ws
     try { ws = new this.WS(this.url) } catch (e) { this.connecting = false; this.scheduleReconnect(); return }
@@ -221,9 +265,17 @@ class MuxConnection {
       // A refused UPGRADE of the mux socket itself (401/402/403/429/503) refuses every file on it.
       // Hand each unsynced channel the same event a refused per-file socket produced.
       const m = /Unexpected server response:\s*(\d{3})/.exec((ev && (ev.message || (ev.error && ev.error.message))) || '')
-      const code = m ? Number(m[1]) : null
+      const code = (m ? Number(m[1]) : null) || (ev && ev.status) || null
       for (const ch of this.channels.values()) {
         if (!ch.synced) ch.facade.emit('connection-error', [{ code, status: code, message: (ev && ev.message) || 'mux socket error' }])
+      }
+      if (code === 401 || code === 403) {
+        const refreshed = this.onAuthFailure ? this.onAuthFailure(code, `HTTP ${code}`) : false
+        if (!refreshed) {
+          this.authStopped = true
+          this.destroyed = true
+          return
+        }
       }
       if (code) this.onRefused(code)
     }
@@ -233,7 +285,15 @@ class MuxConnection {
       this.connected = false
       this.connecting = false
       for (const ch of this.channels.values()) ch.lost(ev)
-      this.scheduleReconnect()
+      if (ev && (ev.code === 4401 || ev.code === 4403)) {
+        const refreshed = this.onAuthFailure ? this.onAuthFailure(ev.code, ev.reason || 'token revoked or expired') : false
+        if (!refreshed) {
+          this.authStopped = true
+          this.destroyed = true
+          return
+        }
+      }
+      if (!this.destroyed && !this.authStopped) this.scheduleReconnect()
     }
   }
   scheduleReconnect() {
@@ -261,12 +321,13 @@ class MuxConnection {
  * decided once -- HIVE_MUX=1 forces mux, HIVE_MUX=0 forces a socket per file, anything else asks
  * the relay's /health -- and file providers created before the answer are bound when it comes.
  */
-export function createFileTransport({ relay, room, wsOpts = {}, log = () => { }, env = process.env, fetchImpl = relayFetch, onFallback = () => { }, retryMs = 1000, detectForMs = 90000 }) {
+export function createFileTransport({ relay, room, wsOpts = {}, log = () => { }, env = process.env, fetchImpl = relayFetch, onFallback = () => { }, onAuthFailure = null, retryMs = 1000, detectForMs = 90000 }) {
   const forced = env.HIVE_MUX === '0' || env.HIVE_MUX === '1'
   let mode = env.HIVE_MUX === '0' ? 'socket' : env.HIVE_MUX === '1' ? 'mux' : null
   let mux = null
   let stopped = false
   const pending = new Set()
+  const allProviders = new Set()
   const health = () => Promise.resolve()
     .then(() => fetchImpl(`${httpBase(relay)}/health`, { signal: AbortSignal.timeout(20000) }))
     .then((r) => (r && r.ok ? r.json() : null))
@@ -297,15 +358,15 @@ export function createFileTransport({ relay, room, wsOpts = {}, log = () => { },
     const moving = mux ? [...mux.channels.values()].map((ch) => ch.facade) : []
     try { if (mux) mux.destroy() } catch { }
     mux = null
-    for (const fp of moving) { if (!fp.destroyed) fp._bindLegacy(relay, wsOpts) }
+    for (const fp of moving) { if (!fp.destroyed) fp._bindLegacy(relay, wsOpts, onAuthFailure) }
   }
   const bind = (fp) => {
     if (fp.destroyed) return
     if (mode === 'mux') {
-      if (!mux) mux = new MuxConnection({ relay, room, params: wsOpts.params, WebSocketPolyfill: wsOpts.WebSocketPolyfill, log, onRefused })
+      if (!mux) mux = new MuxConnection({ relay, room, params: wsOpts.params, WebSocketPolyfill: wsOpts.WebSocketPolyfill, log, onRefused, onAuthFailure })
       fp._impl = mux.channel(fp.docName, fp.doc, fp)
     } else {
-      fp._bindLegacy(relay, wsOpts)
+      fp._bindLegacy(relay, wsOpts, onAuthFailure)
     }
   }
   let resolveReady
@@ -344,11 +405,27 @@ export function createFileTransport({ relay, room, wsOpts = {}, log = () => { },
     get mode() { return mode || 'detecting' },
     provide(docName, doc) {
       const fp = new FileProvider(docName, doc)
+      allProviders.add(fp)
       if (mode) bind(fp)
       else pending.add(fp)
       return fp
     },
+    setToken(tok) {
+      if (!wsOpts.params) wsOpts.params = {}
+      if (tok) wsOpts.params.token = tok
+      else delete wsOpts.params.token
+      if (mux) mux.setToken(tok)
+      for (const fp of allProviders) {
+        if (fp.destroyed) { allProviders.delete(fp); continue }
+        if (fp._impl && typeof fp._impl.setToken === 'function') fp._impl.setToken(tok)
+      }
+    },
     stats() { return { mode: mode || 'detecting', channels: mux ? mux.channels.size : 0, muxConnected: !!(mux && mux.connected) } },
-    stop() { stopped = true; try { if (mux) mux.destroy() } catch { } },
+    stop() {
+      stopped = true
+      try { if (mux) mux.destroy() } catch { }
+      for (const fp of allProviders) { try { if (!fp.destroyed) fp.destroy() } catch { } }
+      allProviders.clear()
+    },
   }
 }

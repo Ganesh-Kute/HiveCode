@@ -1,10 +1,11 @@
 // One-shot: connect, print the last N chat messages, exit.
 //   node hive-readchat.js "<link>" [n]
 import { startSync, parseLink } from './sync.js'
+import { resolveRoomToken } from './hive-room-key.js'
 const [, , LINK = '', N = '40'] = process.argv
 const { relay, room } = parseLink(LINK)
 const dir = (process.env.TEMP || '.') + '/hive-read-tmp'
-const hive = startSync({ relay, room, dir, name: 'Ganesh-AI', kind: 'ai', token: process.env.HIVE_TOKEN || '', syncFiles: false, log: () => {} })
+const hive = startSync({ relay, room, dir, name: 'Ganesh-AI', kind: 'ai', token: resolveRoomToken({ room, name: 'Ganesh-AI', link: LINK }) || resolveRoomToken({ room, link: LINK }), syncFiles: false, log: () => {} })
 let done = false
 const dump = () => {
   if (done) return; done = true

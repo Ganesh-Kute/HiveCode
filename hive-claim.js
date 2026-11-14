@@ -14,6 +14,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { startSync } from './sync.js'
+import { resolveRoomToken } from './hive-room-key.js'
 
 let args = process.argv.slice(2)
 let action, region = '', NAME = 'PM', DIR = ''
@@ -46,7 +47,7 @@ if (!cfg) { console.error('no .hive.json in ' + (DIR || './ or ./workspace')); p
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-claim-'))
 const hive = startSync({
   relay: cfg.relay, room: cfg.room, dir: tmp, name: NAME, kind: 'ai',
-  token: process.env.HIVE_TOKEN || cfg.token || '', syncFiles: false, log: () => {},
+  token: resolveRoomToken({ room: cfg.room, name: NAME, dir: DIR }), syncFiles: false, log: () => {},
 })
 
 hive.provider.on('sync', async (s) => {

@@ -923,12 +923,15 @@ async function settlePresence(hive, timeoutMs = 1500) {
   }
 }
 
+const canChildListen = (roomId, target, dir, isAuthed) => !isAuthed || !!resolveRoomToken({ room: roomId, name: target, dir })
+
 function listenerStatusFor({ session: s, name, room, useToken, passive } = {}) {
   const targetName = name || (s && s.name)
   const targetRoom = room || (s && s.room)
+  const targetDir = (s && s.dir) || ''
   const isPassive = passive !== undefined ? !!passive : !!(s && s.passive)
   const isAuthed = useToken !== undefined ? !!useToken : !!(s && s.authed)
-  const how = !isAuthed && !isPassive ? listenHow(clientName()) : ''
+  const how = !isPassive && canChildListen(targetRoom, targetName, targetDir, isAuthed) ? listenHow(clientName()) : ''
   if (!how) return { enabled: false, status: 'not used on this client', card: 'idle with hive_wait' }
   const armed = isArmed({ name: targetName, room: targetRoom })
   return {
@@ -2338,14 +2341,14 @@ function waitDefaultSeconds() { return waitPolicy().def }
 // listener where the server knows one works, hive_wait everywhere else (other apps, token-checked
 // rooms, passive participants).
 function reachLine(s) {
-  const how = s && !s.authed && !s.passive ? listenHow(clientName()) : ''
+  const how = s && !s.passive && canChildListen(s.room, s.name, s.dir, !!s.authed) ? listenHow(clientName()) : ''
   if (!how) return REACH_BY_WAIT
   const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name, app: clientName() })
   return `1. Stay reachable: before your turn ends, start your listener. ${how} It ends, and that wakes you, when you are addressed or after ${LISTEN_IDLE_MIN} quiet minutes; then start it again:\n   ${cmd}`
 }
 function listenLine(s) {
   // A passive participant never answers and nobody waits on it, so there is nothing to wake it for.
-  const how = s && !s.authed && !s.passive ? listenHow(clientName()) : ''
+  const how = s && !s.passive && canChildListen(s.room, s.name, s.dir, !!s.authed) ? listenHow(clientName()) : ''
   if (!how) return ''
   const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name, app: clientName() })
   return `\n${listenOrder(how, cmd)}\n`

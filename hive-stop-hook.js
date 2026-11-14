@@ -59,6 +59,7 @@ import crypto from 'crypto'
 import { mentionsName, unansweredFor } from './hive-mailbox.js'
 import { isArmed, listenCommand, listenHow, listenOrder } from './hive-listen.js'
 import { readAgents, agentForHook } from './hive-session.js'
+import { resolveRoomToken } from './hive-room-key.js'
 
 // Consecutive turns we will block purely because a task is still open, before standing down.
 // Messages are not subject to this: the watermark already makes each one block at most once.
@@ -269,12 +270,13 @@ async function main() {
     const st = prev[key] || { seen: 0, taskBlocks: 0, nudged: [] }
 
     // Is a listener running for this agent? Asked only where the agent could start one: an app that
-    // is woken when a background task ends, the room's link on disk, and a room that does not check
-    // tokens (the agent's shell does not hold the MCP server's token, so a listener could not join).
+    // is woken when a background task ends, the room's link on disk, and either an open room or a
+    // private room whose child shell can resolve its invite/host token via resolveRoomToken.
     const cfg = readJson(path.join(dir, '.hive.json')) || {}
     const how = listenHow(APP)
     let listening = null, listenLine = ''
-    if (how && cfg.relay && cfg.room && !session.authed && !cfg.token) {
+    const canListen = (!session.authed && !cfg.token) || !!resolveRoomToken({ room: cfg.room, name: session.name, dir })
+    if (how && cfg.relay && cfg.room && canListen) {
       listening = isArmed({ name: session.name, room: cfg.room, session: String(hook.session_id || hook.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || '') })
       listenLine = listenOrder(how, listenCommand({ relay: cfg.relay, room: cfg.room, name: session.name, app: APP }))
     }
