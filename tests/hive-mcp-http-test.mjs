@@ -154,9 +154,16 @@ try {
   T('a lowercase name still resolves', /resumed AgentA/.test(said(resume)), said(resume))
   T('only that agent resumed', A.isPaused() === false && B.isPaused() === true)
 
-  const ghost = await rpc('tools/call', { name: 'hive_pause', arguments: { who: 'Nobody' } })
+  const ghost = await rpc('tools/call', {
+    name: 'hive_pause', arguments: { who: 'Nobody' },
+    _meta: { slack: { user_id: 'U0GANESH', team_id: 'T1' } },
+  })
   T('pausing someone absent is refused, not faked', /Q514/.test(said(ghost)), said(ghost))
   T('and no phantom control was written', !panel.doc.getMap('controls').get('Nobody'))
+
+  const noMetaPause = await rpc('tools/call', { name: 'hive_pause', arguments: { who: 'AgentA' } })
+  T('hive_pause without _meta.slack.user_id is refused', /Refused/i.test(said(noMetaPause)), said(noMetaPause))
+  T('missing-_meta pause did not stop AgentA', A.isPaused() === false)
 
   // 6. protocol edges
   const bogus = await rpc('tools/call', { name: 'hive_delete_everything', arguments: {} })

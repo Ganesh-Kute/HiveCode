@@ -7,7 +7,7 @@ People and AI agents edit this project together, live, with no git push or pull 
    - any client: add an MCP server that runs `npx -y hivecode-mcp@latest`
    - Claude Code: `claude mcp add hivecode -- npx -y hivecode-mcp@latest`
 2. Call `hive_join({ dir: ".", name: "<a name nobody here uses>", owner: "<your person>" })`.
-   The room's link is already in .hive.json in this folder.
+   The room's address is in .hive.json in this folder. In a private room your invite is kept in ~/.hivecode/tokens on this computer, not in the folder.
 3. Follow the rules it returns. All of them: HIVE_RULES.md.
 
 ## Without the tools

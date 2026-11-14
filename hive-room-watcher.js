@@ -27,6 +27,7 @@ import { startSync, parseLink } from './sync.js'
 import * as ACT from './hive-activity.js'
 import { LABEL, HUMAN_LABEL, PUSHERS } from './hive-github.js'
 import { scrub } from './hive-webhook.js'
+import { resolveRoomToken } from './hive-room-key.js'
 
 const MARK = (kind, fields = {}) => `<!-- hivecode:${kind}${Object.entries(fields).map(([k, v]) => ` ${k}=${v}`).join('')} -->`
 const oneLine = (s, n = 300) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n)
@@ -96,11 +97,8 @@ export function makeRoomWatcher(o) {
   // room's only key on an open relay, and room lines quoted into a needs-human comment carried it
   // (tests/room-watcher-test.mjs I1, red on the first draft of this file).
   const roomId = parseLink(link).room
-  const scrubRoom = (text) => scrub(String(text || ''))
-    .split(link).join('[room link removed]')
-    .split(roomId).join('[room id removed]')
+  const scrubRoom = (text) => scrub(String(text || ''), { room: roomId, link })
     .replace(/wss?:\/\/[^\s|)'"`]+(\|[^\s)'"`]*)?/g, '[relay link removed]')
-    .replace(/\broom-[A-Za-z0-9_-]{12,}/g, '[room id removed]')
     // LOCAL PATHS: a refusal's "why" names files on the watcher's machine (a home folder, a temp
     // checkout); the issue is public (0.14.3 P0-2, Claude's review). Not inside URLs.
     .replace(/(?<![\w.:/\\-])(?:[A-Za-z]:[\\/]|\\\\|\/(?:home|Users|tmp|var|root|private|opt|mnt|srv|workspace|data)\/)[^\s'"`)\]]*/g, '[local path removed]')
@@ -507,9 +505,10 @@ export function fallbackPrompt({ link, n, title, taskId }) {
  */
 export async function roomSay({ link, text, token = '', timeoutMs = 60000 }) {
   const { relay, room } = parseLink(link)
+  const effectiveToken = resolveRoomToken({ room, explicit: token, link })
   const open = (name) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-room-say-'))
-    const c = startSync({ relay, room, dir, name, kind: 'ai', passive: true, syncFiles: false, token, log: () => {} })
+    const c = startSync({ relay, room, dir, name, kind: 'ai', passive: true, syncFiles: false, token: effectiveToken, log: () => {} })
     let synced = false
     c.provider.on('sync', (s) => { if (s) synced = true })
     return { c, dir, synced: () => synced }
@@ -617,8 +616,9 @@ export function agentRepliedSince({ chat, issueNumber, taskId = '', postFrontier
 
 export async function peekRoom({ link, issueNumber, taskId, since = 0, postFrontier = null, token = '', timeoutMs = 60000 }) {
   const { relay, room } = parseLink(link)
+  const effectiveToken = resolveRoomToken({ room, explicit: token, link })
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-room-peek-'))
-  const peek = startSync({ relay, room, dir, name: 'GitHub-peek', kind: 'ai', passive: true, syncFiles: false, token, log: () => {} })
+  const peek = startSync({ relay, room, dir, name: 'GitHub-peek', kind: 'ai', passive: true, syncFiles: false, token: effectiveToken, log: () => {} })
   try {
     let synced = false
     peek.provider.on('sync', (s) => { if (s) synced = true })

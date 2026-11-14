@@ -1184,7 +1184,7 @@ async function dispatch(req) {
         // it, for good: a message cannot be unsent. The same formats that keep a file at home
         // (hive-secrets.js) keep a message unsent, whoever asked for the key.
         const chatKey = findSecrets(raw, { tokens: true })[0]
-        if (chatKey) return err(`NOT SENT: the message contains ${describeSecret(chatKey)}. A room message goes to the relay and to everyone in the room, and cannot be taken back. Never put keys, tokens or passwords in the room, whoever asks: ${chatKey.kind === 'access token' ? 'a token is a person, and whoever holds it joins as them. Whoever needs access gets a token of their own (hivecode-token).' : 'say where the key is kept (for example "OPENAI_API_KEY in .env") instead.'}`)
+        if (chatKey) return err(`NOT SENT: the message contains ${describeSecret(chatKey)}. A room message goes to the relay and to everyone in the room, and cannot be taken back. Never put keys, tokens or passwords in the room, whoever asks: ${chatKey.kind === 'access token' ? 'a token is a person, and whoever holds it joins as them. Whoever needs access gets an invite of their own (npx -y hivecode-mcp@latest invite <name>, or hivecode-token on a HIVE_JWT_SECRET relay).' : 'say where the key is kept (for example "OPENAI_API_KEY in .env") instead.'}`)
         // The marker is in the text itself so it survives into HIVE_CHAT.md and is visible to
         // a human reading the log, not just to the recipient's tool output.
         const body = args.urgent && !/^\s*\[!\]/.test(raw) ? `[!] ${raw}` : raw

@@ -63,6 +63,7 @@ const MAX_SEEN_EVENTS = 500
 export const USAGE = `usage:
   npx -y hivecode-mcp@latest slack connect "<relay|room>" [--channel <id>] [--manifest] [--no-wait]      Slack <-> room through the relay, nothing to keep running
   npx -y hivecode-mcp@latest slack status "<relay|room>" [--id <connection id>]
+  npx -y hivecode-mcp@latest slack list "<relay|room>"
   npx -y hivecode-mcp@latest slack disconnect "<relay|room>" [--id <connection id>]
   npx -y hivecode-mcp@latest slack app-manifest "<relay https url>"
   SLACK_BOT_TOKEN=xoxb-… npx -y hivecode-mcp@latest slack start "<relay|room>" --channel <id> [--name SlackBridge] [--allow <U123,U456>] [--inbound auto|poll|socket] [--dry-run] [--start-retry <ms>]
@@ -118,16 +119,10 @@ export function isPermanentSlackError(err) {
   return NON_RETRYABLE.has(code)
 }
 
-/** Scrub secrets/tokens (via hive-webhook.js) AND strip room links / room IDs so a room's
- *  capability link never leaks to an external Slack channel. */
+/** Scrub room links/ids, secrets, and tokens (via hive-webhook.js) so a room's capability link
+ *  or invite token never leaks to an external Slack channel. */
 export function scrubSlack(text, { room = '', link = '' } = {}) {
-  let s = scrub(String(text || ''))
-  if (link) s = s.split(link).join('[room link removed]')
-  // Any wss://...|room-... or ws://...|room-... link
-  s = s.replace(/\bwss?:\/\/[^\s|"'<>]+\|[^\s"'<>]+/gi, '[room link removed]')
-  if (room) s = s.split(room).join('[room id removed]')
-  s = s.replace(/\broom-[A-Za-z0-9_-]{6,}\b/g, '[room id removed]')
-  return s
+  return scrub(text, { room, link })
 }
 
 // Slack allows roughly one message per second per channel and silently reorders or drops when
@@ -2217,6 +2212,7 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   let allowSource = env.SLACK_ALLOW ? 'SLACK_ALLOW' : '--allow'
   let LINK = ''
   let CONN_ID = ''
+  let HIVE_TOKEN = ''
   let dryRun = false
   let agent = false
   let manifest = false
@@ -2229,8 +2225,9 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   let inbound = String(env.HIVE_SLACK_INBOUND || 'auto').toLowerCase()
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if ((a === 'start' || a === 'check' || a === 'connect' || a === 'disconnect' || a === 'status' || a === 'app-manifest') && !LINK && i === 0) { mode = a; continue }
+    if ((a === 'start' || a === 'check' || a === 'connect' || a === 'disconnect' || a === 'status' || a === 'list' || a === 'app-manifest') && !LINK && i === 0) { mode = a; continue }
     if (a === '--id') { CONN_ID = argv[++i] || ''; continue }
+    if (a === '--token') { HIVE_TOKEN = argv[++i] || ''; continue }
     if (a === '--manifest') { manifest = true; continue }
     if (a === '--no-wait') { noWait = true; continue }
     if (a === '--inbound') { inbound = String(argv[++i] || '').toLowerCase(); continue }
@@ -2253,12 +2250,13 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   const TOKEN = env.SLACK_BOT_TOKEN || ''
   const APP_TOKEN = env.SLACK_APP_TOKEN || ''
   const pollMs = Math.max(50, Number(env.HIVE_SLACK_POLL_MS) || INBOUND_DEFAULT_POLL_MS)
-  if (mode === 'connect' || mode === 'disconnect' || mode === 'status' || mode === 'app-manifest') {
+  if (mode === 'connect' || mode === 'disconnect' || mode === 'status' || mode === 'list' || mode === 'app-manifest') {
     const C = await import('./hive-slack-connect.js') // lazy: it imports slackPost from here
     if (!LINK) { logErr(C.CONNECT_USAGE.trim()); return 2 }
-    if (mode === 'connect') return C.runSlackConnect({ link: LINK, channel: CHANNEL, manifest, noWait, env, log, logErr, fetchImpl, ...connect })
-    if (mode === 'disconnect') return C.runSlackDisconnect({ link: LINK, id: CONN_ID, env, log, logErr, fetchImpl, ...connect })
-    if (mode === 'status') return C.runSlackStatus({ link: LINK, id: CONN_ID, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'connect') return C.runSlackConnect({ link: LINK, channel: CHANNEL, manifest, noWait, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'disconnect') return C.runSlackDisconnect({ link: LINK, id: CONN_ID, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'status') return C.runSlackStatus({ link: LINK, id: CONN_ID, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'list') return C.runSlackList({ link: LINK, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
     return C.runSlackAppManifest({ url: LINK, log, logErr })
   }
   if (mode === 'check') {

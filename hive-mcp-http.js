@@ -26,6 +26,8 @@ import crypto from 'crypto'
 import { startSync, parseLink } from './sync.js'
 import { attachRateLimit } from './limits.js'
 import { makeSlackActorCheck, formatSlackSender, slackPost } from './hive-slack.js'
+import { isSecuredRoom } from './token.js'
+import { resolveRoomToken } from './hive-room-key.js'
 import { realpathSync as __hiveRealpath } from 'fs'
 import { resolve as __hiveResolve } from 'path'
 import { fileURLToPath as __hiveFileURLToPath } from 'url'
@@ -140,7 +142,7 @@ export function makeTools(hive, room = '', { actorCheck = null, allow = [] } = {
         let by = actor
         let unverifiedNote = ''
         const uid = userIdOf(actor)
-        if (actorCheck && uid) {
+        if (actorCheck) {
           const resolved = await actorCheck.resolve(uid)
           const check = actorCheck.mayAct(resolved, 'stop', allow)
           if (!check.ok) return text(check.reply || 'Q521 refused by Slack actor check')
@@ -487,7 +489,7 @@ export function resolveConfig(argv = process.argv.slice(2), env = process.env) {
   const name = flag('name', 'Hivecode')
   const trustProxy = /^(1|true|yes)$/i.test(env.HIVE_TRUST_PROXY || '') || argv.includes('--trust-proxy')
   const parsed = link ? parseLink(link) : { relay: '', room: '', token: null }
-  const hiveToken = parsed.token || env.HIVE_TOKEN || ''
+  const hiveToken = parsed.room ? resolveRoomToken({ room: parsed.room, explicit: (!parsed.token && env && env.HIVE_TOKEN) || '', link: link || '' }) : ''
   return { link, relay: parsed.relay, room: parsed.room, port, auth, secret, allow, token, teamId, name, trustProxy, hiveToken }
 }
 
@@ -529,10 +531,12 @@ export async function main(argv = process.argv.slice(2), {
     }
     resolvedTeamId = pf.teamId
   }
+  const safeRoomDir = isSecuredRoom(cfg.room) ? crypto.createHash('sha256').update(cfg.room).digest('hex').slice(0, 12) : cfg.room
+  const displayRoom = isSecuredRoom(cfg.room) ? `${cfg.room.slice(0, 8)}…` : cfg.room
   const hive = startSync({
     relay: cfg.relay,
     room: cfg.room,
-    dir: (env.TEMP || '.') + '/hive-mcp-http-' + cfg.room,
+    dir: (env.TEMP || '.') + '/hive-mcp-http-' + safeRoomDir,
     name: cfg.name,
     kind: 'human',
     token: cfg.hiveToken,
@@ -552,7 +556,7 @@ export async function main(argv = process.argv.slice(2), {
       teamId: resolvedTeamId,
       trustProxy: cfg.trustProxy,
     })
-    log(`[hive-mcp-http] room ${cfg.room} on :${cfg.port}/  auth=${cfg.auth}`)
+    log(`[hive-mcp-http] room ${displayRoom} on :${cfg.port}/  auth=${cfg.auth}`)
     if (cfg.auth === 'none') log('  auth=none: do NOT expose this beyond localhost.')
   } catch (e) {
     logErr((e && e.message) || String(e))
