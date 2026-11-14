@@ -122,6 +122,7 @@ the wrong one:
 | `Q431` | one room past its per-room cap | set `HIVE_SEATS` — raising the total will **not** help |
 | `Q438` | open files across all one-socket participants at `HIVE_MAX_CHANNELS_TOTAL` | raise it (and the instance's memory with it) |
 | `Q439` | one participant at `HIVE_MUX_MAX_DOCS` open files | raise it, or narrow what that participant syncs |
+| `Q677` | private-room revocation store hit `HIVE_REVOCATIONS_MAX_ROOMS` or `HIVE_REVOCATIONS_MAX_MB` | raise those limits (existing revocations are never evicted) |
 
 `roomConns` is keyed on the **file**-room (`baseRoom + FILE_SEP + relPath`), so a room's
 per-room count is *how many participants have that one file open*, not how many files the
@@ -160,9 +161,19 @@ What follows from it:
   for 10 to 14 seconds, and after a restart every client reconnects at once: fifteen clients is
   minutes during which the relay answers nothing else, `/health` included.
 - **A relay without a persistent disk forgets on every deploy.** Rooms come back from the clients
-  that are still connected. Slack connections do not: the stored token is gone, the channel goes
-  quiet in both directions, and neither the room nor Slack is told. Mount a disk and point
-  `HIVE_PERSIST_DIR` at it before connecting a channel anyone relies on.
+  that are still connected, and private-room revocation lists survive restarts when an honest
+  participant holding the signed list reconnects before the revoked person does (without
+  `HIVE_PERSIST_DIR` or a configured store, `/__hive/revocations` reports `durable: false`; if
+  nobody holding the list connects first, the relay cannot know). With `HIVE_PERSIST_DIR`
+  set, signed revocation lists are saved per room (`revocations/<room>.json`; a disk write error
+  is logged and the revoke stays held in memory — `Q676` applies only to a relay embedder that
+  wires an outside revocation `store` whose `ready` or `commit` hook rejects) up to
+  `HIVE_REVOCATIONS_MAX_ROOMS` (default `1000` rooms) and
+  `HIVE_REVOCATIONS_MAX_MB` (default `64` MB, with a 16 KB reserve per already-held room; further
+  rooms receive `Q677` without evicting existing revocations). Slack connections do not recover
+  from memory: the stored token is gone, the channel goes quiet in both directions, and neither the
+  room nor Slack is told. Mount a disk and point `HIVE_PERSIST_DIR` at it before connecting a
+  channel or relying on durable revocations across empty restarts.
 
 ### Who is on the relay right now
 

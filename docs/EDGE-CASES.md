@@ -35,7 +35,7 @@ plus the per-feature live tests (`hive-scope`, `hive-secure`, `hive-readonly`,
 | B5 | Unsigned `h.p.` (empty 3rd segment) / 2-part / empty token. | **FIXED** | explicit `unsigned token` reject + shape checks. unit tests |
 | B6 | Tampered payload or wrong secret. | **SAFE** | `timingSafeEqual` (HS256) / `crypto.verify` (RS256). existing tests |
 | B7 | A broad `"*"` scope listed **before** a tighter scope for the same room silently over-grants. | **FIXED** | `scopeForRoom` now picks the **most specific** match (exact > prefix > `*`). unit test |
-| B8 | `exp`/`nbf` boundary, revoked `jti`. | **SAFE** | expiry + `revokedSet` checked on every connect. `hive-auth-test` |
+| B8 | `exp`/`nbf` boundary, revoked `jti`. | **SAFE** | expiry + `revokedSet` checked on every connect; live sockets whose invite expires are swept and closed within 15 seconds. `hive-auth-test` |
 | B9 | Revocation list file read **mid-write** → JSON parse fails → revocations momentarily forgotten. | **FIXED** | relay keeps the **last good** revoked set on a transient read failure (fail-closed). |
 | B10 | `required` mode with **no keys** configured. | **SAFE** | fail-closed: rejects everything (503). `hive-auth-test` |
 | B11 | Client reads its **own** grant via `decodeUnsafe` (unverified) and trusts it for access. | **SAFE** | `decodeUnsafe` is UX-only; the **relay** is the sole enforcer (verifies signature). documented |
@@ -77,14 +77,14 @@ folder access with no registration and no shared secret**.
 | F3 | Token's embedded `pk` swapped but signature kept (key/sig mismatch). | **SAFE** | `verify(token,{publicKey:pk})` fails — sig won't validate under the swapped key. |
 | F4 | Owner shrinks/cuts access mid-session (**revoke**). | **SAFE** | `POST /__hive/revoke` (owner token required) → in-memory per-room jti block. `hive-secure-test` |
 | F5 | A **non-owner** tries to revoke someone (or revoke the owner). | **SAFE** | revoke requires an admin/maintainer token whose key matches the room. `hive-secure-test` |
-| F6 | Revocation is **in-memory** → lost if the relay restarts. | **LIMIT** | a revoked-but-unexpired token could reconnect after a relay restart; bounded by token TTL (default 7d). A durable revocation store is a future refinement. |
+| F6 | Revocation is **in-memory** → lost if the relay restarts. | **FIXED** when persistent disk/store enabled; **PARTIAL** on diskless relays | `POST /__hive/revocations` persists signed revocation lists per room (`<HIVE_PERSIST_DIR>/revocations/<room>.json`, where a disk write error is logged and revocations remain held in memory; `Q676` applies only when an embedder wires an outside revocation `store` that rejects `ready()`/`commit()`) with bounded memory/disk (`HIVE_REVOCATIONS_MAX_ROOMS=1000`, `HIVE_REVOCATIONS_MAX_MB=64`, 16 KB per-room reserve, `Q677` without evicting existing revocations). On a relay with no disk and no store (`durable: false`), a revoke is restored after a restart only if some honest participant holding the signed list reconnects before the revoked person does; if nobody holding it connects first, the relay cannot know (known gap). |
 | F7 | Private key lost (owner's machine) → room un-administrable. | **LIMIT** | by design (owner-held key, no escrow). Re-host to rotate; old room simply expires. |
 
 ## E. Known limits (accepted, documented)
 
 | # | Limit | Why it's acceptable |
 |---|-------|---------------------|
-| E1 | A scoped client can read out-of-scope **filenames** from the parent manifest (never their **contents** — those live in rooms it can't open and never hit its disk). | per-scope manifest filtering is a future refinement; no content/secret exposure today. |
+| E1 | A `--paths`-scoped client can read shared root-doc metadata — manifest filenames, chat, tasks, and claims — and, if the invite allows writing (not `--reader`), change those shared root-doc records (never out-of-scope **file contents**, which live in `<base>␁<path>` subdocs the relay blocks; reader invites cannot write). | known gap (follow-up B1); per-scope root-doc partitioning is a future refinement, while file contents and secrets stay off out-of-scope participants' disks. |
 | E2 | One WebSocket connection per open file. | fine for typical projects; multiplexing is a scale optimization. |
 | E3 | A reader's local edits stay on its own disk (just never reach the relay). | read-only is about shared state, not the local working copy. |
 | E4 | Two clients joining one room with **different/nested root folders** can cause flat-namespace path collisions / recursive nesting. | operational guidance: join a room from one consistent project root. `hive-workspace/` is gitignored. |

@@ -199,8 +199,9 @@ relay. It is the evidence behind every claim on this page.
 
 | Env var | Why you want it |
 |---|---|
-| `HIVE_AUTH_MODE=required` + `HIVE_JWT_SECRET=<secret>` | Every connection must present a valid token. This is your invite-only control. `npx hivecode-relay --secret <secret>` sets both. Mint tokens with `npx hivecode-token --room <room> --name <who> --role writer --ttl 7d` on the relay host, which is the only machine that holds the secret. See [RBAC.md](RBAC.md). |
-| `HIVE_PERSIST_DIR=/var/data/hive` | **Important.** Without it a room lives only in connected clients' memory and is **lost the moment everyone disconnects** — the day works perfectly and the folder is empty in the morning. `npx hivecode-relay` turns this on by default; running the relay from a clone of the repo (`node server.js`) does not. |
+| `HIVE_AUTH_MODE=required` + `HIVE_JWT_SECRET=<secret>` | Every connection must present a valid token. This is your invite-only control for standard rooms (private `hs_…` rooms already enforce self-certifying RS256 invite tokens automatically). `npx hivecode-relay --secret <secret>` sets both. Mint HS256 tokens with `npx hivecode-token --room <room> --name <who> --role writer --ttl 7d` on the relay host, which is the only machine that holds the secret. See [RBAC.md](RBAC.md). |
+| `HIVE_PERSIST_DIR=/var/data/hive` | **Important.** Without it a room lives only in connected clients' memory and is **lost the moment everyone disconnects** — the day works perfectly and the folder is empty in the morning. It also stores Slack connections and private-room revocation lists (one file per room under `revocations/<room>.json`; `/__hive/revocations` reports `durable: true`; without it, `durable: false` and revocations survive restarts only when an honest participant reconnects and re-presents their signed list). `npx hivecode-relay` turns this on by default; running the relay from a clone of the repo (`node server.js`) does not. |
+| `HIVE_REVOCATIONS_MAX_ROOMS` / `HIVE_REVOCATIONS_MAX_MB` | Caps how many private (`hs_…`) rooms and total revocation list bytes the relay keeps in memory/disk (defaults `1000` rooms, `64` MB, with a 16 KB reserve per already-held room). Nothing is evicted to make room; a new room beyond the cap receives `Q677` (`503`) until expired lists age out or the limit is raised. |
 | `HIVE_SEATS=<n>` | Per-room connection budget (8 per seat). It does **not** raise the whole-relay total — that is `HIVE_MAX_CONNS_TOTAL`. The free-tier ceiling is 8 per room, which is **not** 8 people — see below. |
 | `HIVE_AUDIT_FILE=./audit.log` | One line per admit and reject. This is your evidence of who connected and when. |
 | `HIVE_RELAY_MUX=off` | Turns off one-socket-per-participant mode. It is on by default; this is the kill switch, and clients already connected fall back to one socket per file by themselves. |
@@ -227,6 +228,7 @@ Two different ceilings refuse you, with two different remedies:
 | **Q430** (503) | the whole relay is at `maxConnsTotal` (default 2048, ~56 KB of memory each) | `HIVE_MAX_CONNS_TOTAL` — **`HIVE_SEATS` does not help here** |
 | **Q431** (429) | one room is at its per-room cap | `HIVE_SEATS` |
 | **Q438** (503) | open files across all participants are at `HIVE_MAX_CHANNELS_TOTAL` (default 8,192; ~25.8 KB each unshared, ~2.4 KB per extra participant) | `HIVE_MAX_CHANNELS_TOTAL`, with the memory to match |
+| **Q677** (503) | private-room revocation list table reached `HIVE_REVOCATIONS_MAX_ROOMS` (`1000`) or `HIVE_REVOCATIONS_MAX_MB` (`64`) | `HIVE_REVOCATIONS_MAX_ROOMS` / `HIVE_REVOCATIONS_MAX_MB` |
 
 - **A focused team (~10 humans and their agents in one room): comfortably**, on a small
   always-on instance (≈1 vCPU / 1–2 GB). Free tiers are fine for a trial.
@@ -249,8 +251,6 @@ Said plainly, because discovering it later is worse:
 - **`ws://` is plaintext.** Self-hosting is not encryption. Put TLS in front of it.
 - **An open relay is open.** Running it yourself controls *where* the bytes go, not *who*
   may fetch them. That is what `HIVE_AUTH_MODE=required` is for.
-- **Path scoping needs auth mode.** The `--paths` globs in a token are only enforced when the
-  relay runs in `required` mode. On an open relay every token is ignored, so a "scoped" agent
-  gets the whole room.
+- **Path scoping needs auth mode (and covers file contents, not root room metadata).** The `--paths` globs in a token are enforced on private (`hs_…`) rooms or when the relay runs in `required` mode — on an open relay without `hs_…`, tokens are ignored and a "scoped" agent gets the whole room. Even with scoping enforced, `--paths` restricts per-file subdocuments so out-of-scope file contents never reach the participant, while shared root-doc records (chat, tasks, claims, and the synced filename list) remain visible to everyone admitted to the room — and, if the invite lets them write (not `--reader`), changeable by them (reader invites cannot).
 - **Mixed client versions do not sync.** Everyone on the relay must be on the same Hivecode
   version; announce yours on join.

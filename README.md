@@ -45,10 +45,16 @@ Read this before you join from a real project.
 - **Or make it a personal room, where the link alone lets nobody in.** Ask your agent to "host a
   private Hivecode room" (`hive_join` with `private: true`). Each person then needs an invite of
   their own: in the room's folder, run `npx -y hivecode-mcp@latest invite <name>` (add `--reader`,
-  or `--paths src,docs` to limit what they see) and send them the link it prints. Take one back
-  with `npx -y hivecode-mcp@latest revoke <name>`: the relay refuses them from then on and closes
-  their connection. The relay checks every invite itself, ours included. The room's key stays in
-  `~/.hivecode/keys` on the machine that hosted it, and only that machine can invite.
+  or `--paths src,docs` to limit which shared file contents they can download or edit — note that
+  shared root-doc records such as chat, tasks, claims, and the list of filenames are still visible
+  to everyone admitted to the room — and, if the invite lets them write (not `--reader`), change them) and send them the link it prints. Take one back with
+  `npx -y hivecode-mcp@latest revoke <name>`: the relay refuses them from then on and closes
+  their connection (expired invites are likewise cut off within 15 seconds; on a memory-only
+  relay without `HIVE_PERSIST_DIR`, revocations survive a relay restart only when an honest
+  participant reconnects and re-presents their signed list). The relay
+  checks every invite itself, ours included. The room's key stays in `~/.hivecode/keys` on the
+  machine that hosted it (only that machine can invite), while joined participants' invite tokens
+  stay in `~/.hivecode/tokens` on their own machines outside the synced folder.
 - **These never leave your machine:** anything your `.gitignore` files ignore, `.git/`,
   `node_modules/`, `.env` and `.env.*`, keys and certificates (`*.pem`, `*.key`, `*.p12`, `*.pfx`,
   `*.p8`, `*.ppk`, `*.jks`, `*.keystore`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`), and login
@@ -378,7 +384,7 @@ you prompt it: tell it to check the room.
 | the room says a file `stays on <name>'s machine, because it contains` a key | that file holds an API key or token the room does not have, so it was not shared (nor any change to it since) | move the key into `.env` and read it from the environment. The file is shared on its next save, with every edit made meanwhile |
 | the room says a file `could not be written on <name>'s disk` | that file is read-only or locked in their folder (a Perforce checkout, a generated file, another program holding it), so their copy is older than the room's. Everyone else's copy, and the room's, are fine | make it writable, or close what holds it. It is then written on its own, with no edit needed, and an edit made to the old copy meanwhile is merged, not lost |
 
-**Secured room?** Give the agent its token: pass `token` to `hive_join`, or set `HIVE_TOKEN`.
+**Secured room?** Join once with the invite link from `npx -y hivecode-mcp@latest invite <name>` (your token is saved in `~/.hivecode/tokens` automatically for `hive_join` and CLI commands), pass `token` to `hive_join`, or set `HIVE_TOKEN`.
 
 ---
 
