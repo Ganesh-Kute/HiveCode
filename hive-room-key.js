@@ -212,11 +212,15 @@ export async function revokeInvite({ room, relay, name }) {
   // A relay that knows signed lists always answers JSON with `ok` in it. One from before them has no
   // such route: it answers 404, or, as the hosted relay did, 200 with its plain "relay is up" page.
   const knowsLists = typeof res.body.ok === 'boolean' || res.r.status >= 500
-  if (knowsLists) {
+  // A relay that is FULL of lists (Q677) refuses a room it has never held, and anyone can fill it with
+  // rooms of their own. That must not stop a host cutting someone off: the old, authenticated route
+  // below takes the revoke into the relay's memory at once, and the signed list stays kept here.
+  const full = res.body.ok === false && /Q677/.test(String(res.body.error || ''))
+  if (knowsLists && !full) {
     return { ok: false, text: `The relay did not take the revoke for ${name} (HTTP ${res.r.status}${res.body.error ? ` ${res.body.error}` : ''}). It still accepts the invite; run this again. ${kept}` }
   }
-  // A RELAY FROM BEFORE SIGNED LISTS. Tell it the old way, one id at a time, and say what that is
-  // worth: it remembers until it restarts.
+  // A RELAY FROM BEFORE SIGNED LISTS, OR ONE THAT IS FULL OF THEM. Tell it the old way, one id at a
+  // time, and say what that is worth: it remembers until it restarts.
   const owner = mintRoomToken(rec, { name: rec.host, role: 'maintainer', ttlSec: 600 }).token
   let done = 0, dropped = 0
   const failures = []
@@ -230,7 +234,7 @@ export async function revokeInvite({ room, relay, name }) {
   writeRec(rec)
   if (!done) return { ok: false, text: `Could not reach the relay to revoke ${name}'s invite (${failures.join('; ')}). The relay still accepts it; run this again. ${kept}` }
   return { ok: true, text: `Revoked ${done} invite(s) for ${name}. The relay refuses them from now on${dropped ? `, and closed ${dropped} connection(s) using them` : ''}.
-This relay is older than signed revokes: it will forget this one when it restarts. Update the relay to make it last. ${kept}${failures.length ? `\n${failures.length} more could not be revoked (${failures.join('; ')}); run this again.` : ''}` }
+${full ? 'This relay holds as many signed revocation lists as it will (Q677), so it took this revoke the old way: it will forget it when it restarts. Tell whoever runs the relay to raise HIVE_REVOCATIONS_MAX_ROOMS.' : 'This relay is older than signed revokes: it will forget this one when it restarts. Update the relay to make it last.'} ${kept}${failures.length ? `\n${failures.length} more could not be revoked (${failures.join('; ')}); run this again.` : ''}` }
 }
 
 // ---- where a token is kept, and how every tool finds it -------------------------------------------

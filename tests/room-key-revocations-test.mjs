@@ -52,7 +52,7 @@ const keyRec = (room) => JSON.parse(fs.readFileSync(path.join(process.env.HIVE_K
 
 // ---- a stand-in relay: records every request, answers as told ---------------------------------
 const seen = []
-let mode = 'lists' // 'lists' = new relay | 'old', 'old404' = no /__hive/revocations | 'refuses' = says no | 'down' = 500 on everything
+let mode = 'lists' // 'lists' = new relay | 'old', 'old404' = no /__hive/revocations | 'refuses' = says no | 'full' = knows lists, will hold no more (503 Q677) | 'down' = 500 on everything
 let extraLists = []
 let durable = false // what the relay says of itself: does it keep lists across a restart
 const server = http.createServer((req, res) => {
@@ -69,6 +69,7 @@ const server = http.createServer((req, res) => {
       // what the relay at 0.14.14 really answers to a route it does not have
       if (mode === 'old') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('hivecode relay is up. Connect a client to ws://<this-host>/<room>') }
       if (mode === 'refuses') return send(400, { ok: false, error: 'bad list' })
+      if (mode === 'full') return send(503, { ok: false, error: 'Q677 the relay holds as many revocation lists as it will; this one was not taken and the invite still works here.', full: 'rooms' })
       return send(200, { ok: true, dropped: 1, durable, lists: [...(body.lists || []), ...extraLists] })
     }
     if (req.url === '/__hive/revoke') return send(200, { ok: true, dropped: 2 })
@@ -157,6 +158,14 @@ console.log('\n# K4  a relay too old for lists')
   mode = 'refuses'; seen.length = 0
   const r3 = await safe(() => K.revokeInvite({ room: ROOM, relay: RELAY, name: 'Dan' }), {})
   T('K4 a relay that knows lists and says no is not asked the old way, and nothing is reported revoked', r3.ok === false && !lastPost('/__hive/revoke') && !keyRec(ROOM).invites.find((i) => i.name === 'Dan').revokedAt, JSON.stringify(r3).slice(0, 160))
+  inv('Dina')
+  mode = 'full'; seen.length = 0
+  const r4 = await safe(() => K.revokeInvite({ room: ROOM, relay: RELAY, name: 'Dina' }), {})
+  const lg = lastPost('/__hive/revoke')
+  T('K4b a relay that is full of lists (Q677) is told the old, authenticated way: the revoke is in force now', r4.ok === true && !!lg && lg.body.room === ROOM && typeof lg.body.token === 'string' && keyRec(ROOM).invites.find((i) => i.name === 'Dina').revokedAt > 0, JSON.stringify(r4).slice(0, 200))
+  T('K4b and the host is told why, and that it does not last a restart', /Q677|as many/i.test(r4.text || '') && /restart/i.test(r4.text || '') && !/older than signed/i.test(r4.text || ''), r4.text)
+  T('K4b the signed list is still kept for when the relay can take it', R.mergeLists(ROOM, await safe(() => fn('hostLists')(ROOM), [])).revoked.size >= 1)
+  T('K8 the text holds no token', !/eyJ[A-Za-z0-9_-]{10,}\./.test(r4.text || ''))
   mode = 'lists'
 }
 
