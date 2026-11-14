@@ -54,6 +54,8 @@
     "hive-privacy.js",
     "hive-secrets.js",
     "hive-room-key.js",
+    "hive-revocations.js",
+    "hive-revocations-cache.js",
     "hive-setup.js",
     "hive-stdio.js",
     "hive-update.js",
