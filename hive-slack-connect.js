@@ -16,10 +16,13 @@ import path from 'path'
 import readline from 'readline'
 import { parseLink } from './sync.js'
 import { slackPost } from './hive-slack.js'
+import { isSecuredRoom } from './token.js'
+import { resolveRoomToken } from './hive-room-key.js'
 
 export const CONNECT_USAGE = `usage:
   npx -y hivecode-mcp@latest slack connect "<relay|room>" [--channel <id>] [--manifest] [--no-wait]
   npx -y hivecode-mcp@latest slack status "<relay|room>" [--id <connection id>]
+  npx -y hivecode-mcp@latest slack list "<relay|room>"
   npx -y hivecode-mcp@latest slack disconnect "<relay|room>" [--id <connection id>]   (SLACK_SIGNING_SECRET, or it asks)
   npx -y hivecode-mcp@latest slack app-manifest "<relay https url>"
 `
@@ -109,10 +112,13 @@ async function callRelay(base, route, body, fetchImpl, env = process.env) {
   }
 }
 
-function target(link, logErr) {
-  const { relay, room } = parseLink(link || '')
-  if (!relay || !room) { logErr(`Q665 "${link || ''}" is not a room link (expected wss://relay|room-…).`); return null }
-  return { base: String(relay).replace(/^ws/i, 'http').replace(/\/+$/, ''), room }
+function target(link, logErr, { env = process.env, explicit = '' } = {}) {
+  const parsed = parseLink(link || '')
+  if (!parsed.relay || !parsed.room) { logErr(`Q665 "${link || ''}" is not a room link (expected wss://relay|room-…).`); return null }
+  const secured = isSecuredRoom(parsed.room)
+  const tok = resolveRoomToken({ room: parsed.room, explicit: explicit || (!parsed.token && env && env.HIVE_TOKEN) || '', link })
+  const displayRoom = secured ? `${parsed.room.slice(0, 8)}…` : parsed.room
+  return { base: String(parsed.relay).replace(/^ws/i, 'http').replace(/\/+$/, ''), room: parsed.room, displayRoom, token: tok, secured }
 }
 
 /** Channels the bot is in: id, name, privacy. Follows Slack's cursor, at most 5 pages. */
@@ -128,11 +134,12 @@ async function botChannels(token, fetchImpl, api) {
   return out
 }
 
-export async function runSlackConnect({ link, channel = '', manifest = false, noWait = false, pollMs = 2000, waitMs = 120000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now, env = process.env, log = console.log, logErr = console.error, fetchImpl = fetch, ask = askLine, interactive = Boolean(process.stdin.isTTY), home = os.homedir(), api = env.HIVE_SLACK_API || 'https://slack.com/api' } = {}) {
-  const t = target(link, logErr)
+export async function runSlackConnect({ link, channel = '', manifest = false, noWait = false, token = '', pollMs = 2000, waitMs = 120000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now, env = process.env, log = console.log, logErr = console.error, fetchImpl = fetch, ask = askLine, interactive = Boolean(process.stdin.isTTY), home = os.homedir(), api = env.HIVE_SLACK_API || 'https://slack.com/api' } = {}) {
+  const t = target(link, logErr, { env, explicit: token })
   if (!t) return 2
 
-  const prep = await callRelay(t.base, '/slack/prepare', { room: t.room }, fetchImpl, env)
+  const prepBody = t.secured && t.token ? { room: t.room, token: t.token } : { room: t.room }
+  const prep = await callRelay(t.base, '/slack/prepare', prepBody, fetchImpl, env)
   if (!prep.ok || !prep.id || (!prep.installUrl && !prep.eventsUrl)) { logErr(`${prep.code || 'Q666'} the relay did not prepare a Slack connection: ${prep.why || 'no id came back'}`); return 1 }
 
   if (prep.installUrl && !manifest) {
@@ -215,12 +222,34 @@ export async function runSlackConnect({ link, channel = '', manifest = false, no
   return 0
 }
 
-export async function runSlackStatus({ link, id = '', env = process.env, log = console.log, logErr = console.error, fetchImpl = fetch, home = os.homedir() } = {}) {
-  const t = target(link, logErr)
+export async function runSlackList({ link, token = '', env = process.env, log = console.log, logErr = console.error, fetchImpl = fetch } = {}) {
+  const t = target(link, logErr, { env, explicit: token })
+  if (!t) return 2
+  const body = t.token ? { room: t.room, token: t.token } : { room: t.room }
+  const res = await callRelay(t.base, '/slack/list', body, fetchImpl, env)
+  if (!res.ok) { logErr(`${res.code || 'Q674'} ${res.why || 'could not list Slack connections.'}`); return 1 }
+  const conns = Array.isArray(res.connections) ? res.connections : []
+  if (!conns.length) {
+    log(`No Slack connections for ${t.displayRoom}.`)
+    return 0
+  }
+  for (const c of conns) {
+    const ch = c.channel ? `#${String(c.channel).replace(/^#/, '')}` : '(channel pending)'
+    const meta = [c.team ? `(${c.team})` : '', c.by ? `by ${c.by}` : '', c.shared ? 'shared' : ''].filter(Boolean).join('  ')
+    log(`  ${c.id}  ${ch}${meta ? `  ${meta}` : ''}`)
+  }
+  return 0
+}
+
+export async function runSlackStatus({ link, id = '', token = '', env = process.env, log = console.log, logErr = console.error, fetchImpl = fetch, home = os.homedir() } = {}) {
+  const t = target(link, logErr, { env, explicit: token })
   if (!t) return 2
   const state = readState(home)
   const connection = String(id || (state[t.room] && state[t.room].id) || '')
-  if (!connection) { logErr('Q661 no remembered Slack connection id for this room; run slack connect or pass --id <id>.'); return 1 }
+  if (!connection) {
+    if (t.secured && t.token) return runSlackList({ link, token: t.token, env, log, logErr, fetchImpl })
+    logErr('Q661 no remembered Slack connection id for this room; run slack connect or pass --id <id>.'); return 1
+  }
   const st = await callRelay(t.base, '/slack/status', { id: connection }, fetchImpl, env)
   if (!st.ok) { logErr(`${st.code} ${st.why}`); return 1 }
   if (st.connected) {
@@ -249,8 +278,8 @@ export function runSlackAppManifest({ url, log = console.log, logErr = console.e
   return 0
 }
 
-export async function runSlackDisconnect({ link, id = '', env = process.env, log = console.log, logErr = console.error, fetchImpl = fetch, ask = askLine, interactive = Boolean(process.stdin.isTTY), home = os.homedir() } = {}) {
-  const t = target(link, logErr)
+export async function runSlackDisconnect({ link, id = '', token = '', env = process.env, log = console.log, logErr = console.error, fetchImpl = fetch, ask = askLine, interactive = Boolean(process.stdin.isTTY), home = os.homedir() } = {}) {
+  const t = target(link, logErr, { env, explicit: token })
   if (!t) return 2
   const state = readState(home)
   const remembered = state[t.room] && state[t.room].id ? String(state[t.room].id) : ''
@@ -259,6 +288,15 @@ export async function runSlackDisconnect({ link, id = '', env = process.env, log
   // is no signing secret, so the remembered id alone tries /slack/disconnect before prompting.
   const connection = String(id || remembered || '')
   let signingSecret = String(env.SLACK_SIGNING_SECRET || '').trim()
+  if (t.secured && t.token && !id && !signingSecret) {
+    const r = await callRelay(t.base, '/slack/disconnect', { room: t.room, token: t.token }, fetchImpl, env)
+    if (r.ok) {
+      if (state[t.room]) { delete state[t.room]; try { writeState(home, state) } catch { } }
+      log(`✓ Slack is disconnected from this room${r.ended != null ? ` (${r.ended} ended)` : ''}. The relay no longer holds the token.`)
+      return 0
+    }
+    if (!remembered && !interactive) { logErr(`${r.code} ${r.why}`); return 1 }
+  }
   if (!signingSecret && remembered && (!id || id === remembered)) {
     const r = await callRelay(t.base, '/slack/disconnect', { id: remembered }, fetchImpl, env)
     if (r.ok) {

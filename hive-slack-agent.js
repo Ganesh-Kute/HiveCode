@@ -24,8 +24,11 @@
 // person to test it would find out. It stops the NEXT thing, reliably, and that is what makes
 // it safe to walk away.
 
+import crypto from 'crypto'
 import WebSocket from 'ws'
 import { startSync, parseLink } from './sync.js'
+import { isSecuredRoom } from './token.js'
+import { resolveRoomToken } from './hive-room-key.js'
 import { realpathSync as __hiveRealpath } from 'fs'
 import { resolve as __hiveResolve } from 'path'
 import { fileURLToPath as __hiveFileURLToPath } from 'url'
@@ -346,10 +349,13 @@ export async function main(argv = process.argv.slice(2), {
     logErr(pre.error)
     return 1
   }
-  const { relay, room } = parseLink(LINK)
+  const { relay, room, token: linkToken } = parseLink(LINK)
+  const hiveToken = resolveRoomToken({ room, explicit: (!linkToken && env && env.HIVE_TOKEN) || '', link: LINK })
+  const safeRoomDir = isSecuredRoom(room) ? crypto.createHash('sha256').update(room).digest('hex').slice(0, 12) : room
+  const displayRoom = isSecuredRoom(room) ? `${room.slice(0, 8)}…` : room
   const hive = startSync({
-    relay, room, dir: (env.TEMP || '.') + '/hive-agent-' + room,
-    name: flag('name', 'Hivecode'), kind: 'human', token: env.HIVE_TOKEN || '', syncFiles: false, log: () => {},
+    relay, room, dir: (env.TEMP || '.') + '/hive-agent-' + safeRoomDir,
+    name: flag('name', 'Hivecode'), kind: 'human', token: hiveToken, syncFiles: false, log: () => {},
   })
   const agent = makeAgent({
     hive, channel: CHANNEL, token: TOKEN, post: (m) => slackPost(m.method, m, TOKEN, fetchImpl),
@@ -376,7 +382,7 @@ export async function main(argv = process.argv.slice(2), {
     try { hive.stop() } catch { }
     return 1
   }
-  log(`READY: [hive-slack-agent] ${room} -> ${CHANNEL} (Socket Mode connected) — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}`)
+  log(`READY: [hive-slack-agent] ${displayRoom} -> ${CHANNEL} (Socket Mode connected) — resume: ${allowParsed.ids.length ? allowParsed.ids.join(', ') : 'off'}`)
 
   return new Promise((resolve) => {
     let done = false

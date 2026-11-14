@@ -18,9 +18,9 @@ A secured room's id is `hs_<fp>_<rand>`, where `fp` is a base64url SHA-256 finge
 
 Every token for the room carries the owner's public key (claim `pk`) and is signed by the matching private key (RS256). The relay trusts a token **iff** `fingerprint(token.pk) === fingerprint-in-room-id`, then verifies the signature with that key. 
 
-Because trust is anchored in the room ID itself, **the relay stores nothing**. There is no account system, no database, and no shared secret. Your private key stays in your editor's secure local storage.
+Because trust is anchored in the room ID itself, **the relay has no account database and no shared secret**. Your private signing key stays in your editor's secure local storage (or `~/.hivecode/keys` for the CLI), and invited participants keep their invite tokens locally in `~/.hivecode/tokens` (never in `.hive.json`). Signed revocation lists are stored by the relay when `HIVE_PERSIST_DIR` (or an embedder store) is enabled (`durable: true`), and honest connected clients re-present them on reconnect when `durable: false`.
 
-Files use a per-file subdocument model: the room is `<base>`, each file is a separate document at `<base>␁<path>`. The relay authorizes per path, so a scoped client can only open the files it is granted access to, and out-of-scope content never reaches its disk. Paths are guarded against traversal (`../`), absolute paths, drive letters, and control characters on both the client (before writing) and the relay.
+Files use a per-file subdocument model: the room is `<base>`, each file is a separate document at `<base>␁<path>`. The relay authorizes per path, so a scoped (`--paths`) client can only open the files it is granted access to, and out-of-scope file contents never reach its disk. Shared root-doc records — chat messages, tasks, claims, and the synced filename manifest — remain visible to everyone admitted to the room (and, if the invite lets them write, changeable by them; read-only invites cannot). Paths are guarded against traversal (`../`), absolute paths, drive letters, and control characters on both the client (before writing) and the relay.
 
 ## Self-hosting the Relay
 

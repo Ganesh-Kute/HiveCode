@@ -30,7 +30,8 @@ import { WebsocketProvider } from 'y-websocket'
 // proxy too (CONNECT tunnel, long-poll where the upgrade is refused; loopback direct; HIVE_PROXY=off).
 import { HiveSocket, unreachedReason } from './hive-transport.js'
 import { parseLink } from './sync.js'
-import { fileRoom } from './token.js'
+import { fileRoom, isSecuredRoom } from './token.js'
+import { resolveRoomToken } from './hive-room-key.js'
 
 const argv = process.argv.slice(2)
 const flag = (k, d = '') => { const i = argv.indexOf('--' + k); return i === -1 ? d : (argv[i + 1] || d) }
@@ -43,7 +44,9 @@ const DIR = flag('dir', '')
 const LIMIT = Number(flag('limit', '4000')) || 4000
 const JSON_OUT = argv.includes('--json')
 const { relay, room } = parseLink(LINK)
-const wsOpts = { WebSocketPolyfill: HiveSocket, connect: true }
+const TOKEN = resolveRoomToken({ room, dir: DIR || '.', link: LINK })
+const displayRoom = isSecuredRoom(room) ? `${room.slice(0, 8)}…` : room
+const wsOpts = { WebSocketPolyfill: HiveSocket, connect: true, disableBc: true, ...(TOKEN ? { params: { token: TOKEN } } : {}) }
 const BATCH = 24          // sockets open at once — a full project is thousands of files
 const SYNC_MS = 6000      // how long one batch may take to report synced
 
@@ -64,13 +67,13 @@ let firstError = null // the first connection error says WHY: never reached it, 
 provider.on('connection-error', (ev) => { if (!firstError) firstError = ev })
 if (!(await syncedOnce(provider, 15000))) {
   const why = firstError && unreachedReason(firstError)
-  console.error(`Q543 could not reach the relay at ${relay} (room "${room}")${why ? `: ${why}` : ''}`)
+  console.error(`Q543 could not reach the relay at ${relay} (room "${displayRoom}")${why ? `: ${why}` : ''}`)
   process.exit(2)
 }
 
 const manifest = doc.getMap('manifest')
 const paths = [...manifest.keys()].sort()
-log(`\n  room      ${room}`)
+log(`\n  room      ${displayRoom}`)
 log(`  relay     ${relay}`)
 log(`  registered ${paths.length} path(s)${paths.length > LIMIT ? ` — checking the first ${LIMIT}` : ''}`)
 

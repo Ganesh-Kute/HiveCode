@@ -37,6 +37,7 @@ import { startSync, parseLink } from './sync.js'
 import * as RC from './hive-receipts.js'
 import * as SEEN from './hive-seen.js' // what this listener has seen, by Yjs id (0.14.4)
 import { awaitDir, armedFile, BEAT_MS } from './hive-listen.js'
+import { resolveRoomToken } from './hive-room-key.js'
 
 const [, , LINK = '', NAME = '', IDLE_MIN = '10', APP_ARG = ''] = process.argv
 if (!LINK || !NAME) {
@@ -44,6 +45,7 @@ if (!LINK || !NAME) {
   process.exit(2)
 }
 const { relay, room } = parseLink(LINK)
+const BARE_LINK = relay ? `${relay}|${room}` : room
 const dir = awaitDir(NAME)
 // Which app will be woken when this listener exits: passed by listenCommand, or inferred from the
 // session environment when the agent ran `node hive-await.js <link> <name> <min>` directly. Without
@@ -51,7 +53,8 @@ const dir = awaitDir(NAME)
 // undefined in awareness, and hive-activity.js misreports the agent as "not woken by it".
 const APP = APP_ARG || process.env.HIVE_APP || (process.env.CLAUDE_CODE_SESSION_ID ? 'claude-code' : (process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.ANTIGRAVITY_AGENT ? 'antigravity' : ''))
 
-const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', syncFiles: false, listener: true, app: APP, log: () => {} })
+const useToken = resolveRoomToken({ room, name: NAME, link: LINK })
+const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: useToken, syncFiles: false, listener: true, app: APP, log: () => {} })
 
 // ARMED, AND THE NEWEST LISTENER WINS (4 Oct 2026; see hive-listen.js). This file is how the Stop
 // hook and the MCP server know, with no network call, that the agent will hear the room after its
@@ -61,7 +64,7 @@ const hive = startSync({ relay, room, dir, name: NAME, kind: 'ai', token: proces
 // listener that finds the file naming another process leaves: that one was started after it.
 const ARMED = armedFile(NAME, room)
 const SESSION = process.env.CLAUDE_CODE_SESSION_ID || process.env.ANTIGRAVITY_CONVERSATION_ID || ''
-const AGAIN = `"${process.execPath.replace(/\\/g, '/')}" "${path.resolve(process.argv[1]).replace(/\\/g, '/')}" "${LINK}" "${NAME}" ${IDLE_MIN}${APP_ARG ? ` "${APP_ARG}"` : ''}`
+const AGAIN = `"${process.execPath.replace(/\\/g, '/')}" "${path.resolve(process.argv[1]).replace(/\\/g, '/')}" "${BARE_LINK}" "${NAME}" ${IDLE_MIN}${APP_ARG ? ` "${APP_ARG}"` : ''}`
 const startedAt = Date.now()
 let synced = false
 const readArmed = () => { try { return JSON.parse(fs.readFileSync(ARMED, 'utf8')) } catch { return null } }
@@ -83,7 +86,7 @@ const newerThanMe = (rec) => {
 function beat() {
   try {
     fs.mkdirSync(path.dirname(ARMED), { recursive: true })
-    const body = JSON.stringify({ pid: process.pid, name: NAME, room, link: LINK, session: SESSION, ...(APP ? { app: APP } : {}), at: startedAt, beat: Date.now(), synced })
+    const body = JSON.stringify({ pid: process.pid, name: NAME, room, link: BARE_LINK, session: SESSION, ...(APP ? { app: APP } : {}), at: startedAt, beat: Date.now(), synced })
     const part = `${ARMED}.${process.pid}.tmp`
     try { fs.writeFileSync(part, body); fs.renameSync(part, ARMED) } catch {
       try { fs.rmSync(part, { force: true }) } catch {}

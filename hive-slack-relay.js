@@ -36,6 +36,15 @@
 // More codes: Q669 one-link setup is not enabled on this relay, Q670 that channel is already
 // connected, Q671 a direct message cannot be connected, Q672 Slack did not complete the install.
 //
+// A PRIVATE ROOM (hs_...) AND SLACK (14 Nov 2026). A room id is not a secret in a private room: every
+// past guest knows it, and the relay refuses their websocket without a live invite. /slack/prepare
+// took only the room id, so the same people could attach their own Slack channel and read the chat
+// there. Now, for a private room: prepare, list and disconnect-by-room need the HOST's token (the
+// `access` callback is the relay's own authorize()), because a Slack channel adds everyone in it to
+// the room's chat and only the host decides who is in the room. The connection belongs to the room,
+// not to one token: the host's token is re-minted, and any valid host token lists or ends it.
+// Q674 a private room needs the host's invite here, Q675 that invite is not the host's.
+//
 // WHAT NEVER LEAVES. The bot token and signing secret are stored on the relay's disk only, encrypted
 // (AES-256-GCM, key from HIVE_SLACK_KEY), never logged, never written into a room. The events URL
 // carries a random id, not the room id: the room id is the key to read the room, and Slack keeps
@@ -45,6 +54,7 @@ import fs from 'fs'
 import path from 'path'
 import * as SEEN from './hive-seen.js'
 import { findSecrets } from './hive-secrets.js'
+import { isSecuredRoom } from './token.js'
 
 export const SLACK_PREFIX = '/slack/'
 const DEFAULT_API = 'https://slack.com/api'
@@ -54,6 +64,7 @@ const MAX_PREPARED = 2000          // unconnected ids at once: a cap, so /slack/
 const MAX_BODY = 1024 * 1024       // Slack event payloads are a few KB
 const SIG_WINDOW_S = 300           // Slack's own replay window
 const SEEN_EVENTS = 1000           // event ids remembered per connection, for Slack's retries
+const USERS_TTL_MS = 5 * 60 * 1000 // cache users.info results per connection for 5 min (B3)
 const MAX_TEXT = 3500
 const ROOM_RE = /^[A-Za-z0-9_.~-]{1,200}$/
 const CHANNEL_RE = /^[CGD][A-Z0-9]{2,30}$/
@@ -144,7 +155,7 @@ export function renderForSlack(m, room) {
  *   clientId, clientSecret, appSecret   the relay owner's ONE Slack app (one-link setup); all three or it is off
  *   authorizeUrl   Slack's authorize page (HIVE_SLACK_AUTHORIZE points tests at a fake)
  */
-export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl = globalThis.fetch, api = DEFAULT_API, publicUrl = '', now = Date.now, log = () => { }, tickMs = 1000, clientId = '', clientSecret = '', appSecret = '', authorizeUrl = DEFAULT_AUTHORIZE } = {}) {
+export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = '', fetchImpl = globalThis.fetch, api = DEFAULT_API, publicUrl = '', now = Date.now, log = () => { }, tickMs = 1000, clientId = '', clientSecret = '', appSecret = '', authorizeUrl = DEFAULT_AUTHORIZE } = {}) {
   // id -> { room, at, connected, channel, channelName, team, botUserId, allow, sealed }
   // a one-link connection also has { shared: true, teamId } and, while it waits for the bot to be
   // invited to a private channel, { connected: false, pending: 'invite' }; its sealed part is the token alone.
@@ -157,7 +168,10 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
   if (storePath) {
     try {
       const j = JSON.parse(fs.readFileSync(storePath, 'utf8'))
-      for (const [id, c] of Object.entries((j && j.conns) || {})) conns.set(id, c)
+      // A private room's record with no host mark (pre-A1) or a connected/pending record with no
+      // workspace teamId (pre-B3) cannot enforce host or workspace checks, so it is not served; the
+      // host connects again. Unconnected prepared records (/slack/prepare before connect) still keep.
+      for (const [id, c] of Object.entries((j && j.conns) || {})) if (!(c && isSecuredRoom(String(c.room || '')) && (!c.private || ((c.connected || c.pending) && !c.teamId)))) conns.set(id, c)
     } catch { /* no store yet */ }
   }
   const save = () => {
@@ -212,6 +226,28 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     let j = null
     try { j = await res.json() } catch { j = null }
     return j || { ok: false, error: `http_${res.status}` }
+  }
+
+  // ---- a private room's host --------------------------------------------------------------------
+  const HOST_ROLES = ['admin', 'maintainer']   // the same two /__hive/revoke accepts
+  /** Who is asking, for a private room. { secured:false } for a normal room: nothing changes there.
+   *  Otherwise { secured:true, name } for the host, or { secured:true, refuse } with the answer to send.
+   *  No `access` (an embedder that never wired the relay's authorize) refuses: fail closed. */
+  const hostOf = async (room, token) => {
+    if (!isSecuredRoom(room)) return { secured: false }
+    let a = null
+    try { a = access ? await access(room, String(token || '')) : null } catch { a = null }
+    if (!a || !a.ok) return { secured: true, refuse: fail(401, 'Q674', 'this is a private room: connecting it to Slack needs the host\'s own invite. Run slack connect on the computer that hosts the room.') }
+    if (!HOST_ROLES.includes(a.role)) return { secured: true, refuse: fail(403, 'Q675', 'only the host of a private room can connect it to Slack: a Slack channel adds everyone in it to the room\'s chat.') }
+    return { secured: true, name: String(a.name || 'the host') }
+  }
+  /** What a rebuilt record keeps: that the host made it, and who that was. */
+  const hostMark = (c) => (c && c.private ? { private: true, by: c.by || '' } : {})
+  /** What the room is told when a channel is connected. A private room is also told who did it and
+   *  what it means: the channel's members are now readers and writers of this chat. */
+  const connectedLine = (c) => {
+    const base = `Slack is connected to this room (#${c.channelName || c.channel})`
+    return c.private ? `${base} by ${c.by || 'the host'}. Everyone in that Slack channel can now read this room's chat and post into it.` : `${base}.`
   }
 
   // ---- the room side --------------------------------------------------------------------------
@@ -278,7 +314,7 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     const r = runtime.get(id)
     if (r && r.unobserve) { try { r.unobserve() } catch { } }
     runtime.delete(id)
-    conns.set(id, { room: c.room, at: now(), connected: false, ended: why })
+    conns.set(id, { room: c.room, at: now(), connected: false, ended: why, ...hostMark(c) })
     save()
     if (c.connected) sayInRoom(c.room, `Slack (#${c.channelName || c.channel}) is no longer connected to this room: ${why}. Run slack connect to connect it again.`, { src: 'slack' })
   }
@@ -300,7 +336,7 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
       const r = runtime.get(id)
       if (r && r.unobserve) { try { r.unobserve() } catch { } }
       runtime.delete(id)
-      conns.set(id, { room: c.room, at: now(), connected: false, ended: TAKEN })
+      conns.set(id, { room: c.room, at: now(), connected: false, ended: TAKEN, ...hostMark(c) })
       save()
       sayInRoom(c.room, `Slack (#${c.channelName || c.channel}) was not connected to this room: Q670 ${TAKEN}. Run slack connect and pick another channel.`, { src: 'slack' })
       return false
@@ -310,7 +346,7 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     rt(id).doc = null
     save()
     const line = `Slack is connected to this room (#${c.channelName || c.channel}).`
-    sayInRoom(c.room, line, { src: 'slack' })   // src: the forwarder does not send this one back
+    sayInRoom(c.room, connectedLine(c), { src: 'slack' })   // src: the forwarder does not send this one back
     attach(id)                                  // only lines after this one go to Slack
     // The channel side says who it was bridged to. The link is an invitation: whoever approves it
     // connects THEIR channel to the link-maker's room, and Slack's screen does not name the room.
@@ -337,18 +373,41 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
   if (timer.unref) timer.unref()
 
   // ---- Slack -> room --------------------------------------------------------------------------
-  const nameOf = async (id, user) => {
+  const senderOf = async (id, user, c) => {
     const r = rt(id)
-    if (r.users.has(user)) return r.users.get(user)
-    let handle = user
+    const secured = isSecuredRoom(c.room)
+    const cached = r.users.get(user)
+    if (cached && (!secured || now() - cached.at < USERS_TTL_MS)) return cached
+    let handle = user, denied = false, cacheable = !secured
     const s = secretsOf(id)
-    if (!s) return handle
+    if (!s) {
+      if (secured) log(`[slack] private room dropped Slack message from ${user}: Slack credentials unavailable`)
+      return { handle, denied: secured }
+    }
     try {
       const j = await slack('users.info', s.botToken, { user })
-      if (j.ok && j.user) handle = j.user.name || (j.user.profile && j.user.profile.display_name) || user
-    } catch { }
-    r.users.set(user, handle)
-    return handle
+      if (j && j.ok && j.user) {
+        const u = j.user
+        handle = u.name || (u.profile && u.profile.display_name) || user
+        cacheable = true
+        if (secured && (u.deleted || u.is_bot || u.is_restricted || u.is_ultra_restricted || u.is_stranger || !c.teamId || !u.team_id || u.team_id !== c.teamId)) {
+          denied = true
+          const why = u.deleted ? 'deactivated account' : u.is_bot ? 'bot user' : (u.is_restricted || u.is_ultra_restricted) ? 'workspace guest' : u.is_stranger ? 'Slack Connect stranger' : !c.teamId ? 'connection missing teamId' : !u.team_id ? 'user missing team_id' : 'external workspace'
+          log(`[slack] private room dropped Slack message from ${user}: ${why}`)
+        }
+      } else if (secured) {
+        denied = true
+        log(`[slack] private room dropped Slack message from ${user}: users.info ${(j && j.error) || 'missing user'}`)
+      }
+    } catch (e) {
+      if (secured) {
+        denied = true
+        log(`[slack] private room dropped Slack message from ${user}: users.info failed (${(e && (e.code || e.message)) || 'error'})`)
+      }
+    }
+    const entry = { handle, denied, at: now() }
+    if (cacheable) r.users.set(user, entry)
+    return entry
   }
   const deliver = async (id, payload) => {
     const c = conns.get(id); if (!c || !c.connected) return
@@ -365,9 +424,18 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     if (ev.subtype && !PERSON_SUBTYPES.has(ev.subtype)) return
     if (!ev.user) return
     if (Array.isArray(c.allow) && c.allow.length && !c.allow.includes(ev.user)) return
+    if (isSecuredRoom(c.room)) {
+      if (!c.teamId) { log(`[slack] private room dropped Slack message from ${ev.user}: connection missing teamId`); return }
+      if ((ev.team && ev.team !== c.teamId) || (payload.team_id && payload.team_id !== c.teamId)) {
+        log(`[slack] private room dropped Slack message from ${ev.user}: external workspace team mismatch`)
+        return
+      }
+    }
     const text = String(ev.text || '').trim()
     if (!text) return
-    const by = slackSender(await nameOf(id, ev.user))
+    const sender = await senderOf(id, ev.user, c)
+    if (sender.denied) return
+    const by = slackSender(sender.handle)
     const doc = getDoc(c.room)
     const intent = controlIntent(text)
     if (intent) {
@@ -408,6 +476,8 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     const j = json(raw) || {}
     const room = String(j.room || '')
     if (!ROOM_RE.test(room)) return fail(400, 'Q661', 'that is not a room id (expected the part after "|" in the room link).')
+    const who = await hostOf(room, j.token)
+    if (who.refuse) return who.refuse          // before anything is looked up: no id, no link, for anyone else
     sweepPrepared()
     // ONE UNFINISHED ID PER ROOM. A first `slack connect` that stops after prepare (bot not invited
     // yet, a wrong token) has already printed a manifest with this URL, and the person may already
@@ -423,7 +493,7 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     }
     if ([...conns.values()].filter((c) => !c.connected).length >= MAX_PREPARED) return fail(503, 'Q661', 'this relay has too many unfinished Slack connections; try again later.')
     const id = crypto.randomBytes(16).toString('base64url')
-    conns.set(id, { room, at: now(), connected: false })
+    conns.set(id, { room, at: now(), connected: false, ...(who.secured ? { private: true, by: who.name } : {}) })
     save()
     return prepared(req, id)
   }
@@ -448,17 +518,18 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     let auth, info
     try { auth = await slack('auth.test', botToken) } catch (e) { return fail(502, 'Q662', `could not reach Slack (${e.code || e.message}).`) }
     if (!auth.ok) return fail(400, 'Q662', `Slack refused the bot token (${auth.error}).`)
+    if (isSecuredRoom(c.room) && !auth.team_id) return fail(400, 'Q662', 'Slack did not report a workspace team id for that bot token (required for private rooms).')
     try { info = await slack('conversations.info', botToken, { channel }) } catch (e) { return fail(502, 'Q664', `could not reach Slack (${e.code || e.message}).`) }
     if (!info.ok) return fail(400, 'Q664', `Slack could not find that channel for this bot (${info.error}).`)
     if (info.channel && info.channel.is_member === false) return fail(400, 'Q664', `the bot is not in #${info.channel.name}; invite it there first (/invite @your-app).`)
     const channelName = (info.channel && info.channel.name) || channel
     const allow = Array.isArray(j.allow) ? j.allow.map(String).filter((u) => /^[UW][A-Z0-9]+$/.test(u)) : []
     const r = rt(id)
-    conns.set(id, { room: c.room, at: c.at, connected: true, connectedAt: now(), channel, channelName, team: auth.team || '', botUserId: auth.user_id || '', allow, sealed: sealSecrets({ botToken, signingSecret }, key) })
+    conns.set(id, { room: c.room, at: c.at, connected: true, connectedAt: now(), channel, channelName, team: auth.team || '', teamId: String(auth.team_id || ''), botUserId: auth.user_id || '', allow, sealed: sealSecrets({ botToken, signingSecret }, key), ...hostMark(c) })
     r.secrets = { botToken, signingSecret }; r.unreadable = false; r.doc = null
     save()
     const line = `Slack is connected to this room (#${channelName}).`
-    sayInRoom(c.room, line, { src: 'slack' })   // src: the forwarder does not send this one back
+    sayInRoom(c.room, connectedLine(conns.get(id)), { src: 'slack' })   // src: the forwarder does not send this one back
     attach(id)                                  // only lines after this one go to Slack
     post(id, line)
     return { status: 200, body: { ok: true, team: auth.team || '', channel: channelName, eventsUrl: `${originOf(req)}${SLACK_PREFIX}events/${id}` } }
@@ -468,6 +539,23 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     const j = json(raw) || {}
     let id = String(j.id || '')
     const given = String(j.signingSecret || '')
+    // A private room's host ends every Slack connection of the room with their own token: no id, no
+    // signing secret, one-link connections included. They own the guest list, and this is part of it.
+    if (!id && j.room && j.token != null && isSecuredRoom(String(j.room))) {
+      const room = String(j.room)
+      const who = await hostOf(room, j.token)
+      if (who.refuse) return who.refuse
+      let ended = 0
+      for (const [cid, c] of [...conns]) {
+        if (c.room !== room) continue
+        const r = runtime.get(cid)
+        if (r && r.unobserve) { try { r.unobserve() } catch { } }
+        runtime.delete(cid); conns.delete(cid)
+        if (c.connected) { ended++; sayInRoom(room, `Slack (#${c.channelName || c.channel}) was disconnected from this room by ${who.name}.`, { src: 'slack' }) }
+      }
+      save()
+      return { status: 200, body: { ok: true, ended } }
+    }
     // From another computer the CLI does not know the id: {room, signingSecret} finds the room's
     // connection whose secret matches. Every connection of the room is compared, constant time.
     if (!id && j.room) {
@@ -597,7 +685,7 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
       holder = holderOf(state, teamId, channel)
       if (holder) return takenPage(holder)
       const name = channelName || channel
-      conns.set(state, { room: c.room, at: c.at, connected: false, pending: 'invite', shared: true, channel, channelName: name, team: String(tok.team.name || ''), teamId, botUserId, allow: [], sealed: sealSecrets({ botToken }, key) })
+      conns.set(state, { room: c.room, at: c.at, connected: false, pending: 'invite', shared: true, channel, channelName: name, team: String(tok.team.name || ''), teamId, botUserId, allow: [], sealed: sealSecrets({ botToken }, key), ...hostMark(c) })
       r.secrets = { botToken }; r.unreadable = false
       if (member) {
         if (!finishShared(state)) return takenPage(null)
@@ -615,6 +703,19 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
     const c = conns.get(id)
     if (!c) return fail(404, 'Q661', 'unknown or expired Slack connection id; run slack connect again.')
     return { status: 200, body: { ok: true, connected: !!c.connected, ...(!c.connected && c.pending ? { pending: c.pending } : {}), ...(!c.connected && c.ended ? { ended: c.ended } : {}), ...(c.channelName ? { channel: c.channelName } : {}) } }
+  }
+
+  /** A private room's host asks what is attached to their room. Never a token or a secret. */
+  async function list(req, raw) {
+    const j = json(raw) || {}
+    const room = String(j.room || '')
+    if (!ROOM_RE.test(room)) return fail(400, 'Q661', 'that is not a room id (expected the part after "|" in the room link).')
+    const who = await hostOf(room, j.token)
+    if (!who.secured) return fail(400, 'Q674', 'listing Slack connections by room is for private rooms: in a normal room the room id is the only key, and it is not proof of who is asking.')
+    if (who.refuse) return who.refuse
+    const connections = [...conns].filter(([, c]) => c.room === room && c.connected)
+      .map(([id, c]) => ({ id, channel: c.channelName || c.channel, team: c.team || '', by: c.by || '', connectedAt: c.connectedAt || c.at || 0, shared: !!c.shared }))
+    return { status: 200, body: { ok: true, connections } }
   }
 
   /** The shared app's events: one URL for every workspace, so the workspace and the channel choose the room. */
@@ -669,7 +770,7 @@ export function makeSlackRelay({ getDoc, docs, dir = null, key = '', fetchImpl =
       const m = url.match(/^\/slack\/events\/([A-Za-z0-9_-]{8,64})$/)
       if (m) return await events(req, res, m[1], raw)
       if (url === '/slack/events') return await sharedEvents(req, res, raw)
-      const route = { '/slack/prepare': prepare, '/slack/connect': connect, '/slack/disconnect': disconnect, '/slack/status': status }[url]
+      const route = { '/slack/prepare': prepare, '/slack/connect': connect, '/slack/disconnect': disconnect, '/slack/status': status, '/slack/list': list }[url]
       if (!route) return send(res, 404, { ok: false, why: 'no such Slack route' })
       const out = await route(req, raw)
       return send(res, out.status, out.body)

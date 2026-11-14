@@ -11,13 +11,14 @@ import fs from 'fs'
 import path from 'path'
 import { startSync, parseLink } from './sync.js'
 import { PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
+import { resolveRoomToken } from './hive-room-key.js'
 
 const DEFAULT_RELAY = process.env.HIVE_RELAY || PUBLIC_DEFAULT_RELAY // written once, in hive-privacy.js
 const args = process.argv.slice(2)
 // link is optional first arg (contains "|" or starts with ws); detect it
 let link = ''
 if (args[0] && (args[0].includes('|') || args[0].startsWith('ws'))) link = args.shift()
-const [NAME = 'anon', MESSAGE = '', DIR = './workspace'] = args
+let [NAME = 'anon', MESSAGE = '', DIR = './workspace'] = args
 
 if (!MESSAGE) { console.error('Usage: node hive-say.js [join-link] <name> "<message>" [dir]'); process.exit(1) }
 
@@ -39,7 +40,7 @@ else {
 }
 if (!room) { console.error('No room found (give a link or run from a folder with .hive.json).'); process.exit(1) }
 
-const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai', token: process.env.HIVE_TOKEN || '', log: () => {}, syncFiles: false })
+const hive = startSync({ relay, room, dir: DIR, name: NAME, kind: 'ai', token: resolveRoomToken({ room, name: NAME, dir: DIR, link }), log: () => {}, syncFiles: false })
 hive.provider.on('sync', (s) => {
   if (!s) return
   hive.say(`${NAME}: ${MESSAGE}`)

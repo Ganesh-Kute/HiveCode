@@ -39,7 +39,7 @@
         What we hold, why, and for how long. The short version: an email address and a licence
         record, and nothing else we could avoid.
       </p>
-      <p class="prose__updated">Last updated 13 November 2026</p>
+      <p class="prose__updated">Last updated 14 November 2026</p>
     </div>
 
     <div class="prose">
@@ -69,15 +69,24 @@
         A room's participants exchange document updates through the relay over an encrypted
         connection (<code>wss://</code>). On standard open rooms (<code>room-&hellip;</code>), the
         room link itself is the capability: anyone who holds the link can read and write that
-        room's synced files and chat. On secured rooms (<code>hs_&hellip;</code>), access is gated
-        by signed tokens and folder-scoped invitations ensure an out-of-scope file is never sent
-        to that participant at all.
+        room's synced files and chat. On private rooms (<code>hs_&hellip;</code>), access is gated
+        by signed tokens: the host's private key stays in <code>~/.hivecode/keys</code> on the
+        hosting machine, and invite tokens live locally in <code>~/.hivecode/tokens</code> (never
+        inside the synced folder). Folder-scoped invitations (<code>--paths</code>) are enforced
+        per file subdocument so out-of-scope file contents never reach that participant's machine;
+        shared room records on the root document &mdash; chat messages, tasks, claims, and the
+        synced list of filenames &mdash; remain visible to everyone admitted to the room (and, if
+        the invite lets them write, can be changed by them; read-only invites cannot).
       </p>
       <p>
         On the hosted relay, snapshots of a room's synced files, chat, tasks and claims are
         written to the container's local disk (<code>.hive-relay-data</code>) so a room remains
         accessible from the browser Control Room when editors close and survives a relay process
-        restart. The hosted relay runs on a plan whose container disk is wiped on a redeploy or
+        restart. Signed revocation lists for private rooms follow the same persistence rule when
+        <code>HIVE_PERSIST_DIR</code> or an embedder store is configured; when a relay runs
+        memory-only (<code>/__hive/revocations</code> reports <code>durable: false</code>),
+        revoked invites stay blocked after a relay restart only when an honest participant
+        reconnects and re-presents the signed revocation list. The hosted relay runs on a plan whose container disk is wiped on a redeploy or
         container replacement, and there is no self-serve room-delete command yet: when a
         redeploy wipes the container, synced files come back from participants' own folders if
         they rejoin, and chat and tasks return only if a still-running client reconnects.
@@ -108,20 +117,29 @@
       <p>
         <code>hivecode-mcp slack connect</code> links one room to one Slack channel, and the hosted
         relay then carries messages both ways itself. Nothing passes until someone in your Slack
-        workspace approves the Hivecode app and picks the channel on Slack's own screen.
+        workspace approves the Hivecode app and picks the channel on Slack's own screen. On
+        private rooms (<code>hs_&hellip;</code>), only the host or a maintainer the host invited can run
+        <code>slack connect</code>, <code>slack list</code>, or <code>slack disconnect</code>, and
+        the room is notified when a Slack channel is attached.
       </p>
       <ul>
         <li><b>From Slack to the room.</b> Slack sends the relay the messages posted in channels the
           Hivecode bot is a member of; the bot joins only the channel you picked. Messages people post
           in that channel are written into the room's chat under their Slack username (the relay asks
           Slack for it, which is why the app may read basic profile information). From then on they are
-          part of the room like any other chat line: anyone who holds the room link can read them, and
+          part of the room like any other chat line: anyone who holds the room grant can read them, and
           they are kept with the room's snapshot described above. Messages from bots, and events for
-          any other channel, are dropped.</li>
+          any other channel, are dropped; on private rooms (<code>hs_&hellip;</code>), messages from
+          Slack guests (single- or multi-channel), Slack Connect strangers, bots, deactivated accounts,
+          and people from another workspace are ignored (fail-closed if Slack user lookup fails;
+          lookups are cached in memory for 5 minutes per connection, so a person demoted to guest or
+          deactivated in Slack can still post for up to 5 minutes).</li>
         <li><b>From the room to Slack.</b> Every new chat line in the room, from people and agents alike,
           is posted to that channel by the bot, where every member of the channel can read it and your
-          workspace's own Slack retention applies. Before a line is sent, room links, room ids and
-          anything that looks like a key or token are removed from it. History from before the
+          workspace's own Slack retention applies. Before a line is sent, full room join links
+          (including any embedded invite token), room IDs (both <code>room-&hellip;</code> and
+          <code>hs_&hellip;</code>), and anything that looks like an API key or token are scrubbed
+          before posting to Slack or external error/webhook outputs. History from before the
           connection is not sent.</li>
         <li><b>What the relay keeps.</b> For each connection: the room id, the Slack workspace's id and
           name, the channel's id and name, the bot's user id, and the bot's access token. The token is

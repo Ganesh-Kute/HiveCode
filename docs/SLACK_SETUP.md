@@ -31,6 +31,10 @@ The CLI contacts the relay (`POST /slack/prepare`) and prints a unique, 24-hour 
   npx -y hivecode-mcp@latest slack status "wss://livecode-xoss.onrender.com|room-<id>"
   ```
   (Pass `--id <connection id>` to target a specific connection ID.)
+- On private (`hs_…`) rooms, only the host or a maintainer the host invited (`admin` / `maintainer`) can connect, list, or disconnect Slack (`Q674` / `Q675`). To list attached Slack channels for a private room:
+  ```bash
+  npx -y hivecode-mcp@latest slack list "wss://livecode-xoss.onrender.com|hs_<room>"
+  ```
 
 ### Step 2: Approve in Slack and Pick a Channel
 Open the install link in your browser, authorize the Hivecode Slack app in your workspace, and select the channel to bridge:
@@ -44,15 +48,15 @@ Open the install link in your browser, authorize the Hivecode Slack app in your 
 ### Step 3: Done!
 The relay stores the workspace bot token encrypted (`AES-256-GCM` using `HIVE_SLACK_KEY`) and announces the bridge:
 - **In the Slack channel:** `Slack is connected to this room (#channel). In the room now: <members>. To disconnect, remove this bot from the channel.`
-- **In the Hivecode room:** `Slack is connected to this room (#channel)`
+- **In the Hivecode room:** `Slack is connected to this room (#channel)` (in private `hs_…` rooms, also names who connected it and warns that everyone in that Slack channel can read and post in the room's chat).
 
 ### Disconnecting
 - **From Slack:** Remove `@Hivecode` from the channel (`/remove @Hivecode`) or uninstall the app from the workspace. The relay detects the removal, disconnects, and wipes stored credentials.
-- **From the CLI (on the machine that ran `slack connect`):**
+- **From the CLI (on the machine that ran `slack connect`, or on the host's / invited maintainer's machine in a private room):**
   ```bash
   npx -y hivecode-mcp@latest slack disconnect "wss://livecode-xoss.onrender.com|room-<id>"
   ```
-  One-link connections remember the link's connection `id` locally and authenticate disconnect with it on that machine (no signing secret required).
+  One-link connections remember the link's connection `id` locally and authenticate disconnect with it on that machine (no signing secret required). On private (`hs_…`) rooms, a token from the host or an invited maintainer (resolved automatically from `~/.hivecode/tokens` or the link) also authorizes `slack disconnect`.
 
 ### Fallback: Per-Room App Manifest (`--manifest`)
 If the relay does not have one-link OAuth enabled (`Q669`), or if you prefer a dedicated custom Slack app for one room, pass `--manifest`:
@@ -75,7 +79,8 @@ Hivecode posts room activity into Slack and forwards Slack messages into the roo
 | **Room Bridge (`slack start`)** | One thread per task | Dedicated threads for tasks (`task-open` and `task-done` broadcast to channel), plus a shared room thread for untasked chatter. |
 | **GitHub Watcher (`--slack-channel`)** | One thread per issue | Issue threads with broadcast replies for PR ready, waiting on human, and merged/closed. |
 
-- **Security & Scrubbing**: Before lines leave the relay, API keys and tokens are scrubbed, and the room ID is replaced with `[room]`.
+- **Security & Scrubbing**: Before lines leave the relay or webhook/GitHub bridges, API keys and tokens, full room join links (including any embedded invite token), and room IDs (both `room-…` and `hs_…`) are removed.
+- **Private-Room Slack Sender Guard**: On private (`hs_…`) rooms, the relay checks Slack callers (`users.info`) and ignores workspace guests (`is_restricted`, `is_ultra_restricted`), Slack Connect strangers (`is_stranger`), deactivated accounts (`deleted`), bots (`is_bot`), and external Slack Connect workspaces (`team_id` mismatch), failing closed if Slack lookup fails. Lookups are cached in memory for 5 minutes per connection, so an account deactivated or demoted in Slack can still post for up to 5 minutes.
 - **Deduplication & Deadlines**: The relay acknowledges Slack event webhooks (`HTTP 200`) immediately to satisfy Slack's 3-second deadline, deduplicates `X-Slack-Retry-Num` and `event_id`, and avoids echoing bot or Slack-origin messages.
 - **Attribution**: Messages originating from Slack are attributed in room chat as `slack:<handle>` (e.g. `slack:ganesh`), preventing impersonation of local room participants.
 
@@ -313,6 +318,8 @@ For complete error explanations and remedies, refer to [`docs/TROUBLESHOOTING.md
 | **`Q671`** | Relay | Direct Messages (`D…`) and unsupported conversations cannot be bridged. Pick a public or private Slack channel. |
 | **`Q672`** | Relay | Slack OAuth was cancelled, code/state was invalid, workspace team info was missing, or token exchange failed. Open the install link again and approve in a single workspace. |
 | **`Q673`** | CLI | Timed out waiting for Slack OAuth approval on the install link. Open the link in a browser (within 24 hours) or run with `--no-wait` and check `slack status`. |
+| **`Q674`** | Relay | Private (`hs_…`) room `slack connect` / `slack list` needs a token from the host or an invited maintainer (`401`), or `slack list` was called on an open room (`400`). Run on the host's or invited maintainer's machine (with its invite in `~/.hivecode/tokens`). |
+| **`Q675`** | Relay | Only the host or a maintainer the host invited (`admin` / `maintainer`) may attach or list Slack channels (`403`), because everyone in the channel sees room chat. |
 | **`Q630`** | `slack start` | `SLACK_BOT_TOKEN` missing or revoked. |
 | **`Q631`** | `slack start` | Bot not invited to `--channel`. Run `/invite @Hivecode`. |
 | **`Q632`** | `slack start` | Another bridge with the same name is already running in this room. |

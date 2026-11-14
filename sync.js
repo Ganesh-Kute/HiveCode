@@ -22,14 +22,17 @@ import crypto from 'crypto'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createFileTransport } from './hive-mux.js' // ONE SOCKET PER PARTICIPANT: every file doc on one physical socket when the relay offers it
-import { HiveSocket, transportFor } from './hive-transport.js' // a WebSocket, or HTTPS long-poll where WebSockets are refused
+import { HiveSocket, transportFor, relayFetch } from './hive-transport.js' // a WebSocket, or HTTPS long-poll where WebSockets are refused
 import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3, lineHunks, blockVersions } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
 import { RULES_MD, AGENT_MANUAL } from './hive-instructions.js'
 import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage, gateApproved, gatesDir, writeApproval, notApprovedMessage, notApprovedLine, GATE_CMD, GATE_NOT_APPROVED } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
-import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath } from './token.js'
+import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath, isSecuredRoom } from './token.js'
+import * as RK from './hive-room-key.js'
+import { mergeLists } from './hive-revocations.js'
+import { loadLists, saveLists } from './hive-revocations-cache.js'
 import { validateMemberName } from './hive-mailbox.js' // a name the mention parser cannot produce is not a name
 import { genIdentity, authorChange, verifyReceipt, contentHash } from './substrate.js' // convergent-substrate: signed provenance for every landed change
 import { authorsOf } from './hive-authors.js'
@@ -1302,8 +1305,11 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // the caller passed it on the command line or in the MCP config -- so there is nothing to
   // opt into. `kind` is the valuable half: it is the only way the relay can distinguish an
   // AI agent from a human, which is otherwise invisible to it and to the operator.
+  const secured = isSecuredRoom(room)
+  let activeToken = RK.resolveRoomToken({ room, name, dir: ROOT, explicit: token || '', kind, owner })
+  let authStopped = null
   const wsParams = {}
-  if (token) wsParams.token = token
+  if (activeToken) wsParams.token = activeToken
   // THE ACCOUNT CREDENTIAL, and it is NOT the same thing as `token` above.
   //
   // `token` is a room invite: it says which folders this client may write, it is short-lived,
@@ -1325,7 +1331,74 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   if (passive) wsParams.passive = 'true'
   // HiveSocket: a WebSocket where the network allows one, HTTPS long-poll where it refuses the upgrade
   // (Antigravity's cloud VMs, many company proxies). Same bytes, same relay gates, either way.
-  const wsOpts = { WebSocketPolyfill: HiveSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
+  let stopped = false
+  let provider = null
+  let fileTransport = null
+  let presentInFlight = null
+  function presentRevocations() {
+    if (!secured || stopped || authStopped) return Promise.resolve()
+    if (presentInFlight) return presentInFlight
+    const p = (async () => {
+      try {
+        const lists = RK.hostLists(room)
+        const base = String(relay).replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/+$/, '')
+        const r = await relayFetch(`${base}/__hive/revocations`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ room, lists }),
+          signal: AbortSignal.timeout(lists.length ? 8000 : 3000),
+        }).catch(() => null)
+        if (r && r.ok) {
+          const body = await r.json().catch(() => null)
+          if (Array.isArray(body && body.lists) && body.lists.length) {
+            const merged = mergeLists(room, lists, body.lists)
+            if (merged.lists.length) saveLists(room, merged.lists)
+          }
+        }
+      } catch { }
+    })().finally(() => {
+      if (presentInFlight === p) presentInFlight = null
+    })
+    presentInFlight = p
+    return p
+  }
+  const wsOpts = {
+    WebSocketPolyfill: secured ? HiveSocket.gatedBy(presentRevocations) : HiveSocket,
+    disableBc: true,
+    params: (Object.keys(wsParams).length || secured) ? wsParams : undefined,
+    shouldReconnect: (ev) => !(ev && (ev.code === 4401 || ev.code === 4403)) || !authStopped,
+  }
+  function tryRefreshHostToken() {
+    if (!secured) return false
+    const fresh = RK.hostToken(room, name, '', { kind, owner })
+    if (fresh && fresh !== activeToken) {
+      activeToken = fresh
+      wsParams.token = fresh
+      if (provider && provider.params) provider.params.token = fresh
+      if (fileTransport && typeof fileTransport.setToken === 'function') fileTransport.setToken(fresh)
+      queueMicrotask(() => {
+        if (!stopped && !authStopped && provider && !provider.shouldConnect) {
+          try { provider.connect() } catch { }
+        }
+      })
+      return true
+    }
+    return false
+  }
+  function handleAuthFailure(code, reason) {
+    if (tryRefreshHostToken()) return true
+    if (authStopped) return false
+    authStopped = { code, reason: reason || explain(code), at: Date.now() }
+    if (provider) {
+      provider.shouldConnect = false
+      queueMicrotask(() => { try { provider.disconnect() } catch { } })
+    }
+    if (fileTransport) {
+      try { fileTransport.stop() } catch { }
+    }
+    log(`[hive] NOT SYNCING -- ${authStopped.reason} (stopped retrying)`)
+    return false
+  }
   // ONE SOCKET PER PARTICIPANT. When the relay offers it (it says so in /health), file docs stop
   // costing a socket each: they ride one physical socket as channels, and the relay admits each
   // one through the same gates a per-file socket passes. Against a relay that does not offer it,
@@ -1333,9 +1406,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // before the first file opens, so a session never straddles the two transports.
   // onFallback: the relay stopped offering it mid-session, so trim to the per-file bound before
   // each remaining file gets a socket of its own (trimForSockets, below).
-  const fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets() })
-  let stopped = false
-  const provider = new WebsocketProvider(relay, room, doc, wsOpts)
+  fileTransport = createFileTransport({ relay, room, wsOpts, log, onFallback: () => trimForSockets(), onAuthFailure: (code, reason) => handleAuthFailure(code, reason) })
+  // For private rooms, HiveSocket.gatedBy(presentRevocations) waits on every open (initial
+  // connect and every reconnect) until local/host revocation lists are presented to POST /__hive/revocations.
+  provider = new WebsocketProvider(relay, room, doc, wsOpts)
   // WHICH COPY OF AN AGENT THIS IS: this machine plus this folder, hashed. Everything in a room is
   // keyed by NAME (claims, mail, presence), so two different agents under one name are one identity
   // to everybody; this is what lets a join tell another agent with the same name (refused, see
@@ -1368,7 +1442,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
 
   function explain(code) {
     if (code === 401) {
-      return token
+      return activeToken
         ? 'the relay rejected your token. It may have expired -- ask the room owner for a new invite.'
         : 'this room needs a token of your own. Ask the room owner to mint you one.'
     }
@@ -1425,8 +1499,46 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }, 35000)
   if (stillWaiting.unref) stillWaiting.unref()
 
-  provider.on('connection-error', relayTrouble)
-  provider.on('connection-close', relayTrouble)
+  provider.on('connection-error', (e) => {
+    const code = statusFromError(e) || RH.statusFromError(e) || (e && typeof e.status === 'number' ? e.status : null)
+    if (code === 401 || code === 403) {
+      handleAuthFailure(code, explain(code))
+      return
+    }
+    relayTrouble(e)
+  })
+  provider.on('connection-close', (ev) => {
+    if (ev && (ev.code === 4401 || ev.code === 4403)) {
+      handleAuthFailure(ev.code, ev.reason || 'token revoked or expired')
+      return
+    }
+    relayTrouble(ev)
+  })
+  provider.on('closed', () => {
+    if (!stopped && !authStopped && provider && !provider.shouldConnect) {
+      try { provider.connect() } catch { }
+    }
+  })
+  if (secured) {
+    const revMap = doc.getMap('hive_revocations')
+    const syncDocRevocations = () => {
+      const fromDoc = []
+      const raw = revMap.get('lists')
+      if (Array.isArray(raw)) {
+        for (const item of raw) if (typeof item === 'string') fromDoc.push(item)
+      }
+      for (const [k, v] of revMap.entries()) {
+        if (k === 'lists') continue
+        if (typeof v === 'string') fromDoc.push(v)
+        else if (Array.isArray(v)) for (const s of v) if (typeof s === 'string') fromDoc.push(s)
+      }
+      if (!fromDoc.length) return
+      const m = mergeLists(room, loadLists(room), fromDoc)
+      if (m.lists.length) saveLists(room, m.lists)
+    }
+    revMap.observe(syncDocRevocations)
+    provider.on('sync', (s) => { if (s) syncDocRevocations() })
+  }
   provider.on('status', ({ status }) => {
     if (status !== 'connected') return
     if (!everConnected) {
@@ -1973,6 +2085,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       const code = RH.statusFromError(ev)
       if (code) refusedCodes.set(relPath, code)
       if (ev && typeof ev.reason === 'string' && ev.reason) refusedReasons.set(relPath, ev.reason)
+      if (code === 401) { handleAuthFailure(code, explain(code)); return }
       noteRefusals()
     })
     // Newly opened counts as used, and opening is the moment the working set can go over
@@ -5844,6 +5957,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         transport: fileTransport.mode,
         evicted,
         scanInterval,
+        ...(authStopped ? { authStopped } : {}),
         ...(folderLost ? { folderLost: folderLost.message } : {}),
         ...(unwritable.size ? { unwritable: [...unwritable].map(([p, code]) => ({ path: p, code })) } : {}),
         ...(withheldNow().length ? { withheld: withheldNow() } : {}),
@@ -5867,7 +5981,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // status() also counts filesHeld, one existsSync per file in the room -- 1,000 on a 1,000-file
     // room, every call; in one profile 0.8 s of a 12 s publish went to polling status() alone.
     // ...plus folderLost, because the agent learns its folder is gone only where it is looking.
-    connection: () => ({ connected: !!provider.wsconnected, connecting: !!provider.wsconnecting, ...(folderLost ? { folderLost: folderLost.message } : {}) }),
+    connection: () => ({ connected: !!provider.wsconnected, connecting: !!provider.wsconnecting, ...(authStopped ? { authStopped } : {}), ...(folderLost ? { folderLost: folderLost.message } : {}) }),
     _openTurns: () => openTurns,
     _scanCount: () => scanCount,
     stop: stopAll,

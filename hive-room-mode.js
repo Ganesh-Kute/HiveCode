@@ -22,6 +22,8 @@ import path from 'path'
 import crypto from 'crypto'
 import { spawnSync } from 'child_process'
 import { parseLink, startSync } from './sync.js'
+import { scrub } from './hive-webhook.js'
+import { resolveRoomToken } from './hive-room-key.js'
 import { landAndOpen, testCommandFor } from './hive-land.js'
 import * as SEEN from './hive-seen.js' // what the room held when the issue was posted, by Yjs id (0.14.4)
 
@@ -66,8 +68,10 @@ export function validateRoomLink(link) {
   if (!parsed || !parsed.room || parsed.room.trim() === '' || !parsed.relay) {
     return { ok: false, code: 'Q650', why: `Q650 "${raw}" is not a valid room link (expected wss://relay|room-...)` }
   }
-  return { ok: true, relay: parsed.relay, room: parsed.room }
+  return { ok: true, relay: parsed.relay, room: parsed.room, token: parsed.token || '' }
 }
+
+const pickRoomToken = (room, token, link) => resolveRoomToken({ room, explicit: token || '', link: link || '' })
 
 /** 2. Check git repository using git rev-parse --show-toplevel (Q651) */
 export function checkGitRepo(repoPath) {
@@ -369,7 +373,7 @@ export async function checkRoomModeStart(opts = {}) {
     const connRes = await checkRoomConnection({
       relay: linkRes.relay,
       room: linkRes.room,
-      token: opts.token,
+      token: pickRoomToken(linkRes.room, opts.token, opts.link || opts.room),
       timeoutMs: opts.timeoutMs || 60000,
     })
     if (!connRes.ok) return connRes
@@ -591,7 +595,7 @@ export async function postIssue(opts = {}) {
         kind: 'ai',
         passive: true,
         syncFiles: false,
-        token: parsed.token || token,
+        token: pickRoomToken(parsed.room, token, link),
       })
     } else {
       tempDir = path.join(os.tmpdir(), `hive-gh-${crypto.randomBytes(6).toString('hex')}`)
@@ -604,7 +608,7 @@ export async function postIssue(opts = {}) {
         kind: 'ai',
         passive: true,
         syncFiles: false,
-        token: parsed.token || token,
+        token: pickRoomToken(parsed.room, token, link),
         log: () => {},
       })
 
@@ -649,7 +653,7 @@ export async function postIssue(opts = {}) {
     return {
       ok: false,
       code: 'Q656',
-      why: `Q656 could not reach relay behind ${link}: ${err.message}`,
+      why: scrub(`Q656 could not reach relay behind ${link}: ${err.message}`),
     }
   }
 
@@ -728,7 +732,7 @@ export async function postIssue(opts = {}) {
       : `Issue #${issue.number}`
     const verified = verifierRunner
       ? await verifierRunner({ relay: parsed.relay, room: parsed.room, taskId, chatMarker })
-      : await verifyDelivery({ relay: parsed.relay, room: parsed.room, taskId, chatMarker, token: parsed.token || token })
+      : await verifyDelivery({ relay: parsed.relay, room: parsed.room, taskId, chatMarker, token: pickRoomToken(parsed.room, token, link) })
 
     if (!verified) {
       return {
@@ -878,7 +882,7 @@ export async function openDoneHive({ link, token } = {}) {
     kind: 'ai',
     passive: true,
     syncFiles: false,
-    token: parsed.token || token,
+    token: pickRoomToken(parsed.room, token, link),
     log: () => {},
   })
   // Wait for sync to establish
@@ -1705,7 +1709,7 @@ export async function postPrFeedback(opts = {}) {
         kind: 'ai',
         passive: true,
         syncFiles: false,
-        token: parsed.token || token,
+        token: pickRoomToken(parsed.room, token, link),
       })
     } else {
       tempDir = path.join(os.tmpdir(), `hive-prfb-${crypto.randomBytes(6).toString('hex')}`)
@@ -1718,7 +1722,7 @@ export async function postPrFeedback(opts = {}) {
         kind: 'ai',
         passive: true,
         syncFiles: false,
-        token: parsed.token || token,
+        token: pickRoomToken(parsed.room, token, link),
         log: () => {},
       })
 
@@ -1802,7 +1806,7 @@ export async function postPrFeedback(opts = {}) {
           room: parsed.room,
           taskId,
           chatMarker,
-          token: parsed.token || token,
+          token: pickRoomToken(parsed.room, token, link),
         })
 
     if (!verified) {

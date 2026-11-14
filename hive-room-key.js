@@ -16,6 +16,19 @@
 // few times a week -- is `hivecode-mcp invite <name>`, run by the person or by an agent that has a
 // shell. One link per person, carrying a token minted for them alone: an invite IS that person,
 // which is why it is never pasted into the room chat (hive_say refuses tokens).
+//
+// A REVOKE IS SIGNED TOO (14 Nov 2026). The relay used to remember a revoked invite in a file of its
+// own, and the hosted relay loses its disk on every deploy, so a revoked invite came back to life.
+// Now `revoke` signs the list of everyone this host has revoked (hive-revocations.js) with the room's
+// key. The relay checks it against the room id, as it does an invite, and any member's client can
+// hand it back to a relay that has forgotten. The list is kept in the key file and in this machine's
+// cache BEFORE the relay is asked, so a revoke the relay never heard is still carried by the host's
+// next join.
+//
+// AN INVITE IS KEPT OUT OF THE ROOM FOLDER. A token used to be written to <folder>/.hive.json, the
+// host's maintainer token included, and a room folder is very often a git repository: one `git add
+// -A` published it. Tokens now sit in ~/.hivecode/tokens/<room>/, one file per participant, and
+// resolveRoomToken is the one place every tool asks for "my token for this room".
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -23,6 +36,8 @@ import crypto from 'crypto'
 import { sign, decodeUnsafe, keyFingerprint, roomFingerprint, isSecuredRoom, makeSecuredRoomId } from './token.js'
 import { validateMemberName } from './hive-mailbox.js'
 import { relayFetch } from './hive-transport.js' // through the proxy, as every call to the relay
+import { signList, mergeLists } from './hive-revocations.js'
+import { loadLists, saveLists } from './hive-revocations-cache.js'
 
 export const keysDir = () => process.env.HIVE_KEYS_DIR || path.join(os.homedir(), '.hivecode', 'keys')
 const keyFile = (room) => path.join(keysDir(), `${room}.json`)
@@ -123,14 +138,33 @@ Send it to ${name} directly, never in the room chat: whoever holds this link joi
   Join my Hivecode room. In a terminal, run this once (needs Node.js 18+), then do what it prints:
     npx -y hivecode-mcp@latest setup "${link}"
 
-Take it back any time: npx -y hivecode-mcp@latest revoke ${name}`
+Take it back any time: npx -y hivecode-mcp@latest revoke ${name}${paths.length || writePaths.length ? `
+
+What a path limit does: ${name} can open only the files named above. ${name} still sees the name of every file in the room and the whole chat, and can change the room's shared record (the file list, reviews, tasks).` : ''}`
   return { ok: true, text, link, jti }
 }
 
 const httpBase = (relay) => String(relay).replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/+$/, '')
 
-/** Take back every live invite for a name. The relay refuses those tokens from then on and closes any
- *  connection using them. Returns { ok, text }. */
+// What this host has revoked and whose invite has not yet expired: the entries of the next signed list.
+function liveRevoked(rec, now) {
+  const m = new Map()
+  for (const e of rec.revoked || []) if (e && typeof e.jti === 'string' && e.jti && (e.exp == null || e.exp > now)) m.set(e.jti, e.exp == null ? null : e.exp)
+  return m
+}
+
+/** The signed revocation lists this machine holds for a room: the host's own (from the key file)
+ *  merged with what its cache has seen from the relay. What a client presents before it connects.
+ *  [] for an open room. */
+export function hostLists(room) {
+  if (!isSecuredRoom(room)) return []
+  const rec = loadRoomKey(room)
+  return mergeLists(room, rec && typeof rec.list === 'string' ? [rec.list] : [], loadLists(room)).lists
+}
+
+/** Take back every live invite for a name. The host signs the list of everyone it has revoked and
+ *  gives it to the relay, which refuses those invites from then on and closes any connection using
+ *  them. Returns { ok, text }. */
 export async function revokeInvite({ room, relay, name }) {
   const rec = loadRoomKey(room)
   if (!rec) return { ok: false, text: `This machine does not host room ${room}, so it cannot take invites back. Only the host can.` }
@@ -139,20 +173,167 @@ export async function revokeInvite({ room, relay, name }) {
     const names = [...new Set((rec.invites || []).filter((i) => !i.revokedAt).map((i) => i.name))]
     return { ok: false, text: `No live invite for "${name}" in this room.${names.length ? ` Invited: ${names.join(', ')}.` : ' Nobody has been invited yet.'}` }
   }
+  // SIGNED AND KEPT BEFORE THE RELAY IS ASKED. If the relay cannot be reached, the intent is not
+  // lost: the list is in the key file and in the cache this machine's client presents on its next
+  // join. The invites are marked revoked only once a relay has answered, so the command can be
+  // run again.
+  const now = nowSec()
+  const entries = liveRevoked(rec, now)
+  for (const i of live) if (!(typeof i.exp === 'number' && i.exp <= now)) entries.set(i.jti, typeof i.exp === 'number' ? i.exp : null)
+  rec.revoked = [...entries].map(([jti, exp]) => ({ jti, exp }))
+  rec.seq = (Number.isInteger(rec.seq) && rec.seq >= 0 ? rec.seq : 0) + 1
+  try { rec.list = signList(rec, { seq: rec.seq, revoked: rec.revoked }) } catch (e) { return { ok: false, text: `Could not sign the revoke (${e.message}). Nothing changed.` } }
+  writeRec(rec)
+  const lists = mergeLists(room, [rec.list], loadLists(room)).lists
+  saveLists(room, lists)
+
+  const base = httpBase(relay || rec.relay)
+  const post = async (url, payload) => {
+    const r = await relayFetch(`${base}${url}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+    const body = await r.json().catch(() => null)
+    return { r, body: body && typeof body === 'object' ? body : {} }
+  }
+  const kept = 'The signed revoke is kept on this machine and goes to the relay when you next join the room.'
+  const mark = () => { for (const i of live) i.revokedAt = Date.now(); writeRec(rec) }
+  let res
+  try { res = await post('/__hive/revocations', { room, lists }) } catch (e) {
+    return { ok: false, text: `Could not reach the relay to revoke ${name}'s invite (${e.message}). The relay still accepts it; run this again. ${kept}` }
+  }
+  if (res.r.ok && res.body.ok) {
+    mark()
+    if (Array.isArray(res.body.lists)) saveLists(room, mergeLists(room, lists, res.body.lists).lists)
+    const dropped = Number(res.body.dropped) || 0
+    // Only what this relay said of itself: `durable` is true when it keeps lists across a restart.
+    const lasts = res.body.durable === true
+      ? 'The revoke is signed with this room\'s key, and this relay keeps it across a restart.'
+      : 'The revoke is signed with this room\'s key. This relay does not keep it across a restart by itself: every member\'s Hivecode holds a copy and hands it back when it reconnects.'
+    return { ok: true, text: `Revoked ${live.length} invite(s) for ${name}. The relay refuses them from now on${dropped ? `, and closed ${dropped} connection(s) using them` : ''}.\n${lasts}` }
+  }
+  // A relay that knows signed lists always answers JSON with `ok` in it. One from before them has no
+  // such route: it answers 404, or, as the hosted relay did, 200 with its plain "relay is up" page.
+  const knowsLists = typeof res.body.ok === 'boolean' || res.r.status >= 500
+  // A relay that is FULL of lists (Q677) refuses a room it has never held, and anyone can fill it with
+  // rooms of their own. That must not stop a host cutting someone off: the old, authenticated route
+  // below takes the revoke into the relay's memory at once, and the signed list stays kept here.
+  const full = res.body.ok === false && /Q677/.test(String(res.body.error || ''))
+  if (knowsLists && !full) {
+    return { ok: false, text: `The relay did not take the revoke for ${name} (HTTP ${res.r.status}${res.body.error ? ` ${res.body.error}` : ''}). It still accepts the invite; run this again. ${kept}` }
+  }
+  // A RELAY FROM BEFORE SIGNED LISTS, OR ONE THAT IS FULL OF THEM. Tell it the old way, one id at a
+  // time, and say what that is worth: it remembers until it restarts.
   const owner = mintRoomToken(rec, { name: rec.host, role: 'maintainer', ttlSec: 600 }).token
   let done = 0, dropped = 0
   const failures = []
   for (const i of live) {
     try {
-      const r = await relayFetch(`${httpBase(relay || rec.relay)}/__hive/revoke`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room, token: owner, jti: i.jti }) })
-      const body = await r.json().catch(() => ({}))
+      const { r, body } = await post('/__hive/revoke', { room, token: owner, jti: i.jti })
       if (r.ok && body.ok) { i.revokedAt = Date.now(); done++; dropped += Number(body.dropped) || 0 }
       else failures.push(`HTTP ${r.status}${body.error ? ` ${body.error}` : ''}`)
     } catch (e) { failures.push(e.message) }
   }
   writeRec(rec)
-  if (!done) return { ok: false, text: `Could not reach the relay to revoke ${name}'s invite (${failures.join('; ')}). Nothing changed; try again.` }
-  return { ok: true, text: `Revoked ${done} invite(s) for ${name}. The relay refuses them from now on${dropped ? `, and closed ${dropped} connection(s) using them` : ''}.${failures.length ? `\n${failures.length} more could not be revoked (${failures.join('; ')}); run this again.` : ''}` }
+  if (!done) return { ok: false, text: `Could not reach the relay to revoke ${name}'s invite (${failures.join('; ')}). The relay still accepts it; run this again. ${kept}` }
+  return { ok: true, text: `Revoked ${done} invite(s) for ${name}. The relay refuses them from now on${dropped ? `, and closed ${dropped} connection(s) using them` : ''}.
+${full ? 'This relay holds as many signed revocation lists as it will (Q677), so it took this revoke the old way: it will forget it when it restarts. Tell whoever runs the relay to raise HIVE_REVOCATIONS_MAX_ROOMS.' : 'This relay is older than signed revokes: it will forget this one when it restarts. Update the relay to make it last.'} ${kept}${failures.length ? `\n${failures.length} more could not be revoked (${failures.join('; ')}); run this again.` : ''}` }
+}
+
+// ---- where a token is kept, and how every tool finds it -------------------------------------------
+
+const dotDir = () => path.dirname(path.resolve(keysDir())) // ~/.hivecode, or wherever HIVE_KEYS_DIR put the keys
+export const tokensDir = () => path.join(dotDir(), 'tokens')
+const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
+// A room's id is a file name when it is one (every hosted room's is); a name somebody typed with
+// other characters in it is hashed, so no room name can point outside the store.
+const roomSeg = (room) => (/^[A-Za-z0-9_-]{1,120}$/.test(room) ? room : `r-${sha(room).slice(0, 32)}`)
+const tokenFile = (room, name) => path.join(tokensDir(), roomSeg(room), `${sha(name).slice(0, 16)}.json`)
+const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return null } }
+
+/** Keep a participant's token for a room, outside every room folder. One file per (room, name), so
+ *  two participants on one machine keep their own invites. Returns whether it was written. */
+export function saveRoomToken({ room, name = '', token }) {
+  if (!room || !token || typeof token !== 'string') return false
+  const p = decodeUnsafe(token)
+  const who = name || (p && (p.name || p.sub)) || ''
+  const f = tokenFile(room, who)
+  const tmp = `${f}.${crypto.randomBytes(4).toString('hex')}.tmp`
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(tmp, JSON.stringify({ room, name: who, token, at: Date.now() }), { mode: 0o600 })
+    fs.renameSync(tmp, f)
+    return true
+  } catch {
+    try { fs.rmSync(tmp, { force: true }) } catch { /* nothing to clean */ }
+    return false
+  }
+}
+
+/** The token saved for (room, name); with no name, the one saved last for the room. '' when none. */
+export function savedRoomToken(room, name = '') {
+  if (name) { const j = readJson(tokenFile(room, name)); return j && j.room === room && typeof j.token === 'string' ? j.token : '' }
+  let best = null
+  try {
+    const dir = path.join(tokensDir(), roomSeg(room))
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue
+      const j = readJson(path.join(dir, f))
+      if (j && j.room === room && typeof j.token === 'string' && (!best || (j.at || 0) > (best.at || 0))) best = j
+    }
+  } catch { /* nothing saved for this room */ }
+  return best ? best.token : ''
+}
+
+/** The token to use for a room: the one place every tool asks. In order:
+ *    1. `explicit`: a token passed in by hand, used exactly as given
+ *    2. the token in `link` ("relay|room|token")
+ *    3. $HIVE_TOKEN
+ *    4. the one saved in ~/.hivecode/tokens for this room and `name` (no name: the one saved last)
+ *    5. an old <dir>/.hive.json that still holds one; it is copied to the store, and with
+ *       `migrate` (a join) taken out of that file
+ *    6. this machine hosts the room under `name` (or no name was given): the host's own token,
+ *       minted from the key and renewed before it runs out
+ *  For a private room, a token made for another room is passed over at 2 to 5 rather than sent to
+ *  a relay that would refuse it. Returns '' when there is none. Never prints or logs a token. */
+export function resolveRoomToken({ room, name = '', dir = '', explicit = '', link = '', migrate = false, kind = 'ai', owner = '' } = {}) {
+  if (explicit) return String(explicit)
+  if (!room) return ''
+  const secured = isSecuredRoom(room)
+  const fits = (t) => {
+    if (!t || typeof t !== 'string') return false
+    if (!secured) return true
+    const p = decodeUnsafe(t)
+    return !!(p && p.pk && keyFingerprint(p.pk) === roomFingerprint(room))
+  }
+  const fromLink = String(link || '').split('|')[2] || ''
+  const given = fits(fromLink) ? fromLink : fits(process.env.HIVE_TOKEN) ? process.env.HIVE_TOKEN : ''
+
+  let found = savedRoomToken(room, name)
+  if (!fits(found)) found = ''
+  if (dir) {
+    const cfgPath = path.join(path.resolve(dir), '.hive.json')
+    const cfg = readJson(cfgPath)
+    if (cfg && typeof cfg === 'object' && 'token' in cfg) {
+      if (cfg.room === room && fits(cfg.token)) {
+        // The newer of the two: an older Hivecode in this folder may have written a fresh invite
+        // here after the store was filled.
+        const a = decodeUnsafe(found), b = decodeUnsafe(cfg.token)
+        if (!found || ((b && b.iat) || 0) > ((a && a.iat) || 0)) { found = cfg.token; saveRoomToken({ room, name, token: found }) }
+      }
+      if (migrate) {
+        const { token: _gone, ...rest } = cfg
+        try { fs.writeFileSync(cfgPath, JSON.stringify(rest, null, 2)) } catch { /* read-only folder: the join rewrites it anyway */ }
+      }
+    }
+  }
+  const use = given || found
+  if (!secured) return use
+  const rec = loadRoomKey(room)
+  if (!rec) return use
+  // With no name there is no telling whose saved invite is meant, and this machine holds the key:
+  // the host's token is the one that can do whatever the tool is about to ask.
+  if (!name) return given || hostToken(room, rec.host, savedRoomToken(room, rec.host), { kind, owner })
+  // The host under its own name: whatever it came with is renewed from the key when it is missing
+  // or about to run out, so the host is never locked out of its own room.
+  return hostToken(room, name, use, { kind, owner })
 }
 
 // ---- the command line: hivecode-mcp invite <name> ... | hivecode-mcp revoke <name> ----

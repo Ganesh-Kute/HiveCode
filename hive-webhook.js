@@ -8,9 +8,24 @@
 import { findSecrets } from './hive-secrets.js'
 import { relayFetch } from './hive-transport.js'
 
-/** Every key or token in `text` replaced. Run on everything that goes to GitHub or a webhook. */
-export function scrub(text) {
+export const ROOM_LINK_RE = /\bwss?:\/\/[^\s|"'<>`)\]]+\|[^\s"'<>`)\]]+/gi
+export const ROOM_ID_RE = /\b(?:room-(?=[A-Za-z0-9_-]*[A-Z0-9])[A-Za-z0-9_-]{16,}|hs_[A-Za-z0-9_-]{6,})\b/g
+
+/** Strip Hivecode room links (ws:// / wss:// relay|room|token?) and room IDs (`room-...` / `hs_...`). */
+export function scrubRoomRefs(text, { room = '', link = '' } = {}) {
   let s = String(text || '')
+  // Full `wss://...|room|token` matches must run BEFORE literal `link` replacement so an un-tokened
+  // `{ link }` prefix never leaves `|[access token removed]` behind.
+  s = s.replace(ROOM_LINK_RE, '[room link removed]')
+  if (link) s = s.split(link).join('[room link removed]')
+  s = s.replace(ROOM_ID_RE, '[room id removed]')
+  if (room) s = s.split(room).join('[room id removed]')
+  return s
+}
+
+/** Every room ref, key, or token in `text` replaced. Run on everything that goes to GitHub, Slack, or a webhook. */
+export function scrub(text, opts) {
+  let s = scrubRoomRefs(text, opts)
   for (const f of findSecrets(s, { tokens: true })) s = s.split(f.value).join(`[${f.kind} removed]`)
   return s
 }

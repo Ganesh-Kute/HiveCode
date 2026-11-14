@@ -974,7 +974,13 @@ function start(root, room, relay, linkToken) {
   if (shareName) wsParams.kind = cfg.get('participantKind') === 'ai' ? 'ai' : 'human'
   // disableBc: relay is the ONLY sync path (else same-machine peers would bypass
   // the relay's access control via BroadcastChannel).
-  const wsOpts = { WebSocketPolyfill: WebSocket, disableBc: true, params: Object.keys(wsParams).length ? wsParams : undefined }
+  let authStopped = false
+  const wsOpts = {
+    WebSocketPolyfill: WebSocket,
+    disableBc: true,
+    params: Object.keys(wsParams).length ? wsParams : undefined,
+    shouldReconnect: (ev) => !(ev && (ev.code === 4401 || ev.code === 4403)) || !!(session && session.keys && /^hs_/.test(room) && !authStopped),
+  }
   const provider = new WebsocketProvider(useRelay, room, doc, wsOpts)
   // Unique per window: doc.clientID is distinct even for two windows on one
   // machine (machineId was identical → both showed the same id). A configured
@@ -1014,6 +1020,7 @@ function start(root, room, relay, linkToken) {
     fileDocs.set(r, e)
     text.observe((_ev, txn) => { if (!txn.local) reconcile(r, 'remote') })
     fprovider.on('sync', (s) => { if (s) { e.synced = true; reconcile(r, 'remote') } })
+    fprovider.on('connection-close', (ev) => { if (ev && (ev.code === 4401 || ev.code === 4403)) refreshOrStopAuth() })
     return e
   }
   function closeFile(r) { const e = fileDocs.get(r); if (!e) return; try { e.undo && e.undo.destroy() } catch {} try { e.provider.destroy() } catch {} try { e.doc.destroy() } catch {} fileDocs.delete(r) }
@@ -1811,6 +1818,53 @@ function start(root, room, relay, linkToken) {
     }
     renderMembers()
     pushState()
+  })
+
+  const refreshOrStopAuth = () => {
+    if (session && session.keys && /^hs_/.test(room)) {
+      try {
+        const { token: fresh } = mintToken(session.keys, room, { name: me, kind: 'human', role: 'maintainer' })
+        authStopped = false
+        session.ownerToken = fresh
+        wsParams.token = fresh
+        if (provider.params) provider.params.token = fresh
+        queueMicrotask(() => {
+          if (!authStopped && provider && !provider.shouldConnect && typeof provider.connect === 'function') {
+            try { provider.connect() } catch { }
+          }
+        })
+        for (const e of fileDocs.values()) {
+          if (e && e.provider) {
+            if (e.provider.params) e.provider.params.token = fresh
+            queueMicrotask(() => {
+              if (!authStopped && e.provider && !e.provider.shouldConnect && typeof e.provider.connect === 'function') {
+                try { e.provider.connect() } catch { }
+              }
+            })
+          }
+        }
+        return
+      } catch { }
+    }
+    authStopped = true
+    provider.shouldConnect = false
+    queueMicrotask(() => { try { provider.disconnect() } catch { } })
+    for (const e of fileDocs.values()) {
+      if (e && e.provider) {
+        e.provider.shouldConnect = false
+        queueMicrotask(() => { try { e.provider.disconnect() } catch { } })
+      }
+    }
+    setStatus('off')
+    logActivity('Access revoked or invite expired — disconnected')
+  }
+  provider.on('connection-close', (ev) => {
+    if (ev && (ev.code === 4401 || ev.code === 4403)) refreshOrStopAuth()
+  })
+  provider.on('connection-error', (e) => {
+    const m = /Unexpected server response:\s*(\d{3})/.exec((e && (e.message || e.reason)) || '')
+    const code = m ? Number(m[1]) : (e && e.status)
+    if (code === 401 || code === 403) refreshOrStopAuth()
   })
 
   provider.on('sync', (s) => {

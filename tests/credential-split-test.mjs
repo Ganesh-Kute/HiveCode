@@ -126,7 +126,7 @@ s3.stop()
 
 console.log('\n# The MCP server does not persist the licence into the project folder')
 const mcpSrc = fs.readFileSync(new URL('../hive-mcp.js', import.meta.url), 'utf8')
-T('hive-mcp writes .hive.json without any licence', /\.hive\.json'\), JSON\.stringify\(\{ relay, room, \.\.\.\(useToken/.test(mcpSrc))
+T('hive-mcp writes .hive.json without any licence, and without the room token', /\.hive\.json'\), JSON\.stringify\(\{ relay, room, \.\.\.keep \}/.test(mcpSrc))
 T('hive-mcp never reads a licence from the link', !/linkToken.*licen/i.test(mcpSrc))
 
 console.log('\n# The extension reads SecretStorage, not settings.json')
