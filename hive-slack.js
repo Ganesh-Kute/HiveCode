@@ -2212,7 +2212,6 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   let allowSource = env.SLACK_ALLOW ? 'SLACK_ALLOW' : '--allow'
   let LINK = ''
   let CONN_ID = ''
-  let HIVE_TOKEN = ''
   let dryRun = false
   let agent = false
   let manifest = false
@@ -2227,7 +2226,6 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
     const a = argv[i]
     if ((a === 'start' || a === 'check' || a === 'connect' || a === 'disconnect' || a === 'status' || a === 'list' || a === 'app-manifest') && !LINK && i === 0) { mode = a; continue }
     if (a === '--id') { CONN_ID = argv[++i] || ''; continue }
-    if (a === '--token') { HIVE_TOKEN = argv[++i] || ''; continue }
     if (a === '--manifest') { manifest = true; continue }
     if (a === '--no-wait') { noWait = true; continue }
     if (a === '--inbound') { inbound = String(argv[++i] || '').toLowerCase(); continue }
@@ -2253,10 +2251,10 @@ export async function main(argv = process.argv.slice(2), { log = console.log, lo
   if (mode === 'connect' || mode === 'disconnect' || mode === 'status' || mode === 'list' || mode === 'app-manifest') {
     const C = await import('./hive-slack-connect.js') // lazy: it imports slackPost from here
     if (!LINK) { logErr(C.CONNECT_USAGE.trim()); return 2 }
-    if (mode === 'connect') return C.runSlackConnect({ link: LINK, channel: CHANNEL, manifest, noWait, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
-    if (mode === 'disconnect') return C.runSlackDisconnect({ link: LINK, id: CONN_ID, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
-    if (mode === 'status') return C.runSlackStatus({ link: LINK, id: CONN_ID, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
-    if (mode === 'list') return C.runSlackList({ link: LINK, token: HIVE_TOKEN, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'connect') return C.runSlackConnect({ link: LINK, channel: CHANNEL, manifest, noWait, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'disconnect') return C.runSlackDisconnect({ link: LINK, id: CONN_ID, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'status') return C.runSlackStatus({ link: LINK, id: CONN_ID, env, log, logErr, fetchImpl, ...connect })
+    if (mode === 'list') return C.runSlackList({ link: LINK, env, log, logErr, fetchImpl, ...connect })
     return C.runSlackAppManifest({ url: LINK, log, logErr })
   }
   if (mode === 'check') {

@@ -192,13 +192,26 @@ try {
     T('A1.4 host status on hs_ room without remembered id checks /slack/list with token',
       cSt === 0 && /ops/.test(outSt.join('\n')),
       outSt.join(' | '))
+
+    const rejErr = []
+    const cRej = await slackMain(['list', `wss://relay.example|${HS_ROOM}`, '--token', HOST_TOK], {
+      env: {},
+      fetchImpl: fetchMock(),
+      log: () => {},
+      logErr: (s) => rejErr.push(s),
+    })
+    T('F2 hive-slack CLI rejects removed --token flag with exit 2',
+      cRej === 2 && !rejErr.join('\n').includes('--token'),
+      `code=${cRej}`)
   }
 
   // ── Spin up real relay for live A4 checks ──────────────────────────────────────────────────
   const PORT = await freePort()
   const RELAY = `ws://127.0.0.1:${PORT}`
+  const relayCwd = path.join(tmp, 'relay-cwd')
+  fs.mkdirSync(relayCwd, { recursive: true })
   relayProc = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
-    cwd: ROOT,
+    cwd: relayCwd,
     env: { ...process.env, PORT: String(PORT), HIVE_PERSIST_DIR: 'off', HIVE_SEATS: '25' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -254,8 +267,11 @@ try {
   // ── 4. A4: hive-doctor.js ──────────────────────────────────────────────────────────────────
   console.log('\n# 4. A4: hive-doctor.js')
   {
+    const doc1Cwd = path.join(tmp, 'doc-cwd-1')
+    fs.mkdirSync(doc1Cwd, { recursive: true })
     const runDoc = spawnSync(process.execPath, [path.join(ROOT, 'hive-doctor.js'), `${RELAY}|${HS_ROOM}|${HOST_TOK}`, '--json'], {
-      cwd: ROOT,
+      cwd: doc1Cwd,
+      env: { ...process.env, HIVE_KEYS_DIR: path.join(tmp, 'doc-keys-1') },
       encoding: 'utf8',
       timeout: 22000,
     })
@@ -264,6 +280,14 @@ try {
     T('D1 hive-doctor connects to private hs_ room using link token, verdict OK, never prints token',
       runDoc.status === 0 && j && j.verdict === 'OK' && j.contentBytes === 5 && !runDoc.stdout.includes(HOST_TOK) && !runDoc.stderr.includes(HOST_TOK),
       `code=${runDoc.status} err=${String(runDoc.stderr || '').slice(0, 180)} out=${String(runDoc.stdout || '').slice(0, 180)}`)
+    const docHelp = spawnSync(process.execPath, [path.join(ROOT, 'hive-doctor.js')], {
+      cwd: doc1Cwd,
+      encoding: 'utf8',
+      timeout: 10000,
+    })
+    T('F2 hive-doctor usage advertises no --token flag',
+      docHelp.status === 2 && !docHelp.stderr.includes('--token'),
+      `code=${docHelp.status} err=${String(docHelp.stderr || '').slice(0, 140)}`)
   }
 
   // ── 5. A4: hive-slack-agent.js ─────────────────────────────────────────────────────────────
@@ -444,8 +468,10 @@ try {
         cStore === 0 && seenTok === HOST_TOK && /ops/.test(storeListOut.join('\n')),
         `code=${cStore} out=${storeListOut.join(' | ')}`)
 
+      const doc2Cwd = path.join(tmp, 'doc-cwd-2')
+      fs.mkdirSync(doc2Cwd, { recursive: true })
       const docStore = spawnSync(process.execPath, [path.join(ROOT, 'hive-doctor.js'), `${RELAY}|${HS_ROOM}`, '--json'], {
-        cwd: ROOT,
+        cwd: doc2Cwd,
         env: { ...process.env, HIVE_KEYS_DIR: process.env.HIVE_KEYS_DIR },
         encoding: 'utf8',
         timeout: 22000,

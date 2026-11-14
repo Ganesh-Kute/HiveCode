@@ -40,7 +40,7 @@ const TOK = sign({
   jti: 'jti-' + crypto.randomBytes(6).toString('hex'),
 }, { privateKey: skPem })
 const INVITE_LINK = `wss://relay.example.com|${HS_ROOM}|${TOK}`
-const OPEN_ROOM = 'room-OpenDemo987654'
+const OPEN_ROOM = 'room-AbCdEf1234567890GhIjKl'
 const OPEN_LINK = `wss://relay.example.com|${OPEN_ROOM}|${TOK}`
 const FAKE_AWS = 'AKIA' + 'Q5R7ST9UVW2X4Y6N'
 
@@ -48,7 +48,16 @@ console.log('\n# 1. hive-webhook.js scrub()')
 {
   const a = scrub(`joined ${HS_ROOM} and ${OPEN_ROOM}`)
   T('scrub strips bare hs_ room ID', !a.includes(HS_ROOM) && /\[room id removed\]/.test(a), a)
-  T('scrub strips bare room-... room ID', !a.includes(OPEN_ROOM), a)
+  T('scrub strips bare realistic 22-char room-... room ID', !a.includes(OPEN_ROOM) && /\[room id removed\]/.test(a), a)
+
+  const keep1 = 'see hive-room-watcher.js and tests/room-key-revocations-test.mjs'
+  T('scrub does not corrupt hyphenated filename/test paths starting with room-', scrub(keep1) === keep1, scrub(keep1))
+  const keep2 = 'the room-service is down'
+  T('scrub does not corrupt ordinary lowercase hyphenated phrase room-service', scrub(keep2) === keep2, scrub(keep2))
+  const keep3 = 'check room-cleanup-helper-module in CI'
+  T('scrub does not corrupt long lowercase hyphenated phrase starting with room-', scrub(keep3) === keep3, scrub(keep3))
+  const keep4 = 'token_prefix_not_a_room_id room-short1'
+  T('scrub does not corrupt short room-short1 under 16 chars', scrub(keep4) === keep4, scrub(keep4))
 
   const b = scrub(`invite ${INVITE_LINK} key=${FAKE_AWS}`)
   T('scrub strips wss://...|hs_...|jwt completely without leaking token or dangling fragment',
