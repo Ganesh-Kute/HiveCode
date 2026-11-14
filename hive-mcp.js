@@ -38,7 +38,7 @@ if (!process.env.HIVE_FORK_GATE) process.env.HIVE_FORK_GATE = 'on'
 import { startSync, parseLink } from './sync.js'
 import { transportFor, unreachedReason, proxyFor } from './hive-transport.js'
 import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from './hive-privacy.js'
-import { newPersonalRoom, saveRoomKey, loadRoomKey, hostToken, main as roomKeyMain } from './hive-room-key.js'
+import { newPersonalRoom, saveRoomKey, loadRoomKey, resolveRoomToken, saveRoomToken, main as roomKeyMain } from './hive-room-key.js'
 import { isSecuredRoom } from './token.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
 import { INSTRUCTIONS, joinCard, REACH_BY_WAIT } from './hive-instructions.js'
@@ -90,7 +90,7 @@ function resolveRoomRaw(link, dir) {
   if (link) { const { relay, room, token } = parseLink(link); return { relay: relay || DEFAULT_RELAY, room, token, mode: 'joined (link)' } }
   const cfgPath = path.join(path.resolve(dir), '.hive.json')
   if (fs.existsSync(cfgPath)) {
-    try { const c = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); if (c.room) return { relay: c.relay || DEFAULT_RELAY, room: c.room, token: c.token || '', mode: 'joined (.hive.json)' } } catch {}
+    try { const c = JSON.parse(fs.readFileSync(cfgPath, 'utf8')); if (c.room) return { relay: c.relay || DEFAULT_RELAY, room: c.room, token: '', mode: 'joined (.hive.json)' } } catch {} // the token is not kept here any more: resolveRoomToken finds it
   }
   return { relay: DEFAULT_RELAY, room: 'room-' + crypto.randomBytes(13).toString('base64url'), token: '', mode: 'HOSTED (new room)' }
 }
@@ -291,21 +291,23 @@ NOTHING WAS JOINED. No socket was opened, no file was published, and ${path.join
 was not written. Fix the relay and call hive_join again.`
   }
   if (fresh) saveRoomKey(fresh, { relay, host: name })
-  // token precedence: explicit arg > token baked into the join link > $HIVE_TOKEN.
-  let useToken = token || linkToken || process.env.HIVE_TOKEN || ''
-  // A personal room this machine hosts: the host's own token is minted from the key, and renewed
-  // before it runs out, so the host can never be locked out of its own room. Anyone else joining
-  // here keeps the token it came with.
-  if (!token && isSecuredRoom(room)) useToken = hostToken(room, name, useToken, { kind: kind || 'ai', owner })
-  // persist the token too, so a re-join from .hive.json keeps the grant (the
-  // invitee pastes the link once; subsequent joins just read the folder config).
+  // token precedence: explicit arg > token baked into the join link > $HIVE_TOKEN > the one saved
+  // for this room and name > an old .hive.json. A personal room this machine hosts: the host's own
+  // token is minted from the key, and renewed before it runs out, so the host can never be locked
+  // out of its own room. Anyone else joining here keeps the token it came with. (resolveRoomToken)
+  const useToken = resolveRoomToken({ room, name, dir: ROOT, explicit: token, link: linkToken ? `${relay}|${room}|${linkToken}` : '', migrate: true, kind: kind || 'ai', owner })
+  // THE TOKEN IS NOT WRITTEN INTO THE FOLDER (14 Nov 2026). It used to be, "so a re-join from
+  // .hive.json keeps the grant", and the host's maintainer token went there too. A room folder is
+  // very often a git repository and nothing kept .hive.json out of a commit, so one `git add -A`
+  // published the room. It is saved in ~/.hivecode/tokens instead, per room and participant, and a
+  // re-join finds it there; .hive.json keeps only where the room is.
   // pinnedRelay SURVIVES the rewrite. This line used to write only relay/room/token, so a pin
   // kept in .hive.json -- one of the two places readPin() looks -- was erased by the very first
-  // join that honoured it. Only the pin is carried over: an old token must not follow the
-  // folder into a different room.
+  // join that honoured it. Only the pin is carried over.
+  if (useToken) saveRoomToken({ room, name, token: useToken })
   let keep = {}
   try { const old = JSON.parse(fs.readFileSync(path.join(ROOT, '.hive.json'), 'utf8')); if (old && old.pinnedRelay) keep = { pinnedRelay: old.pinnedRelay } } catch { /* none yet */ }
-  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...(useToken ? { token: useToken } : {}), ...keep }, null, 2))
+  fs.writeFileSync(path.join(ROOT, '.hive.json'), JSON.stringify({ relay, room, ...keep }, null, 2))
   // The ACCOUNT licence is passed through but NOT persisted to .hive.json above, and that
   // asymmetry is deliberate. `.hive.json` sits in the project folder, so it gets committed
   // and it gets shared -- fine for a room invite, which is what it is for, and wrong for a

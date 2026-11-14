@@ -68,10 +68,11 @@ const read = (f) => { try { return fs.readFileSync(f, 'utf8') } catch { return n
 const cli = (...args) => spawnSync(process.execPath, [path.join(ROOT, 'hive-mcp.js'), ...args], { cwd: TMP, encoding: 'utf8', timeout: 30000, env: { ...process.env, HIVE_KEYS_DIR: KEYS, HIVE_TOKEN: '' } })
 const linkIn = (out) => { const m = /setup "([^"]+)"/.exec(out || ''); return m ? m[1] : '' }
 
-// The host's agent, through its own MCP server.
-const agent = (() => {
-  const cwd = path.join(TMP, 'host-mcp'); fs.mkdirSync(cwd, { recursive: true })
-  const p = spawn(process.execPath, [path.join(ROOT, 'hive-mcp.js')], { cwd, env: { ...process.env, HIVE_HOME: path.join(TMP, 'home'), HIVE_KEYS_DIR: KEYS, HIVE_RELAY: RELAY, HIVE_TOKEN: '' } })
+// An agent through its own MCP server. `keys` stands for that machine's ~/.hivecode/keys: the host's
+// holds the room key, a guest's holds none.
+const mcpAgent = (cwdName, keys) => {
+  const cwd = path.join(TMP, cwdName); fs.mkdirSync(cwd, { recursive: true })
+  const p = spawn(process.execPath, [path.join(ROOT, 'hive-mcp.js')], { cwd, env: { ...process.env, HIVE_HOME: path.join(TMP, 'home'), HIVE_KEYS_DIR: keys, HIVE_RELAY: RELAY, HIVE_TOKEN: '' } })
   kids.push(p)
   let buf = '', nextId = 1
   const pending = new Map()
@@ -91,9 +92,9 @@ const agent = (() => {
     return Array.isArray(c) && c[0] && typeof c[0].text === 'string' ? c[0].text : JSON.stringify(r)
   }
   return { rpc, call, notify: (method, params) => p.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n') }
-})()
-await agent.rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'claude-code', version: '1' } })
-agent.notify('notifications/initialized')
+}
+const started = async (a) => { await a.rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'claude-code', version: '1' } }); a.notify('notifications/initialized'); return a }
+const agent = await started(mcpAgent('host-mcp', KEYS)) // the host's agent
 
 const HOST = path.join(TMP, 'host')
 const banner = await agent.call('hive_join', { private: true, name: 'Host', dir: HOST })
@@ -112,8 +113,12 @@ const keyLine = rec ? rec.privateKey.split(/\r?\n/)[1] : '(no key)'
 const holding = roomFiles.filter((f) => (read(f) || '').includes(keyLine))
 T('P2 the room\'s key sits outside the room folder, and no file in the room folder holds it',
   fs.existsSync(keyFile) && path.relative(HOST, keyFile).startsWith('..') && !!rec && holding.length === 0, `${keyFile} | in the folder: ${holding.map((f) => path.basename(f)).join(', ') || 'nothing'}`)
-const hostTok = (JSON.parse(read(path.join(HOST, '.hive.json')) || '{}').token) || ''
+// The host's token is kept in ~/.hivecode/tokens (beside the keys), not in the room folder.
+const hostTok = (K && K.savedRoomToken ? K.savedRoomToken(room, 'Host') : '') || ''
 const hp = decodeUnsafe(hostTok) || {}
+T('P2b no file in the room folder holds the host\'s token, .hive.json included',
+  !!hostTok && !('token' in JSON.parse(read(path.join(HOST, '.hive.json')) || '{}')) && roomFiles.every((f) => !(read(f) || '').includes(hostTok)),
+  `in the folder: ${roomFiles.filter((f) => hostTok && (read(f) || '').includes(hostTok)).map((f) => path.basename(f)).join(', ') || 'nothing'}`)
 T('P3 the host\'s own token is a maintainer grant, signed by that key',
   hp.sub === 'Host' && hp.scopes && hp.scopes[0].role === 'maintainer' && verify(hostTok, { publicKey: hp.pk, alg: 'RS256' }).ok, JSON.stringify({ sub: hp.sub, scopes: hp.scopes }).slice(0, 160))
 T('P4 the join reply says how to invite, and offers no link that would not work',
@@ -205,11 +210,37 @@ const cfg = JSON.parse(read(path.join(HOST, '.hive.json')))
 cfg.token = K && rec ? K.mintRoomToken(rec, { name: 'Host', role: 'maintainer', ttlSec: -60 }).token : 'expired'
 fs.writeFileSync(path.join(HOST, '.hive.json'), JSON.stringify(cfg, null, 2))
 const back = await agent.call('hive_join', { dir: HOST, name: 'Host' })
-const renewed = decodeUnsafe(JSON.parse(read(path.join(HOST, '.hive.json'))).token) || {}
+const renewed = decodeUnsafe(K && K.savedRoomToken ? K.savedRoomToken(room, 'Host') : '') || {}
+T('P13b the old token is taken out of .hive.json by that join', !('token' in JSON.parse(read(path.join(HOST, '.hive.json')))))
 const st2 = JSON.parse(await agent.call('hive_status', {}))
 T('P13 a host whose own token has run out rejoins: renewed from the key, not refused',
   !/NOT JOINED/.test(back) && renewed.exp > Math.floor(Date.now() / 1000) + 86400 && st2.connected === true, `${back.split('\n')[0]} | exp ${renewed.exp} | connected ${st2.connected}`)
 T('P14 hive_status says the room is personal and that this agent hosts it', /^personal/.test(st2.access || '') && /you host it/.test(st2.access || ''), st2.access)
+
+console.log('\n# an invited agent comes back without its link')
+{
+  // P15: the invite used to be written into the guest's room folder (.hive.json), which is how a
+  // re-join found it, and how a `git add -A` published it. It is kept in ~/.hivecode/tokens now.
+  const GKEYS = path.join(TMP, 'visitor-home', 'keys') // another machine: no room key here
+  const VDIR = path.join(TMP, 'visitor')
+  const vLink = linkIn(cli('invite', 'Visitor', '--dir', HOST).stdout)
+  const vTok = vLink.split('|')[2] || ''
+  const visitor = await started(mcpAgent('visitor-mcp', GKEYS))
+  const first = await visitor.call('hive_join', { link: vLink, name: 'Visitor', dir: VDIR })
+  const gotIn = !/NOT JOINED/.test(first) && await until(() => read(path.join(VDIR, 'app.js')) === read(path.join(HOST, 'app.js')), 20000)
+  const vFiles = []
+  ;(function walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); e.isDirectory() ? walk(f) : vFiles.push(f) } })(VDIR)
+  const leaks = vFiles.filter((f) => vTok && (read(f) || '').includes(vTok))
+  T('P15 the invited agent joins, and no file in its room folder holds its invite', gotIn && !!vTok && leaks.length === 0, `joined ${gotIn} | in the folder: ${leaks.map((f) => path.basename(f)).join(', ') || 'nothing'}`)
+  T('P15 the invite is kept beside that machine\'s keys folder', fs.existsSync(path.join(TMP, 'visitor-home', 'tokens', room)))
+  await visitor.call('hive_leave', {})
+  const again = await visitor.call('hive_join', { dir: VDIR, name: 'Visitor' })
+  const st = JSON.parse(await visitor.call('hive_status', {}))
+  T('P15 it comes back with no link: the saved invite lets it in', !/NOT JOINED/.test(again) && st.connected === true && st.room === room, `${again.split('\n')[0]} | connected ${st.connected}`)
+  const hostFile = path.join(HOST, 'after-rejoin.js')
+  fs.writeFileSync(hostFile, 'export const after = "rejoin"\n')
+  T('P15 and it is really in: a file the host writes now reaches it', await until(() => read(path.join(VDIR, 'after-rejoin.js')) === read(hostFile), 20000))
+}
 
 console.log(`\n=== PERSONAL ROOMS: ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)
