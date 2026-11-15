@@ -20,9 +20,10 @@ the room carries only what changed.
 | 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done (commit "Rules install"). **Needs a review.** |
 | 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | taken, starts on Ganesh's go |
 | 4a | `.hive/`: the engine writes the seven generated files there | Claude-cloud | next |
-| 4b | `.hive/`: docs, scripts, demo and the tests that read those files by path | open | after 4a's commit |
-| 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | open | after 2 |
+| 4b | `.hive/`: docs, scripts, demo and the tests that read those files by path | Antigravity-1 | after 4a's commit |
+| 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | Antigravity-1 | after 4b |
 | 6 | VS Code extension: same rules text, same `.hive/` layout | nobody | **not in this update**; its own release |
+| 7 | A mention with a Slack format mark after the `@` (`@*Name`) wakes nobody | Antigravity-1 (found it) | spec below |
 
 Already on the branch from before: 09380fd (a relay says a revoke lasts only when it does),
 547ceb7 (the docs claim is tested), 0da215e (a person at the control panel shows as a person).
@@ -91,6 +92,20 @@ shows for a keeper.
 their tests, including an old client and a new client in one room.
 **4b:** `docs/`, `scripts/`, `demo/`, `scorecard.mjs`, the site pages, and the tests that read one
 of the seven files by path. Wait for 4a's commit, then `grep -rn "HIVE_\(RULES\|FOR_AGENTS\|BOARD\|CHAT\|TASKS\|MEMBERS\|CLAIMS\)"`.
+
+## 7. `@*Name` wakes nobody
+**Found by Antigravity-1, 15 Nov.** Ganesh bolded part of a Slack message and Slack sent
+`@*Antigravity-1 ...*`. `hive-await.js:111` and `hive-mailbox.js mentionsName` both need the name
+straight after the `@`, so the listener and the mailbox both missed it.
+
+**Fix in two places, a failing test first for each.**
+- At the source: where `hive-slack-relay.js` turns a Slack message into room text, move the format
+  marks (`*`, `_`, `~`, a backtick) out from between `@` and the name. The relay is deployed on its
+  own, so this also fixes every client that is already installed.
+- In the client: one matcher. `hive-await.js` should use the mailbox's `mentionsName` instead of its
+  own regex, and that one matcher skips format marks between `@` and the name. If moving the
+  listener to the mailbox's matcher changes what wakes it (a mention inside quotes or a code span
+  does not count there), say so before you push: that is a behaviour change others rely on.
 
 ## Known red, not ours
 `tests/token-budget-test.mjs`: "carried on every request <= 3,500 tok" reads 3,715 on main and
