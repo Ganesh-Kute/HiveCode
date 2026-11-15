@@ -61,11 +61,11 @@ export function mentionsAll(text) {
 export function unwrapFormattedMentions(text) {
   return String(text || '')
     .replace(
-      /(^|[\s(\[{<"'—–:])([*_~]*)@([*_~`]+)([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~`]*)(?![\w\-/])/g,
+      /(^|[\s(\[{<"'—–:])([*_~]*)@([*_~`]+)([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~`]*)(?![\w\-/]|:\w)/g,
       (_, lead, pre, mid, name, post) => (post ? `${lead}${pre}@${name}` : `${lead}@${name}${(pre + mid).replace(/[`_]/g, '')}`),
     )
     .replace(
-      /(^|[\s(\[{<"'—–:])([*_~]+)@([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~]*)(?![\w\-/])/g,
+      /(^|[\s(\[{<"'—–:])([*_~]+)@([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~]*)(?![\w\-/]|:\w)/g,
       (_, lead, pre, name, post) => `${lead}@${name}${post.replace(/_/g, '')}`,
     )
 }

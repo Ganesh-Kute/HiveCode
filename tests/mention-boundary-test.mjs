@@ -234,9 +234,10 @@ console.log('\n# G. SLACK FORMAT MARKS AFTER OR AROUND @ STILL MATCH AND EXTRACT
     !mentionsName('contact first_last@gmail.com or user_@gmail.com', 'gmail') &&
     mentionedNames('contact first_last@gmail.com or user_@gmail.com').length === 0)
 
-  T('G6 priorityOf and isDirectAddress handle @*Name*',
+  T('G6 priorityOf and isDirectAddress handle @*Name*, and @*slack:handle* is not cut into @slack',
     priorityOf('@*Antigravity-1* [!] stand down') === 'stop' &&
-    isDirectAddress('@*Antigravity-1* hi', 'Antigravity-1'))
+    isDirectAddress('@*Antigravity-1* hi', 'Antigravity-1') &&
+    !mentionedNames('@*slack:gkute7024* thanks').includes('slack'))
 }
 
 console.log(`\n=== HIV-P5 MENTION BOUNDARY: ${pass} passed, ${fail} failed ===`)
