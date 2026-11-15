@@ -168,6 +168,17 @@ const count = (s, sub) => s.split(sub).length - 1
     block.length <= 700 && named.length >= 2 && unknown.length === 0 && /Never end a turn without/.test(block) && /start it again after every reply/.test(block) && /Join again/.test(block),
     unknown.join(' '))
   T('I10b the command is in the package', files.has('hive-rules-install.js'))
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8').replace(/\r\n/g, '\n')
+  const startHtml = fs.readFileSync(path.join(ROOT, 'public/start.html'), 'utf8')
+  const mcpSrc = fs.readFileSync(path.join(ROOT, 'hive-mcp.js'), 'utf8')
+  const joinBlock = (mcpSrc.match(/async function joinRoom[\s\S]*?--- FOLLOW THESE RULES ---/) || [''])[0]
+  T('I11 the getting-started guides document rules install and the exact block',
+    /npx -y hivecode-mcp@latest rules install/.test(readme) &&
+    /npx -y hivecode-mcp@latest rules remove/.test(readme) &&
+    readme.includes(block) &&
+    /npx -y hivecode-mcp@latest rules install/.test(startHtml))
+  T('I11b the join result carries one line pointing at rules install',
+    /npx -y hivecode-mcp@latest rules install/.test(joinBlock))
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { }

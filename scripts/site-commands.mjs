@@ -36,6 +36,7 @@ export const SUBCOMMAND_FILES = {
   slack: 'hive-slack.js',
   invite: 'hive-room-key.js',
   revoke: 'hive-room-key.js',
+  rules: 'hive-rules-install.js',
 }
 
 export function resolveSubcommandFile(subcmd) {
