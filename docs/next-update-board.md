@@ -18,9 +18,9 @@ the room carries only what changed.
 |---|---|---|---|
 | 1 | Rules text: never end a turn unreachable, one answer per question, "For agents only" | Claude-cloud | done, c45cb3b. **Reviewed by Antigravity-1 (14/14, 57/57 on win32).** |
 | 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done, 6b38d97. **Reviewed by Antigravity-1 (13/13 on win32; 2 minor edge-case notes).** |
-| 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | **done, 578e5c6 (on `claude/blissful-allen-2ymvsk`). Reviewed by Antigravity-1 (28/28 on win32).** |
-| 4a | `.hive/`: the engine writes the seven generated files there | Claude-cloud | next |
-| 4b | `.hive/`: docs, scripts, demo and the tests that read those files by path | Antigravity-1 | after 4a's commit |
+| 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | **done, 578e5c6 (on `claude/blissful-allen-2ymvsk`). Reviewed by Antigravity-1 (28/28 on win32).** Still to come onto this branch. |
+| 4a | `.hive/`: the engine renders the room there; every test that reads those files | Claude-cloud | done (commit ".hive/"). **Needs a review.** |
+| 4b | `.hive/`: docs, scripts, demo, the site pages | Antigravity-1 | open: 4a is on the branch |
 | 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | Antigravity-1 | after 4b |
 | 6 | VS Code extension: same rules text, same `.hive/` layout | nobody | **not in this update**; its own release |
 | 7 | A mention with a Slack format mark after the `@` (`@*Name`) wakes nobody | Antigravity-1 (found it) | **done, 2a1f0dc + follow-up. Reviewed by Opus-Cloud (246/246 on Linux).** |
@@ -77,21 +77,31 @@ shows for a keeper.
 
 ## 4. `.hive/`
 **Decided.**
-- Only the seven generated files move: `HIVE_RULES.md`, `HIVE_FOR_AGENTS.md`, `HIVE_BOARD.md`,
-  `HIVE_CHAT.md`, `HIVE_TASKS.md`, `HIVE_MEMBERS.md`, `HIVE_CLAIMS.md` to `.hive/<same name>`.
+- **Six** rendered files move: `HIVE_RULES.md`, `HIVE_CHAT.md`, `HIVE_MEMBERS.md`, `HIVE_CLAIMS.md`,
+  `HIVE_BOARD.md`, `HIVE_TASKS.md` to `.hive/<same name>`.
+- **`HIVE_FOR_AGENTS.md` stays at the top level.** It is the sign on the door: its whole job is to
+  be seen by an agent that opens the folder with no Hivecode tools, and nobody looks inside a
+  dot-folder for a sign. It now points at `.hive/`. (Changed from "all seven" while building 4a.
+  One line to flip: `MANUAL_PATH` in `hive-instructions.js`.)
 - `.hive.json` and the five per-agent dotfiles stay where they are. `.hive-lock.json` is what keeps
   two clients out of one folder, and an old build looks for it at the top level.
-- `.hive/` is never synced. The seven old top-level names stay in the skip list for good: an older
-  client still writes them there.
-- A top-level copy an older build left behind: removed on join when git does not track it; left
-  alone, and named once in `hive_status`, when git tracks it. The package's own `HIVE_RULES.md`
-  stays at the package root.
-- One path constant in `hive-instructions.js`; every text that names a file uses it.
+- `.hive/` is never synced (`ALWAYS_IGNORE`). The six old top-level names stay in `SKIP` for good:
+  an older client still writes them there.
+- A top-level copy an older build left behind: removed at the first sync when git does not track
+  it; left alone, byte for byte, and named in the client's log when git tracks it. The package's
+  own `HIVE_RULES.md` stays at the package root.
+- The paths are constants in `hive-instructions.js` (`RULES_PATH`, `CHAT_PATH`, ...). `sync.js`
+  writes by them and every agent-facing text names files by them.
+- The Stop hook reads whichever copy of the chat was written last, `.hive/` or the top level: it
+  runs as the newest build while the agent's MCP server may still be the one it started as.
 
-**4a (Claude-cloud):** `sync.js`, `hive-stop-hook.js`, `hive-instructions.js`, `hive-mcp.js`, and
-their tests, including an old client and a new client in one room.
-**4b:** `docs/`, `scripts/`, `demo/`, `scorecard.mjs`, the site pages, and the tests that read one
-of the seven files by path. Wait for 4a's commit, then `grep -rn "HIVE_\(RULES\|FOR_AGENTS\|BOARD\|CHAT\|TASKS\|MEMBERS\|CLAIMS\)"`.
+**4a (Claude-cloud):** `sync.js`, `hive-stop-hook.js`, `hive-instructions.js`, `hive-throttle.js`,
+`hive-pr.js`, and every test that reads one of the six files. `tests/hive-dir-test.mjs` D1 to D6:
+D5 runs a real 0.14.15 client and this build in one room.
+**4b (Antigravity-1):** `docs/`, `scripts/`, `demo/`, `scorecard.mjs`, `public/`, `README.md`. Wait
+for 4a's commit, then
+`grep -rnE "HIVE_(RULES|BOARD|CHAT|TASKS|MEMBERS|CLAIMS)\.md" docs scripts demo public README.md scorecard.mjs`.
+Leave `extension/` alone (item 6) and leave the history in `docs/rules-rewrite/` as it was written.
 
 ## 7. `@*Name` wakes nobody
 **Found by Antigravity-1, 15 Nov.** Ganesh bolded part of a Slack message and Slack sent

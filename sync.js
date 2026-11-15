@@ -27,7 +27,7 @@ import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3, lineHunks, blockVersions } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
-import { RULES_MD, AGENT_MANUAL } from './hive-instructions.js'
+import { RULES_MD, AGENT_MANUAL, HIVE_DIR, RULES_PATH, CHAT_PATH, MEMBERS_PATH, CLAIMS_PATH, BOARD_PATH, TASKS_PATH, MANUAL_PATH, OLD_TOP_LEVEL } from './hive-instructions.js'
 import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage, gateApproved, gatesDir, writeApproval, notApprovedMessage, notApprovedLine, GATE_CMD, GATE_NOT_APPROVED } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath, isSecuredRoom } from './token.js'
 import * as RK from './hive-room-key.js'
@@ -58,6 +58,7 @@ import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; whic
 import { newSecrets, describeSecret } from './hive-secrets.js' // a credential inside a file is held here, not sent to the room
 import * as OB from './hive-obligations.js'
 import { formatTime } from './hive-time.js'
+import { spawnSync } from 'child_process' // git, asked once: which old top-level copies it tracks (gitTrackedAmong)
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -101,6 +102,11 @@ export const ALWAYS_IGNORE = [
   // Copies of files a teammate's delete removed from THIS folder (see keepDeletedCopy). They
   // are this machine's safety net; syncing them would undo every delete in the room.
   '.hive-deleted/',
+  // Where this client renders the room for its own reader: chat, members, claims, board, tasks and
+  // the rules (HIVE_DIR in hive-instructions.js). Each client renders its own; a shared copy would
+  // be every client overwriting every other's. The whole folder, so a file a later build keeps
+  // there is covered before it exists.
+  '.hive/',
   '.hive-case-*',
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 
@@ -417,9 +423,11 @@ export function deadHeatVerdict(textsByClient, relPath) {
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
 const MAX_BINARY_BYTES = Number(process.env.HIVE_MAX_BINARY_BYTES) || (5 * 1024 * 1024)
-const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
-const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents' conversation
-const TASKS_FILE = 'HIVE_TASKS.md' // generated locally from `tasks`; directed work + approvals
+// The six rendered files are under .hive/ and the sign for a tool-less agent is at the top level:
+// the paths, and why, are in hive-instructions.js, which every agent-facing text also reads them from.
+const BOARD_FILE = BOARD_PATH // generated locally from `board`; never synced as a file
+const CHAT_FILE = CHAT_PATH   // generated locally from `chat`; the agents' conversation
+const TASKS_FILE = TASKS_PATH // generated locally from `tasks`; directed work + approvals
 const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
 const SHADOW_FILE = '.hive-shadow.json' // what THIS client last wrote per file; the cross-restart ancestor
 const LOCK_FILE = '.hive-lock.json'     // one sync client per folder; see acquireFolderLock
@@ -429,18 +437,35 @@ const DELETED_KEEP_MS = 7 * 24 * 3600 * 1000 // ...pruned at start once they are
 const DELETE_SETTLE_MS = Number(process.env.HIVE_DELETE_SETTLE_MS) || 1500
 const BULK_DELETE = 5 // a batch this big is announced in the room, not just logged
 const ID_FILE = '.hive-id.json'    // this client's substrate signing identity (private); never synced
-const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
-const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
+const RULES_FILE = RULES_PATH // the law every participant follows; written into every room
+const MEMBERS_FILE = MEMBERS_PATH // live presence: who is in the room right now
 // The claim map is the stigmergic trace agents SENSE before editing (see `claims` below), but it
 // was the one part of the room that never reached disk — so an agent could only learn it by
 // remembering to call a tool, and a trace nobody can see coordinates nothing. Rendered here for
 // the same reason HIVE_CHAT.md is: a file in the working folder needs no tool call and no memory.
-const CLAIMS_FILE = 'HIVE_CLAIMS.md'
-const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder joins (via .hive.json) + behaves
+const CLAIMS_FILE = CLAIMS_PATH
+const AGENTS_FILE = MANUAL_PATH // how an AI agent opening this folder joins (via .hive.json) + behaves
+/**
+ * Which of `files` (paths relative to `root`) git tracks, as a Set. null when git cannot be asked
+ * about a folder that is inside a repository (no git on the path, or git refusing the folder): the
+ * caller then treats every file as tracked. A folder in no repository tracks nothing.
+ */
+export function gitTrackedAmong(root, files) {
+  let r = null
+  try { r = spawnSync('git', ['ls-files', '-z', '--', ...files], { cwd: root, encoding: 'utf8', timeout: 5000, windowsHide: true }) } catch { }
+  if (r && !r.error && r.status === 0) return new Set(String(r.stdout || '').split('\0').filter(Boolean).map((f) => f.replace(/\\/g, '/')))
+  for (let d = path.resolve(root); ; d = path.dirname(d)) {
+    try { if (fs.existsSync(path.join(d, '.git'))) return null } catch { return null }
+    if (path.dirname(d) === d) return new Set()
+  }
+}
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
 // Exported for hive-branch.js: a tracked file with one of these names never reaches the room.
-export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
+// The top-level names a build before 15 Nov 2026 rendered to stay in the set for good: that build
+// is still in rooms, and in a folder it has used its copies are still on disk until this one
+// removes them (clearOldTopLevel).
+export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE, ...OLD_TOP_LEVEL])
 // Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
 // here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
 // told the whole team about .hive-shadow.json, a file none of them had made.
@@ -4079,7 +4104,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function linkMemory() {
     if (!syncFiles) return
     let count = 0
-    for (const f of ['HIVE_CHAT.md', 'HIVE_BOARD.md', 'HIVE_TASKS.md', 'HIVE_MEMBERS.md']) {
+    for (const f of [CHAT_FILE, BOARD_FILE, TASKS_FILE, MEMBERS_FILE]) {
       try { if (fs.existsSync(path.join(ROOT, f))) count++ } catch { }
     }
     if (count === 0 || (memoryLinked && count === lastLinkedFilesCount)) return
@@ -5271,6 +5296,31 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     log(`[${name}] ${folderLost.message}`)
   }
 
+  // A BUILD BEFORE 15 NOV 2026 RENDERED THE ROOM AT THE TOP OF THE FOLDER. In a folder it has used,
+  // HIVE_CHAT.md and the others are still there and will never change again: a chat that stopped on
+  // the day of the update, which an agent looking around the folder reads as the room. So they go,
+  // once, at the first sync. They were always this client's to overwrite (SKIP), so nothing a person
+  // wrote is in them -- unless git tracks one, which is the person's own act (the Hivecode
+  // repository ships its HIVE_RULES.md that way): that copy stays, byte for byte, and is named.
+  let oldTopLevelCleared = false
+  function clearOldTopLevel() {
+    if (oldTopLevelCleared) return
+    oldTopLevelCleared = true
+    try {
+      const present = OLD_TOP_LEVEL.filter((f) => { try { return fs.statSync(path.join(ROOT, f)).isFile() } catch { return false } })
+      if (!present.length) return
+      const tracked = gitTrackedAmong(ROOT, present)
+      const kept = tracked ? present.filter((f) => tracked.has(f)) : present
+      const removed = []
+      for (const f of present) {
+        if (kept.includes(f)) continue
+        try { fs.rmSync(path.join(ROOT, f), { force: true }); removed.push(f) } catch { }
+      }
+      if (removed.length) log(`[${name}] removed ${removed.join(', ')} from the top of this folder: an older Hivecode wrote ${removed.length === 1 ? 'it' : 'them'} there, and this one keeps ${removed.length === 1 ? 'it' : 'them'} in ${HIVE_DIR}/.`)
+      if (kept.length) log(`[${name}] left ${kept.join(', ')} at the top of this folder alone: ${tracked ? 'git tracks' : 'git could not be asked about'} ${kept.length === 1 ? 'it' : 'them'}. Hivecode writes ${HIVE_DIR}/ now and no longer updates ${kept.length === 1 ? 'that copy' : 'those copies'}.`)
+    } catch { /* a leftover file must never stop a join */ }
+  }
+
   provider.on('sync', (s) => {
     if (!s || !syncFiles) return
     // HIV-P14b. Snapshot what the room already had, once. Measured: the manifest IS populated at
@@ -5281,6 +5331,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       roomAtJoin = new Set()
       try { for (const k of manifest.keys()) roomAtJoin.add(k) } catch { }
     }
+    clearOldTopLevel()
     writeToDisk(RULES_FILE, HIVE_RULES_TEXT) // the law is always present in the room
     writeToDisk(AGENTS_FILE, AGENT_MANUAL_TEXT) // so an agent opening this folder learns how to join + behave
     // Connect to every file I'm granted AND have not excluded; each file-room's sync pulls

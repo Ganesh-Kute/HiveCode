@@ -86,7 +86,7 @@ T('ALL THREE peers converged on the reconciled version', settled)
 if (!settled) console.log('--- A ---\n' + ca + '--- B ---\n' + cb + '--- J ---\n' + cj)
 T('no conflict markers anywhere', ![ca, cb, cj].some((s) => s.includes('<<<<<<<')))
 T('fork record cleared on every peer', !A.forkInfo('m.js') && !B.forkInfo('m.js') && !J.forkInfo('m.js'))
-const chat = fs.readFileSync(path.join(dJ, 'HIVE_CHAT.md'), 'utf8')
+const chat = fs.readFileSync(path.join(dJ, '.hive', 'HIVE_CHAT.md'), 'utf8')
 T('fork announcement carried both signed intents', chat.includes('SILENT FORK') && chat.includes('prod traffic') && chat.includes('enterprise load test'))
 T('resolution announced in the room', chat.includes('FORK RESOLVED by Judge'))
 // provenance: the judge's landed resolution is itself a signed receipt

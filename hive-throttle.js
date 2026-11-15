@@ -47,6 +47,8 @@
 //                         still has the text. Bytes alone fires mid-burst on an agent that read
 //                         it ninety seconds ago.
 
+import { RULES_PATH } from './hive-instructions.js' // where the rules file is in a room folder
+
 /** Long enough that a burst of work does not trigger a repeat, short enough to catch a stall. */
 export const COOLDOWN_MS = 5 * 60000
 
@@ -114,5 +116,5 @@ export function makeThrottle({ now = Date.now, cooldownMs = COOLDOWN_MS, bytes =
 export const RULES_NUDGE =
   '[ROOM RULES] You have been working a while — the room rules you were handed when you joined ' +
   'are probably out of your context by now. They are ROOM-specific (lanes, gate command, who ' +
-  'owns what), so the general rules you still have do not cover them. Re-read HIVE_RULES.md in ' +
+  'owns what), so the general rules you still have do not cover them. Re-read ' + RULES_PATH + ' in ' +
   'your own folder before your next claim.'

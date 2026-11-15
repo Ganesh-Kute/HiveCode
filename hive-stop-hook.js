@@ -60,6 +60,7 @@ import { mentionsName, unansweredFor } from './hive-mailbox.js'
 import { isArmed, listenCommand, listenHow, listenOrder } from './hive-listen.js'
 import { readAgents, agentForHook } from './hive-session.js'
 import { resolveRoomToken } from './hive-room-key.js'
+import { HIVE_DIR } from './hive-instructions.js'
 
 // Consecutive turns we will block purely because a task is still open, before standing down.
 // Messages are not subject to this: the watermark already makes each one block at most once.
@@ -257,7 +258,17 @@ async function main() {
     // no task, and no listener, so there is nothing to hold its turn open for.
     if (session.passive) return allow()
     const dir = path.isAbsolute(session.dir) ? session.dir : path.join(root, session.dir)
-    const read = (f) => { try { return fs.readFileSync(path.join(dir, f), 'utf8') } catch { return '' } }
+    // WHERE THE ROOM IS MIRRORED: .hive/ since 15 Nov 2026, the top of the folder before. This hook
+    // runs as the newest build (npx ...@latest) while the agent's MCP server may still be the build
+    // it started as, so it reads whichever copy was written last. Reading only the new place would
+    // find a copy from an earlier session, days stale, and let a turn end over unread mail.
+    const read = (f) => {
+      let best = '', bestAt = -1
+      for (const p of [path.join(dir, HIVE_DIR, f), path.join(dir, f)]) {
+        try { const at = fs.statSync(p).mtimeMs; if (at > bestAt) { best = fs.readFileSync(p, 'utf8'); bestAt = at } } catch { }
+      }
+      return best
+    }
 
     const chat = read('HIVE_CHAT.md')
     if (!chat) return allow() // room folder not mirrored yet; nothing to be sure about, so allow

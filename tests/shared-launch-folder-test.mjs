@@ -96,7 +96,7 @@ try {
 
   await alice.call('hive_say', { text: '@Bob-AI note-for-bob' })
   await bob.call('hive_say', { text: '@Alice-AI note-for-alice' })
-  const chatOf = (who) => read(path.join((rec[who] && rec[who].dir) || path.join(TMP, 'home', LINK.split('|')[1], who), 'HIVE_CHAT.md'))
+  const chatOf = (who) => read(path.join((rec[who] && rec[who].dir) || path.join(TMP, 'home', LINK.split('|')[1], who), '.hive', 'HIVE_CHAT.md'))
   await until(() => ['Alice-AI', 'Bob-AI'].every((w) => /note-for-bob/.test(chatOf(w)) && /note-for-alice/.test(chatOf(w))), 15000)
 
   console.log("\n# each agent's Stop hook, run in the shared folder")

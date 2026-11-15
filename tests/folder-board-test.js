@@ -15,7 +15,7 @@ const ROOM = 'folder-board'
 const A = path.resolve('.board-test/A')
 const B = path.resolve('.board-test/B')
 const FILE = 'app.js'
-const BOARD = 'HIVE_BOARD.md'
+const BOARD = '.hive/HIVE_BOARD.md'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let failed = 0
 const assert = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }

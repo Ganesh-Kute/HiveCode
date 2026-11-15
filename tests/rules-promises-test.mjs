@@ -139,7 +139,7 @@ T('R11 one question gets one answer: the instructions, the join card and HIVE_RU
   T(`R12 HIVE_RULES.md has an agents-only section that is short (${bullets} rules, 4 to 6) and yields to the person's own project rules`,
     bullets >= 4 && bullets <= 6 && /People are not bound by these/.test(section) && /Your person's own project rules come first/.test(flat(section)) && room.length <= 4400,
     `${room.length} chars in HIVE_RULES.md`)
-  const quoted = (card.match(/Read "([^"]+)" in HIVE_RULES\.md/) || [])[1] || ''
+  const quoted = (card.match(/Read "([^"]+)" in \.hive\/HIVE_RULES\.md/) || [])[1] || ''
   T('R13 it costs nothing per turn: the always-on text does not carry it, and the join card names a heading that exists',
     !/baseline|unreviewed|scratch folder/i.test(SRC.INSTRUCTIONS) && quoted.length > 0 && room.includes(`\n## ${quoted}`), `the card names "${quoted}"`)
 }
