@@ -82,5 +82,14 @@ section('the reconnect-on-every-message mitigation stays gone')
   T('...and runs on the existing sweep', /setInterval\(\(\)=>\{reviveIfDead\(\);render\(\)\},1000\)/.test(panel))
 }
 
+section('the panel is a person, whatever invite opened it (15 Nov 2026)')
+// The panel took "AI or human" from the invite's token, and `invite <name>` makes AI invites unless
+// --human is given. A person who opened the panel with one showed up as an AI that reports no build,
+// and every agent in the room was told "a build older than build reporting": a false MIXED BUILD.
+T('the panel never takes its kind from the token', !/meKind\s*=\s*claim\.kind/.test(panel))
+T('the panel announces itself as human', /setLocalStateField\('user',\{name:me,kind:'human'/.test(panel))
+T('what the panel writes to the room is a human\'s', !/kind:meKind/.test(panel) && !/byKind:meKind/.test(panel))
+T('the token is still read for the expiry check that uses it', !/claim\.exp/.test(panel) || /const claim=decodeJwt\(p\.token\)/.test(panel))
+
 console.log(`\n${pass} passed, ${fail} failed\n`)
 assert.strictEqual(fail, 0)
