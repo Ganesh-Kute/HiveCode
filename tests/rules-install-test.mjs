@@ -19,6 +19,7 @@
 //   I8  a start marker with no end marker is refused, and the file is left alone
 //   I9  show prints the block and changes nothing
 //   I10 the block is short, names only tools the server has, and carries the rule that was forgotten
+//   I12 in a folder Hivecode syncs with a room, the command says the change is shared with everyone
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -179,6 +180,28 @@ const count = (s, sub) => s.split(sub).length - 1
     /npx -y hivecode-mcp@latest rules install/.test(startHtml))
   T('I11b the join result carries one line pointing at rules install',
     /npx -y hivecode-mcp@latest rules install/.test(joinBlock))
+}
+
+// I12. MEASURED 15 Nov 2026: the join result printed `rules install --dir "<the room folder>"`. Run as
+// printed, in a room of two agents on a local relay, it created AGENTS.md in the room folder and the
+// file arrived in the other agent's folder. A room folder is synced, so the block went to everyone
+// in the room, and would go into a pull request made from it. The command cannot know whether that
+// is wanted (for a team's own repository it may be). It can say that it is happening.
+{
+  const room = dirOf('i12-room'); const plain = dirOf('i12-plain')
+  fs.writeFileSync(path.join(room, '.hive.json'), JSON.stringify({ relay: 'ws://127.0.0.1:9', room: 'r1' }))
+  fs.mkdirSync(path.join(room, 'docs'))
+  fs.writeFileSync(path.join(room, 'docs', 'prompt.md'), 'system prompt\n')
+  const inRoom = cli(['install'], room)                              // creates AGENTS.md at the top of the room folder
+  const again = cli(['install'], room)                               // changes nothing, so there is nothing to say
+  const below = cli(['install', '--file', 'docs/prompt.md'], room)   // a file below the top is synced too
+  const shown = cli(['show'], room)
+  const removed = cli(['remove'], room)
+  const elsewhere = cli(['install'], plain)
+  const NOTE = /shared with everyone in the room/
+  T('I12 in a folder Hivecode syncs with a room, install, show and remove say the change is shared with everyone there; an install that changes nothing, and any other folder, say nothing',
+    inRoom.status === 0 && NOTE.test(inRoom.stdout) && inRoom.stdout.includes(path.basename(room)) && !NOTE.test(again.stdout) && NOTE.test(below.stdout) && NOTE.test(shown.stdout) && NOTE.test(removed.stdout) && !NOTE.test(elsewhere.stdout),
+    `install: ${NOTE.test(inRoom.stdout)}, again: ${NOTE.test(again.stdout)}, below: ${NOTE.test(below.stdout)}, show: ${NOTE.test(shown.stdout)}, remove: ${NOTE.test(removed.stdout)}, elsewhere: ${NOTE.test(elsewhere.stdout)}`)
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { }

@@ -126,11 +126,13 @@ If it says **NOT JOINED** instead, see [Troubleshooting](#troubleshooting).
 
 ### Keep the core rules in your agent's own file (`rules install`)
 
-`AGENTS.md`, `CLAUDE.md` and `GEMINI.md` are loaded into every turn by your agent's own app, even after a long conversation is compacted. To add the short Hivecode block between two markers in whichever of those files exist in a folder (or create `AGENTS.md` if none exist):
+`AGENTS.md`, `CLAUDE.md` and `GEMINI.md` are loaded into every turn by your agent's own app, even after a long conversation is compacted. To add the short Hivecode block between two markers in whichever of those files exist (or create `AGENTS.md` if none exist), run this in the folder your agent's app starts in, which is where the app looks for them:
 
 ```bash
 npx -y hivecode-mcp@latest rules install
 ```
+
+If that folder is one Hivecode syncs with a room, the file is shared like any other: everyone in the room gets the change, and the command tells you so.
 
 Take it out again (restoring your file byte for byte) with `npx -y hivecode-mcp@latest rules remove`, or preview it without writing anything via `npx -y hivecode-mcp@latest rules show`. Pass `--dir <folder>` to target another folder, or `--file <path>` to target a specific instruction file:
 

@@ -95,6 +95,23 @@ function parse(argv) {
 const isFile = (p) => { try { return fs.statSync(p).isFile() } catch { return false } }
 const rel = (dir, p) => { const r = path.relative(dir, p); return r && !r.startsWith('..') && !path.isAbsolute(r) ? r.replace(/\\/g, '/') : p }
 
+/** The Hivecode room folder a file is in, or ''. The engine leaves `.hive.json` at the top of one. */
+function roomFolderOf(p) {
+  for (let d = path.dirname(path.resolve(p)); ; d = path.dirname(d)) {
+    try { if (fs.statSync(path.join(d, '.hive.json')).isFile()) return d } catch { }
+    if (path.dirname(d) === d) return ''
+  }
+}
+// A ROOM FOLDER IS SYNCED. Measured 15 Nov 2026: this command, run in one agent's room folder,
+// created AGENTS.md there, and the file arrived in every other member's folder. That may be exactly
+// what a team wants for its own repository, and it may be a surprise. It cannot be told from here,
+// so the command says what is happening and the person decides.
+function sharedNote(paths) {
+  const rooms = [...new Set(paths.map(roomFolderOf).filter(Boolean))]
+  if (!rooms.length) return ''
+  return `Note: ${rooms.join(', ')} ${rooms.length === 1 ? 'is a Hivecode room folder' : 'are Hivecode room folders'}. Files there are synced, so this change is shared with everyone in the room, and goes into a pull request made from it.`
+}
+
 export async function main(argv = process.argv.slice(2), { out = console.log, err = console.error } = {}) {
   const a = parse(argv)
   if (!a || !['install', 'remove', 'show'].includes(a.cmd)) { err(USAGE); return 2 }
@@ -105,13 +122,15 @@ export async function main(argv = process.argv.slice(2), { out = console.log, er
     out(blockFor('\n'))
     out('')
     out(existing.length ? `install would put this in: ${existing.map((p) => rel(a.dir, p)).join(', ')}` : `No agent instruction file is in ${a.dir}: install would create ${CREATED}.`)
+    const note = sharedNote(existing.length ? existing : [path.join(a.dir, CREATED)])
+    if (note) out(note)
     return 0
   }
 
   if (a.cmd === 'install') {
     const targets = existing.length ? existing : [path.join(a.dir, CREATED)]
     const created = !existing.length
-    const done = [], same = [], refused = []
+    const done = [], same = [], refused = [], written = []
     for (const p of targets) {
       let text = ''
       try { text = fs.readFileSync(p, 'utf8') } catch (e) { if (e.code !== 'ENOENT') { refused.push(`${rel(a.dir, p)}: ${e.message}`); continue } }
@@ -119,17 +138,18 @@ export async function main(argv = process.argv.slice(2), { out = console.log, er
       if (r.error) { refused.push(`${rel(a.dir, p)}: ${r.error}`); continue }
       if (!r.changed) { same.push(rel(a.dir, p)); continue }
       try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, r.text) } catch (e) { refused.push(`${rel(a.dir, p)}: ${e.message}`); continue }
-      done.push(rel(a.dir, p))
+      done.push(rel(a.dir, p)); written.push(p)
     }
     if (done.length) out(created ? `No agent instruction file was in this folder, so ${done[0]} was created with the Hivecode rules block. Claude Code reads CLAUDE.md and Gemini reads GEMINI.md: for those, run this again with --file CLAUDE.md (or GEMINI.md).` : `Hivecode rules block added to: ${done.join(', ')}. Nothing else in ${done.length === 1 ? 'that file' : 'those files'} changed.`)
     if (same.length) out(`Already up to date: ${same.join(', ')}.`)
     if (done.length) out('To take it out again: npx -y hivecode-mcp@latest rules remove')
+    if (sharedNote(written)) out(sharedNote(written))
     for (const r of refused) err(`Left alone: ${r}`)
     return refused.length ? 1 : 0
   }
 
   // remove
-  const gone = [], deleted = [], refused = []
+  const gone = [], deleted = [], refused = [], written = []
   for (const p of existing) {
     let text
     try { text = fs.readFileSync(p, 'utf8') } catch (e) { refused.push(`${rel(a.dir, p)}: ${e.message}`); continue }
@@ -139,11 +159,13 @@ export async function main(argv = process.argv.slice(2), { out = console.log, er
     try {
       // A file that held nothing but the block is one `install` created.
       if (r.text === '') { fs.unlinkSync(p); deleted.push(rel(a.dir, p)) } else { fs.writeFileSync(p, r.text); gone.push(rel(a.dir, p)) }
+      written.push(p)
     } catch (e) { refused.push(`${rel(a.dir, p)}: ${e.message}`) }
   }
   if (gone.length) out(`Hivecode rules block removed from: ${gone.join(', ')}.`)
   if (deleted.length) out(`Deleted ${deleted.join(', ')}: it held nothing but the block.`)
   if (!gone.length && !deleted.length && !refused.length) out('No Hivecode rules block was found.')
+  if (sharedNote(written)) out(sharedNote(written))
   for (const r of refused) err(`Left alone: ${r}`)
   return refused.length ? 1 : 0
 }
