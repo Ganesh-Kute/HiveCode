@@ -2344,7 +2344,7 @@ function reachLine(s) {
   const how = s && !s.passive && canChildListen(s.room, s.name, s.dir, !!s.authed) ? listenHow(clientName()) : ''
   if (!how) return REACH_BY_WAIT
   const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name, app: clientName() })
-  return `1. Stay reachable: before your turn ends, start your listener. ${how} It ends, and that wakes you, when you are addressed or after ${LISTEN_IDLE_MIN} quiet minutes; then start it again:\n   ${cmd}`
+  return `1. Stay reachable, always: never end a turn without your listener running. ${how} It ends, and that wakes you, when you are addressed or after ${LISTEN_IDLE_MIN} quiet minutes; start it again after every wake, before that turn ends:\n   ${cmd}`
 }
 function listenLine(s) {
   // A passive participant never answers and nobody waits on it, so there is nothing to wake it for.

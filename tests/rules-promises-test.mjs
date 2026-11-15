@@ -72,8 +72,13 @@ const TOOLS_JSON = (() => {
   const tools = (0, eval)(src.slice(i, j + 1))
   return JSON.stringify(tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })))
 })()
-T(`R5 the always-on text stays small: instructions ${SRC.INSTRUCTIONS.length} <= 1400 chars, join card ${card.length} <= 800, tools ${TOOLS_JSON.length} <= 13642 (0.14.3's size: it must not grow)`,
-  SRC.INSTRUCTIONS.length <= 1400 && card.length <= 800 && TOOLS_JSON.length <= 13642)
+// THE JOIN CARD'S CAP MOVED 800 -> 900 ON 15 NOV 2026, the instructions' did not. The card is paid
+// once per join; the instructions on every turn of every agent. The card gained three things the
+// owner asked for that day: the mandatory form of rule 1, "add only what is new", and the one line
+// that makes the agents-only section of HIVE_RULES.md findable. The instructions took the first two
+// inside their old budget.
+T(`R5 the always-on text stays small: instructions ${SRC.INSTRUCTIONS.length} <= 1400 chars, join card ${card.length} <= 900, tools ${TOOLS_JSON.length} <= 13642 (0.14.3's size: it must not grow)`,
+  SRC.INSTRUCTIONS.length <= 1400 && card.length <= 900 && TOOLS_JSON.length <= 13642)
 
 // Each pair the review found saying opposite things, or a promise the code does not keep.
 const agentTexts = { ...texts, 'the tool list': TOOLS_JSON, 'the Stop hook': read('hive-stop-hook.js') }
@@ -101,6 +106,43 @@ const codeSrc = fs.readdirSync(ROOT).filter((f) => /\.m?js$/.test(f) && f !== 'h
 const codes = new Set(Object.values(agentTexts).flatMap((t) => [...String(t).matchAll(/\bQ\d{3}\b/g)].map((m) => m[0])))
 const missing = [...codes].filter((q) => !codeSrc.includes(q))
 T(`R9 every Q-code the agent texts name exists in the code (${codes.size} named)`, missing.length === 0, missing.join(' '))
+
+// ── 15 Nov 2026: always reachable, one answer per question, an agents-only section ────────────
+// (docs/rules-rewrite/2026-11-15-reachable-and-quality.md)
+//
+// MEASURED 15 Nov 2026, in the team's own room: an agent answered two direct mentions, did not
+// start its listener again after the second, and was out of the member list 14 minutes later when
+// an @all went out. Rule 1 said "when you have nothing to do, ... run its listener": a description
+// of idling, which an agent that has just replied does not think it is doing. The same day the
+// owner asked five agents one question and asked them to stop "everyone just jumping in".
+const flat = (s) => String(s).replace(/\s+/g, ' ')
+const mcpSrc = read('hive-mcp.js')
+{
+  const I = flat(SRC.INSTRUCTIONS), R = flat(room), C = flat(card)
+  const gaps = []
+  if (!/Never end a turn without/.test(I)) gaps.push('instructions: a turn may still end unreachable')
+  if (!/start it again after every reply/.test(I)) gaps.push('instructions: nothing says the listener is started again after every reply')
+  if (!/rejoin|join again/.test(I)) gaps.push('instructions: an agent that dropped out is not told to join again')
+  if (!/Never end a turn without/.test(R) || !/start it again after every reply/.test(R) || !/join again/.test(R)) gaps.push('HIVE_RULES.md: rule 1 is not the mandatory form')
+  if (!/Leave only when your person/.test(R) || !/Leave only when your person/.test(C)) gaps.push('leaving is not reserved for the person (HIVE_RULES.md and the join card)')
+  if (!/do not end your turn/i.test(C) || !/each time it returns/.test(C)) gaps.push('join card (hive_wait clients): may end the turn')
+  if (!/never end a turn without your listener running/.test(mcpSrc) || !/start it again after every wake/.test(mcpSrc)) gaps.push('join card (listener clients): the listener line is not the mandatory form')
+  T('R10 rule 1 is mandatory everywhere: no turn ends unreachable, the listener is started again after every wake, a dropped agent joins again', gaps.length === 0, gaps.join(' | '))
+}
+T('R11 one question gets one answer: the instructions, the join card and HIVE_RULES.md all say to add only what is new',
+  [SRC.INSTRUCTIONS, card, room].every((t) => /add only what is new/.test(flat(t))))
+{
+  const start = room.indexOf('\n## For agents only')
+  const end = start === -1 ? -1 : room.indexOf('\n## ', start + 4)
+  const section = start === -1 ? '' : room.slice(start, end === -1 ? undefined : end)
+  const bullets = (section.match(/^- \*\*/gm) || []).length
+  T(`R12 HIVE_RULES.md has an agents-only section that is short (${bullets} rules, 4 to 6) and yields to the person's own project rules`,
+    bullets >= 4 && bullets <= 6 && /People are not bound by these/.test(section) && /Your person's own project rules come first/.test(flat(section)) && room.length <= 4400,
+    `${room.length} chars in HIVE_RULES.md`)
+  const quoted = (card.match(/Read "([^"]+)" in HIVE_RULES\.md/) || [])[1] || ''
+  T('R13 it costs nothing per turn: the always-on text does not carry it, and the join card names a heading that exists',
+    !/baseline|unreviewed|scratch folder/i.test(SRC.INSTRUCTIONS) && quoted.length > 0 && room.includes(`\n## ${quoted}`), `the card names "${quoted}"`)
+}
 
 console.log(failed ? `\n${failed} FAILED` : '\nall passed')
 process.exit(failed ? 1 : 0)

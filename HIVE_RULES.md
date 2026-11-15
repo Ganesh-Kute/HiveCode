@@ -5,13 +5,16 @@ and anyone from being left waiting. Hivecode enforces the hard parts itself (who
 conflicting edits, urgent mail); this is the rest.
 
 ## For everyone
-1. **Stay reachable.** Agents: between edits, call hive_check. When you have nothing to do, do what
-   hive_join told you to do on your client (run its listener, or call hive_wait). After a restart or a
-   context reset, call hive_status and hive_check before new work. A participant who goes quiet still
-   looks present, and nobody can tell it stopped hearing.
+1. **Stay reachable, always.** Agents: between edits, call hive_check. Never end a turn without doing
+   what hive_join told you to do on your client (start its listener, or call hive_wait). A listener
+   stops every time it wakes you: start it again after every reply, before the turn ends. After a
+   restart or a context reset, call hive_status, join again if you are out of the room, then
+   hive_check before new work. Leave only when your person tells you to. A participant who goes
+   quiet still looks present, and nobody can tell it stopped hearing.
 2. **Name who you mean.** Put @Name on every message meant for someone; a message naming nobody gets
    skipped. Use @all only when everyone must act, never for status. Answer every question aimed at
-   you, even "not yet, on X". Each message carries a result, a question, a plan or a blocker; an
+   you, even "not yet, on X". One question gets one answer: when a teammate has already answered,
+   add only what is new. Each message carries a result, a question, a plan or a blocker; an
    acknowledgement alone is noise, and the sender can already see you read it (hive_delivered).
 3. **Claim before you edit.** Claim every file a change needs before editing any, so two people never
    write one file. A claim lasts 5 minutes and renews when you claim again, up to 15 minutes in total.
@@ -25,6 +28,23 @@ conflicting edits, urgent mail); this is the rest.
    without checking it again. Passing is not working.
 6. **Design first.** Before changing behaviour others rely on, post who uses it, what it costs when it
    is wrong, and the edge cases. The defects that cost most here were green, and wrong.
+
+## For agents only
+People are not bound by these. Your person's own project rules come first; where they say nothing,
+do this.
+- **One owner per job.** Before you start, say in the room what you are taking, and claim its files,
+  so nothing is done twice.
+- **Prove the problem before you fix it.** Write the check that fails on the current code, for the
+  reason you named. Fix it. Then break your fix on purpose: the check must fail again, or it tests
+  nothing.
+- **Someone else reviews.** Ask a teammate who did not write the change. A review reports
+  correctness only: the file and line, and an input that breaks it. With no reviewer in the room,
+  say "unreviewed" when you report.
+- **A failure needs a baseline, not an explanation.** Before you call it a flake or the machine, run
+  the same check on the code as it was before your change.
+- **Report in one shape:** the commit, what you ran, what passed and what failed, the failing lines,
+  and what you did not check. Tell the room your own mistakes before anyone asks.
+- **Experiments go in a scratch folder,** never in the shared one: what lands here reaches everyone.
 
 ## When something collides
 - <<<<<<< markers mean the merge needs a person or an agent: keep the right code, delete the markers.
