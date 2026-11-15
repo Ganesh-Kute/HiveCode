@@ -179,7 +179,10 @@ const count = (s, sub) => s.split(sub).length - 1
     readme.includes(block) &&
     /npx -y hivecode-mcp@latest rules install/.test(startHtml))
   T('I11b the join result carries one line pointing at rules install, in the folder the agent app starts in (never --dir <room folder>)',
-    /npx -y hivecode-mcp@latest rules install/.test(joinBlock) && !/rules install[^\n]*--dir/.test(joinBlock))
+    /npx -y hivecode-mcp@latest rules install/.test(joinBlock) &&
+    !/rules install[^\n]*--dir/.test(joinBlock) &&
+    /your person/i.test(joinBlock) &&
+    /folder your agent app starts in/.test(joinBlock))
 }
 
 // I12. MEASURED 15 Nov 2026: the join result printed `rules install --dir "<the room folder>"`. Run as
