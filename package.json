@@ -22,12 +22,14 @@
   "bin": {
     "hivecode-mcp": "hive-mcp.js",
     "hivecode-hook": "hive-hook-install.js",
-    "hivecode-await": "hive-await.js"
+    "hivecode-await": "hive-await.js",
+    "hivecode-stay": "hive-stay.js"
   },
   "files": [
     "hive-mcp.js",
     "hive-await.js",
     "hive-listen.js",
+    "hive-stay.js",
     "hive-rules-install.js",
     "hive-session.js",
     "hive-mux.js",
@@ -122,7 +124,7 @@
     "test:setup": "node tests/setup-test.mjs --package",
     "test:mcp": "node tests/mcp-conformance-test.mjs",
     "test:recreate": "node tests/blind-recreate-test.mjs",
-    "test:liveness": "node tests/presence-listener-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs",
+    "test:liveness": "node tests/presence-listener-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs && node tests/stay-test.mjs",
     "test:attest": "node tests/attest-stale-test.mjs && node tests/hive-smp-test.js",
     "build:ext": "node scripts/build-icr-cjs.cjs && node scripts/build-privacy-cjs.cjs",
     "test:selfhost": "node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs",

@@ -544,7 +544,7 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, app = '', gatesDir: gatesDirOpt = '' }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, keeper = false, app = '', gatesDir: gatesDirOpt = '' }) {
   // Where this machine keeps its gate approvals (0.14.4 S-1): outside the synced folder, so no peer can write one.
   const GATES_DIR = gatesDirOpt || gatesDir()
   const gateSkipSaid = new Set() // (agent, command) pairs already announced as unchecked
@@ -1416,7 +1416,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // sameNameElsewhere) from this agent a moment ago, restarting in the same folder (allowed).
   const IID = crypto.createHash('sha256').update(`${os.hostname()}|${ROOT}`).digest('hex').slice(0, 12)
   const joinedAt = Date.now()
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID, joined: joinedAt }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, keeper: keeper || undefined, app: app || undefined, iid: IID, joined: joinedAt }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -4023,7 +4023,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     try {
       for (const st of provider.awareness.getStates().values()) {
         const u = st && st.user
-        if (u && u.name && !u.listener && !u.passive && u.v === PROTOCOL_VERSION) names.add(u.name)
+        if (u && u.name && !u.listener && !u.keeper && !u.passive && u.v === PROTOCOL_VERSION) names.add(u.name)
       }
     } catch { }
     return [...names].sort().indexOf(name)
@@ -4037,7 +4037,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
   function postOnce(id, text, { observer = false, ttlMs = SYS_TTL_MS, clear = null } = {}) {
     if (!text) return null
-    if (observer && (passive || listener)) return null // a client nobody waits on never speaks for the room
+    if (observer && (passive || listener || keeper)) return null // a client nobody waits on never speaks for the room
     const fire = () => {
       try {
         const prev = sysEvents.get(id)
@@ -4377,7 +4377,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID, joined: joinedAt })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, keeper: keeper || undefined, app: app || undefined, iid: IID, joined: joinedAt })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -4501,7 +4501,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     add(name, VERSION_LABEL)
     for (const st of provider.awareness.getStates().values()) {
       const u = st && st.user
-      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION || u.listener) continue
+      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION || u.listener || u.keeper) continue
       if (u.hv) add(u.name, String(u.hv))
       // An AI on this protocol reporting no build is an engine older than build reporting: the rollout
       // case, and it cannot warn itself. Humans carry no engine build (the extension, the browser panel).
@@ -5843,6 +5843,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (const s of provider.awareness.getStates().values()) {
         const u = s.user
         if (!u || !u.name) continue
+        const had = seen.has(u.name)
         const prev = seen.get(u.name) || {}
         const hv = (prev.hv === VERSION_LABEL || u.hv === VERSION_LABEL)
           ? VERSION_LABEL
@@ -5855,6 +5856,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           owner: u.owner || prev.owner,
           passive: !!(u.passive || prev.passive),
           listener: !!(u.listener || prev.listener) || undefined,
+          // A KEEPER (hive-stay.js) only when EVERY connection under the name is one: a keeper beside
+          // a listener or a full engine is that agent, listening or working; a keeper alone is an
+          // agent kept listed while it is not listening. Never merged into `listener`.
+          keeper: (!!u.keeper && (!had || !!prev.keeper)) || undefined,
           app: u.app || prev.app || undefined
         })
       }
@@ -5865,7 +5870,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // "claimed x.js -- it's yours"; the second one's write landed in the first one's folder while
     // the first held the file. hive_members showed a single Claude. (The same thing once fused a
     // file to 32,038 lines between two agents called Hermes.) Not counted: this connection, a
-    // listener (it runs under its agent's name on purpose), this same agent a moment ago in this
+    // listener or a keeper (both run under their agent's name on purpose; hive-stay.js), this same agent a moment ago in this
     // same folder (same iid), and a person in a second window when this is a person too. A state
     // with no iid is an older build that cannot say, so it counts.
     sameNameElsewhere: () => {
@@ -5875,7 +5880,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (const [id, s] of provider.awareness.getStates()) {
         const u = s && s.user
         if (id === me || !u || !u.name || String(u.name).toLowerCase() !== lc) continue
-        if (u.listener || u.iid === IID) continue
+        if (u.listener || u.keeper || u.iid === IID) continue
         if (kind === 'human' && u.kind === 'human') continue
         out.push({ name: u.name, kind: u.kind, owner: u.owner, app: u.app, joined: u.joined, clientID: id })
       }
