@@ -21,6 +21,9 @@ its LEDGER, not a second rewrite: the six rules, their order and their budget ru
 | Rule 2, everywhere | "If a teammate already answered, add only what is new." | E-2 |
 | HIVE_RULES.md | New section "For agents only": six rules. | E-4 |
 | Join card | Line 7 names that section. | A section nobody is pointed at is not read. |
+| The agent's own instruction file | `rules install` puts a short block between two markers in AGENTS.md, CLAUDE.md, GEMINI.md and the like, and `rules remove` takes it out byte for byte. | The agent's app loads those files on every turn, also after a compaction. HIVE_RULES.md is read only when an agent chooses to read it. |
+| Join result | One line: the person can run `rules install` in the folder the agent's app starts in. No folder is named. | Measured with the room folder named: the block was synced to every member and loaded by no app (docs/next-update-board.md, section 5). |
+| Every path in these texts | The six rendered files are named under `.hive/`. | They moved there the same day; `HIVE_FOR_AGENTS.md` stays at the top as the sign. |
 
 ## Where the six agents-only rules come from
 
@@ -60,8 +63,9 @@ listeners. Antigravity has no hook, so there rule 1 is still only text.
 | Text | Before | After | Cap |
 |---|---|---|---|
 | Instructions (every turn) | 1,261 | 1,399 | 1,400, unchanged |
-| Join card (once per join) | 714 | 870 | 800 raised to 900 |
+| Join card (once per join) | 714 | 882 | 800 raised to 900 |
 | HIVE_RULES.md (on demand) | 2,865 | 4,288 | 4,400, new |
+| The block for an agent's own file | none | 658 | 700, new |
 
 tests/token-budget-test.mjs: "carried on every request <= 3,500 tok" read 3,715 before this change
 and 3,750 after. It was already over its cap on main (0da215e); this change adds 35 tokens to it.
