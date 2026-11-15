@@ -2249,6 +2249,12 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // machine (0.14.4 S-1). A command, never a tool: an agent persuaded by a message cannot consent.
   const { main: gateMain } = await import('./hive-gate.js')
   process.exit(await gateMain(process.argv.slice(2)))
+} else if (isEntryPoint && process.argv[2] === 'rules') {
+  // `rules install|remove|show`: the few rules an agent forgets, between two markers in the file its
+  // own app loads on every turn (AGENTS.md, CLAUDE.md, GEMINI.md...). A command, never a tool: it is
+  // the person's file, so nothing writes there unless someone runs this. (hive-rules-install.js)
+  const { main: rulesMain } = await import('./hive-rules-install.js')
+  process.exit(await rulesMain(process.argv.slice(3)))
 } else if (isEntryPoint && (process.argv[2] === 'invite' || process.argv[2] === 'revoke')) {
   // `invite <name>` makes one person's link into a personal room this machine hosts; `revoke <name>`
   // takes it back. Commands rather than tools: see hive-room-key.js for why.

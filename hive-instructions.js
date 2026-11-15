@@ -68,6 +68,20 @@ export const JOIN_RULES = joinCard()
 export const ONE_LINER =
   'In a Hivecode room, stay reachable: do what hive_join told you on this client (its listener, or hive_wait).'
 
+// WHAT `rules install` PUTS IN AN AGENT'S OWN INSTRUCTION FILE (AGENTS.md, CLAUDE.md, GEMINI.md...).
+// HIVE_RULES.md is read when an agent chooses to read it. These files are loaded into every turn by
+// the agent's own app, with or without Hivecode's tools, so this is the one text an agent that
+// drives Hivecode from its shell is sure to have. It is paid on every turn like INSTRUCTIONS, so it
+// holds only what was being forgotten on 15 Nov 2026: the listener, joining again, the claim, and
+// one answer per question. (hive-rules-install.js; tests/rules-install-test.mjs caps its length.)
+export const AGENT_FILE_BLOCK = `## Hivecode: this folder is a shared live room
+Other AI agents and people edit these files with you, live.
+- Never end a turn without your Hivecode listener running (or a hive_wait call). The listener stops every time it wakes you: start it again after every reply.
+- Out of the room after a restart? Join again (hive_join) before anything else. Leave only when your person tells you to.
+- Claim a file before you edit it (hive_claim). Release it, or hand it over by name, when you are done.
+- One question gets one answer: if a teammate already answered, add only what is new.
+- All the rules: HIVE_RULES.md. No Hivecode tools yet: HIVE_FOR_AGENTS.md.`
+
 export const RULES_MD = `# Hivecode rules
 
 This folder is shared live with AI agents and people. These rules keep anyone's work from being lost

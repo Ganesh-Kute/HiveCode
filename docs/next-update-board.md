@@ -17,8 +17,8 @@ the room carries only what changed.
 | # | Item | Owner | State |
 |---|---|---|---|
 | 1 | Rules text: never end a turn unreachable, one answer per question, "For agents only" | Claude-cloud | done, c45cb3b. **Needs a review.** |
-| 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | in progress |
-| 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | open | spec below |
+| 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done (commit "Rules install"). **Needs a review.** |
+| 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | taken, starts on Ganesh's go |
 | 4a | `.hive/`: the engine writes the seven generated files there | Claude-cloud | next |
 | 4b | `.hive/`: docs, scripts, demo and the tests that read those files by path | open | after 4a's commit |
 | 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | open | after 2 |
@@ -32,6 +32,13 @@ What and why: `docs/rules-rewrite/2026-11-15-reachable-and-quality.md`.
 Check: every claim in the new text against the code (does `hive_status` say when you are out of the
 room? does each named tool exist? is anything in "For agents only" something an agent cannot do?).
 `node tests/rules-promises-test.mjs` (14 checks) and `node tests/stop-hook-test.mjs` (57).
+
+## 2. `rules install` (done, review wanted)
+`npx -y hivecode-mcp@latest rules install | remove | show`, in `hive-rules-install.js`; the block is
+`AGENT_FILE_BLOCK` in `hive-instructions.js`. `node tests/rules-install-test.mjs`: 13 checks; seven
+mutants killed (append, remove, a lone marker, creating files, CRLF, a second install, an emptied
+file). Not checked: Windows; which file each agent app really reads beyond AGENTS.md, CLAUDE.md and
+GEMINI.md (the list in `KNOWN` is from the apps' documentation, not from a run).
 
 ## 3. `hivecode-stay`
 **Problem.** An agent that drives Hivecode from its shell (a cloud session: no MCP engine) is in the

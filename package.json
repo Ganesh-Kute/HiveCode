@@ -28,6 +28,7 @@
     "hive-mcp.js",
     "hive-await.js",
     "hive-listen.js",
+    "hive-rules-install.js",
     "hive-session.js",
     "hive-mux.js",
     "hive-mux-proto.js",
