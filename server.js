@@ -44,7 +44,7 @@ import { serveMux } from './relay-mux.js'
 import { STATIC, staticFile } from './relay-static.js'
 import { makeSlackRelay, SLACK_PREFIX } from './hive-slack-relay.js'
 import { presenceReport, adminOk } from './relay-presence.js'
-import { makeRelayRevocations, isSafeRoomId, MAX_ROOMS as MAX_REVOCATION_ROOMS, MAX_BYTES as MAX_REVOCATION_BYTES } from './relay-revocations.js'
+import { makeRelayRevocations, persistLasts, isSafeRoomId, MAX_ROOMS as MAX_REVOCATION_ROOMS, MAX_BYTES as MAX_REVOCATION_BYTES } from './relay-revocations.js'
 import { MAX_LISTS } from './hive-revocations.js'
 // CRITICAL: use the SAME Yjs instance as y-websocket's server utils (which are CJS
 // and require('yjs')). An ESM `import * as Y from 'yjs'` loads a SECOND copy of the
@@ -1223,6 +1223,7 @@ if (PERSIST_DIR) {
 const posInt = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : d }
 const revocations = makeRelayRevocations({
   dir: PERSIST_DIR, store: null, log: (m) => console.log(m),
+  durable: persistLasts(),   // the default folder on Render does not survive a restart
   maxRooms: posInt(process.env.HIVE_REVOCATIONS_MAX_ROOMS, MAX_REVOCATION_ROOMS),
   maxBytes: posInt(process.env.HIVE_REVOCATIONS_MAX_MB, MAX_REVOCATION_BYTES / 1048576) * 1048576,
 })

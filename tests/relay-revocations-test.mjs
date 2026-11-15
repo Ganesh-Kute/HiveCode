@@ -10,6 +10,7 @@
 //       host can still revoke, and a large addition is refused and changes nothing
 //   F1  with a disk: one small file per room, written on change, read (and verified) at boot
 //   F2  a file that is junk, or holds another room's list, is ignored
+//   F4  "durable" is said only of a disk someone set up on purpose, not of the default folder
 //   O1  an outside store is read once per boot before anyone is let in; what it returns is verified
 //   O2  a store that cannot be read: ready() rejects (the caller refuses the join), and works on retry
 //   O3  a store that refuses a write: commit() rejects, memory still holds the revoke
@@ -27,7 +28,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-relay-rev-t-'))
 process.env.HIVE_KEYS_DIR = path.join(tmp, 'keys')
 const { newPersonalRoom } = await import('../hive-room-key.js')
 const { signList } = await import('../hive-revocations.js')
-const { makeRelayRevocations } = await import('../relay-revocations.js')
+const RR = await import('../relay-revocations.js')
+const { makeRelayRevocations } = RR
 const { roomFingerprint } = await import('../token.js')
 
 let pass = 0, fail = 0
@@ -90,6 +92,12 @@ try {
   const d3 = makeRelayRevocations({ dir, now: () => NOW })
   T('F2 junk and another room\'s list in a file are ignored', !d3.isRevoked(C.room, 'zz') && d3.listsOf(C.room).length === 0 && d3.isRevoked(A.room, 'a2'))
   T('F3 no disk and no store: not durable', makeRelayRevocations({}).durable === false)
+  // A folder is not a disk that lasts. On Render's free plan the relay writes to a folder by default and
+  // a restart wipes it (found live on 14 Nov 2026: the relay said durable, the revoke was gone).
+  T('F4a a relay can be told its folder does not last', makeRelayRevocations({ dir, durable: false }).durable === false)
+  T('F4b only a persist dir someone set on purpose counts as lasting', typeof RR.persistLasts === 'function'
+    && RR.persistLasts({ RENDER: 'true' }) === false && RR.persistLasts({}) === false && RR.persistLasts({ HIVE_PERSIST_DIR: 'off' }) === false
+    && RR.persistLasts({ HIVE_PERSIST_DIR: '/var/data' }) === true && RR.persistLasts({ RENDER: 'true', HIVE_PERSIST_DIR: '/var/data' }) === true)
 
   console.log('\n# O an outside store')
   let down = false, puts = [], gets = 0
