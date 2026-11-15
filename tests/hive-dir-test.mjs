@@ -191,6 +191,24 @@ const synced = (c) => until(() => c.status().connected, 15000)
   const { isOwnFile } = await import(pathToFileURL(path.join(ROOT, 'hive-pr.js')).href)
   T('D8 landing a room on a git branch never takes a file from .hive/',
     isOwnFile('.hive/HIVE_CHAT.md') && isOwnFile('.hive/notes.txt') && isOwnFile('sub/.hive/x.md') && !isOwnFile('src/app.js') && !isOwnFile('docs/hive.md'))
+
+  const SWEEP_FILES = [
+    'docs/SPEC.md', 'docs/MCP.md', 'docs/DCO_EXPLAINED.md', 'docs/IMPROVEMENTS.md', 'docs/HIVE_FOR_AGENTS.md',
+    'public/start.html', 'demo/cast.mjs', 'scorecard.mjs',
+    'scripts/hive-watch-judge.mjs', 'scripts/hive-watch-resolve.mjs', 'scripts/join-hive-active.mjs',
+  ]
+  const bareMoved = []
+  let foundInHive = 0
+  for (const rel of SWEEP_FILES) {
+    const src = read(path.join(ROOT, rel)) || ''
+    for (const m of src.matchAll(/(\.hive[\\/',\s]+)?(HIVE_(?:RULES|BOARD|CHAT|TASKS|MEMBERS|CLAIMS)\.md)/g)) {
+      if (m[1]) foundInHive++
+      else bareMoved.push(`${rel}: ${m[0]}`)
+    }
+  }
+  T('D9 docs, scripts, demo, scorecard and public pages name the six rendered files under .hive/, never at the top level',
+    bareMoved.length === 0 && foundInHive >= 20,
+    bareMoved.length ? bareMoved.join(' | ') : `found ${foundInHive} .hive/ references`)
 }
 
 console.log(`\n=== HIVE DIR: ${pass} passed, ${fail} failed ===`)

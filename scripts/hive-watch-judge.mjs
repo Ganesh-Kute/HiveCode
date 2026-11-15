@@ -12,7 +12,7 @@ const authored = (chat, who, val) =>
 let done = false
 for (let t = 0; t < 240 && !done; t += 4) {
   await new Promise((r) => setTimeout(r, 4000))
-  let chat = ''; try { chat = fs.readFileSync('./hive-work-Judge/HIVE_CHAT.md', 'utf8') } catch {}
+  let chat = ''; try { chat = fs.readFileSync('./hive-work-Judge/.hive/HIVE_CHAT.md', 'utf8') } catch {}
   let lim = ''; try { lim = fs.readFileSync('./hive-work-Judge/limits.js', 'utf8') } catch {}
   const aPost = authored(chat, 'Agent-A', '250')
   const bPost = authored(chat, 'Agent-B', '1000')
@@ -21,7 +21,7 @@ for (let t = 0; t < 240 && !done; t += 4) {
   if (bPost || bFile) { console.log('=== AGENT-B HAS ACTED ==='); done = true }
 }
 
-let chat = ''; try { chat = fs.readFileSync('./hive-work-Judge/HIVE_CHAT.md', 'utf8') } catch {}
+let chat = ''; try { chat = fs.readFileSync('./hive-work-Judge/.hive/HIVE_CHAT.md', 'utf8') } catch {}
 let lim = ''; try { lim = fs.readFileSync('./hive-work-Judge/limits.js', 'utf8') } catch {}
 console.log('----AGENT CHAT LINES----')
 console.log(chat.split('\n').filter((l) => l.includes('Agent-A (ai):') || l.includes('Agent-B (ai):')).join('\n') || '(none yet)')

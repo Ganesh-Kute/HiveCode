@@ -17,7 +17,7 @@ process.setMaxListeners(50);
 
 function parseTasks() {
   try {
-    const content = fs.readFileSync(path.resolve('./HIVE_TASKS.md'), 'utf8');
+    const content = fs.readFileSync(path.resolve('./.hive/HIVE_TASKS.md'), 'utf8');
     return content.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
       const m = line.match(/^\- \[([^\]]+)\] ([^\s]+)  ([^:]+): (.*)$/);
       if (!m) return null;
@@ -79,7 +79,7 @@ function handleMention(message) {
 
 function pollChat() {
   try {
-    const chatPath = path.resolve('./HIVE_CHAT.md');
+    const chatPath = path.resolve('./.hive/HIVE_CHAT.md');
     const text = fs.readFileSync(chatPath, 'utf8');
     const lines = text.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {

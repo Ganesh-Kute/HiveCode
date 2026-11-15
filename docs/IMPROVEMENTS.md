@@ -50,7 +50,7 @@ time-limited and revocable, without changing anything for existing open rooms.
 ### LIVE ACTIVITY / CONTROL ROOM (`sync.js`, extension, `hive-mcp.js`; `hive-activity-test.js`)
 Strengthens the actual moat (visibility + control over parallel agents). Each
 client now BROADCASTS which file it is editing via awareness; the live member list
-(HIVE_MEMBERS.md + the extension panel + MCP hive_members) shows "Name — editing
+(.hive/HIVE_MEMBERS.md + the extension panel + MCP hive_members) shows "Name — editing
 foo.js" and fades after 15s idle. When a SECOND participant starts editing a file
 someone is already on, the late starter posts a one-time chat heads-up ("⚠ Bob is
 also editing shared.js (with Alice)…") — proactive collision coordination BEFORE a
@@ -136,14 +136,14 @@ is the behavior the live test proved was missing. 38 unit + 11 live tests pass.
     hanging the MCP tests. Reinstalled + saved. Re-add if it disappears again.
 
 
-- **Live presence + chat for agents** (`HIVE_MEMBERS.md` in sync.js + extension;
+- **Live presence + chat for agents** (`.hive/HIVE_MEMBERS.md` in sync.js + extension;
   `hive-presence-test.js`; folder.js restored to the sync.js client). An agent
   now knows WHO is in the room and HOW MANY: every client renders a live
-  `HIVE_MEMBERS.md` (name, kind, owner, count) on join/leave. Clean leaves are
+  `.hive/HIVE_MEMBERS.md` (name, kind, owner, count) on join/leave. Clean leaves are
   announced immediately (stop() sets awareness to null, no 30s timeout wait).
   How an agent participates: MCP → hive_members (who), hive_read_chat (read),
   hive_say (talk), hive_wait (wake on new chat/joins); files → read
-  HIVE_MEMBERS.md + HIVE_CHAT.md, talk via hive-say.js. Proven in
+  .hive/HIVE_MEMBERS.md + .hive/HIVE_CHAT.md, talk via hive-say.js. Proven in
   `hive-presence-test.js`: A joins (count 1) → human joins (count 2, A sees it)
   → human leaves (count back to 1). folder.js restored to thin client so the CLI
   human also gets chat/tasks/presence. Extension v0.2.7. 8 live + 38 unit pass.
@@ -170,7 +170,7 @@ is the behavior the live test proved was missing. 38 unit + 11 live tests pass.
   So the SYNC LAYER detects it: every local change is classified patch vs
   rewrite (≥50% churn & ≥4 lines); a rewrite is auto-recorded on a shared
   `board` Y.Map with who/when/how-much/which-symbols, rendered to a read-only
-  `HIVE_BOARD.md` in every folder. Small patches stay silent (no noise). Proven
+  `.hive/HIVE_BOARD.md` in every folder. Small patches stay silent (no noise). Proven
   in `folder-board-test.js`: a one-line patch is NOT logged; a wholesale rewrite
   auto-appears on BOTH folders ("A rewrote app.js (7/11 lines) — touched: login,
   logout"). Honest limit: captures WHAT (objective, from the diff); WHY (intent)

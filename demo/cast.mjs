@@ -420,7 +420,7 @@ const timeline = {
   cast: CAST.map((a) => ({ name: a.name, model: a.model })),
   humanBrief: { atSeconds: BRIEF_AT, text: BRIEF },
   humanRedirect: { atSeconds: REDIRECT_AT },
-  chatFile: path.join(tmp, CAST[0].name, 'HIVE_CHAT.md'),
+  chatFile: path.join(tmp, CAST[0].name, '.hive', 'HIVE_CHAT.md'),
   roomFolder: path.join(tmp, CAST[0].name),
 }
 fs.writeFileSync(path.join(HERE, 'cast-timeline.json'), JSON.stringify(timeline, null, 1))
