@@ -100,6 +100,12 @@ try {
     rec['Alice-AI'] && rec['Alice-AI'].hiveDir === '.hive' && rec['Bob-AI'] && rec['Bob-AI'].hiveDir === '.hive' && fs.existsSync(path.join(dirA, '.hive')),
     `hiveDir on record: ${JSON.stringify([rec['Alice-AI'] && rec['Alice-AI'].hiveDir, rec['Bob-AI'] && rec['Bob-AI'].hiveDir])}`)
 
+  // What a real join hands the agent (15 Nov 2026): the rules command with no folder in it. Alice's
+  // room folder is under the Hivecode home, not the folder her app started in.
+  const ruleLine = (String(joinedA).split('\n').find((l) => /rules install/.test(l)) || '')
+  T('S1c the join result offers rules install without pointing it at the room folder, and leaves it to the person',
+    /npx -y hivecode-mcp@latest rules install/.test(ruleLine) && !/--dir/.test(ruleLine) && !ruleLine.includes(dirA) && /your person's call/.test(ruleLine), ruleLine.slice(0, 240))
+
   await alice.call('hive_say', { text: '@Bob-AI note-for-bob' })
   await bob.call('hive_say', { text: '@Alice-AI note-for-alice' })
   const chatOf = (who) => read(path.join((rec[who] && rec[who].dir) || path.join(TMP, 'home', LINK.split('|')[1], who), '.hive', 'HIVE_CHAT.md'))

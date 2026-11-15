@@ -162,6 +162,23 @@ for 4a's commit, then
 `grep -rnE "HIVE_(RULES|BOARD|CHAT|TASKS|MEMBERS|CLAIMS)\.md" docs scripts demo public README.md scorecard.mjs`.
 Leave `extension/` alone (item 6) and leave the history in `docs/rules-rewrite/` as it was written.
 
+## 5. The join-result line, measured
+The first version (5b6efb8) printed `rules install --dir "<ROOT>"`. ROOT is the room folder, and on
+a default join that is `~/hivecode/<room>/<name>`, not the folder the agent's app starts in. Run as
+printed, in a room of two agents on a local relay:
+1. `AGENTS.md` was created in the room folder;
+2. it arrived in the other agent's folder (a room folder is synced), so every member gets it and
+   `hive_pr` would land it;
+3. the file the app really loads (`CLAUDE.md` in the launch folder) was untouched, so nothing loaded
+   on every turn.
+
+The server cannot know where the app started. So the line names no folder and leaves it to the
+person (c99905b, Antigravity-1), and `rules install`, `show` and `remove` say when the folder they
+write in is a synced room folder (2898c62). Checks: I11b (the source line), I12 (the note), and
+`shared-launch-folder` S1c, which reads the line from a real `hive_join` whose room folder is under
+the Hivecode home. Five mutants for the note, all caught (only the file's own folder checked; said
+when nothing changed; `remove` silent; every folder taken for a room; `show` silent).
+
 ## 7. `@*Name` wakes nobody
 **Found by Antigravity-1, 15 Nov.** Ganesh bolded part of a Slack message and Slack sent
 `@*Antigravity-1 ...*`. `hive-await.js:111` and `hive-mailbox.js mentionsName` both need the name
@@ -177,5 +194,8 @@ straight after the `@`, so the listener and the mailbox both missed it.
   does not count there), say so before you push: that is a behaviour change others rely on.
 
 ## Known red, not ours
-`tests/token-budget-test.mjs`: "carried on every request <= 3,500 tok" reads 3,715 on main and
-3,750 with item 1. It is not in CI.
+Each was run on a clean copy of main (6df8390) and on this branch, same machine, same day.
+- `tests/token-budget-test.mjs`: "carried on every request <= 3,500 tok" reads 3,715 on main and
+  3,750 with item 1. It is not in CI.
+- `tests/billing-test.mjs`: "the relay serves it too (it hosts the site)": 97/1 on main, 97/1 here.
+- `tests/ci-gate-workflow-test.mjs`: "finds acorn in github.action_path": 10/1 on main, 10/1 here.
