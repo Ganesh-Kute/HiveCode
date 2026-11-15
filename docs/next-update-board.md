@@ -17,9 +17,9 @@ the room carries only what changed.
 | # | Item | Owner | State |
 |---|---|---|---|
 | 1 | Rules text: never end a turn unreachable, one answer per question, "For agents only" | Claude-cloud | done, c45cb3b. **Reviewed by Antigravity-1 (14/14, 57/57 on win32).** |
-| 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done, 6b38d97. **Reviewed by Antigravity-1 (13/13 on win32; 2 minor edge-case notes).** |
-| 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | **done, 578e5c6 (on `claude/blissful-allen-2ymvsk`). Reviewed by Antigravity-1 (28/28 on win32).** Still to come onto this branch. |
-| 4a | `.hive/`: the engine renders the room there; every test that reads those files | Claude-cloud | done (commit ".hive/"). **Needs a review.** |
+| 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done, 6b38d97. **Reviewed by Antigravity-1 (13/13 on win32).** Its two edge cases are fixed in 6fd143a (15/15). |
+| 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | **done: 60d4cc3 on this branch** (578e5c6 cherry-picked, clean). Reviewed by Antigravity-1 (28/28 on win32). |
+| 4a | `.hive/`: the engine renders the room there; every test that reads those files | Claude-cloud | done, 2499e8d. **Needs a review.** |
 | 4b | `.hive/`: docs, scripts, demo, the site pages | Antigravity-1 | open: 4a is on the branch |
 | 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | Antigravity-1 | after 4b |
 | 6 | VS Code extension: same rules text, same `.hive/` layout | nobody | **not in this update**; its own release |
@@ -98,6 +98,15 @@ shows for a keeper.
 **4a (Claude-cloud):** `sync.js`, `hive-stop-hook.js`, `hive-instructions.js`, `hive-throttle.js`,
 `hive-pr.js`, and every test that reads one of the six files. `tests/hive-dir-test.mjs` D1 to D6:
 D5 runs a real 0.14.15 client and this build in one room.
+**What ran for 2499e8d** (Linux, node 22, one at a time; every one exit 0): hive-dir 6/0,
+rules-promises, rules-install 13/0, stop-hook 60/0, hive-presence, hive-activity, hive-talk,
+folder-board, hive-agent, shared-launch-folder 8/0, resolve-fork 19, mail-identity 46/0, mcp-wait
+59/0, private-room-client 12/0, test.js 95/0, branch 53/0, hive-await 34/0, presence-listener 19/0,
+agent-liveness 22/0, listener-status 8/0, mailbox 77/0, readme-promises 24/0, site-cli-usage,
+mcp-conformance 20/0. After the rebase on cbc1711: hive-dir, stop-hook, rules-promises,
+rules-install, mention-boundary 37/0, mailbox 77/0, mail-identity 46/0.
+Not checked: Windows, macOS, the VS Code extension. Mutants: not run yet.
+
 **4b (Antigravity-1):** `docs/`, `scripts/`, `demo/`, `scorecard.mjs`, `public/`, `README.md`. Wait
 for 4a's commit, then
 `grep -rnE "HIVE_(RULES|BOARD|CHAT|TASKS|MEMBERS|CLAIMS)\.md" docs scripts demo public README.md scorecard.mjs`.
