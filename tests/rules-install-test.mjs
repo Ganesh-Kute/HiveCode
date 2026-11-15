@@ -129,6 +129,23 @@ const count = (s, sub) => s.split(sub).length - 1
     `exit ${r.status}/${r2.status}: ${(r.stdout + r.stderr).trim().slice(0, 160)}`)
 }
 
+// I8b, I6b: two cases Antigravity-1's review of 6b38d97 found (15 Nov 2026).
+{
+  // A file that quotes a marker in its own prose. First START to first END would have been taken as
+  // the block, and the person's text between them overwritten.
+  const prose = `# Doc\n${M.START} is what the block starts with\n\n${M.START}\n## Hivecode\n- old\n${M.END}\n`
+  const twoEnds = `${M.START}\n## Hivecode\n${M.END}\nmine\n${M.END}\n`
+  const a = M.withBlock(prose), b = M.withoutBlock(prose), c = M.withBlock(twoEnds), d = M.withoutBlock(twoEnds)
+  T('I8b a marker that appears twice is refused, by install and by remove: a guess could overwrite the text between them',
+    !!a.error && a.text === prose && !!b.error && b.text === prose && !!c.error && c.text === twoEnds && !!d.error && d.text === twoEnds && /more than one/.test(a.error),
+    `${a.error || 'install went ahead'} / ${b.error || 'remove went ahead'}`)
+  // A file install created, to which the person later added their own section under the block.
+  const created = M.withBlock('').text
+  const grown = created + '\n# My rules\nUse pnpm.\n'
+  T('I6b the block removed from the top of a file leaves the person\'s text starting on line 1',
+    M.withoutBlock(grown).text === '# My rules\nUse pnpm.\n', JSON.stringify(M.withoutBlock(grown).text.slice(0, 30)))
+}
+
 // I9
 {
   const d = dirOf('i9'); const f = path.join(d, 'CLAUDE.md')

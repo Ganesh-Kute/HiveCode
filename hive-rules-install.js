@@ -33,6 +33,10 @@ const blockFor = (eol) => [START, ...AGENT_FILE_BLOCK.split('\n'), END].join(eol
 function find(text) {
   const a = text.indexOf(START), b = text.indexOf(END)
   if (a === -1 && b === -1) return null
+  // A marker that appears twice: one of them is the person's own text (a file that quotes the
+  // marker, a block pasted in by hand). First-to-first would take their text for part of the block.
+  if (a !== -1 && text.indexOf(START, a + START.length) !== -1) return { error: 'it has more than one hivecode:start. Delete the one that is not the block, then run this again.' }
+  if (b !== -1 && text.indexOf(END, b + END.length) !== -1) return { error: 'it has more than one hivecode:end. Delete the one that is not the block, then run this again.' }
   if (a === -1 || b === -1 || b < a) return { error: `it has ${a === -1 ? 'hivecode:end without hivecode:start' : b === -1 ? 'hivecode:start without hivecode:end' : 'hivecode:end before hivecode:start'}. Put the missing marker back, or delete the leftover one, then run this again.` }
   return { a, b: b + END.length }
 }
@@ -64,6 +68,9 @@ export function withoutBlock(text) {
     post = post.slice(eol.length)
     if (pre.endsWith(eol + eol)) strip(1)
   } else if (!post) strip(2) // it was added to a file with no final newline
+  // The block was the top of the file (a file `install` created, since added to): the blank lines
+  // under it separated it from the person's text, and now separate that text from nothing.
+  if (!pre) while (post.startsWith(eol)) post = post.slice(eol.length)
   return { text: pre + post, changed: true }
 }
 
