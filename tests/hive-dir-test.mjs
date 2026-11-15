@@ -15,6 +15,8 @@
 //   D5 an older build in the same room is undisturbed, and so is this one (needs an older build
 //      on this machine: skipped, and said so, when there is none)
 //   D6 every file an agent-facing text names is where the engine writes it
+//   D7 git is asked which old copies it tracks; "cannot tell" is never read as "none"
+//   D8 landing a room on a git branch never takes a file from .hive/
 import fs from 'fs'
 import os from 'os'
 import net from 'net'
@@ -164,6 +166,31 @@ const synced = (c) => until(() => c.status().connected, 15000)
     }
   }
   T('D6 every file an agent-facing text names is where the engine writes it', wrong.length === 0 && /\.hive\/HIVE_RULES\.md/.test(SRC.joinCard()), wrong.join(' | '))
+}
+
+// ── D7, D8 ────────────────────────────────────────────────────────────────────────────────
+{
+  const { gitTrackedAmong } = await import(pathToFileURL(path.join(ROOT, 'sync.js')).href)
+  const repo = dirOf('g-repo'), plain = dirOf('g-plain')
+  const haveGit = spawnSync('git', ['init', '-q'], { cwd: repo }).status === 0
+  if (!haveGit) T('D7 what git tracks (git is not on this machine: not checked)', true)
+  else {
+    fs.writeFileSync(path.join(repo, 'HIVE_RULES.md'), 'mine\n'); fs.writeFileSync(path.join(repo, 'HIVE_CHAT.md'), 'left over\n')
+    spawnSync('git', ['add', 'HIVE_RULES.md'], { cwd: repo })
+    const names = ['HIVE_RULES.md', 'HIVE_CHAT.md']
+    const inRepo = gitTrackedAmong(repo, names), outside = gitTrackedAmong(plain, names)
+    // No git to ask (it is not on the path): inside a repository that must read as "cannot tell", so
+    // nothing is removed; in a folder that is in no repository, nothing can be tracked.
+    const PATH = process.env.PATH; process.env.PATH = ''
+    let blindRepo, blindPlain
+    try { blindRepo = gitTrackedAmong(repo, names); blindPlain = gitTrackedAmong(plain, names) } finally { process.env.PATH = PATH }
+    T('D7 git is asked which copies it tracks; when it cannot be asked inside a repository the answer is "cannot tell", never "none"',
+      inRepo instanceof Set && inRepo.has('HIVE_RULES.md') && !inRepo.has('HIVE_CHAT.md') && outside instanceof Set && outside.size === 0 && blindRepo === null && blindPlain instanceof Set && blindPlain.size === 0,
+      `tracked: ${inRepo && [...inRepo].join(',')}; outside a repo: ${outside && outside.size}; no git, in a repo: ${blindRepo}; no git, no repo: ${blindPlain && blindPlain.size}`)
+  }
+  const { isOwnFile } = await import(pathToFileURL(path.join(ROOT, 'hive-pr.js')).href)
+  T('D8 landing a room on a git branch never takes a file from .hive/',
+    isOwnFile('.hive/HIVE_CHAT.md') && isOwnFile('.hive/notes.txt') && isOwnFile('sub/.hive/x.md') && !isOwnFile('src/app.js') && !isOwnFile('docs/hive.md'))
 }
 
 console.log(`\n=== HIVE DIR: ${pass} passed, ${fail} failed ===`)
