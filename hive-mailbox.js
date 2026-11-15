@@ -56,9 +56,23 @@ export function mentionsAll(text) {
   return /@all(?![\w-])/i.test(stripSpansAndQuotes(text))
 }
 
+/** Move Slack/markdown format marks (*, _, ~, `) out from between @ and a member name (or around @Name).
+ *  A backtick BEFORE @ (`@all`) is a code span and is left alone so stripSpansAndQuotes blanks it out. */
+export function unwrapFormattedMentions(text) {
+  return String(text || '')
+    .replace(
+      /(^|[\s(\[{<"'—–:])([*_~]*)@([*_~`]+)([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~`]*)(?![\w\-/])/g,
+      (_, lead, pre, mid, name, post) => (post ? `${lead}${pre}@${name}` : `${lead}@${name}${(pre + mid).replace(/[`_]/g, '')}`),
+    )
+    .replace(
+      /(^|[\s(\[{<"'—–:])([*_~]+)@([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~]*)(?![\w\-/])/g,
+      (_, lead, pre, name, post) => `${lead}@${name}${post.replace(/_/g, '')}`,
+    )
+}
+
 /** Code spans and quoted text blanked out, so a token quoted as code or prose is not read as an address. */
 export function stripSpansAndQuotes(text) {
-  const raw = String(text || '')
+  const raw = unwrapFormattedMentions(String(text || ''))
   const trimmed = raw.trim()
   const quotePairs = [
     ['"', '"'],
@@ -330,7 +344,7 @@ export function unansweredFor(messages, me) {
  */
 const ORDER_WINDOW = 160
 export function priorityOf(text) {
-  const s = String(text || '')
+  const s = unwrapFormattedMentions(String(text || ''))
   if (/^\s*\[!\]|^\s*\[stop\]/i.test(s)) return 'stop'
   const head = s
     .replace(/```[\s\S]*?(?:```|$)/g, ' ')          // fenced code, closed or not
@@ -338,7 +352,7 @@ export function priorityOf(text) {
     .replace(/"[^"\n]*"/g, ' ')                    // double quotes
     .replace(/(?:^|[\s(\[{<])'[^'\n]*'(?=$|[\s)\]}>.,!?:;])/g, ' ') // single quotes
     .replace(/[“”][^“”\n]*[“”]/g, ' ')             // curly double quotes
-    .replace(/^(?:\s*@[\w-]+[\s,:;.!-]*)+/, '')    // the leading @names being addressed
+    .replace(/^(?:\s*@[\w-]+[*_~]*[\s,:;.!-]*)+/, '') // the leading @names being addressed
     .trimStart()
     .slice(0, ORDER_WINDOW)
 
@@ -401,7 +415,7 @@ export function findClosestKnown(name, knownNames) {
 
 /** Does this mention sit at the direct-address position (start of the message)? */
 export function isDirectAddress(text, name) {
-  const s = String(text || '').trimStart()
+  const s = unwrapFormattedMentions(String(text || '').trimStart())
   const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(`^@${escaped}(?![\\w\\-/])`, 'i').test(s)
 }

@@ -138,6 +138,15 @@ try {
   const r1 = await call(`/slack/events/${id}`, e1.raw, e1.headers)
   T('S6a a signed event is accepted', r1.status === 200)
   T('S6b ...and lands in the room as slack:<handle>', await until(() => chatOf(ROOM).some((m) => m.by === 'slack:ganesh' && m.text === 'hello room' && m.src === 'slack' && /^\d\d:\d\d:\d\d$/.test(m.at))))
+  const eFmt = signed(msg('Ev1Fmt', { text: '@*Antigravity-1 @Opus-Cloud how hard?* and @_Claude_ plus @`Vega` and @~all~' }))
+  await call(`/slack/events/${id}`, eFmt.raw, eFmt.headers)
+  await until(() => chatOf(ROOM).some((m) => /how hard\?/.test(m.text)))
+  const fmtLine = (chatOf(ROOM).find((m) => /how hard\?/.test(m.text)) || {}).text || ''
+  const oldClientRe = /(?:^|[\s(\[{<"'—–:])@([\w-]+)(?![\w\-/])/g
+  const oldExtracted = [...fmtLine.matchAll(oldClientRe)].map((m) => m[1])
+  T('S6e format marks between @ and a name are moved out so installed clients still match every mention',
+    ['Antigravity-1', 'Opus-Cloud', 'Claude', 'Vega', 'all'].every((n) => oldExtracted.includes(n)),
+    `got line: ${JSON.stringify(fmtLine)} -> extracted: ${JSON.stringify(oldExtracted)}`)
   const forged = signed(msg('Ev2', { text: 'forged' }), { secret: 'not-the-secret' })
   const r2 = await call(`/slack/events/${id}`, forged.raw, forged.headers)
   const stale = signed(msg('Ev3', { text: 'stale' }), { ts: Math.floor(Date.now() / 1000) - 600 })

@@ -34,6 +34,7 @@
 import fs from 'fs'
 import path from 'path'
 import { startSync, parseLink } from './sync.js'
+import { mentionsName } from './hive-mailbox.js'
 import * as RC from './hive-receipts.js'
 import * as SEEN from './hive-seen.js' // what this listener has seen, by Yjs id (0.14.4)
 import { awaitDir, armedFile, BEAT_MS } from './hive-listen.js'
@@ -104,11 +105,8 @@ beat()
 setInterval(() => { if (!superseded()) beat() }, BEAT_MS).unref()
 process.on('exit', () => { try { if (ownerPid() === process.pid) fs.unlinkSync(ARMED) } catch { } })
 const chat = hive.doc.getArray('chat')
-const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-// `@all` wakes everyone — it is how the room is addressed deliberately. `\b` is NOT enough: "-" is a
-// word boundary, so `@Claude\b` fired on `@Claude-2`, a different participant. A name ends where no
-// name character follows. `@all` must not match `@allen` either.
-const rx = new RegExp(`@(${esc(NAME)}|all)(?![\\w-])`, 'i')
+// One matcher with the mailbox (hive-mailbox.js mentionsName): @Name and @all, including Slack
+// format marks after @ (@*Name), while ignoring mentions inside code spans, inline quotes, or emails.
 let armed = false
 let finishing = false
 
@@ -233,7 +231,7 @@ function check() {
   for (const { id, value: m } of items) {
     if (f.has(id)) continue
     f.add(id) // seen = scanned, wherever it landed
-    if (m && rx.test(String(m.text || '')) && m.by !== NAME) hits.push(m)
+    if (m && mentionsName(String(m.text || ''), NAME) && m.by !== NAME) hits.push(m)
   }
   // Advance past everything SCANNED, not just everything matched — an unaddressed message I have
   // already seen must not be re-scanned on the next call either.
