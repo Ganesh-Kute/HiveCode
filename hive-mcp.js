@@ -41,7 +41,7 @@ import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from '.
 import { newPersonalRoom, saveRoomKey, loadRoomKey, resolveRoomToken, saveRoomToken, main as roomKeyMain } from './hive-room-key.js'
 import { isSecuredRoom } from './token.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
-import { INSTRUCTIONS, joinCard, REACH_BY_WAIT } from './hive-instructions.js'
+import { INSTRUCTIONS, joinCard, REACH_BY_WAIT, HIVE_DIR } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
@@ -115,8 +115,11 @@ function persistSession({ dir, name, owner, cursor, frontier, authed = false, ki
     // tokens -- the agent's shell does not hold this server's token, so that listener could not join.
     // `kind` and `passive`: a resume rejoins from this file, and without them a human came back as an
     // AI and a passive participant as one the room waits on; the Stop hook reads `passive` too.
+    // `hiveDir`: where this server's engine renders the room (.hive/ since 15 Nov 2026). The Stop hook
+    // runs as the newest build whatever build this server is, and reads the chat from the folder named
+    // here. A record without it was written by an older build, which rendered at the top of the folder.
     const rec = { dir, name, owner, chatCursor, ...(chatFrontier ? { chatFrontier } : {}), ...(authed ? { authed: true } : {}),
-      ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}),
+      ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}), hiveDir: HIVE_DIR,
       pid: process.pid, ...(CONV ? { conv: CONV } : {}), at: Date.now() }
     for (const [n, s] of Object.entries(agents)) if (n !== name && s.pid === process.pid) delete agents[n] // this server's earlier identity
     agents[name] = rec

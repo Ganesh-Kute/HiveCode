@@ -93,6 +93,12 @@ try {
   const rec = onRecord()
   const dirA = rec['Alice-AI'] && rec['Alice-AI'].dir, dirB = rec['Bob-AI'] && rec['Bob-AI'].dir
   T('S1 both agents are on record, each with its own folder', !!dirA && !!dirB && dirA !== dirB, `on record: ${Object.keys(rec).join(', ') || 'nobody'}`)
+  // The Stop hook reads the chat from the folder the record names (15 Nov 2026). A server that did
+  // not name it would be taken for an older build, its hook would look at the top of the folder,
+  // find no chat, and let every turn end.
+  T('S1b each record names the folder its server renders the room in, which is where the Stop hook reads',
+    rec['Alice-AI'] && rec['Alice-AI'].hiveDir === '.hive' && rec['Bob-AI'] && rec['Bob-AI'].hiveDir === '.hive' && fs.existsSync(path.join(dirA, '.hive')),
+    `hiveDir on record: ${JSON.stringify([rec['Alice-AI'] && rec['Alice-AI'].hiveDir, rec['Bob-AI'] && rec['Bob-AI'].hiveDir])}`)
 
   await alice.call('hive_say', { text: '@Bob-AI note-for-bob' })
   await bob.call('hive_say', { text: '@Alice-AI note-for-alice' })

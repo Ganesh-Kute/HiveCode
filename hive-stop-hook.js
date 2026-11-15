@@ -260,15 +260,14 @@ async function main() {
     const dir = path.isAbsolute(session.dir) ? session.dir : path.join(root, session.dir)
     // WHERE THE ROOM IS MIRRORED: .hive/ since 15 Nov 2026, the top of the folder before. This hook
     // runs as the newest build (npx ...@latest) while the agent's MCP server may still be the build
-    // it started as, so it reads whichever copy was written last. Reading only the new place would
-    // find a copy from an earlier session, days stale, and let a turn end over unread mail.
-    const read = (f) => {
-      let best = '', bestAt = -1
-      for (const p of [path.join(dir, HIVE_DIR, f), path.join(dir, f)]) {
-        try { const at = fs.statSync(p).mtimeMs; if (at > bestAt) { best = fs.readFileSync(p, 'utf8'); bestAt = at } } catch { }
-      }
-      return best
-    }
+    // it started as, so it reads the copy THAT server writes. The server names the folder in the
+    // record it writes on join (`hiveDir`, hive-mcp.js persistSession); a record without it was
+    // written by an older build, which renders at the top. It is not told from file times: in a
+    // repository that committed HIVE_CHAT.md, a `git checkout` rewrites the top-level copy, and a
+    // chat that ended weeks ago is then the newest file in the folder. And only the one known
+    // folder is followed, never a path the record happens to carry.
+    const base = session.hiveDir === HIVE_DIR ? path.join(dir, HIVE_DIR) : dir
+    const read = (f) => { try { return fs.readFileSync(path.join(base, f), 'utf8') } catch { return '' } }
 
     const chat = read('HIVE_CHAT.md')
     if (!chat) return allow() // room folder not mirrored yet; nothing to be sure about, so allow

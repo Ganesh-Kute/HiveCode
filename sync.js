@@ -5301,7 +5301,8 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // the day of the update, which an agent looking around the folder reads as the room. So they go,
   // once, at the first sync. They were always this client's to overwrite (SKIP), so nothing a person
   // wrote is in them -- unless git tracks one, which is the person's own act (the Hivecode
-  // repository ships its HIVE_RULES.md that way): that copy stays, byte for byte, and is named.
+  // repository ships its HIVE_RULES.md that way): that copy stays, byte for byte, and the agent is
+  // told which one it is and where the live one is.
   let oldTopLevelCleared = false
   function clearOldTopLevel() {
     if (oldTopLevelCleared) return
@@ -5317,7 +5318,12 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         try { fs.rmSync(path.join(ROOT, f), { force: true }); removed.push(f) } catch { }
       }
       if (removed.length) log(`[${name}] removed ${removed.join(', ')} from the top of this folder: an older Hivecode wrote ${removed.length === 1 ? 'it' : 'them'} there, and this one keeps ${removed.length === 1 ? 'it' : 'them'} in ${HIVE_DIR}/.`)
-      if (kept.length) log(`[${name}] left ${kept.join(', ')} at the top of this folder alone: ${tracked ? 'git tracks' : 'git could not be asked about'} ${kept.length === 1 ? 'it' : 'them'}. Hivecode writes ${HIVE_DIR}/ now and no longer updates ${kept.length === 1 ? 'that copy' : 'those copies'}.`)
+      // To the agent, not only the log: it is the agent that opens the stale copy and takes it for
+      // the room. note() reaches hive_status (thisFolderOnly); a log line reaches nobody.
+      if (kept.length) {
+        const one = kept.length === 1
+        note(`${kept.join(', ')} at the top of this folder ${one ? 'is' : 'are'} not the room's: ${tracked ? 'git tracks' : 'git could not be asked about'} ${one ? 'it' : 'them'}, so Hivecode left ${one ? 'it' : 'them'} alone and no longer updates ${one ? 'it' : 'them'}. The live ${one ? 'copy is' : 'copies are'} ${kept.map((f) => `${HIVE_DIR}/${f}`).join(', ')}.`)
+      }
     } catch { /* a leftover file must never stop a join */ }
   }
 

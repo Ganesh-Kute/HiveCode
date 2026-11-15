@@ -603,7 +603,7 @@ console.log('\n# A4  CLI & listener tools work in private rooms without leaking 
   fs.writeFileSync(path.join(hookRoomDir, '.hive.json'), JSON.stringify({ relay: RELAY, room }))
   fs.mkdirSync(path.join(hookRoomDir, '.hive'), { recursive: true })
   fs.writeFileSync(path.join(hookRoomDir, '.hive', 'HIVE_CHAT.md'), '# Hive Chat\n')
-  fs.writeFileSync(path.join(hookProj, '.hive-mcp-session.json'), JSON.stringify({ dir: hookRoomDir, name: 'BotA4', owner: 'G', room, authed: true }))
+  fs.writeFileSync(path.join(hookProj, '.hive-mcp-session.json'), JSON.stringify({ dir: hookRoomDir, name: 'BotA4', owner: 'G', room, authed: true, hiveDir: '.hive' }))
   const hookRes = spawnSync(process.execPath, [path.join(ROOT, 'hive-stop-hook.js')], {
     cwd: TMP,
     input: JSON.stringify({ cwd: hookProj, session_id: 'S-priv' }),

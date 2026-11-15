@@ -17,6 +17,9 @@
 //   D6 every file an agent-facing text names is where the engine writes it
 //   D7 git is asked which old copies it tracks; "cannot tell" is never read as "none"
 //   D8 landing a room on a git branch never takes a file from .hive/
+//   D9 docs, scripts, the demo, the scorecard and the site pages name the six files under .hive/
+//   D10 a top-level copy that was left alone is named where the agent sees it (hive_status), not
+//      only in a log; one that was removed is not
 import fs from 'fs'
 import os from 'os'
 import net from 'net'
@@ -55,6 +58,7 @@ const tag = `${process.pid}-${Date.now().toString(36)}`
 const { startSync } = await import(pathToFileURL(path.join(ROOT, 'sync.js')).href)
 const join = (mod, room, dir, name) => { const c = mod({ relay: RELAY, room, dir, name, kind: 'ai', log: () => { } }); clients.push(c); return c }
 const synced = (c) => until(() => c.status().connected, 15000)
+const NOTED = { kept: null, removedOnly: [] } // what the D3 and D4 clients told their own folder; checked in D10
 
 // ── D1, D2 ────────────────────────────────────────────────────────────────────────────────
 {
@@ -96,6 +100,7 @@ const synced = (c) => until(() => c.status().connected, 15000)
   const gone = await until(() => MOVED.every((f) => !has(d, f)) && has(d, '.hive/HIVE_CHAT.md'), 15000)
   T('D3 the top-level copies an older build left are removed on join, and nothing else is',
     gone && read(path.join(d, 'README.md')) === '# mine\n', `still at the top: ${MOVED.filter((f) => has(d, f)).join(', ') || 'none'}`)
+  NOTED.removedOnly = C.notices().map((n) => n.text).filter((t) => /HIVE_[A-Z]+\.md/.test(t))
   C.stop()
 }
 
@@ -123,7 +128,23 @@ const synced = (c) => until(() => c.status().connected, 15000)
     T('D4 a top-level copy that git tracks is left alone, byte for byte; the untracked one beside it is removed; neither is shared',
       arrived && read(path.join(d, 'HIVE_RULES.md')) === mine && !has(d, 'HIVE_CHAT.md') && !has(dE, 'HIVE_RULES.md') && read(path.join(d, '.hive/HIVE_RULES.md')) !== mine,
       `tracked file intact: ${read(path.join(d, 'HIVE_RULES.md')) === mine}; leftover removed: ${!has(d, 'HIVE_CHAT.md')}; the other client got HIVE_RULES.md at the top: ${has(dE, 'HIVE_RULES.md')}`)
+    NOTED.kept = D.notices().map((n) => n.text)
     D.stop(); E.stop()
+  }
+}
+
+// ── D10 ───────────────────────────────────────────────────────────────────────────────────
+// Opus-Cloud's review of 2499e8d (15 Nov 2026): the copy that is left alone was named only in the
+// client's log, which an agent never reads. An agent looking around that folder finds a
+// HIVE_CHAT.md that stopped on the day of the update and takes it for the room. What only this
+// folder needs to know goes through the engine's notices, which hive_status shows.
+{
+  if (!NOTED.kept) T('D10 a copy that was left alone is named where the agent sees it (git is not on this machine: not checked)', true)
+  else {
+    const line = NOTED.kept.find((t) => /HIVE_RULES\.md/.test(t)) || ''
+    T('D10 a top-level copy that was left alone is named in the notices hive_status shows, with where the live one is; one that was removed is not',
+      /at the top of this folder/.test(line) && line.includes('.hive/HIVE_RULES.md') && /git tracks/.test(line) && !/HIVE_CHAT\.md/.test(line) && NOTED.removedOnly.length === 0,
+      `kept: ${JSON.stringify(NOTED.kept).slice(0, 300)}; after a plain removal: ${JSON.stringify(NOTED.removedOnly).slice(0, 200)}`)
   }
 }
 

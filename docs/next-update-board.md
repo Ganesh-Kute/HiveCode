@@ -19,9 +19,9 @@ the room carries only what changed.
 | 1 | Rules text: never end a turn unreachable, one answer per question, "For agents only" | Claude-cloud | done, c45cb3b. **Reviewed by Antigravity-1 (14/14, 57/57 on win32).** |
 | 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done, 6b38d97. **Reviewed by Antigravity-1 (13/13 on win32).** Its two edge cases are fixed in 6fd143a (15/15). |
 | 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | **done: 60d4cc3 on this branch** (578e5c6 cherry-picked, clean). Reviewed by Antigravity-1 (28/28 on win32). |
-| 4a | `.hive/`: the engine renders the room there; every test that reads those files | Claude-cloud | done, 2499e8d + f3433d3. 11 mutants, all caught. **Reviewed by Opus-Cloud (Linux) & Antigravity-1 (win32, 9/9 with 0.14.15 D5 + 60/60 stop-hook).** |
-| 4b | `.hive/`: docs, scripts, demo, the site pages | Antigravity-1 | **done, 55c643d.** Needs a review. |
-| 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | Antigravity-1 | **done.** Needs a review. |
+| 4a | `.hive/`: the engine renders the room there; every test that reads those files | Claude-cloud | done, 2499e8d + f3433d3. **Reviewed by Opus-Cloud (Linux) & Antigravity-1 (win32, 9/9 with 0.14.15 D5 + 60/60 stop-hook): pass, one gap and one note. Both are fixed in the commit after 5b6efb8, which wants its own review.** 17 mutants, all caught. |
+| 4b | `.hive/`: docs, scripts, demo, the site pages | Antigravity-1 | **done, 55c643d.** Review: Opus-Cloud, in progress. |
+| 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | Antigravity-1 | **done, 5b6efb8.** Review: Opus-Cloud, in progress. |
 | 6 | VS Code extension: same rules text, same `.hive/` layout | nobody | **not in this update**; its own release |
 | 7 | A mention with a Slack format mark after the `@` (`@*Name`) wakes nobody | Antigravity-1 (found it) | **done, 2a1f0dc + follow-up. Reviewed by Opus-Cloud (246/246 on Linux).** |
 
@@ -88,12 +88,15 @@ shows for a keeper.
 - `.hive/` is never synced (`ALWAYS_IGNORE`). The six old top-level names stay in `SKIP` for good:
   an older client still writes them there.
 - A top-level copy an older build left behind: removed at the first sync when git does not track
-  it; left alone, byte for byte, and named in the client's log when git tracks it. The package's
-  own `HIVE_RULES.md` stays at the package root.
+  it; left alone, byte for byte, when git tracks it, and then named to the agent in `hive_status`
+  (`thisFolderOnly`) with where the live copy is. The package's own `HIVE_RULES.md` stays at the
+  package root.
 - The paths are constants in `hive-instructions.js` (`RULES_PATH`, `CHAT_PATH`, ...). `sync.js`
   writes by them and every agent-facing text names files by them.
-- The Stop hook reads whichever copy of the chat was written last, `.hive/` or the top level: it
-  runs as the newest build while the agent's MCP server may still be the one it started as.
+- The Stop hook runs as the newest build while the agent's MCP server may still be the one it
+  started as, so it reads the copy that server writes. The server names the folder in the record
+  it writes on join (`hiveDir` in `.hive-mcp-session.json`); a record without it was written by an
+  older build, which renders at the top. It is not told from file times.
 
 **4a (Claude-cloud):** `sync.js`, `hive-stop-hook.js`, `hive-instructions.js`, `hive-throttle.js`,
 `hive-pr.js`, and every test that reads one of the six files. `tests/hive-dir-test.mjs` D1 to D8:
@@ -124,6 +127,35 @@ notice). All 11 were caught:
 | the Stop hook reads `.hive/` only | H16 |
 | the Stop hook reads the top level only | H1, H4, H5, H6 |
 | the Stop hook takes the first copy it finds, not the newest | H16 |
+
+**Opus-Cloud's review of 4a (f3433d3): pass, with two findings. Both fixed.**
+- *Gap against this board.* The copy that is left alone was named only in the client's log, and
+  the board said `hive_status`. An agent never reads the log; it does open a `HIVE_CHAT.md` at the
+  top of the folder. Now it goes through the engine's `note()`, which `hive_status` shows. D10.
+- *The Stop hook trusted file times.* In a repository that committed `HIVE_CHAT.md`, a
+  `git checkout` rewrites the top-level copy and a dead chat is the newest file. "Prefer `.hive/`
+  when git tracks the other" is wrong the other way round (an older server in that repository keeps
+  writing the tracked copy). So the server says where it renders: `hiveDir` in its record. Opus-Cloud
+  checked that 0.14.15 builds its record fresh on join, so an older server's join drops the field.
+  H16 and H17 failed first on the old code; H18 keeps the hook from following any other path;
+  `shared-launch-folder` S1b checks a real server writes the field.
+
+Six more mutants, all caught:
+
+| The break | Caught by |
+|---|---|
+| the server does not name its folder in the record | S1b, S2a, S2b (shared-launch-folder) |
+| the hook always reads `.hive/` | H16, H18 |
+| the hook always reads the top level | H1, H4, H5, H6 |
+| the hook follows whatever folder the record carries | H18 |
+| a kept copy is only logged | D10 |
+| a removed copy is announced to the agent too | D10 |
+
+Ran after the fix (Linux, node 22, one at a time, all exit 0): stop-hook 61/0, hive-dir 10/0,
+shared-launch-folder 9/0, private-room-client 12/0, mail-identity 46/0, coordination 60/0, mcp-wait
+59/0, mcp-conformance 20/0, rules-promises, readme-promises 24/0, session-resume 5/0, lifecycle 35,
+hive-wakestate 18, presence-listener 19/0, delete-safety 39/0, test.js 95/0, stay 28/0, hive-await
+35/0, throttle 33, rules-install 15/0. Not checked: Windows, macOS.
 
 **4b (Antigravity-1):** `docs/`, `scripts/`, `demo/`, `scorecard.mjs`, `public/`, `README.md`. Wait
 for 4a's commit, then
