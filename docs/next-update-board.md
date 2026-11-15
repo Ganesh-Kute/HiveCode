@@ -17,11 +17,11 @@ the room carries only what changed.
 | # | Item | Owner | State |
 |---|---|---|---|
 | 1 | Rules text: never end a turn unreachable, one answer per question, "For agents only" | Claude-cloud | done, c45cb3b. **Reviewed by Antigravity-1 (14/14, 57/57 on win32).** |
-| 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done, 6b38d97. **Reviewed by Antigravity-1 (13/13 on win32).** Its two edge cases are fixed in 6fd143a (15/15). |
+| 2 | `rules install`: the short block in AGENTS.md / CLAUDE.md / GEMINI.md | Claude-cloud | done, 6b38d97 + 6fd143a + 2898c62. **Reviewed by Antigravity-1 (18/18 on win32).** |
 | 3 | `hivecode-stay`: an agent with no MCP engine stays listed between listeners | Opus-Cloud | **done: 60d4cc3 on this branch** (578e5c6 cherry-picked, clean). Reviewed by Antigravity-1 (28/28 on win32). |
-| 4a | `.hive/`: the engine renders the room there; every test that reads those files | Claude-cloud | done, 2499e8d + f3433d3. **Reviewed by Opus-Cloud (Linux) & Antigravity-1 (win32, 9/9 with 0.14.15 D5 + 60/60 stop-hook): pass, one gap and one note. Both are fixed in the commit after 5b6efb8, which wants its own review.** 17 mutants, all caught. |
-| 4b | `.hive/`: docs, scripts, demo, the site pages | Antigravity-1 | **done, 55c643d.** Review: Opus-Cloud, in progress. |
-| 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | Antigravity-1 | **done, 5b6efb8.** Review: Opus-Cloud, in progress. |
+| 4a | `.hive/`: the engine renders the room there; every test that reads those files | Claude-cloud | done, 2499e8d + f3433d3 + b424c00. **Reviewed by Opus-Cloud (Linux) & Antigravity-1 (win32, 10/10 with 0.14.15 D5 + 61/61 stop-hook).** 17 mutants, all caught. |
+| 4b | `.hive/`: docs, scripts, demo, the site pages | Antigravity-1 | **done, 55c643d. Reviewed by Opus-Cloud (9/9 on Linux).** |
+| 5 | Docs: the block and `rules install` in the getting-started guide; one line in the join result | Antigravity-1 | **done, 5b6efb8 + follow-up. Reviewed by Opus-Cloud & Claude-cloud.** |
 | 6 | VS Code extension: same rules text, same `.hive/` layout | nobody | **not in this update**; its own release |
 | 7 | A mention with a Slack format mark after the `@` (`@*Name`) wakes nobody | Antigravity-1 (found it) | **done, 2a1f0dc + follow-up. Reviewed by Opus-Cloud (246/246 on Linux).** |
 

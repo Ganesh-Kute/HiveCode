@@ -639,7 +639,7 @@ was not written. Fix the relay and call hive_join again.`
   // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
   // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.
   const ls = listenerStatusFor({ name, room, useToken, passive })
-  const rulesInstallLine = `\nagent file (optional, loads core rules every turn): npx -y hivecode-mcp@latest rules install --dir "${ROOT}"`
+  const rulesInstallLine = '\nrules on every turn (your person\'s call): run "npx -y hivecode-mcp@latest rules install" in the folder your agent app starts in; it adds a short block to AGENTS.md / CLAUDE.md / GEMINI.md there.'
   return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nlistener: ${ls.card}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${rulesInstallLine}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
