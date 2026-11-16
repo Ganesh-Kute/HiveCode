@@ -20,7 +20,8 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { createRequire } from 'module'
-import { makeSlackRelay, verifySlackSignature, controlIntent } from '../hive-slack-relay.js'
+import { makeSlackRelay, verifySlackSignature, controlIntent, normalizeSlackMentions } from '../hive-slack-relay.js'
+import { unwrapFormattedMentions } from '../hive-mailbox.js'
 
 const require = createRequire(import.meta.url)
 const Y = require('yjs')
@@ -148,6 +149,23 @@ try {
     ['Antigravity-1', 'Opus-Cloud', 'Claude', 'Vega', 'all'].every((n) => oldExtracted.includes(n)) &&
     fmtLine.includes('@*slack:gkute7024* thanks') && !fmtLine.includes('@slack*:gkute7024*'),
     `got line: ${JSON.stringify(fmtLine)} -> extracted: ${JSON.stringify(oldExtracted)}`)
+  // 16 Nov 2026: the relay REWRITES what a person typed, for every client. So it must not take the
+  // first character of a member's name for an italic mark: "@_agent hello" from Slack was stored
+  // as "@agent hello" and _agent was never addressed. Closed italics are still moved out.
+  T('S6f a name that begins with an underscore is left as typed; a closed italic is still moved out',
+    normalizeSlackMentions('@_agent hello there') === '@_agent hello there' &&
+    normalizeSlackMentions('@_agent see snake_case_name here') === '@_agent see snake_case_name here' &&
+    /(^|\s)@Claude(?![\w-])/.test(normalizeSlackMentions('ping @_Claude_ now')) &&
+    /^@Opus-Cloud(?![\w-])/.test(normalizeSlackMentions('@_Opus-Cloud never wait for me_')),
+    JSON.stringify([normalizeSlackMentions('@_agent hello there'), normalizeSlackMentions('ping @_Claude_ now'), normalizeSlackMentions('@_Opus-Cloud never wait for me_')]))
+  {
+    // The relay and the client carry the same rule in two files. If they drift, a message is stored
+    // one way and matched another.
+    const SAMPLES = ['@*Antigravity-1 @Opus-Cloud how hard?*', '@_Claude_ plus @`Vega` and @~all~', '@*slack:gkute7024* thanks', '@_agent hello there',
+      '@_Opus-Cloud never wait for me_', '*@Antigravity-1* please', 'mail first_last@gmail.com', '@__ and @_- and @-_', 'see @_a and @_b_ here', '@*_Name_* x', 'plain @Name here']
+    const drift = SAMPLES.filter((x) => normalizeSlackMentions(x) !== unwrapFormattedMentions(x))
+    T('S6g the relay and the client move format marks out of a mention in exactly the same way', drift.length === 0, JSON.stringify(drift.slice(0, 3)))
+  }
   const forged = signed(msg('Ev2', { text: 'forged' }), { secret: 'not-the-secret' })
   const r2 = await call(`/slack/events/${id}`, forged.raw, forged.headers)
   const stale = signed(msg('Ev3', { text: 'stale' }), { ts: Math.floor(Date.now() / 1000) - 600 })

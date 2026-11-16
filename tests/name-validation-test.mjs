@@ -32,7 +32,7 @@
 // exists because a "validator" that made every name addressable by making every name match
 // EVERYTHING would satisfy a naive round-trip and destroy the room.
 
-import { mentionsName, mentionedNames, mentionsAll } from '../hive-mailbox.js'
+import { mentionsName, mentionedNames, mentionsAll, isDirectAddress } from '../hive-mailbox.js'
 
 let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
@@ -121,6 +121,39 @@ console.log('\n# B. EVERY VALID NAME CAN BE ADDRESSED (the property, not example
   const notMatched = valid.filter((n) => !mentionsName(`please look at this @${n} when you can`, n))
   T('B2 AND EVERY VALID NAME MATCHES ITSELF',
     notMatched.length === 0, notMatched.slice(0, 6).join(', '))
+
+  // 16 Nov 2026. THE FULL RUN FOUND B1 AND B2 RED FOR EVERY NAME THAT BEGINS WITH AN UNDERSCORE.
+  // The fix for Slack format marks (`@*Name`, 15 Nov) read the underscore straight after @ as an
+  // italic mark, so "@_agent hello" became "@agent hello" and a member named _agent could not be
+  // addressed. A name's first character is not formatting unless the italic is closed. And whatever
+  // the reading, the name exactly as typed after @ must still match: nothing that matched before
+  // that fix may stop matching.
+  const SHAPES = [
+    (n) => `@${n} please look`,                          // at the start
+    (n) => `please look at this @${n} when you can`,     // in a sentence
+    (n) => `hey @${n}, see snake_case_name here`,        // an underscore inside a later word closes nothing
+    (n) => `ask @${n} about foo_ and bar`,               // an underscore that ENDS a later word: reads as a closed italic
+    (n) => `(@${n})`,
+  ]
+  const lost = []
+  for (const n of valid) for (const shape of SHAPES) if (!mentionsName(shape(n), n)) lost.push(`${n} in ${JSON.stringify(shape(n))}`)
+  T('B2b a valid name typed straight after @ matches itself in every sentence shape: nothing the matcher found before the Slack fix is lost',
+    lost.length === 0, `${lost.length} lost, e.g. ${lost.slice(0, 3).join(' | ')}`)
+  T('B2c a leading underscore is the name\'s own when the italic is not closed: "@_agent hello" names _agent and nobody called agent',
+    JSON.stringify(mentionedNames('@_agent hello there')) === JSON.stringify(['_agent']) && !mentionsName('@_agent hello there', 'agent') && isDirectAddress('@_agent hello there', '_agent') &&
+    // an underscore INSIDE a later word (snake_case) ends no italic
+    JSON.stringify(mentionedNames('@_agent see snake_case_name here')) === JSON.stringify(['_agent']) && !mentionsName('@_agent see snake_case_name here', 'agent'),
+    JSON.stringify([mentionedNames('@_agent hello there'), mentionedNames('@_agent see snake_case_name here')]))
+  T('B2d a closed italic is still formatting: "@_Opus-Cloud never wait_" and "@_Opus-Cloud_" reach Opus-Cloud',
+    mentionsName('@_Opus-Cloud never wait for me_', 'Opus-Cloud') && mentionsName('hey @_Opus-Cloud_ check', 'Opus-Cloud') && mentionedNames('@_Opus-Cloud never wait for me_').includes('Opus-Cloud'),
+    JSON.stringify(mentionedNames('@_Opus-Cloud never wait for me_')))
+
+  // The one shape that cannot be told apart without knowing who is in the room: "@_x_" is a member
+  // called _x_ and also an italic x. Both are woken; the transcript names x. Stated here so that
+  // nobody finds it by accident.
+  T('B2e a member called _x_ is still woken by "@_x_", at the start of a message too, though the transcript reads it as an italic x',
+    mentionsName('ping @_x_ now', '_x_') && isDirectAddress('@_x_ hello', '_x_') && mentionsName('ping @_x_ now', 'x') && JSON.stringify(mentionedNames('ping @_x_ now')) === JSON.stringify(['x']),
+    JSON.stringify(mentionedNames('ping @_x_ now')))
 
   // The incident, stated as the property failing.
   T('B3 the name from the incident fails the property, which is why it must be refused at the door',
