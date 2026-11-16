@@ -49,6 +49,9 @@ HIVE_CHAT.md
 HIVE_BOARD.md
 HIVE_TASKS.md
 HIVE_MEMBERS.md
+# since 15 Nov 2026 a client renders these under .hive/; the sign for a tool-less agent stays at the top
+.hive/
+/HIVE_FOR_AGENTS.md
 .hive.json
 .presence-test/
 

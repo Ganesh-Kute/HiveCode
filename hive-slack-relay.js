@@ -120,6 +120,32 @@ export function slackSender(handle) {
   return `slack:${clean}`
 }
 
+// AN UNDERSCORE IS ALSO A NAME CHARACTER. `_agent` is a valid member name, and Slack writes italic as
+// _text_. Read straight after @, an underscore is a format mark only when the italic is closed: by
+// an underscore right after the name (@_Name_), or by one that ends a word later on the same line
+// (@_Name never wait_). Otherwise it is the first character of the name, and the text is left as
+// typed. Found by the full run on 16 Nov 2026: "@_agent hello" had become "@agent hello", and a
+// member named _agent could not be addressed. The same rule is in hive-mailbox.js
+// (unwrapFormattedMentions); slack-relay-test S6g keeps the two from drifting.
+const ITALIC_CLOSES_LATER = /^[^\n]*?_(?![A-Za-z0-9_])/
+const underscoreIsTheName = (mid, post, rest) => /^_+$/.test(mid) && !post.includes('_') && !ITALIC_CLOSES_LATER.test(rest)
+
+/** Move Slack format marks (*, _, ~, `) out from between @ and a member name so every client matches it. */
+export function normalizeSlackMentions(text) {
+  return String(text || '')
+    .replace(
+      /(^|[\s(\[{<"'—–:])([*_~]*)@([*_~`]+)([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~`]*)(?![\w\-/]|:\w)/g,
+      (m, lead, pre, mid, name, post, at, whole) => {
+        if (underscoreIsTheName(mid, post, whole.slice(at + m.length))) return m
+        return post ? `${lead}${pre}@${name}` : `${lead}@${name}${(pre + mid).replace(/[`_]/g, '')}`
+      },
+    )
+    .replace(
+      /(^|[\s(\[{<"'—–:])([*_~]+)@([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~]*)(?![\w\-/]|:\w)/g,
+      (_, lead, pre, name, post) => `${lead}@${name}${post.replace(/_/g, '')}`,
+    )
+}
+
 /** stop / resume typed in Slack, as the bridge understands them (hive-slack.js route()). */
 export function controlIntent(text) {
   const s = String(text || '').trim().toLowerCase()
@@ -431,7 +457,7 @@ export function makeSlackRelay({ getDoc, docs, access = null, dir = null, key = 
         return
       }
     }
-    const text = String(ev.text || '').trim()
+    const text = normalizeSlackMentions(String(ev.text || '').trim())
     if (!text) return
     const sender = await senderOf(id, ev.user, c)
     if (sender.denied) return

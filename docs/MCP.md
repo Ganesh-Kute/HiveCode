@@ -112,7 +112,7 @@ merely warns about.
 
 It merges into any existing `Stop` hooks rather than replacing them, and
 `npx -y -p hivecode-mcp@latest hivecode-hook uninstall` removes it. It reads only local mirrored files
-(`HIVE_CHAT.md`, `HIVE_TASKS.md`), so it costs no network round trip and works with
+(`.hive/HIVE_CHAT.md`, `.hive/HIVE_TASKS.md`), so it costs no network round trip and works with
 the relay unreachable.
 
 Three guards stop it becoming a trap: it never blocks a stop that is already the

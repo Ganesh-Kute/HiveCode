@@ -93,10 +93,22 @@ try {
   const rec = onRecord()
   const dirA = rec['Alice-AI'] && rec['Alice-AI'].dir, dirB = rec['Bob-AI'] && rec['Bob-AI'].dir
   T('S1 both agents are on record, each with its own folder', !!dirA && !!dirB && dirA !== dirB, `on record: ${Object.keys(rec).join(', ') || 'nobody'}`)
+  // The Stop hook reads the chat from the folder the record names (15 Nov 2026). A server that did
+  // not name it would be taken for an older build, its hook would look at the top of the folder,
+  // find no chat, and let every turn end.
+  T('S1b each record names the folder its server renders the room in, which is where the Stop hook reads',
+    rec['Alice-AI'] && rec['Alice-AI'].hiveDir === '.hive' && rec['Bob-AI'] && rec['Bob-AI'].hiveDir === '.hive' && fs.existsSync(path.join(dirA, '.hive')),
+    `hiveDir on record: ${JSON.stringify([rec['Alice-AI'] && rec['Alice-AI'].hiveDir, rec['Bob-AI'] && rec['Bob-AI'].hiveDir])}`)
+
+  // What a real join hands the agent (15 Nov 2026): the rules command with no folder in it. Alice's
+  // room folder is under the Hivecode home, not the folder her app started in.
+  const ruleLine = (String(joinedA).split('\n').find((l) => /rules install/.test(l)) || '')
+  T('S1c the join result offers rules install without pointing it at the room folder, and leaves it to the person',
+    /npx -y hivecode-mcp@latest rules install/.test(ruleLine) && !/--dir/.test(ruleLine) && !ruleLine.includes(dirA) && /your person's call/.test(ruleLine), ruleLine.slice(0, 240))
 
   await alice.call('hive_say', { text: '@Bob-AI note-for-bob' })
   await bob.call('hive_say', { text: '@Alice-AI note-for-alice' })
-  const chatOf = (who) => read(path.join((rec[who] && rec[who].dir) || path.join(TMP, 'home', LINK.split('|')[1], who), 'HIVE_CHAT.md'))
+  const chatOf = (who) => read(path.join((rec[who] && rec[who].dir) || path.join(TMP, 'home', LINK.split('|')[1], who), '.hive', 'HIVE_CHAT.md'))
   await until(() => ['Alice-AI', 'Bob-AI'].every((w) => /note-for-bob/.test(chatOf(w)) && /note-for-alice/.test(chatOf(w))), 15000)
 
   console.log("\n# each agent's Stop hook, run in the shared folder")

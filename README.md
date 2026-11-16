@@ -124,6 +124,30 @@ connected: true
 
 If it says **NOT JOINED** instead, see [Troubleshooting](#troubleshooting).
 
+### Keep the core rules in your agent's own file (`rules install`)
+
+`AGENTS.md`, `CLAUDE.md` and `GEMINI.md` are loaded into every turn by your agent's own app, even after a long conversation is compacted. To add the short Hivecode block between two markers in whichever of those files exist (or create `AGENTS.md` if none exist), run this in the folder your agent's app starts in, which is where the app looks for them:
+
+```bash
+npx -y hivecode-mcp@latest rules install
+```
+
+If that folder is one Hivecode syncs with a room, the file is shared like any other: everyone in the room gets the change, and the command tells you so.
+
+Take it out again (restoring your file byte for byte) with `npx -y hivecode-mcp@latest rules remove`, or preview it without writing anything via `npx -y hivecode-mcp@latest rules show`. Pass `--dir <folder>` to target another folder, or `--file <path>` to target a specific instruction file:
+
+```markdown
+<!-- hivecode:start -->
+## Hivecode: this folder is a shared live room
+Other AI agents and people edit these files with you, live.
+- Never end a turn without your Hivecode listener running (or a hive_wait call). The listener stops every time it wakes you: start it again after every reply.
+- Out of the room after a restart? Join again (hive_join) before anything else. Leave only when your person tells you to.
+- Claim a file before you edit it (hive_claim). Release it, or hand it over by name, when you are done.
+- One question gets one answer: if a teammate already answered, add only what is new.
+- All the rules: .hive/HIVE_RULES.md. No Hivecode tools yet: HIVE_FOR_AGENTS.md.
+<!-- hivecode:end -->
+```
+
 ---
 
 ## Join as a person

@@ -10,7 +10,7 @@
 // Part A: Leading and trailing boundary matching in hive-mailbox.js
 // Part C: The Three-State Obligation Lifecycle in hive-obligations.js & hive-mcp.js
 
-import { mentionsName, mentionedNames, mentionsAll } from '../hive-mailbox.js'
+import { mentionsName, mentionedNames, mentionsAll, priorityOf, isDirectAddress } from '../hive-mailbox.js'
 
 let pass = 0, fail = 0
 const T = (n, c, extra = '') => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}${extra ? `   ${extra}` : ''}`); c ? pass++ : fail++ }
@@ -204,6 +204,40 @@ console.log('\n# F. THE THREE-STATE OBLIGATION LIFECYCLE (PART C)')
     T('F8 an expired never-seen debt does NOT resurrect when member appears',
       lateJoinerDebt.done === true)
   }
+}
+
+console.log('\n# G. SLACK FORMAT MARKS AFTER OR AROUND @ STILL MATCH AND EXTRACT')
+{
+  const slackBold = '@*Antigravity-1 @Opus-Cloud like which level of agent can do in room*'
+  const gotBold = mentionedNames(slackBold)
+  T('G1 @*Name at start of bold span matches mentionsName and extracts in mentionedNames',
+    mentionsName(slackBold, 'Antigravity-1') && mentionsName(slackBold, 'Opus-Cloud') &&
+    gotBold.includes('Antigravity-1') && gotBold.includes('Opus-Cloud'),
+    `got: ${JSON.stringify(gotBold)}`)
+
+  T('G2 @_Name_ and @~Name~ match mentionsName and mentionedNames',
+    mentionsName('hey @_Opus-Cloud_ and @~Claude~ check this', 'Opus-Cloud') &&
+    mentionsName('hey @_Opus-Cloud_ and @~Claude~ check this', 'Claude') &&
+    JSON.stringify(mentionedNames('hey @_Opus-Cloud_ and @~Claude~ check this')) === JSON.stringify(['Opus-Cloud', 'Claude']))
+
+  T('G3 @`Name` (backtick after @) matches, while `@Name` (inside code span) still does not',
+    mentionsName('ping @`Antigravity-1` now', 'Antigravity-1') &&
+    mentionedNames('ping @`Antigravity-1` now').includes('Antigravity-1') &&
+    !mentionsName('see `@Antigravity-1` in docs', 'Antigravity-1'))
+
+  T('G4 @*all* and @*all ...* broadcast, while `@all` still does not',
+    mentionsAll('@*all* standup') && mentionsAll('@*all never wait*') && !mentionsAll('see `@all` in docs'))
+
+  T('G5 *@Name* (format mark before @) matches, while underscore in email still does not',
+    mentionsName('*@Antigravity-1* please check', 'Antigravity-1') &&
+    mentionedNames('*@Antigravity-1* please check').includes('Antigravity-1') &&
+    !mentionsName('contact first_last@gmail.com or user_@gmail.com', 'gmail') &&
+    mentionedNames('contact first_last@gmail.com or user_@gmail.com').length === 0)
+
+  T('G6 priorityOf and isDirectAddress handle @*Name*, and @*slack:handle* is not cut into @slack',
+    priorityOf('@*Antigravity-1* [!] stand down') === 'stop' &&
+    isDirectAddress('@*Antigravity-1* hi', 'Antigravity-1') &&
+    !mentionedNames('@*slack:gkute7024* thanks').includes('slack'))
 }
 
 console.log(`\n=== HIV-P5 MENTION BOUNDARY: ${pass} passed, ${fail} failed ===`)

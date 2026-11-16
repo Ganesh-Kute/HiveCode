@@ -27,7 +27,7 @@ import ignore from 'ignore'
 import { applyDiff, summarizeChange, changedRange, hasConflictMarkers, merge3, lineHunks, blockVersions } from './core.js'
 import { icrMerge3 } from './icr-merge.js' // structure/intent-aware merge; falls back to line merge3
 import { makeCoordinator } from './hive-coord.js' // decentralized claim layer (collision PREVENTION)
-import { RULES_MD, AGENT_MANUAL } from './hive-instructions.js'
+import { RULES_MD, AGENT_MANUAL, HIVE_DIR, RULES_PATH, CHAT_PATH, MEMBERS_PATH, CLAIMS_PATH, BOARD_PATH, TASKS_PATH, MANUAL_PATH, OLD_TOP_LEVEL } from './hive-instructions.js'
 import { gateConfig, runGate, verdictRecord, refusalMessage, forcedMessage, gateApproved, gatesDir, writeApproval, notApprovedMessage, notApprovedLine, GATE_CMD, GATE_NOT_APPROVED } from './hive-gate.js' // the HANDOFF gate: a claim you cannot give back while your own check fails
 import { fileRoom, decodeUnsafe, scopeForRoom, pathAllowed, writeAllowed, isSafeRelPath, isSecuredRoom } from './token.js'
 import * as RK from './hive-room-key.js'
@@ -58,6 +58,7 @@ import { checkRelay, currentRelayFor } from './hive-privacy.js' // HIV-P20; whic
 import { newSecrets, describeSecret } from './hive-secrets.js' // a credential inside a file is held here, not sent to the room
 import * as OB from './hive-obligations.js'
 import { formatTime } from './hive-time.js'
+import { spawnSync } from 'child_process' // git, asked once: which old top-level copies it tracks (gitTrackedAmong)
 
 // Wire-format/protocol version. Bump when a change makes clients incompatible
 // (e.g. the v2 per-file-subdoc model). Broadcast via awareness so peers can warn
@@ -101,6 +102,11 @@ export const ALWAYS_IGNORE = [
   // Copies of files a teammate's delete removed from THIS folder (see keepDeletedCopy). They
   // are this machine's safety net; syncing them would undo every delete in the room.
   '.hive-deleted/',
+  // Where this client renders the room for its own reader: chat, members, claims, board, tasks and
+  // the rules (HIVE_DIR in hive-instructions.js). Each client renders its own; a shared copy would
+  // be every client overwriting every other's. The whole folder, so a file a later build keeps
+  // there is covered before it exists.
+  '.hive/',
   '.hive-case-*',
   '*.log', '.DS_Store', 'Thumbs.db', '*.vsix',
 
@@ -417,9 +423,11 @@ export function deadHeatVerdict(textsByClient, relPath) {
 const IGNORE = new Set(['node_modules', '.git'])
 const MAX_BYTES = 1_000_000
 const MAX_BINARY_BYTES = Number(process.env.HIVE_MAX_BINARY_BYTES) || (5 * 1024 * 1024)
-const BOARD_FILE = 'HIVE_BOARD.md' // generated locally from `board`; never synced as a file
-const CHAT_FILE = 'HIVE_CHAT.md'   // generated locally from `chat`; the agents' conversation
-const TASKS_FILE = 'HIVE_TASKS.md' // generated locally from `tasks`; directed work + approvals
+// The six rendered files are under .hive/ and the sign for a tool-less agent is at the top level:
+// the paths, and why, are in hive-instructions.js, which every agent-facing text also reads them from.
+const BOARD_FILE = BOARD_PATH // generated locally from `board`; never synced as a file
+const CHAT_FILE = CHAT_PATH   // generated locally from `chat`; the agents' conversation
+const TASKS_FILE = TASKS_PATH // generated locally from `tasks`; directed work + approvals
 const CONFIG_FILE = '.hive.json'   // local rendezvous config (room id); not synced
 const SHADOW_FILE = '.hive-shadow.json' // what THIS client last wrote per file; the cross-restart ancestor
 const LOCK_FILE = '.hive-lock.json'     // one sync client per folder; see acquireFolderLock
@@ -429,18 +437,35 @@ const DELETED_KEEP_MS = 7 * 24 * 3600 * 1000 // ...pruned at start once they are
 const DELETE_SETTLE_MS = Number(process.env.HIVE_DELETE_SETTLE_MS) || 1500
 const BULK_DELETE = 5 // a batch this big is announced in the room, not just logged
 const ID_FILE = '.hive-id.json'    // this client's substrate signing identity (private); never synced
-const RULES_FILE = 'HIVE_RULES.md' // the law every participant follows; written into every room
-const MEMBERS_FILE = 'HIVE_MEMBERS.md' // live presence: who is in the room right now
+const RULES_FILE = RULES_PATH // the law every participant follows; written into every room
+const MEMBERS_FILE = MEMBERS_PATH // live presence: who is in the room right now
 // The claim map is the stigmergic trace agents SENSE before editing (see `claims` below), but it
 // was the one part of the room that never reached disk — so an agent could only learn it by
 // remembering to call a tool, and a trace nobody can see coordinates nothing. Rendered here for
 // the same reason HIVE_CHAT.md is: a file in the working folder needs no tool call and no memory.
-const CLAIMS_FILE = 'HIVE_CLAIMS.md'
-const AGENTS_FILE = 'HIVE_FOR_AGENTS.md' // how an AI agent opening this folder joins (via .hive.json) + behaves
+const CLAIMS_FILE = CLAIMS_PATH
+const AGENTS_FILE = MANUAL_PATH // how an AI agent opening this folder joins (via .hive.json) + behaves
+/**
+ * Which of `files` (paths relative to `root`) git tracks, as a Set. null when git cannot be asked
+ * about a folder that is inside a repository (no git on the path, or git refusing the folder): the
+ * caller then treats every file as tracked. A folder in no repository tracks nothing.
+ */
+export function gitTrackedAmong(root, files) {
+  let r = null
+  try { r = spawnSync('git', ['ls-files', '-z', '--', ...files], { cwd: root, encoding: 'utf8', timeout: 5000, windowsHide: true }) } catch { }
+  if (r && !r.error && r.status === 0) return new Set(String(r.stdout || '').split('\0').filter(Boolean).map((f) => f.replace(/\\/g, '/')))
+  for (let d = path.resolve(root); ; d = path.dirname(d)) {
+    try { if (fs.existsSync(path.join(d, '.git'))) return null } catch { return null }
+    if (path.dirname(d) === d) return new Set()
+  }
+}
 // Generated/coordination files are rendered locally from CRDT state — never
 // synced as ordinary files (that would cause echo loops / conflicts).
 // Exported for hive-branch.js: a tracked file with one of these names never reaches the room.
-export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE])
+// The top-level names a build before 15 Nov 2026 rendered to stay in the set for good: that build
+// is still in rooms, and in a folder it has used its copies are still on disk until this one
+// removes them (clearOldTopLevel).
+export const SKIP = new Set([BOARD_FILE, CHAT_FILE, TASKS_FILE, CONFIG_FILE, ID_FILE, RULES_FILE, MEMBERS_FILE, CLAIMS_FILE, AGENTS_FILE, ...OLD_TOP_LEVEL])
 // Files a client writes into its folder for ITSELF. They are ignored on purpose, so the "created
 // here but is ignored" notice must never name them: on 27 Sep 2026 every agent joining a live room
 // told the whole team about .hive-shadow.json, a file none of them had made.
@@ -544,7 +569,7 @@ export function acquireFolderLock(root, room, log = console.log) {
   return release
 }
 
-export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, app = '', gatesDir: gatesDirOpt = '' }) {
+export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir = '.', name = 'anon', kind = 'human', owner = '', token = '', license = '', log = console.log, syncFiles = true, passive = false, listener = false, keeper = false, app = '', gatesDir: gatesDirOpt = '' }) {
   // Where this machine keeps its gate approvals (0.14.4 S-1): outside the synced folder, so no peer can write one.
   const GATES_DIR = gatesDirOpt || gatesDir()
   const gateSkipSaid = new Set() // (agent, command) pairs already announced as unchecked
@@ -1416,7 +1441,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   // sameNameElsewhere) from this agent a moment ago, restarting in the same folder (allowed).
   const IID = crypto.createHash('sha256').update(`${os.hostname()}|${ROOT}`).digest('hex').slice(0, 12)
   const joinedAt = Date.now()
-  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID, joined: joinedAt }) // identity is implicit in the client
+  provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, keeper: keeper || undefined, app: app || undefined, iid: IID, joined: joinedAt }) // identity is implicit in the client
 
   // ---- relay reachability, said out loud exactly once -------------------------------
   // y-websocket retries forever and silently. That is the right RECOVERY behaviour and
@@ -4023,7 +4048,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     try {
       for (const st of provider.awareness.getStates().values()) {
         const u = st && st.user
-        if (u && u.name && !u.listener && !u.passive && u.v === PROTOCOL_VERSION) names.add(u.name)
+        if (u && u.name && !u.listener && !u.keeper && !u.passive && u.v === PROTOCOL_VERSION) names.add(u.name)
       }
     } catch { }
     return [...names].sort().indexOf(name)
@@ -4037,7 +4062,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   }
   function postOnce(id, text, { observer = false, ttlMs = SYS_TTL_MS, clear = null } = {}) {
     if (!text) return null
-    if (observer && (passive || listener)) return null // a client nobody waits on never speaks for the room
+    if (observer && (passive || listener || keeper)) return null // a client nobody waits on never speaks for the room
     const fire = () => {
       try {
         const prev = sysEvents.get(id)
@@ -4079,7 +4104,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   function linkMemory() {
     if (!syncFiles) return
     let count = 0
-    for (const f of ['HIVE_CHAT.md', 'HIVE_BOARD.md', 'HIVE_TASKS.md', 'HIVE_MEMBERS.md']) {
+    for (const f of [CHAT_FILE, BOARD_FILE, TASKS_FILE, MEMBERS_FILE]) {
       try { if (fs.existsSync(path.join(ROOT, f))) count++ } catch { }
     }
     if (count === 0 || (memoryLinked && count === lastLinkedFilesCount)) return
@@ -4377,7 +4402,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
   let myEditing = null, myLastEdit = null
   let editingClearTimer = null
   const warnedAt = new Map() // file -> last time we warned about co-editing it
-  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, app: app || undefined, iid: IID, joined: joinedAt })
+  const setUserState = () => provider.awareness.setLocalStateField('user', { name, kind, owner: owner || undefined, editing: myEditing || undefined, lastEdit: myLastEdit || undefined, v: PROTOCOL_VERSION, hv: VERSION_LABEL, passive: !!passive, listener: listener || undefined, keeper: keeper || undefined, app: app || undefined, iid: IID, joined: joinedAt })
   function markEditing(relPath) {
     myEditing = { file: relPath, at: Date.now() }
     myLastEdit = myEditing
@@ -4501,7 +4526,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     add(name, VERSION_LABEL)
     for (const st of provider.awareness.getStates().values()) {
       const u = st && st.user
-      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION || u.listener) continue
+      if (!u || !u.name || u.name === name || u.v !== PROTOCOL_VERSION || u.listener || u.keeper) continue
       if (u.hv) add(u.name, String(u.hv))
       // An AI on this protocol reporting no build is an engine older than build reporting: the rollout
       // case, and it cannot warn itself. Humans carry no engine build (the extension, the browser panel).
@@ -5271,6 +5296,37 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     log(`[${name}] ${folderLost.message}`)
   }
 
+  // A BUILD BEFORE 15 NOV 2026 RENDERED THE ROOM AT THE TOP OF THE FOLDER. In a folder it has used,
+  // HIVE_CHAT.md and the others are still there and will never change again: a chat that stopped on
+  // the day of the update, which an agent looking around the folder reads as the room. So they go,
+  // once, at the first sync. They were always this client's to overwrite (SKIP), so nothing a person
+  // wrote is in them -- unless git tracks one, which is the person's own act (the Hivecode
+  // repository ships its HIVE_RULES.md that way): that copy stays, byte for byte, and the agent is
+  // told which one it is and where the live one is.
+  let oldTopLevelCleared = false
+  function clearOldTopLevel() {
+    if (oldTopLevelCleared) return
+    oldTopLevelCleared = true
+    try {
+      const present = OLD_TOP_LEVEL.filter((f) => { try { return fs.statSync(path.join(ROOT, f)).isFile() } catch { return false } })
+      if (!present.length) return
+      const tracked = gitTrackedAmong(ROOT, present)
+      const kept = tracked ? present.filter((f) => tracked.has(f)) : present
+      const removed = []
+      for (const f of present) {
+        if (kept.includes(f)) continue
+        try { fs.rmSync(path.join(ROOT, f), { force: true }); removed.push(f) } catch { }
+      }
+      if (removed.length) log(`[${name}] removed ${removed.join(', ')} from the top of this folder: an older Hivecode wrote ${removed.length === 1 ? 'it' : 'them'} there, and this one keeps ${removed.length === 1 ? 'it' : 'them'} in ${HIVE_DIR}/.`)
+      // To the agent, not only the log: it is the agent that opens the stale copy and takes it for
+      // the room. note() reaches hive_status (thisFolderOnly); a log line reaches nobody.
+      if (kept.length) {
+        const one = kept.length === 1
+        note(`${kept.join(', ')} at the top of this folder ${one ? 'is' : 'are'} not the room's: ${tracked ? 'git tracks' : 'git could not be asked about'} ${one ? 'it' : 'them'}, so Hivecode left ${one ? 'it' : 'them'} alone and no longer updates ${one ? 'it' : 'them'}. The live ${one ? 'copy is' : 'copies are'} ${kept.map((f) => `${HIVE_DIR}/${f}`).join(', ')}.`)
+      }
+    } catch { /* a leftover file must never stop a join */ }
+  }
+
   provider.on('sync', (s) => {
     if (!s || !syncFiles) return
     // HIV-P14b. Snapshot what the room already had, once. Measured: the manifest IS populated at
@@ -5281,6 +5337,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       roomAtJoin = new Set()
       try { for (const k of manifest.keys()) roomAtJoin.add(k) } catch { }
     }
+    clearOldTopLevel()
     writeToDisk(RULES_FILE, HIVE_RULES_TEXT) // the law is always present in the room
     writeToDisk(AGENTS_FILE, AGENT_MANUAL_TEXT) // so an agent opening this folder learns how to join + behave
     // Connect to every file I'm granted AND have not excluded; each file-room's sync pulls
@@ -5843,6 +5900,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (const s of provider.awareness.getStates().values()) {
         const u = s.user
         if (!u || !u.name) continue
+        const had = seen.has(u.name)
         const prev = seen.get(u.name) || {}
         const hv = (prev.hv === VERSION_LABEL || u.hv === VERSION_LABEL)
           ? VERSION_LABEL
@@ -5855,6 +5913,10 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
           owner: u.owner || prev.owner,
           passive: !!(u.passive || prev.passive),
           listener: !!(u.listener || prev.listener) || undefined,
+          // A KEEPER (hive-stay.js) only when EVERY connection under the name is one: a keeper beside
+          // a listener or a full engine is that agent, listening or working; a keeper alone is an
+          // agent kept listed while it is not listening. Never merged into `listener`.
+          keeper: (!!u.keeper && (!had || !!prev.keeper)) || undefined,
           app: u.app || prev.app || undefined
         })
       }
@@ -5865,7 +5927,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
     // "claimed x.js -- it's yours"; the second one's write landed in the first one's folder while
     // the first held the file. hive_members showed a single Claude. (The same thing once fused a
     // file to 32,038 lines between two agents called Hermes.) Not counted: this connection, a
-    // listener (it runs under its agent's name on purpose), this same agent a moment ago in this
+    // listener or a keeper (both run under their agent's name on purpose; hive-stay.js), this same agent a moment ago in this
     // same folder (same iid), and a person in a second window when this is a person too. A state
     // with no iid is an older build that cannot say, so it counts.
     sameNameElsewhere: () => {
@@ -5875,7 +5937,7 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
       for (const [id, s] of provider.awareness.getStates()) {
         const u = s && s.user
         if (id === me || !u || !u.name || String(u.name).toLowerCase() !== lc) continue
-        if (u.listener || u.iid === IID) continue
+        if (u.listener || u.keeper || u.iid === IID) continue
         if (kind === 'human' && u.kind === 'human') continue
         out.push({ name: u.name, kind: u.kind, owner: u.owner, app: u.app, joined: u.joined, clientID: id })
       }

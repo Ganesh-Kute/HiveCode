@@ -14,7 +14,7 @@ const PORT = 1243
 const RELAY = `ws://localhost:${PORT}`
 const ONE = path.resolve('.talk-test/one')
 const TWO = path.resolve('.talk-test/two')
-const CHAT = 'HIVE_CHAT.md'
+const CHAT = '.hive/HIVE_CHAT.md'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let failed = 0
 const assert = (n, c) => { console.log(`  ${c ? 'ok  ' : 'FAIL'} ${n}`); if (!c) failed++ }
@@ -48,7 +48,7 @@ fs.writeFileSync(path.join(TWO, '.hive.json'), cfg)
 start(['hive-agent.js', '', TWO, 'Two'], 'Two')
 await sleep(2500)
 assert('agent Two rendezvous-joined the SAME room', (read(TWO, '.hive.json') || '').includes(room))
-assert('HIVE_RULES.md auto-written into both folders (the law is present)', (read(ONE, 'HIVE_RULES.md') || '').includes('# Hivecode rules') && (read(TWO, 'HIVE_RULES.md') || '').includes('# Hivecode rules'))
+assert('HIVE_RULES.md auto-written into both folders (the law is present)', (read(ONE, '.hive/HIVE_RULES.md') || '').includes('# Hivecode rules') && (read(TWO, '.hive/HIVE_RULES.md') || '').includes('# Hivecode rules'))
 
 // 4. both should see both join announcements in the chat
 const chatOne = read(ONE, CHAT) || '', chatTwo = read(TWO, CHAT) || ''

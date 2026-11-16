@@ -59,7 +59,7 @@ console.log('\n# the AI rewrites a file itself -> auto-logged + synced back to t
 fs.writeFileSync(path.join(G, 'main.js'), ['function a(x) {', '  validate(x)', '  return x + 1', '}', 'function b(y) {', '  return y * 2', '}'].join('\n'))
 await sleep(3000)
 assert('human received the agent\'s rewrite', (read(H, 'main.js') || '').includes('validate(x)'))
-const boardH = read(H, 'HIVE_BOARD.md') || ''
+const boardH = read(H, '.hive/HIVE_BOARD.md') || ''
 console.log('\n   human HIVE_BOARD.md:\n' + (boardH || '(none)').split('\n').map((l) => '      ' + l).join('\n'))
 assert('board attributes the rewrite to the AI (Bot)', boardH.includes('Bot') && boardH.includes('main.js'))
 

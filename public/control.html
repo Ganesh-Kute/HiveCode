@@ -469,7 +469,7 @@ const setChatErr=(m)=>{const e=$('chatErr');if(e){e.textContent=m||'';e.classLis
 const genId=()=>'t'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36)
 const tstr=()=>new Date().toTimeString().slice(0,8) // "HH:MM:SS" — matches the editor/MCP clients
 
-let Y=null,WS=null,provider=null,doc=null,timer=null,me='Control',meKind='human'
+let Y=null,WS=null,provider=null,doc=null,timer=null,me='Control'
 function b64urlDecode(s){s=String(s).replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';return atob(s)}
 function decodeJwt(t){const p=String(t||'').split('.')[1];if(!p)return null;try{return JSON.parse(decodeURIComponent(escape(b64urlDecode(p))))}catch{try{return JSON.parse(b64urlDecode(p))}catch{return null}}}
 // ONE import, so ONE Yjs. This used to be two independent esm.sh imports, which resolved to
@@ -492,14 +492,16 @@ async function connect(raw){
   if(!me){err('What should the crew call you? Enter a name above to join.');$('uname').focus();return}
   try{localStorage.setItem('hc-name',me)}catch{}
   if(!(await ensureLib()))return
-  const claim=decodeJwt(p.token)||{};meKind=claim.kind||'human'
+  // A person is at the panel, whatever invite opened it: `invite <name>` makes AI invites unless --human,
+  // and an "AI" that reports no build is flagged to the whole room as an old build (15 Nov 2026).
+  const claim=decodeJwt(p.token)||{}   // still read: an expired invite is told apart from a refused one
   doc=new Y.Doc()
   // fresh provenance cache per connection (tear down any file docs from a prior room)
   if(window._prov){for(const e of window._prov.docs.values()){try{e.fp.destroy();e.fdoc.destroy()}catch{}}}
   window._prov={docs:new Map(),verif:new Map()}
   const opts={connect:true};if(p.token)opts.params={token:p.token}
   try{provider=new WS(p.relay,p.room,doc,opts)}catch(e){err('Could not connect: '+e.message);return}
-  provider.awareness.setLocalStateField('user',{name:me,kind:meKind,v:2})
+  provider.awareness.setLocalStateField('user',{name:me,kind:'human',v:2})
   window._h={chat:doc.getArray('chat'),tasks:doc.getMap('tasks'),controls:doc.getMap('controls'),history:doc.getMap('history'),provider,doc}
   window._conn={relay:p.relay,room:p.room,token:p.token} // kept so we can open a file's own doc to restore it
   const ok=()=>{$('dot').classList.add('on');$('connState').textContent='connected';if(timer){clearTimeout(timer);timer=null}}
@@ -670,10 +672,10 @@ document.addEventListener('click',(e)=>{
   if(b.classList.contains('hrestore')){restoreSnap(b.dataset.id,b.dataset.file);return}
   if(b.dataset.act==='revert'){revertAgent(b.dataset.name);return}
   const{controls,tasks}=window._h
-  const pushChat=(text)=>window._h.chat.push([{by:me,kind:meKind,at:tstr(),text}]) // announce so others see it + agents wake
+  const pushChat=(text)=>window._h.chat.push([{by:me,kind:'human',at:tstr(),text}]) // announce so others see it + agents wake
   if(b.dataset.act==='pause'){controls.set(b.dataset.name,{state:'paused',by:me,at:tstr()});pushChat(`${me} ⏸ paused ${b.dataset.name}`)}
   if(b.dataset.act==='resume'){controls.set(b.dataset.name,{state:'running',by:me,at:tstr()});pushChat(`${me} ▶ resumed ${b.dataset.name}`)}
-  if(b.dataset.act==='reassign'){const txt=prompt('New task for '+b.dataset.name+':');if(txt&&txt.trim()){const id=genId(),to=b.dataset.name;tasks.set(id,{id,to,by:me,byKind:meKind,text:txt.trim(),status:'accepted',decidedBy:me,at:tstr()});pushChat(`@${to}: ${txt.trim()}  (task ${id} — proceeding)`)}}
+  if(b.dataset.act==='reassign'){const txt=prompt('New task for '+b.dataset.name+':');if(txt&&txt.trim()){const id=genId(),to=b.dataset.name;tasks.set(id,{id,to,by:me,byKind:'human',text:txt.trim(),status:'accepted',decidedBy:me,at:tstr()});pushChat(`@${to}: ${txt.trim()}  (task ${id} — proceeding)`)}}
   if(b.dataset.tact){const t=tasks.get(b.dataset.id);const own=t&&((doc.getMap('owners').toJSON()||{})[t.to]||'');if(t&&(!own||own===me)&&(t.status==='pending'||t.status==='denied')){const ok=b.dataset.tact==='accept';tasks.set(b.dataset.id,{...t,status:ok?'accepted':'denied',decidedBy:me});pushChat(`${ok?`@${t.to} `:''}task ${t.id} ${ok?'APPROVED':'denied'} by ${me}: "${t.text}"`)}}
 })
 function sendChat(){
@@ -691,10 +693,10 @@ function sendChat(){
     const to=m[1],text=m[2],id=genId()
     const ownerOf=(doc.getMap('owners').toJSON()||{})[to]
     const auto=!ownerOf||me===ownerOf
-    window._h.tasks.set(id,{id,to,by:me,byKind:meKind,text,status:auto?'accepted':'pending',decidedBy:auto?me:null,at})
-    window._h.chat.push([{by:me,kind:meKind,at,text:`@${to}: ${text}  (task ${id} — ${auto?'proceeding':(ownerOf+' must approve')})`}])
+    window._h.tasks.set(id,{id,to,by:me,byKind:'human',text,status:auto?'accepted':'pending',decidedBy:auto?me:null,at})
+    window._h.chat.push([{by:me,kind:'human',at,text:`@${to}: ${text}  (task ${id} — ${auto?'proceeding':(ownerOf+' must approve')})`}])
   }else{
-    window._h.chat.push([{by:me,kind:meKind,at,text:v}])
+    window._h.chat.push([{by:me,kind:'human',at,text:v}])
   }
   i.value=''
 }
@@ -813,7 +815,7 @@ async function restoreCore(id,file,{releaseFrom=''}={}){
     if(!landed)await new Promise((r)=>setTimeout(r,1200))
   }
   if(!landed)return{error:'not-landed'}
-  window._h.chat.push([{by:me,kind:meKind,at:tstr(),text:`↩ ${me} restored ${file} to ${entry.at}${entry.by&&entry.by!==me?` (state before ${entry.by}'s edit)`:''}.`}])
+  window._h.chat.push([{by:me,kind:'human',at:tstr(),text:`↩ ${me} restored ${file} to ${entry.at}${entry.by&&entry.by!==me?` (state before ${entry.by}'s edit)`:''}.`}])
   return{ok:true}
 }
 async function restoreSnap(id,file){
@@ -908,7 +910,7 @@ async function revertAgent(who){
   const parts=[`⏮ ${me} reverted ${who}'s changes in ${done.length} file(s)${done.length?': '+done.join(', '):''}.`]
   if(same.length)parts.push(`Already at that point: ${same.join(', ')}.`)
   if(failed.length)parts.push(`NOT reverted: ${failed.join(', ')}.`)
-  window._h.chat.push([{by:me,kind:meKind,at:tstr(),text:parts.join(' ')}])
+  window._h.chat.push([{by:me,kind:'human',at:tstr(),text:parts.join(' ')}])
   if(failed.length)alert(`Not reverted: ${failed.join(', ')}.`)
 }
 

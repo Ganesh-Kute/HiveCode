@@ -169,8 +169,9 @@ section('the hook end to end: session file, room folder, listener file')
   const proj = path.join(t, 'proj'), roomDir = path.join(t, 'room')
   fs.mkdirSync(proj, { recursive: true }); fs.mkdirSync(roomDir, { recursive: true })
   fs.writeFileSync(path.join(roomDir, '.hive.json'), JSON.stringify({ relay: 'ws://127.0.0.1:9', room: 'r1' }))
-  fs.writeFileSync(path.join(roomDir, 'HIVE_CHAT.md'), '# Hive Chat\n')
-  const session = (extra = {}) => fs.writeFileSync(path.join(proj, '.hive-mcp-session.json'), JSON.stringify({ dir: roomDir, name: 'Ada', owner: 'G', ...extra }))
+  fs.mkdirSync(path.join(roomDir, '.hive'), { recursive: true })
+  fs.writeFileSync(path.join(roomDir, '.hive', 'HIVE_CHAT.md'), '# Hive Chat\n')
+  const session = (extra = {}) => fs.writeFileSync(path.join(proj, '.hive-mcp-session.json'), JSON.stringify({ dir: roomDir, name: 'Ada', owner: 'G', hiveDir: '.hive', ...extra }))
   const armed = (o) => { fs.mkdirSync(path.dirname(armedFile('Ada', 'r1', env)), { recursive: true }); fs.writeFileSync(armedFile('Ada', 'r1', env), JSON.stringify({ pid: process.pid, at: Date.now(), beat: Date.now(), synced: true, session: 'S1', ...o })) }
   const hook = (input, args = []) => {
     try { fs.rmSync(path.join(proj, '.hive-stop-hook.json')) } catch { } // each case starts with no blocks spent
@@ -217,6 +218,36 @@ section('the hook end to end: session file, room folder, listener file')
   session({ passive: true })
   const pc = hook({}), pa = hook(agPayload, ['--app=antigravity'])
   T('H14 a passive participant with no listener is let through, in both apps', pc.raw === '' && !!pa.out && pa.out.decision === 'stop', pc.raw + ' | ' + pa.raw)
+  // 15 Nov 2026: the room is mirrored in .hive/ now, and at the top of the folder by a build before
+  // that. The hook runs as the newest build while the agent's MCP server may still be the one it
+  // started as, so it has to read the copy THAT server writes. The first version took whichever
+  // copy was newer on disk. Opus-Cloud's review found where that is wrong: in a repository that
+  // committed HIVE_CHAT.md, a `git checkout` or `git pull` rewrites the top-level copy, and a chat
+  // that ended weeks ago is the newest file in the folder. So the server says where it renders, in
+  // the record it writes on join (`hiveDir`). A record without it was written by an older build,
+  // and those render at the top.
+  const NEW = path.join(roomDir, '.hive', 'HIVE_CHAT.md'), OLD = path.join(roomDir, 'HIVE_CHAT.md')
+  const quiet = '# Hive Chat\n', mail = '# Hive Chat\n\n- 19:07:27  Bob (ai): @Ada please look at parser.js\n'
+  const stamp = (f, secondsAgo) => { const at = new Date(Date.now() - secondsAgo * 1000); fs.utimesSync(f, at, at) }
+  session()
+  armed({})
+  fs.writeFileSync(NEW, mail)
+  const hNew = hook({})
+  T('H15 mail in .hive/HIVE_CHAT.md holds the turn open', !!hNew.out && hNew.out.decision === 'block' && /Bob/.test(hNew.out.reason), hNew.raw.slice(0, 200))
+  session({ hiveDir: undefined })
+  fs.writeFileSync(OLD, mail); stamp(OLD, 3600)
+  fs.writeFileSync(NEW, quiet); stamp(NEW, 5)
+  const hOld = hook({})
+  T('H16 an older MCP server (its record names no folder) writes the top-level copy: that one is read, even beside a newer .hive/ copy from another session',
+    !!hOld.out && hOld.out.decision === 'block' && /Bob/.test(hOld.out.reason), hOld.raw.slice(0, 200))
+  session()
+  fs.writeFileSync(NEW, quiet); stamp(NEW, 3600)
+  fs.writeFileSync(OLD, mail); stamp(OLD, 5)
+  T('H17 a top-level copy that git rewrote a moment ago is not the room: with a server that renders in .hive/ it never holds a turn open', hook({}).raw === '')
+  session({ hiveDir: '../somewhere-else' })
+  T('H18 a record that names any other folder is not followed there: the hook reads the top level, as for an older build',
+    (() => { const h = hook({}); return !!h.out && h.out.decision === 'block' && /Bob/.test(h.out.reason) })())
+  try { fs.rmSync(OLD) } catch { }
   try { fs.rmSync(t, { recursive: true, force: true }) } catch { }
 }
 

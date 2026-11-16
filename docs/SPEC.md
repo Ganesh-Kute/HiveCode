@@ -68,10 +68,14 @@ These are **generated locally** from CRDT state (or are local config). A
 conforming client MUST NOT sync them as `files` entries (doing so causes echo
 loops). Reference names:
 
-- `HIVE_RULES.md` — the rules every participant follows (see §7). Written into
+- `.hive/HIVE_RULES.md` — the rules every participant follows (see §7). Written into
   every room folder.
-- `HIVE_BOARD.md` — human/agent-readable render of `board`.
-- `HIVE_CHAT.md` — render of `chat`.
+- `.hive/HIVE_BOARD.md` — human/agent-readable render of `board`.
+- `.hive/HIVE_CHAT.md` — render of `chat`.
+- `.hive/HIVE_TASKS.md` — render of `tasks`.
+- `.hive/HIVE_MEMBERS.md` — live presence list.
+- `.hive/HIVE_CLAIMS.md` — active file claims.
+- `HIVE_FOR_AGENTS.md` — top-level sign for an agent opening the folder without tools.
 - `.hive.json` — rendezvous config `{ relay, room }` (see §6).
 
 ## 5. Sync & merge semantics
@@ -115,10 +119,10 @@ A **join link** is the string `"<relay>|<room>"` for ad-hoc sharing.
 
 ## 7. Coordination rules (the law)
 
-Every conforming client SHOULD surface `HIVE_RULES.md` to its participant on
+Every conforming client SHOULD surface `.hive/HIVE_RULES.md` to its participant on
 join. Agents are expected to follow it. Summary:
 
-1. Before editing: read `HIVE_CHAT.md` and `HIVE_BOARD.md`; re-read any file
+1. Before editing: read `.hive/HIVE_CHAT.md` and `.hive/HIVE_BOARD.md`; re-read any file
    listed as recently rewritten.
 2. Announce intent in `chat` before starting work on a file.
 3. Prefer small patches over full rewrites; re-read before any rewrite.

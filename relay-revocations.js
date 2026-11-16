@@ -48,6 +48,10 @@ export const MAX_ROOMS = 1000
 export const MAX_BYTES = 64 * 1048576
 export const RESERVE_BYTES = 16 * 1024
 const nowSec = () => Math.floor(Date.now() / 1000)
+/** Does the relay's persist dir outlast a restart? Only when someone set HIVE_PERSIST_DIR on purpose
+ *  (a mounted disk). The default folder a relay on Render writes to is wiped by every restart and
+ *  deploy on the free plan, so a relay must not tell a host its revokes last there. */
+export const persistLasts = (env = process.env) => Boolean(env.HIVE_PERSIST_DIR && env.HIVE_PERSIST_DIR !== 'off')
 const sizeOf = (lists) => lists.reduce((n, l) => n + l.length, 0)
 /** When the last entry of a merge expires (Infinity when one never does). */
 const lastExp = (m) => { let x = 0; for (const exp of m.revoked.values()) { if (exp === null) return Infinity; if (exp > x) x = exp } return x }
@@ -56,10 +60,11 @@ const lastExp = (m) => { let x = 0; for (const exp of m.revoked.values()) { if (
  * @param {object} o
  * @param {string|null} [o.dir]    the relay's persist dir; lists go in <dir>/revocations/<room>.json. Or null
  * @param {{get: (room: string) => Promise<string[]>, put: (room: string, lists: string[]) => Promise<void>}|null} [o.store]
+ * @param {boolean|null} [o.durable] whether `dir` outlasts a restart; null = assume it does
  * @param {() => number} [o.now]   seconds
  * @param {number} [o.maxRooms] @param {number} [o.maxBytes] @param {number} [o.reserveBytes]
  */
-export function makeRelayRevocations({ dir = null, store = null, now = nowSec, log = () => { }, maxRooms = MAX_ROOMS, maxBytes = MAX_BYTES, reserveBytes = RESERVE_BYTES } = {}) {
+export function makeRelayRevocations({ dir = null, store = null, durable = null, now = nowSec, log = () => { }, maxRooms = MAX_ROOMS, maxBytes = MAX_BYTES, reserveBytes = RESERVE_BYTES } = {}) {
   const rooms = new Map()            // room -> { lists, revoked: Map(jti -> exp|null), seq, bytes, until }
   const loaded = new Map()           // room -> Promise, the store read of this boot
   const folder = dir ? path.join(dir, FOLDER) : null
@@ -132,7 +137,8 @@ export function makeRelayRevocations({ dir = null, store = null, now = nowSec, l
   }
 
   return {
-    durable: Boolean(folder || store),
+    // `durable` from the caller wins: a folder is only a lasting disk when the relay knows it is.
+    durable: Boolean(store) || (durable === null ? Boolean(folder) : Boolean(durable)),
     present: (room, lists) => present(room, lists),
     /** What is held now, for the operator: { rooms, bytes, maxRooms, maxBytes }. */
     size: () => ({ rooms: rooms.size, bytes: total, maxRooms, maxBytes }),

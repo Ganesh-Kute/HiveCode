@@ -37,7 +37,12 @@ export function mentionsName(text, me) {
   // Both boundaries, and the same ones the extractor uses. If these two ever disagree, a message
   // can be extracted as addressing someone who does not match it, or match someone it was never
   // extracted for -- which is how a mailbox and a transcript come to tell different stories.
-  return new RegExp(`${MENTION_START}@${escaped}${MENTION_END}`, 'i').test(clean)
+  const re = new RegExp(`${MENTION_START}@${escaped}${MENTION_END}`, 'i')
+  // ...or exactly as typed. Reading a format mark out of a mention may only ever ADD a match: a
+  // name is, first of all, whatever follows the @ (a member called _x_ is addressed by "@_x_",
+  // which also reads as an italic x). So nothing that matched before format marks were read can
+  // stop matching.
+  return re.test(clean) || re.test(stripAsTyped(text))
 }
 
 /**
@@ -56,9 +61,39 @@ export function mentionsAll(text) {
   return /@all(?![\w-])/i.test(stripSpansAndQuotes(text))
 }
 
+// AN UNDERSCORE IS ALSO A NAME CHARACTER. `_agent` is a valid member name, and Slack writes italic as
+// _text_. Read straight after @, an underscore is a format mark only when the italic is closed: by
+// an underscore right after the name (@_Name_), or by one that ends a word later on the same line
+// (@_Name never wait_). Otherwise it is the first character of the name, and the text is left as
+// typed. Found by the full run on 16 Nov 2026: "@_agent hello" had become "@agent hello", and a
+// member named _agent could not be addressed.
+const ITALIC_CLOSES_LATER = /^[^\n]*?_(?![A-Za-z0-9_])/
+const underscoreIsTheName = (mid, post, rest) => /^_+$/.test(mid) && !post.includes('_') && !ITALIC_CLOSES_LATER.test(rest)
+
+/** Move Slack/markdown format marks (*, _, ~, `) out from between @ and a member name (or around @Name).
+ *  A backtick BEFORE @ (`@all`) is a code span and is left alone so stripSpansAndQuotes blanks it out. */
+export function unwrapFormattedMentions(text) {
+  return String(text || '')
+    .replace(
+      /(^|[\s(\[{<"'—–:])([*_~]*)@([*_~`]+)([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~`]*)(?![\w\-/]|:\w)/g,
+      (m, lead, pre, mid, name, post, at, whole) => {
+        if (underscoreIsTheName(mid, post, whole.slice(at + m.length))) return m
+        return post ? `${lead}${pre}@${name}` : `${lead}@${name}${(pre + mid).replace(/[`_]/g, '')}`
+      },
+    )
+    .replace(
+      /(^|[\s(\[{<"'—–:])([*_~]+)@([A-Za-z0-9](?:[\w-]*[A-Za-z0-9])?)([*_~]*)(?![\w\-/]|:\w)/g,
+      (_, lead, pre, name, post) => `${lead}@${name}${post.replace(/_/g, '')}`,
+    )
+}
+
 /** Code spans and quoted text blanked out, so a token quoted as code or prose is not read as an address. */
 export function stripSpansAndQuotes(text) {
-  const raw = String(text || '')
+  return stripText(unwrapFormattedMentions(String(text || '')))
+}
+/** The same, on the text exactly as typed: no format mark is read out of a mention. */
+const stripAsTyped = (text) => stripText(String(text || ''))
+function stripText(raw) {
   const trimmed = raw.trim()
   const quotePairs = [
     ['"', '"'],
@@ -330,7 +365,7 @@ export function unansweredFor(messages, me) {
  */
 const ORDER_WINDOW = 160
 export function priorityOf(text) {
-  const s = String(text || '')
+  const s = unwrapFormattedMentions(String(text || ''))
   if (/^\s*\[!\]|^\s*\[stop\]/i.test(s)) return 'stop'
   const head = s
     .replace(/```[\s\S]*?(?:```|$)/g, ' ')          // fenced code, closed or not
@@ -338,7 +373,7 @@ export function priorityOf(text) {
     .replace(/"[^"\n]*"/g, ' ')                    // double quotes
     .replace(/(?:^|[\s(\[{<])'[^'\n]*'(?=$|[\s)\]}>.,!?:;])/g, ' ') // single quotes
     .replace(/[“”][^“”\n]*[“”]/g, ' ')             // curly double quotes
-    .replace(/^(?:\s*@[\w-]+[\s,:;.!-]*)+/, '')    // the leading @names being addressed
+    .replace(/^(?:\s*@[\w-]+[*_~]*[\s,:;.!-]*)+/, '') // the leading @names being addressed
     .trimStart()
     .slice(0, ORDER_WINDOW)
 
@@ -401,9 +436,10 @@ export function findClosestKnown(name, knownNames) {
 
 /** Does this mention sit at the direct-address position (start of the message)? */
 export function isDirectAddress(text, name) {
-  const s = String(text || '').trimStart()
+  const typed = String(text || '').trimStart()
   const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`^@${escaped}(?![\\w\\-/])`, 'i').test(s)
+  const re = new RegExp(`^@${escaped}(?![\\w\\-/])`, 'i')
+  return re.test(unwrapFormattedMentions(typed)) || re.test(typed) // as typed too: see mentionsName
 }
 
 /**

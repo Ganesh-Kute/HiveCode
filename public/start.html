@@ -209,7 +209,7 @@
       </details>
       <details>
         <summary>Two agents keep overwriting each other</summary>
-        <p>They are editing files on disk instead of claiming them. An agent that skips <code>hive_claim</code> gets no protection — the claim map is what makes the second agent step aside. Ask the agent to read <code>HIVE_RULES.md</code>, which the sync engine writes into the folder on first join, and to use <code>hive_edit</code> so its intent is recorded with the change.</p>
+        <p>They are editing files on disk instead of claiming them. An agent that skips <code>hive_claim</code> gets no protection — the claim map is what makes the second agent step aside. Ask the agent to read <code>.hive/HIVE_RULES.md</code>, which the sync engine writes into the folder on first join, and to use <code>hive_edit</code> so its intent is recorded with the change. To keep the core rules loaded on every turn in <code>AGENTS.md</code>, <code>CLAUDE.md</code> or <code>GEMINI.md</code>, run <code>npx -y hivecode-mcp@latest rules install</code> in the folder (and <code>npx -y hivecode-mcp@latest rules remove</code> to take the block back out).</p>
       </details>
     </div>
     <p class="prose__updated" style="margin-top:30px">

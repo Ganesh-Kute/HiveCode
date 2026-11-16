@@ -41,7 +41,7 @@ import { checkRelay, currentRelayFor, controlUrl, PUBLIC_DEFAULT_RELAY } from '.
 import { newPersonalRoom, saveRoomKey, loadRoomKey, resolveRoomToken, saveRoomToken, main as roomKeyMain } from './hive-room-key.js'
 import { isSecuredRoom } from './token.js'
 import { createMailbox, formatMessage, mentionsName, mentionedNames, mentionsAll, unansweredFor, priorityOf, ambientDigest, validateMemberName, collapseRepeats, findClosestKnown, isDirectAddress } from './hive-mailbox.js'
-import { INSTRUCTIONS, joinCard, REACH_BY_WAIT } from './hive-instructions.js'
+import { INSTRUCTIONS, joinCard, REACH_BY_WAIT, HIVE_DIR } from './hive-instructions.js'
 import { makeBusy, isBusy, describeRecipient } from './hive-busy.js'
 import * as ACT from './hive-activity.js'   // HIV-P11; key MUST be 'activity'
 import * as RH from './hive-relay-health.js' // HIV-P13; the ONLY producer of the not-syncing diagnosis
@@ -115,8 +115,11 @@ function persistSession({ dir, name, owner, cursor, frontier, authed = false, ki
     // tokens -- the agent's shell does not hold this server's token, so that listener could not join.
     // `kind` and `passive`: a resume rejoins from this file, and without them a human came back as an
     // AI and a passive participant as one the room waits on; the Stop hook reads `passive` too.
+    // `hiveDir`: where this server's engine renders the room (.hive/ since 15 Nov 2026). The Stop hook
+    // runs as the newest build whatever build this server is, and reads the chat from the folder named
+    // here. A record without it was written by an older build, which rendered at the top of the folder.
     const rec = { dir, name, owner, chatCursor, ...(chatFrontier ? { chatFrontier } : {}), ...(authed ? { authed: true } : {}),
-      ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}),
+      ...(kind && kind !== 'ai' ? { kind } : {}), ...(passive ? { passive: true } : {}), hiveDir: HIVE_DIR,
       pid: process.pid, ...(CONV ? { conv: CONV } : {}), at: Date.now() }
     for (const [n, s] of Object.entries(agents)) if (n !== name && s.pid === process.pid) delete agents[n] // this server's earlier identity
     agents[name] = rec
@@ -636,7 +639,8 @@ was not written. Fix the relay and call hive_join again.`
   // No "announce your version" rule any more: since 29 Sep the room flags a mixed build itself
   // (sync.js checkBuilds), and the joiner is told here, by name, when one is already in the room.
   const ls = listenerStatusFor({ name, room, useToken, passive })
-  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nlistener: ${ls.card}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
+  const rulesInstallLine = '\nrules on every turn (your person\'s call): run "npx -y hivecode-mcp@latest rules install" in the folder your agent app starts in; it adds a short block to AGENTS.md / CLAUDE.md / GEMINI.md there.'
+  return `${branchNote}${mode}\nroom: ${room}\nrelay: ${relay}  [${priv.headline}]\nfolder: ${ROOT}\nhivecode: ${VERSION_LABEL}\nlistener: ${ls.card}\nothers here: ${others.join(', ') || 'none yet'}${mixedNote}\n${personalRoom ? 'room link (lets nobody in without an invite)' : 'invite link'}: ${inviteLink}${tokenNote}${invite}${rulesInstallLine}${movedNote}${privNote}${updateNotice() ? '\n\n' + updateNotice() : ''}\n\n--- FOLLOW THESE RULES ---\n${rulesText}`
 }
 
 // A MIXED BUILD, TOLD TO THE ONE WHO CAN ACT ON IT (2 Oct 2026). The room's own warning names
@@ -2249,6 +2253,12 @@ if (isEntryPoint && process.argv[2] === 'setup') {
   // machine (0.14.4 S-1). A command, never a tool: an agent persuaded by a message cannot consent.
   const { main: gateMain } = await import('./hive-gate.js')
   process.exit(await gateMain(process.argv.slice(2)))
+} else if (isEntryPoint && process.argv[2] === 'rules') {
+  // `rules install|remove|show`: the few rules an agent forgets, between two markers in the file its
+  // own app loads on every turn (AGENTS.md, CLAUDE.md, GEMINI.md...). A command, never a tool: it is
+  // the person's file, so nothing writes there unless someone runs this. (hive-rules-install.js)
+  const { main: rulesMain } = await import('./hive-rules-install.js')
+  process.exit(await rulesMain(process.argv.slice(3)))
 } else if (isEntryPoint && (process.argv[2] === 'invite' || process.argv[2] === 'revoke')) {
   // `invite <name>` makes one person's link into a personal room this machine hosts; `revoke <name>`
   // takes it back. Commands rather than tools: see hive-room-key.js for why.
@@ -2344,7 +2354,7 @@ function reachLine(s) {
   const how = s && !s.passive && canChildListen(s.room, s.name, s.dir, !!s.authed) ? listenHow(clientName()) : ''
   if (!how) return REACH_BY_WAIT
   const cmd = listenCommand({ relay: s.relay, room: s.room, name: s.name, app: clientName() })
-  return `1. Stay reachable: before your turn ends, start your listener. ${how} It ends, and that wakes you, when you are addressed or after ${LISTEN_IDLE_MIN} quiet minutes; then start it again:\n   ${cmd}`
+  return `1. Stay reachable, always: never end a turn without your listener running. ${how} It ends, and that wakes you, when you are addressed or after ${LISTEN_IDLE_MIN} quiet minutes; start it again after every wake, before that turn ends:\n   ${cmd}`
 }
 function listenLine(s) {
   // A passive participant never answers and nobody waits on it, so there is nothing to wake it for.

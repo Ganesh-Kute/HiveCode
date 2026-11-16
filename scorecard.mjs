@@ -126,8 +126,8 @@ await sleep(3000)
 const REDIRECT = 'stop on app.js and move to routes.js instead'
 try { H.say(REDIRECT) } catch (e) { console.log('        say() threw: ' + e.message) }
 await sleep(4500)
-const inAda = (rd('a', 'HIVE_CHAT.md') || '').includes(REDIRECT)
-const inCara = (rd('c', 'HIVE_CHAT.md') || '').includes(REDIRECT)
+const inAda = (rd('a', '.hive/HIVE_CHAT.md') || '').includes(REDIRECT)
+const inCara = (rd('c', '.hive/HIVE_CHAT.md') || '').includes(REDIRECT)
 CHECK(3, "a human's redirect lands in every running agent's context", inAda && inCara,
   inAda && inCara
     ? 'delivered to Ada and Cara without restarting either process (delivery, not obedience)'

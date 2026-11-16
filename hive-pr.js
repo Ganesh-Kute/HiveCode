@@ -177,7 +177,8 @@ export function buildPlanJson({ room, groups = [], orphans = [], identical = [],
 export const OWN_FILES = new Set(['.hive.json', '.hive-shadow.json', '.hive-shadow.json.tmp', '.hive-lock.json', '.hive-id.json', '.hive-mcp-session.json', '.hive-stop-hook.json'])
 export const isOwnFile = (rel) => {
   const b = path.basename(rel)
-  return OWN_FILES.has(b) || /^HIVE_[A-Z0-9_]+\.md$/i.test(b) || b.startsWith('.hive')
+  // Anything under .hive/ as well: that folder is where a client renders the room for itself.
+  return OWN_FILES.has(b) || /^HIVE_[A-Z0-9_]+\.md$/i.test(b) || b.startsWith('.hive') || String(rel).replace(/\\/g, '/').split('/').includes('.hive')
 }
 
 export function isOrphan({ rel, last, roomText, branchText }) {

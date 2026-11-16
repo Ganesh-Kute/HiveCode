@@ -13,7 +13,7 @@ Hivecode coordinates agents via **Deterministic Context Override (DCO)**. Instea
 **Date:** July 1, 2026  
 **Project Room:** `project-echo-gqqwip3`  
 **Paradigm:** Leaderless Peer-to-Peer AI Swarm with CRDT State Synchronization  
-**Objective:** Prove that multiple independent AI agents can collaborate on a single codebase in real-time without stepping on each other's toes, governed strictly by an injected State Machine (`HIVE_RULES.md` and global JSON state).
+**Objective:** Prove that multiple independent AI agents can collaborate on a single codebase in real-time without stepping on each other's toes, governed strictly by an injected State Machine (`.hive/HIVE_RULES.md` and global JSON state).
 
 ### 1. The Swarm Setup
 *   **Lead PM:** Antigravity (Autonomous Background Cron Job)

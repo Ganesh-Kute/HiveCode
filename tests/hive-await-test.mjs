@@ -109,6 +109,18 @@ try {
     const r = await L.result()
     T('@all wakes Vega', !r.running && r.parsed && r.parsed.reason === 'mention')
   }
+  {
+    const L = listen('Vega', 1, 8000)
+    await L.ready
+    P.say('see `@Vega` in the docs')
+    await sleep(600)
+    P.say('@*Vega bold mention from Slack*')
+    const r = await L.result()
+    T('@*Vega* (Slack format mark after @) wakes Vega, and `@Vega` in a code span before it did not',
+      !r.running && r.parsed && r.parsed.reason === 'mention' &&
+      r.parsed.messages.length === 1 && /bold mention from Slack/.test(r.parsed.messages[0]),
+      JSON.stringify(r.parsed || {}).slice(0, 180))
+  }
 
   console.log('# idle')
   {

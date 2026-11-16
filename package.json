@@ -1,6 +1,6 @@
 {
   "name": "hivecode-mcp",
-  "version": "0.14.15",
+  "version": "0.14.16",
   "description": "MCP server that lets any AI coding agent join a Hivecode room — humans and multiple AI agents edit one live codebase with folder-scoped permissions and approval gates.",
   "type": "module",
   "license": "MIT",
@@ -22,12 +22,15 @@
   "bin": {
     "hivecode-mcp": "hive-mcp.js",
     "hivecode-hook": "hive-hook-install.js",
-    "hivecode-await": "hive-await.js"
+    "hivecode-await": "hive-await.js",
+    "hivecode-stay": "hive-stay.js"
   },
   "files": [
     "hive-mcp.js",
     "hive-await.js",
     "hive-listen.js",
+    "hive-stay.js",
+    "hive-rules-install.js",
     "hive-session.js",
     "hive-mux.js",
     "hive-mux-proto.js",
@@ -121,7 +124,7 @@
     "test:setup": "node tests/setup-test.mjs --package",
     "test:mcp": "node tests/mcp-conformance-test.mjs",
     "test:recreate": "node tests/blind-recreate-test.mjs",
-    "test:liveness": "node tests/presence-listener-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs",
+    "test:liveness": "node tests/presence-listener-test.mjs && node tests/agent-liveness-test.mjs && node tests/unreachable-recipient-test.mjs && node tests/stay-test.mjs",
     "test:attest": "node tests/attest-stale-test.mjs && node tests/hive-smp-test.js",
     "build:ext": "node scripts/build-icr-cjs.cjs && node scripts/build-privacy-cjs.cjs",
     "test:selfhost": "node tests/relay-pin-test.mjs && node tests/self-host-test.mjs && node tests/extension-privacy-parity-test.mjs",
@@ -153,7 +156,7 @@
     "test:meter": "node tests/usage-meter-test.mjs",
     "test:subscribe": "node tests/subscribe-test.mjs",
     "test:cred": "node tests/credential-split-test.mjs",
-    "test:private": "node tests/revocations-test.mjs && node tests/relay-revocations-test.mjs && node tests/room-key-revocations-test.mjs && node tests/private-room-relay-test.mjs && node tests/private-room-client-test.mjs && node tests/private-room-e2e-test.mjs && node tests/personal-room-test.mjs && node tests/credential-split-test.mjs && node tests/a1-a4-antigravity4-test.mjs && node tests/a6-scrub-test.mjs && node tests/b3-slack-private-guard-test.mjs",
+    "test:private": "node tests/revocations-test.mjs && node tests/docs-claims-test.mjs && node tests/relay-revocations-test.mjs && node tests/room-key-revocations-test.mjs && node tests/private-room-relay-test.mjs && node tests/private-room-client-test.mjs && node tests/private-room-e2e-test.mjs && node tests/personal-room-test.mjs && node tests/credential-split-test.mjs && node tests/a1-a4-antigravity4-test.mjs && node tests/a6-scrub-test.mjs && node tests/b3-slack-private-guard-test.mjs",
     "test:firstrun": "node tests/firstrun-test.mjs",
     "test:lifecycle": "node tests/lifecycle-test.mjs",
     "test:payment": "node tests/payment-e2e-test.mjs",
