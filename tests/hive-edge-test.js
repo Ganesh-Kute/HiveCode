@@ -4,8 +4,8 @@
 //
 //   1. PATH TRAVERSAL — a peer injects manifest paths like "../escaped.txt" and
 //      "/abs.txt"; a victim client must NEVER write them outside its project root.
-//   2. BINARY/LARGE CLOBBER — if a tracked text file is replaced locally by a
-//      binary, an incoming remote text edit must NOT overwrite (destroy) it.
+//   2. BINARY vs TEXT — a text file replaced by a binary while a peer edits it: the
+//      binary survives the race, every losing version is kept in .hive-deleted/.
 //   3. OUT-OF-SCOPE PUBLISH — a path-scoped agent must not be able to publish a
 //      file OUTSIDE its scope (the relay + client both refuse).
 //   4. RELAY TRAVERSAL REJECT — the relay refuses a "<base>␁../../etc/x" file-room
@@ -88,26 +88,44 @@ const ROOM1 = 'edge-traversal'
 }
 
 // =====================================================================
-console.log('\n# 2. BINARY CLOBBER — a remote text edit must not destroy a locally-replaced binary file')
+console.log('\n# 2. BINARY vs TEXT — a binary is shared since 25520fa; neither side may lose bytes')
+// This section was written when a binary could not be shared: the guard was "a remote text update
+// never overwrites a local binary". That guard still holds, but since binary sync (25520fa, 3 Oct)
+// A's binary goes to the room, so a LATER write by someone who has it wins like any later write.
+// What must never happen is bytes vanishing. Two cases:
+//   2a RACE: A swaps in a binary while B, who has not seen it, edits the text. A's binary must
+//      survive, B's text must be kept in B's .hive-deleted/, and both folders end equal.
+//   2b LATER WRITE: B has A's binary, then saves text over it. Both end on B's text, and A's
+//      binary is kept in A's .hive-deleted/: replaced in the open, never destroyed.
 const ROOM2 = 'edge-binary'
+const keptCopies = (dir) => {
+  const d = path.join(dir, '.hive-deleted')
+  try { return fs.readdirSync(d, { recursive: true }).map((f) => path.join(d, f)).filter((p) => fs.statSync(p).isFile()).map((p) => fs.readFileSync(p)) } catch { return [] }
+}
 {
   const dirA = path.join(ROOT, 'binA'), dirB = path.join(ROOT, 'binB')
   fs.mkdirSync(dirA, { recursive: true }); fs.mkdirSync(dirB, { recursive: true })
-  fs.writeFileSync(path.join(dirA, 'asset.dat'), 'TEXTVERSION')
+  const fA = path.join(dirA, 'asset.dat'), fB = path.join(dirB, 'asset.dat')
+  fs.writeFileSync(fA, 'TEXTVERSION')
   const A = startSync({ relay: RELAY_OPEN, room: ROOM2, dir: dirA, name: 'A', log: () => {} })
   await sleep(1800)
   const B = startSync({ relay: RELAY_OPEN, room: ROOM2, dir: dirB, name: 'B', log: () => {} })
   await sleep(2800)
-  assert('B received asset.dat as text', readStr(path.join(dirB, 'asset.dat')) === 'TEXTVERSION')
-  // A replaces its local copy with a BINARY file (contains NUL bytes)
+  assert('B received asset.dat as text', readStr(fB) === 'TEXTVERSION')
   const binBuf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x00, 0xff, 0x10])
-  fs.writeFileSync(path.join(dirA, 'asset.dat'), binBuf)
-  await sleep(2000)
-  // B edits the text version -> a remote update lands on A's file-doc
-  fs.writeFileSync(path.join(dirB, 'asset.dat'), 'TEXTVERSION2')
+  // 2a: both writes land before either side can have heard the other's
+  fs.writeFileSync(fB, 'TEXT-B-RACE')
+  fs.writeFileSync(fA, binBuf)
   await sleep(3000)
-  const aNow = readBuf(path.join(dirA, 'asset.dat'))
-  assert('A\'s binary file was NOT clobbered by the remote text edit', aNow !== null && aNow.includes(0))
+  const a1 = readBuf(fA), b1 = readBuf(fB)
+  assert('2a A\'s binary survived B\'s concurrent text edit', a1 !== null && a1.equals(binBuf))
+  assert('2a both folders end on the same bytes', a1 !== null && b1 !== null && a1.equals(b1))
+  assert('2a B\'s text edit is kept in B\'s .hive-deleted/', keptCopies(dirB).some((c) => c.toString() === 'TEXT-B-RACE'))
+  // 2b: B has the binary now, and replaces it with text
+  fs.writeFileSync(fB, 'TEXT-B-LATER')
+  await sleep(3000)
+  assert('2b both folders end on B\'s later text', readStr(fA) === 'TEXT-B-LATER' && readStr(fB) === 'TEXT-B-LATER')
+  assert('2b A\'s binary is kept in A\'s .hive-deleted/', keptCopies(dirA).some((c) => c.equals(binBuf)))
   A.stop(); B.stop()
 }
 
