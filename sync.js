@@ -4656,18 +4656,59 @@ export function startSync({ relay = 'ws://localhost:1234', room = 'default', dir
         id = rec && rec.id
       } catch { }
       unsharedWarned.set(r, { id, reason: info.reason, size: info.size })
-      try {
-        say(`⛔ ${contextPrefix} and claimed by ${holder.by} — it ${guidance}`)
-      } catch { }
+      const line = `⛔ ${contextPrefix} and claimed by ${holder.by} — it ${guidance}`
+      if (inRoom) { try { say(line) } catch { } } else queueUnsharedLine({ r, holder: holder.by, reason: info.reason, single: line })
     } else {
       const guidance = `stays on ${name}'s machine only: teammates will not get it from the room. Share it another way (commit it).`
       unsharedWarned.set(r, { id: null, reason: info.reason, size: info.size })
       if (!preexisting.has(r) || inRoom) {
-        try {
-          say(`· ${contextPrefix} — it ${guidance}`)
-        } catch { }
+        const line = `· ${contextPrefix} — it ${guidance}`
+        if (inRoom) { try { say(line) } catch { } } else queueUnsharedLine({ r, holder: null, reason: info.reason, single: line })
       }
     }
+  }
+
+  // ONE LINE PER BURST, NOT ONE PER FILE (26 Nov 2026). In a branch room binary sync is off, so an
+  // agent that generated a video and four images put five near-identical lines in a row into a live
+  // room (whatsapp-server/campaign*.png), and a new user reads that wall as "something is broken".
+  // The lines wait 1.2 s and leave together: one file keeps its exact line, two or more become one
+  // line per (claimer, reason) naming the count and the first three paths. Only the CHAT is shorter:
+  // status().unshared and the obligations ledger still hold one entry per file, each discharged on
+  // its own. A file that is already in the room as text is not batched: its local copy now differs
+  // from the room's, which is worth its own line. A file deleted before the flush is not mentioned.
+  const UNSHARED_BATCH_MS = 1200
+  let unsharedQueue = []
+  let unsharedTimer = null
+  function queueUnsharedLine(item) {
+    unsharedQueue.push(item)
+    if (unsharedTimer) return
+    unsharedTimer = setTimeout(flushUnsharedLines, UNSHARED_BATCH_MS)
+    sysTimers.add(unsharedTimer)
+  }
+  function flushUnsharedLines() {
+    if (unsharedTimer) { sysTimers.delete(unsharedTimer); unsharedTimer = null }
+    const q = unsharedQueue
+    unsharedQueue = []
+    if (stopped) return
+    const groups = new Map()
+    for (const it of q) {
+      if (!unsharedWarned.has(it.r)) continue
+      const k = `${it.holder || ''}\u0001${it.reason}`
+      if (!groups.has(k)) groups.set(k, [])
+      groups.get(k).push(it)
+    }
+    for (const items of groups.values()) {
+      try { say(items.length === 1 ? items[0].single : unsharedBatchLine(items)) } catch { }
+    }
+  }
+  function unsharedBatchLine(items) {
+    const { holder, reason } = items[0]
+    const shown = items.slice(0, 3).map((i) => i.r).join(', ') + (items.length > 3 ? `, +${items.length - 3} more` : '')
+    const why = reason === 'oversized' ? 'over the 1MB limit' : 'binary (contain null bytes)'
+    const where = `they stay on ${holder || name}'s machine only: teammates will not get them from the room. Share them another way (commit them), or add them to .gitignore`
+    return holder
+      ? `⛔ ${items.length} files claimed by ${holder} are ${why} — ${where}: ${shown}`
+      : `· ${items.length} files are ${why} — ${where}: ${shown}`
   }
 
   function noticeBornInvisible(ignoredRel) {

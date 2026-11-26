@@ -141,7 +141,13 @@ T(
   syncedToBob ? 'synced byte-identical' : (aliceNoticed ? `reported via ${reasonReported}` : 'SILENT LOSS: neither synced nor reported!')
 )
 
-// Check notice guidance
+// Check notice guidance. The chat line can trail status() by up to 1.2 s since unshared lines are
+// batched into one per burst (tests/unshared-batch-notice-test.mjs); the invariant is "within 20 s".
+const guidanceIn = (t) => t.includes('Share it another way') || t.includes('commit it') || t.includes('stays on')
+for (const end = Date.now() + 5000; Date.now() < end;) {
+  if (alice.doc.getArray('chat').toArray().some((m) => guidanceIn(String(m.text || '')))) break
+  await sleep(200)
+}
 const allChat = alice.doc.getArray('chat').toArray().map((m) => String(m.text || ''))
 const hasGuidance = allChat.some((m) => m.includes('Share it another way') || m.includes('commit it') || m.includes('stays on'))
 T('guard: notice explains why and provides actionable guidance', hasGuidance, hasGuidance ? 'guidance found' : 'no guidance found')
